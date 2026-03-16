@@ -155,6 +155,21 @@ class SimpleLayout:
         """重置 spacing manager（用于命令执行后）"""
         self._spacing.reset()
 
+    def _display_width(self, text: str) -> int:
+        """计算字符串的显示宽度（中文字符占 2 个宽度）"""
+        width = 0
+        for char in text:
+            # 中文字符（CJK）占 2 个宽度
+            if '\u4e00' <= char <= '\u9fff' or \
+               '\u3000' <= char <= '\u303f' or \
+               '\uff00' <= char <= '\uffef' or \
+               '\u3040' <= char <= '\u309f' or \
+               '\u30a0' <= char <= '\u30ff':
+                width += 2
+            else:
+                width += 1
+        return width
+
     async def get_input(self) -> str:
         """获取用户输入（带背景色显示）"""
         # 确保 spinner 已停止
@@ -165,6 +180,7 @@ class SimpleLayout:
 
         # 显示输入提示（input 会回显用户输入）
         prompt = f"{BOLD}{BLUE}>{RESET} "
+        prompt_width = 2  # "> " 的显示宽度
 
         try:
             # 使用标准输入（用户输入会被回显）
@@ -175,13 +191,19 @@ class SimpleLayout:
                 import shutil
                 width = shutil.get_terminal_size().columns
 
+                # 计算实际占用行数（使用显示宽度）
+                text_width = self._display_width(user_input)
+                total_width = prompt_width + text_width
+                num_lines = (total_width + width - 1) // width  # 向上取整
+
                 # 构造带背景色的显示行（前面带 >，用白色确保可见）
                 display_line = f"{BG_BLUE}{BOLD}{WHITE}>{RESET}{BG_BLUE}{BOLD} {user_input} {RESET}"
-                # 填充到行尾
-                padding = " " * max(0, width - len(user_input) - 3)
+                # 填充到行尾（填满所有占用的行）
+                padding_width = width * num_lines - text_width - prompt_width
+                padding = " " * max(0, padding_width)
 
-                # 光标上移一行，回到行首，清空行，打印背景色版本
-                print(f"\033[1A\r\033[K{display_line}{padding}{RESET}")
+                # 光标上移 num_lines 行，回到行首，清空行，打印背景色版本
+                print(f"\033[{num_lines}A\r\033[K{display_line}{padding}{RESET}")
             # 注意：input() 本身已经有一个换行，所以这里不加 print()
 
             return user_input
