@@ -1,31 +1,29 @@
 """Shell 工具"""
 
-import subprocess
-
 from .base import Tool, ToolRegistry
+from .bash_session import get_session
 
 
 def _bash(args: dict) -> str:
-    """执行 shell 命令"""
+    """执行 shell 命令（使用 Git Bash 持久化会话）"""
     # 支持 cmd 或 command 作为参数名
     cmd = args.get("cmd") or args.get("command")
     if not cmd:
         return "error: missing required parameter 'cmd'"
 
+    # 检查是否是重启命令
+    if args.get("restart"):
+        from .bash_session import _session
+        if _session:
+            _session.restart()
+            return "Bash session restarted"
+        return "error: no active session to restart"
+
     try:
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        output = result.stdout
-        if result.stderr:
-            output += "\n" + result.stderr
-        return output.strip() or "(empty)"
-    except subprocess.TimeoutExpired:
-        return "(timed out after 30s)"
+        session = get_session()
+        return session.execute(cmd, timeout=args.get("timeout", 30))
+    except RuntimeError as e:
+        return f"error: {e}"
     except Exception as e:
         return f"error: {e}"
 
@@ -35,8 +33,13 @@ def register_shell_tools():
     ToolRegistry.register(
         Tool(
             "bash",
-            "Run shell command",
-            {"cmd": "string"},
+            "Run shell command in persistent Git Bash session",
+            {
+                "cmd": "string?",
+                "command": "string?",
+                "restart": "boolean?",
+                "timeout": "number?",
+            },
             _bash,
         )
     )
