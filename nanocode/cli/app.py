@@ -4,14 +4,14 @@ import asyncio
 import os
 import sys
 
-from ..core import Config, AsyncAgent, events, EventType, get_system_prompt
+from ..core import AsyncAgent, Config, EventType, events, get_system_prompt
 from ..core.permission import PermissionMatcher
 from ..providers import AsyncOpenAIProvider
 from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
+from .ui.colors import BLUE, BOLD, CYAN, DIM, GREEN, RED, RESET
 from .ui.layout import SimpleLayout
 from .ui.widgets import SelectMenu
-from .ui.colors import BOLD, BLUE, CYAN, RESET, DIM, RED, GREEN
 
 
 class AsyncApp:
@@ -27,7 +27,7 @@ class AsyncApp:
     async def run(self):
         """运行应用（异步入口）"""
         # 清屏
-        os.system('cls' if os.name == 'nt' else 'clear')
+        os.system("cls" if os.name == "nt" else "clear")
 
         # 初始化
         self.layout.initialize()
@@ -93,7 +93,7 @@ class AsyncApp:
     def _on_tool_start(self, event):
         """工具开始 - 停止思考并显示工具调用"""
         self.layout.set_thinking(False)
-        
+
         name = event.data["name"]
         args = event.data["args"]
         preview = str(list(args.values())[0])[:50] if args else ""
@@ -118,13 +118,21 @@ class AsyncApp:
         response_future = event.data["response_future"]
 
         # 提取目标用于显示
-        target = tool_args.get("cmd") or tool_args.get("command") or tool_args.get("path") or ""
+        target = (
+            tool_args.get("cmd")
+            or tool_args.get("command")
+            or tool_args.get("path")
+            or ""
+        )
 
-        # 显示权限询问
-        print(f"\n{BOLD}{CYAN}?{RESET} Permission required for {GREEN}{tool_name}{RESET}")
+        # 生成预览
+        preview = ""
         if target:
             preview = target[:60] + "..." if len(target) > 60 else target
-            print(f"  {DIM}{preview}{RESET}")
+            preview = f" ({DIM}{preview}{RESET})"
+
+        # 显示权限询问
+        print(f"\n{BOLD}{CYAN}?{RESET} Permission required for {GREEN}{tool_name}{RESET}{preview}")
 
         # 显示选择菜单
         menu = SelectMenu(
