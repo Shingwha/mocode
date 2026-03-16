@@ -17,6 +17,7 @@ class EventType(Enum):
     MODEL_CHANGED = auto()    # 模型切换
     ERROR = auto()            # 错误
     STATUS_UPDATE = auto()    # 状态栏更新
+    PERMISSION_ASK = auto()   # 权限询问
 
 
 @dataclass

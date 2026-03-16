@@ -5,11 +5,13 @@ import os
 import sys
 
 from ..core import Config, AsyncAgent, events, EventType, get_system_prompt
+from ..core.permission import PermissionMatcher
 from ..providers import AsyncOpenAIProvider
 from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
 from .ui.layout import SimpleLayout
-from .ui.colors import BOLD, BLUE, CYAN, RESET, DIM, RED
+from .ui.widgets import SelectMenu
+from .ui.colors import BOLD, BLUE, CYAN, RESET, DIM, RED, GREEN
 
 
 class AsyncApp:
@@ -54,10 +56,15 @@ class AsyncApp:
             model=self.config.model,
             base_url=self.config.base_url or None,
         )
+
+        # 创建权限匹配器
+        permission_matcher = PermissionMatcher(self.config.permission)
+
         self.agent = AsyncAgent(
             provider=provider,
             system_prompt=get_system_prompt(),
             max_tokens=self.config.max_tokens,
+            permission_matcher=permission_matcher,
         )
 
     def _setup_event_handlers(self):
@@ -67,6 +74,7 @@ class AsyncApp:
         events.on(EventType.TOOL_START, self._on_tool_start)
         events.on(EventType.TOOL_COMPLETE, self._on_tool_complete)
         events.on(EventType.ERROR, self._on_error)
+        events.on(EventType.PERMISSION_ASK, self._on_permission_ask)
 
     # ===== 事件处理器 =====
 
@@ -100,6 +108,48 @@ class AsyncApp:
         """错误处理"""
         self.layout.set_thinking(False)
         print(f"\n{RED}Error: {event.data}{RESET}\n")
+
+    def _on_permission_ask(self, event):
+        """权限询问处理"""
+        self.layout.set_thinking(False)
+
+        tool_name = event.data["tool_name"]
+        tool_args = event.data["tool_args"]
+        response_future = event.data["response_future"]
+
+        # 提取目标用于显示
+        target = tool_args.get("cmd") or tool_args.get("command") or tool_args.get("path") or ""
+
+        # 显示权限询问
+        print(f"\n{BOLD}{CYAN}?{RESET} Permission required for {GREEN}{tool_name}{RESET}")
+        if target:
+            preview = target[:60] + "..." if len(target) > 60 else target
+            print(f"  {DIM}{preview}{RESET}")
+
+        # 显示选择菜单
+        menu = SelectMenu(
+            title="Choose action",
+            choices=[
+                ("allow", "Allow (execute the tool)"),
+                ("deny", "Deny (cancel the operation)"),
+                ("input", "Type something (provide custom response)"),
+            ],
+        )
+
+        result = menu.show()
+
+        if result == "allow":
+            response_future.set_result("allow")
+        elif result == "deny" or result is None:
+            response_future.set_result("deny")
+        elif result == "input":
+            # 获取用户输入
+            try:
+                print(f"\n{BOLD}{BLUE}>{RESET} ", end="", flush=True)
+                user_input = input()
+                response_future.set_result(user_input)
+            except (KeyboardInterrupt, EOFError):
+                response_future.set_result("deny")
 
     # ===== 主循环 =====
 

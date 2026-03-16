@@ -2,9 +2,11 @@
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 import json
 import os
+
+from .permission import PermissionConfig
 
 
 @dataclass
@@ -29,6 +31,7 @@ class Config:
 
     current: CurrentConfig = field(default_factory=CurrentConfig)
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
+    permission: PermissionConfig = field(default_factory=PermissionConfig)
     max_tokens: int = 8192
 
     CONFIG_PATH: Path = Path.home() / ".nanocode" / "config.json"
@@ -77,6 +80,10 @@ class Config:
                 if "max_tokens" in data:
                     config.max_tokens = data["max_tokens"]
 
+                # 加载权限配置
+                if "permission" in data:
+                    config.permission = PermissionConfig.from_dict(data["permission"])
+
             except (json.JSONDecodeError, IOError, TypeError):
                 pass
 
@@ -97,6 +104,7 @@ class Config:
             "providers": {
                 k: asdict(v) for k, v in self.providers.items()
             },
+            "permission": self.permission.to_dict(),
             "max_tokens": self.max_tokens,
         }
 
