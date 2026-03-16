@@ -44,19 +44,15 @@ class SelectMenu(Generic[T]):
                 return None
 
     def _render_initial(self):
-        """首次渲染（首行前有空行）"""
-        print()  # 首行前添加空行
+        """首次渲染（不再自带空行）"""
         for i, (key, display) in enumerate(self.choices):
             print(self._format_line(i, key, display))
 
     def _render_update(self):
-        """更新渲染（仅选项部分）"""
-        # 需要向上移动的行数：空行(1) + 选项(len)
-        lines = len(self.choices) + 1
+        """更新渲染"""
+        lines = len(self.choices)  # 移除 +1（不再有前置空行）
         print(f"\033[{lines}A", end="")
         print("\033[J", end="")
-
-        print()  # 保持首行前的空行
         for i, (key, display) in enumerate(self.choices):
             print(self._format_line(i, key, display))
     def _format_line(self, index: int, key: T, display: str) -> str:

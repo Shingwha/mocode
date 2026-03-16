@@ -1,10 +1,13 @@
 """命令基类"""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import ClassVar
+from dataclasses import dataclass, field
+from typing import ClassVar, TYPE_CHECKING
 
 from ...core import Config, AsyncAgent
+
+if TYPE_CHECKING:
+    from ..ui.layout import SimpleLayout
 
 
 @dataclass
@@ -13,6 +16,7 @@ class CommandContext:
     config: Config
     agent: AsyncAgent
     args: str  # 命令参数
+    layout: "SimpleLayout | None" = None
 
 
 class Command(ABC):

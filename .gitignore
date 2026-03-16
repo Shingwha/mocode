@@ -25,3 +25,5 @@ Thumbs.db
 
 # Project specific
 .uv/
+
+.claude

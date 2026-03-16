@@ -1,7 +1,7 @@
 """模型切换命令"""
 
 from .base import Command, CommandContext, command
-from ..ui import SelectMenu, success, error, info
+from ..ui import SelectMenu, error
 from ...providers import AsyncOpenAIProvider
 
 
@@ -67,6 +67,6 @@ class ModelCommand(Command):
 
         # 保存配置
         ctx.config.save()
-        if not quiet:
-            print()  # 空行分隔
-            success(f"Switched to {model}")
+        if not quiet and ctx.layout:
+            from ..ui import format_success
+            ctx.layout.add_command_output(format_success(f"Switched to {model}"))

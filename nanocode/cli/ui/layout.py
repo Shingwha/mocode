@@ -17,20 +17,19 @@ from .colors import RESET, BOLD, DIM, CYAN, GREEN, BLUE, RED, WHITE, BG_BLUE
 
 
 class SpacingManager:
-    """空行管理器 - 控制消息间的空行"""
+    """空行管理器 - 前置空行模式"""
 
     def __init__(self):
         self._last_type: str | None = None
 
-    def before_message(self, current_type: str):
-        """在打印消息前调用，只记录类型"""
+    def print_space_if_needed(self, current_type: str):
+        """根据需要打印前置空行，并记录当前类型"""
+        # 首条消息不需要空行
+        if self._last_type is not None:
+            # tool_call 后的 tool_result 不需要空行
+            if not (self._last_type == "tool_call" and current_type == "tool_result"):
+                print()
         self._last_type = current_type
-
-    def after_message(self):
-        """在打印消息后调用，根据类型决定是否打印空行"""
-        if self._last_type == "tool_call":
-            return
-        print()
 
     def reset(self):
         """重置状态"""
@@ -76,7 +75,7 @@ class SimpleLayout:
 
     def add_assistant_message(self, content: str):
         """添加助手消息"""
-        self._spacing.before_message("assistant")
+        self._spacing.print_space_if_needed("assistant")
         lines = content.split('\n')
         if len(lines) == 1:
             print(f"{CYAN}*{RESET} {content}")
@@ -84,29 +83,45 @@ class SimpleLayout:
             print(f"{CYAN}*{RESET} {lines[0]}")
             for line in lines[1:]:
                 print(f"  {line}")
-        self._spacing.after_message()
 
     def add_tool_call(self, name: str, args_preview: str = ""):
         """添加工具调用"""
-        self._spacing.before_message("tool_call")
+        self._spacing.print_space_if_needed("tool_call")
         args_str = f"{DIM}({args_preview}){RESET}" if args_preview else ""
         print(f"{CYAN}◆{RESET} {GREEN}{name}{RESET}{args_str}")
-        # 工具调用后不打印空行，因为后面紧跟工具结果
 
     def add_tool_result(self, preview: str, max_length: int = 60):
         """添加工具结果"""
-        self._spacing.before_message("tool_result")
+        self._spacing.print_space_if_needed("tool_result")
         text = preview
         if len(text) > max_length:
             text = text[:max_length - 3] + "..."
         print(f"  {DIM}⎿ {text}{RESET}")
-        self._spacing.after_message()
 
     def add_tool_error(self, error: str):
         """添加工具错误"""
-        self._spacing.before_message("error")
+        self._spacing.print_space_if_needed("error")
         print(f"  {RED}✗ {error}{RESET}")
-        self._spacing.after_message()
+
+    def add_command_output(self, text: str):
+        """添加命令输出"""
+        self._spacing.print_space_if_needed("command")
+        print(text)
+
+    def add_error_message(self, text: str):
+        """添加错误消息"""
+        self._spacing.print_space_if_needed("error")
+        print(f"{RED}Error: {text}{RESET}")
+
+    def add_permission_ask_title(self, tool_name: str, preview: str = ""):
+        """添加权限询问标题"""
+        self._spacing.print_space_if_needed("permission")
+        print(f"{BOLD}{CYAN}?{RESET} Permission required for {GREEN}{tool_name}{RESET}{preview}")
+
+    def add_exit_message(self, text: str):
+        """添加退出消息"""
+        self._spacing.print_space_if_needed("exit")
+        print(f"{DIM}{text}{RESET}")
 
     def set_thinking(self, thinking: bool, text: str = "Thinking"):
         """设置思考状态"""
@@ -175,8 +190,8 @@ class SimpleLayout:
         # 确保 spinner 已停止
         self._stop_spinner()
 
-        # 记录用户输入类型（空行由上一次消息的 after_message 处理，或由命令执行后的 print() 处理）
-        self._spacing.before_message("user_input")
+        # 打印前置空行并记录类型
+        self._spacing.print_space_if_needed("user_input")
 
         # 显示输入提示（input 会回显用户输入）
         prompt = f"{BOLD}{BLUE}>{RESET} "

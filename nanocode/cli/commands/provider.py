@@ -1,7 +1,7 @@
 """供应商切换命令"""
 
 from .base import Command, CommandContext, command
-from ..ui import SelectMenu, success, error, info
+from ..ui import SelectMenu, error, info
 from ..ui.colors import RESET, CYAN, GREEN
 from ...providers import AsyncOpenAIProvider
 
@@ -27,8 +27,8 @@ class ProviderCommand(Command):
             result = cmd.execute(ctx)
             ctx.args = original_args
             # 最后输出切换信息
-            print()  # 空行分隔
-            success(f"{CYAN}{old_provider}{RESET} → {GREEN}{provider}{RESET} | {CYAN}{ctx.config.current.model}{RESET}")
+            if ctx.layout:
+                ctx.layout.add_command_output(f"{CYAN}{old_provider}{RESET} → {GREEN}{provider}{RESET} | {CYAN}{ctx.config.current.model}{RESET}")
             return result
         elif arg.isdigit():
             # 数字选择
@@ -51,8 +51,8 @@ class ProviderCommand(Command):
 
         # 切换供应商（直接指定时立即输出）
         old_provider = self._switch_provider(ctx, provider)
-        print()  # 空行分隔
-        success(f"{CYAN}{old_provider}{RESET} → {GREEN}{provider}{RESET} | {CYAN}{ctx.config.current.model}{RESET}")
+        if ctx.layout:
+            ctx.layout.add_command_output(f"{CYAN}{old_provider}{RESET} → {GREEN}{provider}{RESET} | {CYAN}{ctx.config.current.model}{RESET}")
         return True
 
     def _select_interactive(self, config) -> str | None:

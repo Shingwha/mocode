@@ -16,3 +16,18 @@ def success(text: str):
 def info(text: str):
     """显示信息消息"""
     print(f"{CYAN}ℹ{RESET} {text}")
+
+
+def format_error(text: str) -> str:
+    """格式化错误消息（不打印）"""
+    return f"{RED}✗{RESET} {text}"
+
+
+def format_success(text: str) -> str:
+    """格式化成功消息（不打印）"""
+    return f"{GREEN}✓{RESET} {text}"
+
+
+def format_info(text: str) -> str:
+    """格式化信息消息（不打印）"""
+    return f"{CYAN}ℹ{RESET} {text}"

@@ -2,14 +2,13 @@
 
 import asyncio
 import os
-import sys
 
 from ..core import AsyncAgent, Config, EventType, events, get_system_prompt
 from ..core.permission import PermissionMatcher
 from ..providers import AsyncOpenAIProvider
 from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
-from .ui.colors import BLUE, BOLD, CYAN, DIM, GREEN, RED, RESET
+from .ui.colors import BLUE, BOLD, DIM, RESET
 from .ui.layout import SimpleLayout
 from .ui.widgets import SelectMenu
 
@@ -44,7 +43,7 @@ class AsyncApp:
         try:
             await self._main_loop()
         except Exception as e:
-            print(f"\n{RED}Error: {e}{RESET}\n")
+            self.layout.add_error_message(str(e))
         finally:
             self._is_running = False
             self.layout.cleanup()
@@ -107,7 +106,7 @@ class AsyncApp:
     def _on_error(self, event):
         """错误处理"""
         self.layout.set_thinking(False)
-        print(f"\n{RED}Error: {event.data}{RESET}\n")
+        self.layout.add_error_message(str(event.data))
 
     def _on_permission_ask(self, event):
         """权限询问处理"""
@@ -131,10 +130,10 @@ class AsyncApp:
             preview = target[:60] + "..." if len(target) > 60 else target
             preview = f" ({DIM}{preview}{RESET})"
 
-        # 显示权限询问
-        print(f"\n{BOLD}{CYAN}?{RESET} Permission required for {GREEN}{tool_name}{RESET}{preview}")
+        # 显示权限询问标题（使用 layout 管理）
+        self.layout.add_permission_ask_title(tool_name, preview)
 
-        # 显示选择菜单
+        # 显示选择菜单（SelectMenu 不再自带空行）
         menu = SelectMenu(
             title="Choose action",
             choices=[
@@ -178,6 +177,7 @@ class AsyncApp:
                         config=self.config,
                         agent=self.agent,
                         args=user_input,
+                        layout=self.layout,
                     )
                     if not await self._execute_command(ctx):
                         break
@@ -190,7 +190,7 @@ class AsyncApp:
                 break
             except Exception as e:
                 self.layout.set_thinking(False)
-                print(f"\n{RED}Error: {e}{RESET}\n")
+                self.layout.add_error_message(str(e))
 
     async def _execute_command(self, ctx: CommandContext) -> bool:
         """执行命令（异步包装）"""
@@ -198,15 +198,11 @@ class AsyncApp:
 
         # 特殊处理退出命令
         if command_name in ["/exit", "/quit"]:
-            print(f"\n{DIM}Goodbye!{RESET}\n")
+            self.layout.add_exit_message("Goodbye!")
             return False
 
         # 将同步命令执行放入线程池
         result = await asyncio.to_thread(self.commands.execute, ctx)
-
-        # 命令执行后打印空行并重置 spacing（命令输出不经过 layout 的 spacing）
-        print()
-        self.layout.reset_spacing()
 
         return result
 
