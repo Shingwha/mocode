@@ -27,7 +27,9 @@ class SpacingManager:
         # 首条消息不需要空行
         if self._last_type is not None:
             # tool_call 后的 tool_result 不需要空行
-            if not (self._last_type == "tool_call" and current_type == "tool_result"):
+            # user_input 后的消息不需要空行（input() 已带回车换行）
+            if not (self._last_type == "tool_call" and current_type == "tool_result") \
+               and self._last_type != "user_input":
                 print()
         self._last_type = current_type
 
@@ -190,9 +192,8 @@ class SimpleLayout:
         # 确保 spinner 已停止
         self._stop_spinner()
 
-        # 打印前置空行（但不记录类型，因为 input() 自带回车换行）
-        if self._spacing._last_type is not None:
-            print()
+        # 打印前置空行并记录类型
+        self._spacing.print_space_if_needed("user_input")
 
         # 显示输入提示（input 会回显用户输入）
         prompt = f"{BOLD}{BLUE}>{RESET} "
