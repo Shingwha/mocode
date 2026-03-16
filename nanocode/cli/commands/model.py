@@ -1,7 +1,7 @@
 """模型切换命令"""
 
 from .base import Command, CommandContext, command
-from ..ui import Message, SelectMenu, success, error, info
+from ..ui import SelectMenu, success, error, info
 from ...providers import AsyncOpenAIProvider
 
 

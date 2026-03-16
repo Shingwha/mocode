@@ -1,7 +1,7 @@
 """供应商切换命令"""
 
 from .base import Command, CommandContext, command
-from ..ui import Message, SelectMenu, success, error, info
+from ..ui import SelectMenu, success, error, info
 from ..ui.colors import RESET, CYAN, GREEN
 from ...providers import AsyncOpenAIProvider
 
