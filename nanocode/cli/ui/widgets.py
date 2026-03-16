@@ -3,7 +3,7 @@
 import sys
 from typing import TypeVar, Generic
 
-from .colors import RESET, BOLD, DIM, GREEN
+from .colors import RESET, BOLD, DIM, GREEN, CYAN
 
 T = TypeVar("T")
 
@@ -44,15 +44,23 @@ class SelectMenu(Generic[T]):
                 return None
 
     def _render_initial(self):
-        """首次渲染（不再自带空行）"""
+        """首次渲染"""
+        # 打印标题（如果有）
+        if self.title:
+            print(f"{BOLD}{CYAN}?{RESET} {self.title}")
+        # 打印选项
         for i, (key, display) in enumerate(self.choices):
             print(self._format_line(i, key, display))
 
     def _render_update(self):
         """更新渲染"""
-        lines = len(self.choices)  # 移除 +1（不再有前置空行）
+        # 计算需要移动的行数（标题 + 选项）
+        lines = len(self.choices) + (1 if self.title else 0)
         print(f"\033[{lines}A", end="")
         print("\033[J", end="")
+        # 重新打印标题和选项
+        if self.title:
+            print(f"{BOLD}{CYAN}?{RESET} {self.title}")
         for i, (key, display) in enumerate(self.choices):
             print(self._format_line(i, key, display))
     def _format_line(self, index: int, key: T, display: str) -> str:

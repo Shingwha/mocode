@@ -8,7 +8,7 @@ from ..core.permission import PermissionMatcher
 from ..providers import AsyncOpenAIProvider
 from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
-from .ui.colors import BLUE, BOLD, DIM, RESET
+from .ui.colors import BLUE, BOLD, DIM, GREEN, RESET
 from .ui.layout import SimpleLayout
 from .ui.widgets import SelectMenu
 
@@ -124,18 +124,19 @@ class AsyncApp:
             or ""
         )
 
-        # 生成预览
-        preview = ""
+        # 生成标题
         if target:
             preview = target[:60] + "..." if len(target) > 60 else target
-            preview = f" ({DIM}{preview}{RESET})"
+            title = f"Permission required for {GREEN}{tool_name}{RESET} ({DIM}{preview}{RESET})"
+        else:
+            title = f"Permission required for {GREEN}{tool_name}{RESET}"
 
-        # 显示权限询问标题（使用 layout 管理）
-        self.layout.add_permission_ask_title(tool_name, preview)
+        # 打印前置空行
+        self.layout._spacing.print_space_if_needed("permission")
 
-        # 显示选择菜单（SelectMenu 不再自带空行）
+        # 显示选择菜单
         menu = SelectMenu(
-            title="Choose action",
+            title=title,
             choices=[
                 ("allow", "Allow (execute the tool)"),
                 ("deny", "Deny (cancel the operation)"),

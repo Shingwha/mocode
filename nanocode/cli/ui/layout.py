@@ -190,8 +190,9 @@ class SimpleLayout:
         # 确保 spinner 已停止
         self._stop_spinner()
 
-        # 打印前置空行并记录类型
-        self._spacing.print_space_if_needed("user_input")
+        # 打印前置空行（但不记录类型，因为 input() 自带回车换行）
+        if self._spacing._last_type is not None:
+            print()
 
         # 显示输入提示（input 会回显用户输入）
         prompt = f"{BOLD}{BLUE}>{RESET} "
