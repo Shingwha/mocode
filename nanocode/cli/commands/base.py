@@ -17,6 +17,7 @@ class CommandContext:
     agent: AsyncAgent
     args: str  # 命令参数
     layout: "SimpleLayout | None" = None
+    pending_message: str | None = None  # 命令执行后要发送给 agent 的消息
 
 
 class Command(ABC):

@@ -6,6 +6,7 @@ import os
 from ..core import AsyncAgent, Config, EventType, events, get_system_prompt
 from ..core.permission import PermissionMatcher
 from ..providers import AsyncOpenAIProvider
+from ..skills import SkillManager
 from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
 from .ui.colors import BLUE, BOLD, DIM, GREEN, RESET
@@ -59,9 +60,13 @@ class AsyncApp:
         # 创建权限匹配器
         permission_matcher = PermissionMatcher(self.config.permission)
 
+        # 初始化 SkillManager 并获取系统提示
+        skill_manager = SkillManager.get_instance()
+        system_prompt = get_system_prompt(skill_manager)
+
         self.agent = AsyncAgent(
             provider=provider,
-            system_prompt=get_system_prompt(),
+            system_prompt=system_prompt,
             max_tokens=self.config.max_tokens,
             permission_matcher=permission_matcher,
         )
@@ -182,6 +187,9 @@ class AsyncApp:
                     )
                     if not await self._execute_command(ctx):
                         break
+                    # 检查命令是否设置了待发送消息
+                    if ctx.pending_message:
+                        await self.agent.chat(ctx.pending_message)
                     continue
 
                 # 运行 Agent（用户输入已由 input() 回显）

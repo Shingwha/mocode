@@ -4,6 +4,7 @@ from .base import Command, CommandContext, CommandRegistry, command
 from .builtin import QuitCommand, ClearCommand, HelpCommand
 from .model import ModelCommand
 from .provider import ProviderCommand
+from .skills_command import SkillsCommand
 
 __all__ = [
     "Command",
@@ -17,6 +18,7 @@ __all__ = [
     "HelpCommand",
     "ModelCommand",
     "ProviderCommand",
+    "SkillsCommand",
 ]
 
 # 自动注册的内置命令
@@ -26,6 +28,7 @@ BUILTIN_COMMANDS = [
     HelpCommand,
     ModelCommand,
     ProviderCommand,
+    SkillsCommand,
 ]
 
 

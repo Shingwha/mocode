@@ -20,3 +20,8 @@ def register_all_tools():
     register_file_tools()
     register_search_tools()
     register_shell_tools()
+
+    # 注册 skill 工具
+    from ..skills import register_skill_tools
+
+    register_skill_tools()
