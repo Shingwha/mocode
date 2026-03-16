@@ -1,6 +1,6 @@
 """Tool 基类和注册机制"""
 
-from typing import Callable, Any
+from typing import Callable
 
 
 class Tool:
@@ -26,7 +26,7 @@ class Tool:
             return f"error: {err}"
 
     def to_schema(self) -> dict:
-        """转换为 API 格式的工具定义"""
+        """转换为 OpenAI API 格式的工具定义"""
         properties = {}
         required = []
 
@@ -49,12 +49,15 @@ class Tool:
                 required.append(param_name)
 
         return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": {
-                "type": "object",
-                "properties": properties,
-                "required": required,
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                },
             },
         }
 
@@ -96,7 +99,9 @@ def tool(name: str, description: str, params: dict):
     def read_file(args):
         ...
     """
+
     def decorator(func: Callable[[dict], str]) -> Callable[[dict], str]:
         ToolRegistry.register(Tool(name, description, params, func))
         return func
+
     return decorator
