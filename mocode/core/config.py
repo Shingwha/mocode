@@ -7,6 +7,7 @@ import json
 import os
 
 from .permission import PermissionConfig
+from ..paths import CONFIG_PATH
 
 
 @dataclass
@@ -34,7 +35,7 @@ class Config:
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     max_tokens: int = 8192
 
-    CONFIG_PATH: Path = Path.home() / ".mocode" / "config.json"
+    CONFIG_PATH: Path = CONFIG_PATH
 
     def __post_init__(self):
         """确保默认供应商存在"""

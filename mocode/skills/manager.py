@@ -6,6 +6,7 @@ from typing import Optional
 import yaml
 
 from .schema import Skill, SkillMetadata
+from ..paths import SKILLS_DIR, PROJECT_SKILLS_DIRNAME
 
 
 class SkillManager:
@@ -14,13 +15,13 @@ class SkillManager:
     _instance: Optional["SkillManager"] = None
 
     DEFAULT_SKILLS_DIRS = [
-        Path.home() / ".claude" / "skills",  # 全局 skills
+        SKILLS_DIR,  # 全局 skills
     ]
 
     def __init__(self, skills_dirs: Optional[list[Path]] = None):
         self.skills_dirs = skills_dirs or self.DEFAULT_SKILLS_DIRS.copy()
         # 添加项目级 skills 目录
-        project_skills = Path.cwd() / ".claude" / "skills"
+        project_skills = Path.cwd() / PROJECT_SKILLS_DIRNAME / "skills"
         if project_skills not in self.skills_dirs:
             self.skills_dirs.append(project_skills)
 

@@ -79,7 +79,7 @@ mocode/
 
 5. **Command Pattern**: Slash commands (`/help`, `/model`, `/provider`, `/skills`) via `@command` decorator and `CommandRegistry`.
 
-6. **Skill System**: Skills discovered from `~/.claude/skills/`. Each skill has `SKILL.md` with YAML frontmatter. Listed in system prompt; loaded on demand via `skill` tool.
+6. **Skill System**: Skills discovered from `~/.mocode/skills/`. Each skill has `SKILL.md` with YAML frontmatter. Listed in system prompt; loaded on demand via `skill` tool.
 
 7. **Gateway System**: `GatewayManager` manages multiple channels (Telegram, etc.) with per-user sessions. Each session gets isolated `MocodeClient` with its own `EventBus`. Channels implement `BaseChannel` interface.
 
@@ -146,7 +146,7 @@ Config stored at `~/.mocode/config.json`, or use `Config.from_dict(data)` for in
 
 ## Adding New Skills
 
-Skills auto-discovered from `~/.claude/skills/`. Create `SKILL.md`:
+Skills auto-discovered from `~/.mocode/skills/`. Create `SKILL.md`:
 
 ```markdown
 ---

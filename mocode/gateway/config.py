@@ -5,6 +5,8 @@ from typing import Any
 import json
 from pathlib import Path
 
+from ..paths import CONFIG_PATH
+
 
 @dataclass
 class TelegramConfig:
@@ -20,7 +22,7 @@ class GatewayConfig:
 
     channels: dict[str, Any] = field(default_factory=dict)
 
-    CONFIG_PATH: Path = Path.home() / ".mocode" / "config.json"
+    CONFIG_PATH: Path = CONFIG_PATH
 
     @classmethod
     def load(cls) -> "GatewayConfig":
