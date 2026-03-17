@@ -5,16 +5,28 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from nanocode import NanoCodeClient, EventBus, EventType
+from nanocode import EventBus, EventType, NanoCodeClient
 
 from .base import BaseChannel
 from .config import GatewayConfig
 from .telegram import TelegramChannel
 
+# 命令注册表
+COMMANDS = {
+    "start": "Start conversation",
+    "help": "Show commands",
+    "clear": "Clear history",
+    "model": "View/switch model",
+    "provider": "View/switch provider",
+    "status": "Show status",
+    "cancel": "Cancel operation",
+}
+
 
 @dataclass
 class UserSession:
     """用户会话"""
+
     user_id: str
     channel: str
     client: NanoCodeClient
@@ -36,6 +48,65 @@ class GatewayManager:
         self.sessions: dict[str, UserSession] = {}
         self._running = False
 
+    def get_commands(self) -> dict[str, str]:
+        """返回命令注册表供 Channel 使用"""
+        return COMMANDS
+
+    def _format_help(self) -> str:
+        """格式化帮助信息"""
+        lines = [f"/{cmd} - {desc}" for cmd, desc in COMMANDS.items()]
+        return "\n".join(lines)
+
+    def _format_models(self, session: UserSession) -> str:
+        """格式化模型列表"""
+        lines = []
+        config = session.client.config
+
+        for prov_key, prov_config in config.providers.items():
+            is_current = prov_key == config.current.provider
+            marker = " *" if is_current else ""
+            lines.append(f"**{prov_config.name}**{marker}")
+
+            for model in prov_config.models:
+                is_current_model = is_current and model == config.current.model
+                check = " *" if is_current_model else ""
+                lines.append(f"- {model}{check}")
+
+        return "\n".join(lines)
+
+    def _find_model_in_providers(
+        self, session: UserSession, model_name: str
+    ) -> tuple[str | None, str | None]:
+        """在所有供应商中查找模型
+
+        Returns:
+            (provider_key, model_name) 如果找到，否则 (None, None)
+        """
+        config = session.client.config
+        found_provider = None
+
+        for prov_key, prov_config in config.providers.items():
+            if model_name in prov_config.models:
+                if found_provider is None:
+                    found_provider = prov_key
+                else:
+                    # 在多个供应商中找到
+                    return None, None
+
+        return found_provider, model_name if found_provider else None
+
+    def _format_providers(self, session: UserSession) -> str:
+        """格式化供应商列表"""
+        lines = []
+        config = session.client.config
+
+        for prov_key, prov_config in config.providers.items():
+            is_current = prov_key == config.current.provider
+            check = " *" if is_current else ""
+            lines.append(f"{prov_key} - {prov_config.name}{check}")
+
+        return "\n".join(lines)
+
     async def start(self) -> None:
         """启动所有渠道"""
         # 初始化 Telegram 渠道
@@ -43,6 +114,8 @@ class GatewayManager:
         if tg_config.enabled:
             channel = TelegramChannel(tg_config)
             channel_name = "telegram"
+            # 设置命令注册表
+            channel.set_command_registry(self.get_commands())
             # 使用 lambda 绑定 channel 名称
             channel.on_message(
                 lambda uid, txt, ch=channel_name: asyncio.create_task(
@@ -139,71 +212,126 @@ class GatewayManager:
                 EventType.TEXT_COMPLETE,
                 lambda e, ch=channel, uid=user_id: asyncio.create_task(
                     self._on_text_complete(ch, uid, e)
-                )
+                ),
             )
             event_bus.on(
                 EventType.TOOL_START,
                 lambda e, ch=channel, uid=user_id: asyncio.create_task(
                     self._on_tool_start(ch, uid, e)
-                )
+                ),
             )
             event_bus.on(
                 EventType.INTERRUPTED,
                 lambda e, ch=channel, uid=user_id: asyncio.create_task(
                     self._on_interrupted(ch, uid, e)
-                )
+                ),
             )
             # 订阅 MESSAGE_ADDED - 记录用户输入
             event_bus.on(
                 EventType.MESSAGE_ADDED,
                 lambda e, ch=channel, uid=user_id: asyncio.create_task(
                     self._on_message_added(ch, uid, e)
-                )
+                ),
             )
             # 订阅 TOOL_COMPLETE - 记录工具结果
             event_bus.on(
                 EventType.TOOL_COMPLETE,
                 lambda e, ch=channel, uid=user_id: asyncio.create_task(
                     self._on_tool_complete(ch, uid, e)
-                )
+                ),
             )
             # 订阅 ERROR - 记录错误
             event_bus.on(
                 EventType.ERROR,
                 lambda e, ch=channel, uid=user_id: asyncio.create_task(
                     self._on_error(ch, uid, e)
-                )
+                ),
             )
 
             print(f"[Gateway] New session: {session_key}")
 
         return self.sessions[session_key]
 
-    async def _handle_command(self, session: UserSession, text: str, channel: str) -> None:
+    async def _handle_command(
+        self, session: UserSession, text: str, channel: str
+    ) -> None:
         """处理命令"""
         parts = text.split()
-        cmd = parts[0].lower()
+        cmd = parts[0].lower().lstrip("/")  # 移除 "/" 前缀
         args = parts[1:] if len(parts) > 1 else []
 
         ch = self.channels[channel]
 
-        if cmd == "/clear":
+        if cmd == "start":
+            await ch.send_message(session.user_id, "NanoCode Bot ready.")
+
+        elif cmd == "help":
+            await ch.send_message(session.user_id, self._format_help())
+
+        elif cmd == "clear":
             session.client.clear_history()
             await ch.send_message(session.user_id, "History cleared.")
 
-        elif cmd == "/model":
+        elif cmd == "model":
             if args:
                 model_name = args[0]
-                session.client.set_model(model_name)
-                await ch.send_message(session.user_id, f"Model: {model_name}")
-            else:
-                await ch.send_message(
-                    session.user_id,
-                    f"Model: {session.client.current_model}\n"
-                    f"Provider: {session.client.current_provider}",
+                # 跨供应商搜索模型
+                provider_key, found_model = self._find_model_in_providers(
+                    session, model_name
                 )
 
-        elif cmd == "/status":
+                if provider_key and found_model:
+                    session.client.set_model(found_model, provider_key)
+                    session.client.config.save()  # 持久化配置
+                    prov_name = session.client.config.providers[provider_key].name
+                    await ch.send_message(
+                        session.user_id,
+                        f"Switched to **{found_model}** ({prov_name})",
+                    )
+                else:
+                    # 尝试在当前供应商中查找
+                    config = session.client.config
+                    current_models = config.models
+                    if model_name in current_models:
+                        session.client.set_model(model_name)
+                        session.client.config.save()  # 持久化配置
+                        await ch.send_message(
+                            session.user_id, f"Switched to **{model_name}**"
+                        )
+                    else:
+                        await ch.send_message(
+                            session.user_id,
+                            f"Model `{model_name}` not found.\n\n{self._format_models(session)}",
+                        )
+            else:
+                await ch.send_message(session.user_id, self._format_models(session))
+
+        elif cmd == "provider":
+            if args:
+                provider_key = args[0].lower()
+                config = session.client.config
+
+                if provider_key in config.providers:
+                    prov_config = config.providers[provider_key]
+                    # 切换供应商，使用第一个模型
+                    first_model = (
+                        prov_config.models[0] if prov_config.models else "default"
+                    )
+                    session.client.set_model(first_model, provider_key)
+                    session.client.config.save()  # 持久化配置
+                    await ch.send_message(
+                        session.user_id,
+                        f"Switched to **{prov_config.name}** ({first_model})",
+                    )
+                else:
+                    await ch.send_message(
+                        session.user_id,
+                        f"Provider `{provider_key}` not found.\n\n{self._format_providers(session)}",
+                    )
+            else:
+                await ch.send_message(session.user_id, self._format_providers(session))
+
+        elif cmd == "status":
             await ch.send_message(
                 session.user_id,
                 f"User: `{session.user_id}`\n"
@@ -213,11 +341,7 @@ class GatewayManager:
                 f"Messages: {len(session.client.agent.messages)}",
             )
 
-        elif cmd in ("/start", "/help"):
-            # 这些已经在 Channel 层处理过了
-            pass
-
-        elif cmd == "/cancel":
+        elif cmd == "cancel":
             session.client.interrupt()
             await ch.send_message(session.user_id, "Cancelled.")
 
