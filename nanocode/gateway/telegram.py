@@ -15,6 +15,9 @@ class TelegramChannel(BaseChannel):
 
     name = "telegram"
 
+    # 只在 Telegram 快捷菜单中显示的命令
+    MENU_COMMANDS = {"help", "clear", "cancel"}
+
     def __init__(self, config: TelegramConfig):
         self.config = config
         self._application = None
@@ -68,12 +71,15 @@ class TelegramChannel(BaseChannel):
             MessageHandler(filters.TEXT, handle_all)
         )
 
-        # 注册命令菜单
+        # 注册命令菜单（只显示快捷菜单中的命令）
         if self._command_registry:
             commands = [
-                BotCommand(cmd, desc) for cmd, desc in self._command_registry.items()
+                BotCommand(cmd, self._command_registry[cmd])
+                for cmd in self.MENU_COMMANDS
+                if cmd in self._command_registry
             ]
-            await self._application.bot.set_my_commands(commands)
+            if commands:
+                await self._application.bot.set_my_commands(commands)
 
         # 启动
         await self._application.initialize()
