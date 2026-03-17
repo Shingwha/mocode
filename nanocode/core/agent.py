@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ..providers.openai import AsyncOpenAIProvider
 from ..tools.base import ToolRegistry
-from .events import EventType, events
+from .events import EventType, EventBus, get_event_bus
 from .permission import PermissionAction, PermissionMatcher
 
 if TYPE_CHECKING:
@@ -21,17 +21,19 @@ class AsyncAgent:
         system_prompt: str,
         max_tokens: int = 8192,
         permission_matcher: PermissionMatcher | None = None,
+        event_bus: EventBus | None = None,
     ):
         self.provider = provider
         self.system_prompt = system_prompt
         self.max_tokens = max_tokens
         self.messages: list = []
         self.permission_matcher = permission_matcher
+        self.event_bus = event_bus or get_event_bus()
 
     async def chat(self, user_input: str) -> str:
         """运行一轮异步对话（非流式，工具顺序执行）"""
         self.messages.append({"role": "user", "content": user_input})
-        events.emit(EventType.MESSAGE_ADDED, {"role": "user", "content": user_input})
+        self.event_bus.emit(EventType.MESSAGE_ADDED, {"role": "user", "content": user_input})
 
         final_response = ""
 
@@ -48,7 +50,7 @@ class AsyncAgent:
             # 处理文本内容
             if message.content:
                 final_response = message.content
-                events.emit(EventType.TEXT_COMPLETE, message.content)
+                self.event_bus.emit(EventType.TEXT_COMPLETE, message.content)
 
             # 处理工具调用（顺序执行）
             if message.tool_calls:
@@ -103,7 +105,7 @@ class AsyncAgent:
                 response_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
 
                 # 发送权限询问事件
-                events.emit(
+                self.event_bus.emit(
                     EventType.PERMISSION_ASK,
                     {
                         "tool_name": tool_name,
@@ -129,7 +131,7 @@ class AsyncAgent:
                     return f"User denied tool '{tool_name}'"
 
         # 执行工具
-        events.emit(
+        self.event_bus.emit(
             EventType.TOOL_START,
             {
                 "name": tool_name,
@@ -140,7 +142,7 @@ class AsyncAgent:
         # 在线程池中执行同步工具（避免阻塞事件循环）
         result = await asyncio.to_thread(ToolRegistry.run, tool_name, tool_args)
 
-        events.emit(
+        self.event_bus.emit(
             EventType.TOOL_COMPLETE,
             {
                 "name": tool_name,

@@ -28,15 +28,13 @@ class Event:
 
 
 class EventBus:
-    """事件总线"""
-    _instance = None
-    _handlers: dict[EventType, list[Callable[[Event], None]]] = {}
+    """事件总线 - 支持实例化，用于多租户场景"""
 
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._handlers = {et: [] for et in EventType}
-        return cls._instance
+    def __init__(self):
+        """初始化事件总线"""
+        self._handlers: dict[EventType, list[Callable[[Event], None]]] = {
+            et: [] for et in EventType
+        }
 
     def on(self, event_type: EventType, handler: Callable[[Event], None]):
         """订阅事件"""
@@ -61,5 +59,24 @@ class EventBus:
             handlers.clear()
 
 
-# 全局事件总线实例
-events = EventBus()
+# 全局默认事件总线实例（向后兼容）
+_default_bus: EventBus | None = None
+
+
+def get_event_bus() -> EventBus:
+    """获取默认事件总线实例（延迟初始化）"""
+    global _default_bus
+    if _default_bus is None:
+        _default_bus = EventBus()
+    return _default_bus
+
+
+# 向后兼容：保留全局 events 变量作为属性访问
+class _EventsProxy:
+    """代理类，向后兼容 events 全局变量"""
+
+    def __getattr__(self, name):
+        return getattr(get_event_bus(), name)
+
+
+events = _EventsProxy()

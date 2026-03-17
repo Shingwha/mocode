@@ -59,31 +59,28 @@ class Config:
         }
 
     @classmethod
-    def load(cls) -> "Config":
-        """加载配置"""
+    def load(cls, path: str | None = None, data: dict | None = None) -> "Config":
+        """加载配置
+
+        Args:
+            path: 配置文件路径，默认使用 CONFIG_PATH
+            data: 直接从字典加载（内存模式），优先级高于文件
+
+        Returns:
+            Config 实例
+        """
+        # 内存模式：直接从字典加载
+        if data is not None:
+            return cls.from_dict(data)
+
+        # 文件模式：从文件加载
         config = cls()
+        config_path = Path(path) if path else cls.CONFIG_PATH
 
-        if cls.CONFIG_PATH.exists():
+        if config_path.exists():
             try:
-                data = json.loads(cls.CONFIG_PATH.read_text(encoding="utf-8-sig"))
-
-                # 加载当前配置
-                if "current" in data:
-                    config.current = CurrentConfig(**data["current"])
-
-                # 加载供应商配置
-                if "providers" in data:
-                    for key, pdata in data["providers"].items():
-                        config.providers[key] = ProviderConfig(**pdata)
-
-                # 加载其他配置
-                if "max_tokens" in data:
-                    config.max_tokens = data["max_tokens"]
-
-                # 加载权限配置
-                if "permission" in data:
-                    config.permission = PermissionConfig.from_dict(data["permission"])
-
+                file_data = json.loads(config_path.read_text(encoding="utf-8-sig"))
+                config._apply_dict(file_data)
             except (json.JSONDecodeError, IOError, TypeError):
                 pass
 
@@ -93,6 +90,32 @@ class Config:
             config.providers["openai"].api_key = env_key
 
         return config
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Config":
+        """从字典创建配置（内存模式）"""
+        config = cls()
+        config._apply_dict(data)
+        return config
+
+    def _apply_dict(self, data: dict):
+        """应用字典数据到配置"""
+        # 加载当前配置
+        if "current" in data:
+            self.current = CurrentConfig(**data["current"])
+
+        # 加载供应商配置
+        if "providers" in data:
+            for key, pdata in data["providers"].items():
+                self.providers[key] = ProviderConfig(**pdata)
+
+        # 加载其他配置
+        if "max_tokens" in data:
+            self.max_tokens = data["max_tokens"]
+
+        # 加载权限配置
+        if "permission" in data:
+            self.permission = PermissionConfig.from_dict(data["permission"])
 
     def save(self):
         """保存配置"""

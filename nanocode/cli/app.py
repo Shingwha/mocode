@@ -3,7 +3,7 @@
 import asyncio
 import os
 
-from ..core import AsyncAgent, Config, EventType, events, get_system_prompt
+from ..core import AsyncAgent, Config, EventType, get_event_bus, get_system_prompt
 from ..core.permission import PermissionMatcher
 from ..providers import AsyncOpenAIProvider
 from ..skills import SkillManager
@@ -73,12 +73,13 @@ class AsyncApp:
 
     def _setup_event_handlers(self):
         """设置事件处理器"""
-        events.on(EventType.MESSAGE_ADDED, self._on_message_added)
-        events.on(EventType.TEXT_COMPLETE, self._on_text_complete)
-        events.on(EventType.TOOL_START, self._on_tool_start)
-        events.on(EventType.TOOL_COMPLETE, self._on_tool_complete)
-        events.on(EventType.ERROR, self._on_error)
-        events.on(EventType.PERMISSION_ASK, self._on_permission_ask)
+        event_bus = get_event_bus()
+        event_bus.on(EventType.MESSAGE_ADDED, self._on_message_added)
+        event_bus.on(EventType.TEXT_COMPLETE, self._on_text_complete)
+        event_bus.on(EventType.TOOL_START, self._on_tool_start)
+        event_bus.on(EventType.TOOL_COMPLETE, self._on_tool_complete)
+        event_bus.on(EventType.ERROR, self._on_error)
+        event_bus.on(EventType.PERMISSION_ASK, self._on_permission_ask)
 
     # ===== 事件处理器 =====
 
