@@ -7,6 +7,21 @@ from .colors import RESET, BOLD, DIM, GREEN, CYAN
 
 T = TypeVar("T")
 
+# 模块级暂停标志，用于在 SelectMenu 显示期间暂停 ESC 监听
+_esc_monitor_paused = False
+
+
+def pause_esc_monitor():
+    """暂停 ESC 键监听"""
+    global _esc_monitor_paused
+    _esc_monitor_paused = True
+
+
+def resume_esc_monitor():
+    """恢复 ESC 键监听"""
+    global _esc_monitor_paused
+    _esc_monitor_paused = False
+
 
 def check_esc_key() -> bool:
     """非阻塞检测 ESC 键
@@ -14,6 +29,10 @@ def check_esc_key() -> bool:
     Returns:
         True 如果检测到 ESC 键，False 否则
     """
+    # 暂停时直接返回，不消费任何按键
+    if _esc_monitor_paused:
+        return False
+
     if sys.platform == "win32":
         import msvcrt
         if msvcrt.kbhit():
@@ -49,23 +68,27 @@ class SelectMenu(Generic[T]):
 
     def show(self) -> T | None:
         """显示菜单并返回选择结果"""
-        self._render_initial()
+        pause_esc_monitor()  # 暂停 ESC 监听
+        try:
+            self._render_initial()
 
-        while True:
-            try:
-                key = self._getch()
-                if key == "UP":
-                    self.selected = (self.selected - 1) % len(self.choices)
-                    self._render_update()
-                elif key == "DOWN":
-                    self.selected = (self.selected + 1) % len(self.choices)
-                    self._render_update()
-                elif key in ("\r", "\n", "RIGHT"):
-                    return self.choices[self.selected][0]
-                elif key == "LEFT" or key == "\x1b":
+            while True:
+                try:
+                    key = self._getch()
+                    if key == "UP":
+                        self.selected = (self.selected - 1) % len(self.choices)
+                        self._render_update()
+                    elif key == "DOWN":
+                        self.selected = (self.selected + 1) % len(self.choices)
+                        self._render_update()
+                    elif key in ("\r", "\n", "RIGHT"):
+                        return self.choices[self.selected][0]
+                    elif key == "LEFT" or key == "\x1b":
+                        return None
+                except (KeyboardInterrupt, EOFError):
                     return None
-            except (KeyboardInterrupt, EOFError):
-                return None
+        finally:
+            resume_esc_monitor()  # 恢复 ESC 监听
 
     def _render_initial(self):
         """首次渲染"""
