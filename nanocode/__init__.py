@@ -7,6 +7,12 @@ from .core import EventBus, EventType, Event, get_event_bus
 from .core import Config, AsyncAgent
 from .core import PermissionHandler, DefaultPermissionHandler
 
+# Gateway (lazy import to avoid dependency issues)
+def get_gateway():
+    """获取 Gateway 模块（延迟导入）"""
+    from . import gateway
+    return gateway
+
 __all__ = [
     # SDK
     "NanoCodeClient",
@@ -20,4 +26,6 @@ __all__ = [
     # Permission
     "PermissionHandler",
     "DefaultPermissionHandler",
+    # Gateway
+    "get_gateway",
 ]

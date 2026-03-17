@@ -33,8 +33,10 @@
 from typing import Callable
 
 from .core import AsyncAgent, Config, EventBus, EventType, get_event_bus
+from .core.prompts import get_system_prompt
 from .core.permission_handler import PermissionHandler, DefaultPermissionHandler
 from .providers import AsyncOpenAIProvider
+from .skills import SkillManager
 from .tools import register_all_tools
 
 
@@ -45,6 +47,7 @@ class NanoCodeClient:
     - 内存配置（无需文件系统）
     - 独立的事件总线（多租户支持）
     - 灵活的权限处理
+    - 自动加载 Skills
     """
 
     def __init__(
@@ -60,7 +63,7 @@ class NanoCodeClient:
             config: 配置字典（内存模式），优先级高于 config_path
             config_path: 配置文件路径
             event_bus: 事件总线实例，为 None 时使用默认实例
-            permission_handler: 权限处理器，为 None 时使用默认处理器（自动允许）
+            permission_handler: 权限处理器，为 NULL 时使用默认处理器（自动允许）
         """
         # 注册工具（确保工具已注册）
         register_all_tools()
@@ -78,10 +81,14 @@ class NanoCodeClient:
             model=self.config.model,
         )
 
+        # 初始化 SkillManager 并获取系统提示
+        skill_manager = SkillManager.get_instance()
+        system_prompt = get_system_prompt(skill_manager)
+
         # 初始化 Agent
         self.agent = AsyncAgent(
             provider=self.provider,
-            system_prompt="You are a helpful coding assistant.",
+            system_prompt=system_prompt,
             max_tokens=self.config.max_tokens,
             event_bus=self.event_bus,
         )
