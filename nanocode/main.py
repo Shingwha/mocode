@@ -14,7 +14,10 @@ def main():
     from .cli import AsyncApp
 
     app = AsyncApp()
-    asyncio.run(app.run())
+    try:
+        asyncio.run(app.run())
+    except KeyboardInterrupt:
+        pass  # 静默退出
     return 0
 
 
@@ -22,7 +25,10 @@ def run_gateway():
     """运行 Gateway"""
     from .gateway import run_gateway as _run_gateway
 
-    asyncio.run(_run_gateway())
+    try:
+        asyncio.run(_run_gateway())
+    except KeyboardInterrupt:
+        pass  # 静默退出
     return 0
 
 

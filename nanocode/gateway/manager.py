@@ -85,7 +85,7 @@ class GatewayManager:
             # 保持运行
             while self._running:
                 await asyncio.sleep(1)
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             print("\n[Gateway] Shutting down...")
         finally:
             await self.stop()
@@ -107,9 +107,7 @@ class GatewayManager:
         except Exception as e:
             print(f"[Gateway] Error handling message: {e}")
             if channel in self.channels:
-                await self.channels[channel].send_message(
-                    user_id, f"❌ 处理消息时出错: {e}"
-                )
+                await self.channels[channel].send_message(user_id, f"Error: {e}")
 
     def _get_or_create_session(self, channel: str, user_id: str) -> UserSession:
         """获取或创建用户会话"""
@@ -155,6 +153,27 @@ class GatewayManager:
                     self._on_interrupted(ch, uid, e)
                 )
             )
+            # 订阅 MESSAGE_ADDED - 记录用户输入
+            event_bus.on(
+                EventType.MESSAGE_ADDED,
+                lambda e, ch=channel, uid=user_id: asyncio.create_task(
+                    self._on_message_added(ch, uid, e)
+                )
+            )
+            # 订阅 TOOL_COMPLETE - 记录工具结果
+            event_bus.on(
+                EventType.TOOL_COMPLETE,
+                lambda e, ch=channel, uid=user_id: asyncio.create_task(
+                    self._on_tool_complete(ch, uid, e)
+                )
+            )
+            # 订阅 ERROR - 记录错误
+            event_bus.on(
+                EventType.ERROR,
+                lambda e, ch=channel, uid=user_id: asyncio.create_task(
+                    self._on_error(ch, uid, e)
+                )
+            )
 
             print(f"[Gateway] New session: {session_key}")
 
@@ -170,31 +189,28 @@ class GatewayManager:
 
         if cmd == "/clear":
             session.client.clear_history()
-            await ch.send_message(session.user_id, "🗑️ 对话历史已清空")
+            await ch.send_message(session.user_id, "History cleared.")
 
         elif cmd == "/model":
             if args:
                 model_name = args[0]
                 session.client.set_model(model_name)
-                await ch.send_message(
-                    session.user_id, f"🔄 已切换到模型: {model_name}"
-                )
+                await ch.send_message(session.user_id, f"Model: {model_name}")
             else:
                 await ch.send_message(
                     session.user_id,
-                    f"📋 当前模型: {session.client.current_model}\n"
-                    f"供应商: {session.client.current_provider}",
+                    f"Model: {session.client.current_model}\n"
+                    f"Provider: {session.client.current_provider}",
                 )
 
         elif cmd == "/status":
             await ch.send_message(
                 session.user_id,
-                f"📊 *状态*\n\n"
-                f"用户: `{session.user_id}`\n"
-                f"渠道: `{channel}`\n"
-                f"模型: `{session.client.current_model}`\n"
-                f"供应商: `{session.client.current_provider}`\n"
-                f"消息数: {len(session.client.agent.messages)}",
+                f"User: `{session.user_id}`\n"
+                f"Channel: `{channel}`\n"
+                f"Model: `{session.client.current_model}`\n"
+                f"Provider: `{session.client.current_provider}`\n"
+                f"Messages: {len(session.client.agent.messages)}",
             )
 
         elif cmd in ("/start", "/help"):
@@ -203,7 +219,7 @@ class GatewayManager:
 
         elif cmd == "/cancel":
             session.client.interrupt()
-            await ch.send_message(session.user_id, "⏹️ 已取消")
+            await ch.send_message(session.user_id, "Cancelled.")
 
         else:
             # 未知命令，发送给 Agent
@@ -211,29 +227,58 @@ class GatewayManager:
 
     async def _on_text_complete(self, channel: str, user_id: str, event) -> None:
         """处理文本完成事件"""
+        content = event.data
+        preview = content[:100] + "..." if len(content) > 100 else content
+        print(f"[{channel}:{user_id}] <<< {preview}")
         if channel in self.channels:
             await self.channels[channel].send_message(user_id, event.data)
 
     async def _on_tool_start(self, channel: str, user_id: str, event) -> None:
         """处理工具开始事件"""
+        tool_name = event.data.get("name", "unknown")
+        tool_args = event.data.get("args", {})
+        args_preview = json.dumps(tool_args, ensure_ascii=False)
+        if len(args_preview) > 100:
+            args_preview = args_preview[:100] + "..."
+        print(f"[{channel}:{user_id}] Tool: {tool_name}({args_preview})")
+
         if channel in self.channels:
-            tool_name = event.data.get("name", "unknown")
-            tool_args = event.data.get("args", {})
-
             # 发送工具执行通知
-            args_preview = json.dumps(tool_args, ensure_ascii=False)
-            if len(args_preview) > 100:
-                args_preview = args_preview[:100] + "..."
-
             await self.channels[channel].send_message(
                 user_id,
-                f"🔧 执行工具: `{tool_name}`\n参数: `{args_preview}`",
+                f"`{tool_name}`({args_preview})",
             )
 
     async def _on_interrupted(self, channel: str, user_id: str, event) -> None:
         """处理中断事件"""
+        print(f"[{channel}:{user_id}] Interrupted")
         if channel in self.channels:
-            await self.channels[channel].send_message(user_id, "⏹️ 操作已取消")
+            await self.channels[channel].send_message(user_id, "Cancelled.")
+
+    async def _on_message_added(self, channel: str, user_id: str, event) -> None:
+        """用户消息添加 - 记录到控制台"""
+        content = event.data.get("content", "")
+        preview = content[:100] + "..." if len(content) > 100 else content
+        print(f"[{channel}:{user_id}] >>> {preview}")
+
+    async def _on_tool_complete(self, channel: str, user_id: str, event) -> None:
+        """工具完成 - 记录结果到控制台"""
+        result = self._preview_result(event.data.get("result", ""))
+        print(f"[{channel}:{user_id}] Tool result: {result}")
+
+    async def _on_error(self, channel: str, user_id: str, event) -> None:
+        """错误处理 - 记录到控制台"""
+        print(f"[{channel}:{user_id}] Error: {event.data}")
+
+    def _preview_result(self, result: str) -> str:
+        """生成结果预览"""
+        lines = result.split("\n")
+        preview = lines[0][:60]
+        if len(lines) > 1:
+            preview += f" ... +{len(lines) - 1} lines"
+        elif len(lines[0]) > 60:
+            preview += "..."
+        return preview
 
 
 async def run_gateway() -> None:

@@ -53,6 +53,8 @@ class AsyncApp:
         self._is_running = True
         try:
             await self._main_loop()
+        except asyncio.CancelledError:
+            pass  # Ctrl+C 优雅退出
         except Exception as e:
             self.layout.add_error_message(str(e))
         finally:
@@ -232,8 +234,8 @@ class AsyncApp:
                 # 运行 Agent（用户输入已由 input() 回显）
                 await self.agent.chat(user_input)
 
-            except (KeyboardInterrupt, EOFError):
-                break
+            except (KeyboardInterrupt, EOFError, asyncio.CancelledError):
+                break  # 优雅退出
             except Exception as e:
                 self.layout.set_thinking(False)
                 self.layout.add_error_message(str(e))

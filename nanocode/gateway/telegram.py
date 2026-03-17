@@ -51,9 +51,7 @@ class TelegramChannel(BaseChannel):
 
             # 检查用户权限
             if not self.is_user_allowed(user_id):
-                await update.message.reply_text(
-                    "⛔ 抱歉，您没有权限使用此 Bot。"
-                )
+                await update.message.reply_text("Permission denied.")
                 return
 
             # 处理命令
@@ -75,26 +73,20 @@ class TelegramChannel(BaseChannel):
         async def handle_start(update: Update, context):
             user_id = str(update.effective_user.id)
             if not self.is_user_allowed(user_id):
-                await update.message.reply_text("⛔ 抱歉，您没有权限使用此 Bot。")
+                await update.message.reply_text("Permission denied.")
                 return
             await update.message.reply_text(
-                "👋 欢迎使用 NanoCode Bot!\n\n"
-                "我是您的 AI 编程助手，可以帮您:\n"
-                "• 编写和修改代码\n"
-                "• 调试问题\n"
-                "• 解释代码逻辑\n\n"
-                "直接发送消息开始对话，或使用 /help 查看可用命令。"
+                "NanoCode Bot - AI coding assistant.\n"
+                "Send a message to start, or /help for commands."
             )
 
         async def handle_help(update: Update, context):
             await update.message.reply_text(
-                "📖 *可用命令*\n\n"
-                "/start - 开始使用\n"
-                "/help - 显示帮助\n"
-                "/clear - 清空对话历史\n"
-                "/model - 查看当前模型\n"
-                "/model <name> - 切换模型\n"
-                "/status - 显示当前状态",
+                "/start - Start\n"
+                "/help - Show commands\n"
+                "/clear - Clear history\n"
+                "/model [name] - View/set model\n"
+                "/status - Show status",
                 parse_mode="Markdown",
             )
 
