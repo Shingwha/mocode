@@ -99,6 +99,7 @@ class MocodeClient:
             max_tokens=self.config.max_tokens,
             event_bus=self.event_bus,
             interrupt_token=self._interrupt_token,
+            config=self.config,
         )
 
         # 权限处理器

@@ -5,6 +5,7 @@ from .builtin import QuitCommand, ClearCommand, HelpCommand
 from .model import ModelCommand
 from .provider import ProviderCommand
 from .skills_command import SkillsCommand
+from .rtk import RtkCommand
 
 __all__ = [
     "Command",
@@ -19,6 +20,7 @@ __all__ = [
     "ModelCommand",
     "ProviderCommand",
     "SkillsCommand",
+    "RtkCommand",
 ]
 
 # 自动注册的内置命令
@@ -29,6 +31,7 @@ BUILTIN_COMMANDS = [
     ModelCommand,
     ProviderCommand,
     SkillsCommand,
+    RtkCommand,
 ]
 
 

@@ -42,6 +42,7 @@ class AsyncApp:
         register_builtin_commands(self.commands)
         self._init_agent()
         self._setup_event_handlers()
+        self._check_rtk()  # 检查 RTK 安装状态
 
         # 启动 ESC 键监听
         self._start_esc_monitor()
@@ -83,7 +84,19 @@ class AsyncApp:
             max_tokens=self.config.max_tokens,
             permission_matcher=permission_matcher,
             interrupt_token=self._interrupt_token,
+            config=self.config,
         )
+
+    def _check_rtk(self):
+        """检查 RTK 安装状态并提示"""
+        if not self.config.rtk.enabled:
+            return  # RTK 未启用，跳过检测
+
+        from ..tools.rtk_wrapper import check_rtk_installation
+        is_installed, message = check_rtk_installation()
+
+        if not is_installed:
+            self.layout.add_command_output(f"[RTK] {message}")
 
     def _start_esc_monitor(self):
         """启动 ESC 键监听线程"""

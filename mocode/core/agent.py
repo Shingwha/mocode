@@ -10,7 +10,7 @@ from .permission import PermissionAction, PermissionMatcher
 from .interrupt import InterruptToken
 
 if TYPE_CHECKING:
-    from .config import PermissionConfig
+    from .config import Config, PermissionConfig
 
 
 class AsyncAgent:
@@ -24,6 +24,7 @@ class AsyncAgent:
         permission_matcher: PermissionMatcher | None = None,
         event_bus: EventBus | None = None,
         interrupt_token: InterruptToken | None = None,
+        config: "Config | None" = None,
     ):
         self.provider = provider
         self.system_prompt = system_prompt
@@ -32,6 +33,7 @@ class AsyncAgent:
         self.permission_matcher = permission_matcher
         self.event_bus = event_bus or get_event_bus()
         self.interrupt_token = interrupt_token
+        self.config = config
 
     async def chat(self, user_input: str) -> str:
         """运行一轮异步对话（非流式，工具顺序执行）"""
@@ -204,6 +206,11 @@ class AsyncAgent:
                 "args": tool_args,
             },
         )
+
+        # 设置工具执行上下文（传递 config 给工具）
+        if self.config:
+            from ..tools.context import set_tool_context
+            set_tool_context(self.config)
 
         # 在线程池中执行同步工具（可中断）
         result = await self._call_with_interrupt_check(
