@@ -2,16 +2,19 @@
 
 import asyncio
 import os
+import threading
+import time
 
 from ..core import AsyncAgent, Config, EventType, get_event_bus, get_system_prompt
 from ..core.permission import PermissionMatcher
+from ..core.interrupt import InterruptToken
 from ..providers import AsyncOpenAIProvider
 from ..skills import SkillManager
 from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
 from .ui.colors import BLUE, BOLD, DIM, GREEN, RESET
 from .ui.layout import SimpleLayout
-from .ui.widgets import SelectMenu
+from .ui.widgets import SelectMenu, check_esc_key
 
 
 class AsyncApp:
@@ -23,6 +26,10 @@ class AsyncApp:
         self.commands = CommandRegistry()
         self.layout = SimpleLayout()
         self._is_running = False
+        # 中断信号
+        self._interrupt_token = InterruptToken()
+        self._esc_monitor_thread: threading.Thread | None = None
+        self._stop_esc_monitor_flag = False
 
     async def run(self):
         """运行应用（异步入口）"""
@@ -36,6 +43,9 @@ class AsyncApp:
         self._init_agent()
         self._setup_event_handlers()
 
+        # 启动 ESC 键监听
+        self._start_esc_monitor()
+
         # 显示欢迎界面
         self.layout.show_welcome("nanocode", self.config.display_name, os.getcwd())
 
@@ -47,6 +57,7 @@ class AsyncApp:
             self.layout.add_error_message(str(e))
         finally:
             self._is_running = False
+            self._stop_esc_monitor_thread()
             self.layout.cleanup()
 
     def _init_agent(self):
@@ -69,7 +80,26 @@ class AsyncApp:
             system_prompt=system_prompt,
             max_tokens=self.config.max_tokens,
             permission_matcher=permission_matcher,
+            interrupt_token=self._interrupt_token,
         )
+
+    def _start_esc_monitor(self):
+        """启动 ESC 键监听线程"""
+        def monitor_loop():
+            while not self._stop_esc_monitor_flag:
+                if check_esc_key():
+                    self._interrupt_token.interrupt()
+                time.sleep(0.05)  # 50ms 检测间隔
+
+        self._stop_esc_monitor_flag = False
+        self._esc_monitor_thread = threading.Thread(target=monitor_loop, daemon=True)
+        self._esc_monitor_thread.start()
+
+    def _stop_esc_monitor_thread(self):
+        """停止 ESC 键监听线程"""
+        self._stop_esc_monitor_flag = True
+        if self._esc_monitor_thread and self._esc_monitor_thread.is_alive():
+            self._esc_monitor_thread.join(timeout=1.0)
 
     def _setup_event_handlers(self):
         """设置事件处理器"""
@@ -80,6 +110,7 @@ class AsyncApp:
         event_bus.on(EventType.TOOL_COMPLETE, self._on_tool_complete)
         event_bus.on(EventType.ERROR, self._on_error)
         event_bus.on(EventType.PERMISSION_ASK, self._on_permission_ask)
+        event_bus.on(EventType.INTERRUPTED, self._on_interrupted)
 
     # ===== 事件处理器 =====
 
@@ -113,6 +144,11 @@ class AsyncApp:
         """错误处理"""
         self.layout.set_thinking(False)
         self.layout.add_error_message(str(event.data))
+
+    def _on_interrupted(self, event):
+        """中断处理"""
+        self.layout.set_thinking(False)
+        self.layout.add_assistant_message("[interrupted]")
 
     def _on_permission_ask(self, event):
         """权限询问处理"""

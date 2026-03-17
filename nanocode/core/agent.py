@@ -7,6 +7,7 @@ from ..providers.openai import AsyncOpenAIProvider
 from ..tools.base import ToolRegistry
 from .events import EventType, EventBus, get_event_bus
 from .permission import PermissionAction, PermissionMatcher
+from .interrupt import InterruptToken
 
 if TYPE_CHECKING:
     from .config import PermissionConfig
@@ -22,6 +23,7 @@ class AsyncAgent:
         max_tokens: int = 8192,
         permission_matcher: PermissionMatcher | None = None,
         event_bus: EventBus | None = None,
+        interrupt_token: InterruptToken | None = None,
     ):
         self.provider = provider
         self.system_prompt = system_prompt
@@ -29,20 +31,37 @@ class AsyncAgent:
         self.messages: list = []
         self.permission_matcher = permission_matcher
         self.event_bus = event_bus or get_event_bus()
+        self.interrupt_token = interrupt_token
 
     async def chat(self, user_input: str) -> str:
         """运行一轮异步对话（非流式，工具顺序执行）"""
+        # 重置中断状态
+        if self.interrupt_token:
+            self.interrupt_token.reset()
+
         self.messages.append({"role": "user", "content": user_input})
         self.event_bus.emit(EventType.MESSAGE_ADDED, {"role": "user", "content": user_input})
 
         final_response = ""
 
         while True:
-            # 异步调用 API（等待完整响应）
+            # 检查中断
+            if self.interrupt_token and self.interrupt_token.is_interrupted:
+                self.event_bus.emit(EventType.INTERRUPTED, None)
+                return "[interrupted]"
+
+            # 异步调用 API（可中断）
             tools = ToolRegistry.all_schemas()
-            response = await self.provider.call(
-                self.messages, self.system_prompt, tools, self.max_tokens
+            response = await self._call_with_interrupt_check(
+                self.provider.call(
+                    self.messages, self.system_prompt, tools, self.max_tokens
+                )
             )
+
+            # 如果被中断
+            if response is None:
+                self.event_bus.emit(EventType.INTERRUPTED, None)
+                return "[interrupted]"
 
             message = response.choices[0].message
             tool_results = []
@@ -55,12 +74,17 @@ class AsyncAgent:
             # 处理工具调用（顺序执行）
             if message.tool_calls:
                 for tool_call in message.tool_calls:
+                    # 工具执行前检查中断
+                    if self.interrupt_token and self.interrupt_token.is_interrupted:
+                        self.event_bus.emit(EventType.INTERRUPTED, None)
+                        return "[interrupted]"
+
                     import json
 
                     tool_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
 
-                    # 顺序执行工具
+                    # 顺序执行工具（可中断）
                     result = await self._run_tool_async(tool_name, tool_args)
 
                     tool_results.append(
@@ -91,8 +115,50 @@ class AsyncAgent:
 
         return final_response
 
+    async def _call_with_interrupt_check(self, coro, check_interval: float = 0.1):
+        """等待协程或 Future，同时检查中断信号
+
+        Args:
+            coro: 协程或 Future 对象
+            check_interval: 检查间隔（秒）
+
+        Returns:
+            协程返回值，如果被中断则返回 None
+        """
+        if not self.interrupt_token:
+            return await coro
+
+        # 创建任务（协程）或直接使用（Future）
+        if asyncio.isfuture(coro):
+            task = asyncio.ensure_future(coro)
+        else:
+            task = asyncio.create_task(coro)
+
+        try:
+            while not task.done():
+                # 检查中断
+                if self.interrupt_token.is_interrupted:
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    return None
+
+                # 等待一小段时间
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=check_interval)
+                    return task.result()
+                except asyncio.TimeoutError:
+                    # 超时继续检查
+                    continue
+
+            return task.result()
+        except asyncio.CancelledError:
+            return None
+
     async def _run_tool_async(self, tool_name: str, tool_args: dict) -> str:
-        """异步执行单个工具（带权限检查）"""
+        """异步执行单个工具（带权限检查和中断支持）"""
         # 权限检查
         if self.permission_matcher:
             action = self.permission_matcher.check(tool_name, tool_args)
@@ -114,21 +180,21 @@ class AsyncAgent:
                     },
                 )
 
-                # 等待用户响应
-                try:
-                    user_response = await response_future
+                # 等待用户响应（可中断）
+                user_response = await self._call_with_interrupt_check(response_future)
 
-                    # 处理用户响应
-                    if user_response == "deny":
-                        return f"User denied tool '{tool_name}'"
-                    elif user_response == "allow":
-                        pass  # 继续执行
-                    else:
-                        # 用户输入了自定义内容，作为工具结果返回
-                        return user_response
+                # 如果被中断
+                if user_response is None:
+                    return "[interrupted]"
 
-                except asyncio.CancelledError:
+                # 处理用户响应
+                if user_response == "deny":
                     return f"User denied tool '{tool_name}'"
+                elif user_response == "allow":
+                    pass  # 继续执行
+                else:
+                    # 用户输入了自定义内容，作为工具结果返回
+                    return user_response
 
         # 执行工具
         self.event_bus.emit(
@@ -139,8 +205,13 @@ class AsyncAgent:
             },
         )
 
-        # 在线程池中执行同步工具（避免阻塞事件循环）
-        result = await asyncio.to_thread(ToolRegistry.run, tool_name, tool_args)
+        # 在线程池中执行同步工具（可中断）
+        result = await self._call_with_interrupt_check(
+            asyncio.to_thread(ToolRegistry.run, tool_name, tool_args)
+        )
+
+        if result is None:
+            return "[interrupted]"
 
         self.event_bus.emit(
             EventType.TOOL_COMPLETE,

@@ -6,6 +6,7 @@ from .sdk import NanoCodeClient
 from .core import EventBus, EventType, Event, get_event_bus
 from .core import Config, AsyncAgent
 from .core import PermissionHandler, DefaultPermissionHandler
+from .core import InterruptToken
 
 # Gateway (lazy import to avoid dependency issues)
 def get_gateway():
@@ -26,6 +27,8 @@ __all__ = [
     # Permission
     "PermissionHandler",
     "DefaultPermissionHandler",
+    # Interrupt
+    "InterruptToken",
     # Gateway
     "get_gateway",
 ]

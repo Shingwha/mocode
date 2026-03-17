@@ -35,6 +35,7 @@ from typing import Callable
 from .core import AsyncAgent, Config, EventBus, EventType, get_event_bus
 from .core.prompts import get_system_prompt
 from .core.permission_handler import PermissionHandler, DefaultPermissionHandler
+from .core.interrupt import InterruptToken
 from .providers import AsyncOpenAIProvider
 from .skills import SkillManager
 from .tools import register_all_tools
@@ -48,6 +49,7 @@ class NanoCodeClient:
     - 独立的事件总线（多租户支持）
     - 灵活的权限处理
     - 自动加载 Skills
+    - 中断支持（通过 interrupt() 方法）
     """
 
     def __init__(
@@ -56,6 +58,7 @@ class NanoCodeClient:
         config_path: str | None = None,
         event_bus: EventBus | None = None,
         permission_handler: PermissionHandler | None = None,
+        interrupt_token: InterruptToken | None = None,
     ):
         """初始化 NanoCode 客户端
 
@@ -64,12 +67,16 @@ class NanoCodeClient:
             config_path: 配置文件路径
             event_bus: 事件总线实例，为 None 时使用默认实例
             permission_handler: 权限处理器，为 NULL 时使用默认处理器（自动允许）
+            interrupt_token: 中断信号，为 None 时创建新实例
         """
         # 注册工具（确保工具已注册）
         register_all_tools()
 
         # 初始化事件总线
         self.event_bus = event_bus or get_event_bus()
+
+        # 初始化中断信号
+        self._interrupt_token = interrupt_token or InterruptToken()
 
         # 加载配置
         self.config = Config.load(path=config_path, data=config)
@@ -91,6 +98,7 @@ class NanoCodeClient:
             system_prompt=system_prompt,
             max_tokens=self.config.max_tokens,
             event_bus=self.event_bus,
+            interrupt_token=self._interrupt_token,
         )
 
         # 权限处理器
@@ -129,6 +137,10 @@ class NanoCodeClient:
         """清空对话历史"""
         self.agent.clear()
 
+    def interrupt(self):
+        """中断当前操作"""
+        self._interrupt_token.interrupt()
+
     def set_model(self, model: str, provider: str | None = None):
         """切换模型
 
@@ -166,4 +178,5 @@ __all__ = [
     "EventType",
     "PermissionHandler",
     "DefaultPermissionHandler",
+    "InterruptToken",
 ]

@@ -66,12 +66,6 @@ class GatewayManager:
         """停止所有渠道"""
         self._running = False
 
-        # 取消所有 pending 的权限请求
-        for session in self.sessions.values():
-            for future in session.permission_futures.values():
-                if not future.done():
-                    future.cancel()
-
         # 停止所有渠道
         for name, channel in self.channels.items():
             try:
@@ -155,6 +149,12 @@ class GatewayManager:
                     self._on_tool_start(ch, uid, e)
                 )
             )
+            event_bus.on(
+                EventType.INTERRUPTED,
+                lambda e, ch=channel, uid=user_id: asyncio.create_task(
+                    self._on_interrupted(ch, uid, e)
+                )
+            )
 
             print(f"[Gateway] New session: {session_key}")
 
@@ -201,6 +201,10 @@ class GatewayManager:
             # 这些已经在 Channel 层处理过了
             pass
 
+        elif cmd == "/cancel":
+            session.client.interrupt()
+            await ch.send_message(session.user_id, "⏹️ 已取消")
+
         else:
             # 未知命令，发送给 Agent
             await session.client.chat(text)
@@ -225,6 +229,11 @@ class GatewayManager:
                 user_id,
                 f"🔧 执行工具: `{tool_name}`\n参数: `{args_preview}`",
             )
+
+    async def _on_interrupted(self, channel: str, user_id: str, event) -> None:
+        """处理中断事件"""
+        if channel in self.channels:
+            await self.channels[channel].send_message(user_id, "⏹️ 操作已取消")
 
 
 async def run_gateway() -> None:

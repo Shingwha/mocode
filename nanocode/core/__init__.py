@@ -6,6 +6,7 @@ from .agent import AsyncAgent
 from .prompts import get_system_prompt
 from .permission import PermissionAction, PermissionMatcher, PermissionConfig
 from .permission_handler import PermissionHandler, DefaultPermissionHandler, DenyAllPermissionHandler
+from .interrupt import InterruptToken
 
 __all__ = [
     "Config",
@@ -21,4 +22,5 @@ __all__ = [
     "PermissionHandler",
     "DefaultPermissionHandler",
     "DenyAllPermissionHandler",
+    "InterruptToken",
 ]

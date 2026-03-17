@@ -8,6 +8,30 @@ from .colors import RESET, BOLD, DIM, GREEN, CYAN
 T = TypeVar("T")
 
 
+def check_esc_key() -> bool:
+    """非阻塞检测 ESC 键
+
+    Returns:
+        True 如果检测到 ESC 键，False 否则
+    """
+    if sys.platform == "win32":
+        import msvcrt
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            # ESC 键
+            if ch == b'\x1b':
+                return True
+        return False
+    else:
+        import select
+        # 非阻塞检测标准输入是否有数据
+        if select.select([sys.stdin], [], [], 0)[0]:
+            ch = sys.stdin.read(1)
+            if ch == '\x1b':
+                return True
+        return False
+
+
 class SelectMenu(Generic[T]):
     """交互式选择菜单"""
 

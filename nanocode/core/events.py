@@ -18,6 +18,7 @@ class EventType(Enum):
     ERROR = auto()            # 错误
     STATUS_UPDATE = auto()    # 状态栏更新
     PERMISSION_ASK = auto()   # 权限询问
+    INTERRUPTED = auto()      # 中断完成
 
 
 @dataclass
