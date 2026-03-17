@@ -1,8 +1,8 @@
-"""nanocode - minimal claude code alternative"""
+"""mocode - minimal claude code alternative"""
 
 __version__ = "0.2.0"
 
-from .sdk import NanoCodeClient
+from .sdk import MocodeClient
 from .core import EventBus, EventType, Event, get_event_bus
 from .core import Config, AsyncAgent
 from .core import PermissionHandler, DefaultPermissionHandler
@@ -16,7 +16,7 @@ def get_gateway():
 
 __all__ = [
     # SDK
-    "NanoCodeClient",
+    "MocodeClient",
     # Core
     "EventBus",
     "EventType",

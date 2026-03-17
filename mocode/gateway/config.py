@@ -20,7 +20,7 @@ class GatewayConfig:
 
     channels: dict[str, Any] = field(default_factory=dict)
 
-    CONFIG_PATH: Path = Path.home() / ".nanocode" / "config.json"
+    CONFIG_PATH: Path = Path.home() / ".mocode" / "config.json"
 
     @classmethod
     def load(cls) -> "GatewayConfig":

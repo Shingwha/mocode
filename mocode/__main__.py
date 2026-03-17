@@ -1,4 +1,4 @@
-"""支持 python -m nanocode 运行"""
+"""支持 python -m mocode 运行"""
 
 from .main import main
 

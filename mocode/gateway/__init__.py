@@ -1,4 +1,4 @@
-"""NanoCode Gateway - 多渠道支持
+"""mocode Gateway - 多渠道支持
 
 提供 Telegram、飞书、钉钉等渠道的 Bot 支持。
 """

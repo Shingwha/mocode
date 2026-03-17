@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from nanocode import EventBus, EventType, NanoCodeClient
+from mocode import EventBus, EventType, MocodeClient
 
 from .base import BaseChannel
 from .config import GatewayConfig
@@ -29,7 +29,7 @@ class UserSession:
 
     user_id: str
     channel: str
-    client: NanoCodeClient
+    client: MocodeClient
     event_bus: EventBus
 
 
@@ -38,7 +38,7 @@ class GatewayManager:
 
     管理:
     - 所有渠道实例 (Telegram, 飞书, 钉钉等)
-    - 用户会话 (每个用户独立的 NanoCodeClient)
+    - 用户会话 (每个用户独立的 MocodeClient)
     - 消息路由和权限响应
     """
 
@@ -190,8 +190,8 @@ class GatewayManager:
             # 创建独立的事件总线
             event_bus = EventBus()
 
-            # 创建 NanoCodeClient
-            client = NanoCodeClient(
+            # 创建 MocodeClient
+            client = MocodeClient(
                 event_bus=event_bus,
             )
 
@@ -263,7 +263,7 @@ class GatewayManager:
         ch = self.channels[channel]
 
         if cmd == "start":
-            await ch.send_message(session.user_id, "NanoCode Bot ready.")
+            await ch.send_message(session.user_id, "mocode Bot ready.")
 
         elif cmd == "help":
             await ch.send_message(session.user_id, self._format_help())

@@ -34,7 +34,7 @@ class Config:
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     max_tokens: int = 8192
 
-    CONFIG_PATH: Path = Path.home() / ".nanocode" / "config.json"
+    CONFIG_PATH: Path = Path.home() / ".mocode" / "config.json"
 
     def __post_init__(self):
         """确保默认供应商存在"""

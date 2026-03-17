@@ -47,7 +47,7 @@ class AsyncApp:
         self._start_esc_monitor()
 
         # 显示欢迎界面
-        self.layout.show_welcome("nanocode", self.config.display_name, os.getcwd())
+        self.layout.show_welcome("mocode", self.config.display_name, os.getcwd())
 
         # 主循环
         self._is_running = True

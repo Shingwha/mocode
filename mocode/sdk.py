@@ -1,14 +1,14 @@
-"""NanoCode SDK - 嵌入式 AI 编程助手
+"""mocode SDK - 嵌入式 AI 编程助手
 
-提供便捷的 SDK 入口，用于将 NanoCode 嵌入到其他应用中。
+提供便捷的 SDK 入口，用于将 mocode 嵌入到其他应用中。
 
 使用示例:
     import asyncio
-    from nanocode import NanoCodeClient, EventType
+    from mocode import MocodeClient, EventType
 
     async def main():
         # 使用内存配置
-        client = NanoCodeClient(config={
+        client = MocodeClient(config={
             "current": {"provider": "openai", "model": "gpt-4o"},
             "providers": {
                 "openai": {
@@ -41,10 +41,10 @@ from .skills import SkillManager
 from .tools import register_all_tools
 
 
-class NanoCodeClient:
+class MocodeClient:
     """便捷的 SDK 入口
 
-    用于将 NanoCode 嵌入到其他应用中，支持：
+    用于将 mocode 嵌入到其他应用中，支持：
     - 内存配置（无需文件系统）
     - 独立的事件总线（多租户支持）
     - 灵活的权限处理
@@ -60,7 +60,7 @@ class NanoCodeClient:
         permission_handler: PermissionHandler | None = None,
         interrupt_token: InterruptToken | None = None,
     ):
-        """初始化 NanoCode 客户端
+        """初始化 mocode 客户端
 
         Args:
             config: 配置字典（内存模式），优先级高于 config_path
@@ -173,7 +173,7 @@ class NanoCodeClient:
 
 # 便捷导出
 __all__ = [
-    "NanoCodeClient",
+    "MocodeClient",
     "EventBus",
     "EventType",
     "PermissionHandler",

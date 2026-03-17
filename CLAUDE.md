@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-NanoCode is a CLI coding assistant powered by LLM (OpenAI-compatible APIs). It provides an interactive terminal interface with tool-calling capabilities for file operations, search, and shell execution. Can also be embedded as an SDK in other applications.
+mocode is a CLI coding assistant powered by LLM (OpenAI-compatible APIs). It provides an interactive terminal interface with tool-calling capabilities for file operations, search, and shell execution. Can also be embedded as an SDK in other applications.
 
 ## Commands
 
@@ -13,16 +13,16 @@ NanoCode is a CLI coding assistant powered by LLM (OpenAI-compatible APIs). It p
 uv tool install -e .
 
 # Run the CLI
-uv run nanocode
+uv run mocode
 
 # or use the tool directly after installation
-nanocode
+mocode
 
 # Run Gateway (multi-channel bot mode)
-uv run nanocode gateway
+uv run mocode gateway
 
-# or use nanocode gateway directly after installation
-nanocode gateway
+# or use mocode gateway directly after installation
+mocode gateway
 
 # Install dependencies
 uv sync
@@ -30,11 +30,11 @@ uv sync
 
 ## Architecture
 
-NanoCode uses a layered architecture with event-driven communication. Core is independent of CLI and can be used as a library.
+mocode uses a layered architecture with event-driven communication. Core is independent of CLI and can be used as a library.
 
 ```
-nanocode/
-├── sdk.py              # SDK entry point (NanoCodeClient)
+mocode/
+├── sdk.py              # SDK entry point (MocodeClient)
 ├── main.py             # Entry point (CLI or gateway mode)
 ├── core/               # Business logic (independent of UI)
 │   ├── agent.py        # AsyncAgent - LLM conversation loop
@@ -81,9 +81,9 @@ nanocode/
 
 6. **Skill System**: Skills discovered from `~/.claude/skills/`. Each skill has `SKILL.md` with YAML frontmatter. Listed in system prompt; loaded on demand via `skill` tool.
 
-7. **Gateway System**: `GatewayManager` manages multiple channels (Telegram, etc.) with per-user sessions. Each session gets isolated `NanoCodeClient` with its own `EventBus`. Channels implement `BaseChannel` interface.
+7. **Gateway System**: `GatewayManager` manages multiple channels (Telegram, etc.) with per-user sessions. Each session gets isolated `MocodeClient` with its own `EventBus`. Channels implement `BaseChannel` interface.
 
-8. **SDK Usage**: `NanoCodeClient` provides easy embedding. Supports in-memory config, custom EventBus instances, PermissionHandler, and InterruptToken.
+8. **SDK Usage**: `MocodeClient` provides easy embedding. Supports in-memory config, custom EventBus instances, PermissionHandler, and InterruptToken.
 
 ### Data Flow
 
@@ -110,7 +110,7 @@ User Input → AsyncApp._main_loop() | GatewayManager._handle_message()
 
 ## Configuration
 
-Config stored at `~/.nanocode/config.json`, or use `Config.from_dict(data)` for in-memory:
+Config stored at `~/.mocode/config.json`, or use `Config.from_dict(data)` for in-memory:
 
 ```json
 {
@@ -162,10 +162,10 @@ Detailed instructions for the LLM...
 ## SDK Usage
 
 ```python
-from nanocode import NanoCodeClient, EventType
+from mocode import MocodeClient, EventType
 
 async def main():
-    client = NanoCodeClient(config={
+    client = MocodeClient(config={
         "current": {"provider": "openai", "model": "gpt-4o"},
         "providers": {"openai": {"api_key": "sk-...", "base_url": "..."}}
     })
