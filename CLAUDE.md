@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-NanoCode is a CLI coding assistant powered by LLM (OpenAI-compatible APIs). It provides an interactive terminal interface with tool-calling capabilities for file operations, search, and shell execution.
+NanoCode is a CLI coding assistant powered by LLM (OpenAI-compatible APIs). It provides an interactive terminal interface with tool-calling capabilities for file operations, search, and shell execution. Can also be embedded as an SDK in other applications.
 
 ## Commands
 
@@ -21,47 +21,49 @@ uv sync
 
 ## Architecture
 
-NanoCode uses a layered architecture with event-driven communication:
+NanoCode uses a layered architecture with event-driven communication. Core is independent of CLI and can be used as a library.
 
 ```
 nanocode/
-├── core/          # Business logic (independent of UI)
-│   ├── agent.py       # AsyncAgent - LLM conversation loop with tool execution
-│   ├── config.py      # Multi-provider configuration management
-│   ├── events.py      # EventBus for decoupling Agent from UI
-│   ├── permission.py  # Tool permission system (allow/ask/deny)
-│   └── prompts.py     # System prompts for LLM
-├── providers/     # LLM providers
-│   └── openai.py      # AsyncOpenAIProvider using OpenAI SDK
-├── tools/         # Tool implementations
-│   ├── base.py        # Tool class and ToolRegistry
-│   ├── file_tools.py  # read, write, edit
+├── sdk.py              # SDK entry point (NanoCodeClient)
+├── core/               # Business logic (independent of UI)
+│   ├── agent.py        # AsyncAgent - LLM conversation loop
+│   ├── config.py       # Multi-provider config (file or in-memory)
+│   ├── events.py       # EventBus - instance-based for multi-tenant
+│   ├── permission.py   # PermissionMatcher (allow/ask/deny)
+│   ├── permission_handler.py  # PermissionHandler abstraction
+│   └── prompts.py      # System prompts for LLM
+├── providers/          # LLM providers
+│   └── openai.py       # AsyncOpenAIProvider
+├── tools/              # Tool implementations
+│   ├── base.py         # Tool class and ToolRegistry
+│   ├── file_tools.py   # read, write, edit
 │   ├── search_tools.py # glob, grep
-│   ├── shell_tools.py # bash tool
-│   └── bash_session.py # SimpleBashSession (stateful Git Bash wrapper)
-├── skills/        # Skill system (pluggable extensions)
-│   ├── manager.py     # SkillManager - discovers skills from ~/.claude/skills/
-│   ├── schema.py      # Skill and SkillMetadata dataclasses
-│   └── tool.py        # skill tool implementation
-└── cli/           # Terminal interface
-    ├── app.py         # AsyncApp main entry
-    ├── commands/      # Slash command system
-    └── ui/            # Layout, colors, widgets
+│   ├── shell_tools.py  # bash
+│   └── bash_session.py # SimpleBashSession (stateful)
+├── skills/             # Skill system (pluggable extensions)
+│   ├── manager.py      # SkillManager
+│   ├── schema.py       # Skill dataclasses
+│   └── tool.py         # skill tool implementation
+└── cli/                # Terminal interface
+    ├── app.py          # AsyncApp main entry
+    ├── commands/       # Slash command system
+    └── ui/             # Layout, colors, widgets
 ```
 
 ### Key Patterns
 
-1. **Event System**: `EventBus` (singleton) decouples `AsyncAgent` from UI. Events include `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `PERMISSION_ASK`. UI components subscribe to events via `events.on(EventType.X, handler)`.
+1. **Event System**: `EventBus` instances decouple `AsyncAgent` from UI. Use `get_event_bus()` for default instance. Events: `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `PERMISSION_ASK`. Agent uses `self.event_bus.emit()`; UI subscribes via `event_bus.on(EventType.X, handler)`.
 
-2. **Tool Registry**: Tools are registered via `@tool(name, description, params)` decorator. Each tool's schema is auto-generated for OpenAI function calling. Params use `"type?"` syntax for optional parameters.
+2. **Tool Registry**: Tools registered via `@tool(name, description, params)` decorator. Schema auto-generated for OpenAI function calling. Params use `"type?"` syntax for optional parameters.
 
-3. **Permission System**: Tools can be configured with `allow`, `ask`, or `deny` actions. When `ask`, the UI prompts the user before execution. Configured in `config.json` under `permission: {"*": "ask", "bash": "allow"}`.
+3. **Permission System**: `PermissionMatcher` checks tool permissions (allow/ask/deny). `PermissionHandler` abstracts user interaction - CLI uses Future-based prompt, SDK can use custom handlers.
 
-4. **Command Pattern**: Slash commands (`/help`, `/model`, `/provider`, `/skills`) extend the CLI. Commands are registered via `@command` decorator and `CommandRegistry`.
+4. **Command Pattern**: Slash commands (`/help`, `/model`, `/provider`, `/skills`) via `@command` decorator and `CommandRegistry`.
 
-5. **Skill System**: Skills are pluggable extensions discovered from `~/.claude/skills/`. Each skill is a directory with `SKILL.md` containing YAML frontmatter. Skills are listed in the system prompt; the `skill` tool loads full instructions on demand.
+5. **Skill System**: Skills discovered from `~/.claude/skills/`. Each skill has `SKILL.md` with YAML frontmatter. Listed in system prompt; loaded on demand via `skill` tool.
 
-6. **Bash Session**: `SimpleBashSession` maintains `cwd` and environment variables in Python, executing commands via Git Bash subprocess. Handles `cd` and `export` internally for state persistence.
+6. **SDK Usage**: `NanoCodeClient` provides easy embedding. Supports in-memory config, custom EventBus instances, and PermissionHandler.
 
 ### Data Flow
 
@@ -69,35 +71,28 @@ nanocode/
 User Input → AsyncApp._main_loop()
     │
     ├─ "/" prefix → CommandRegistry.execute()
-    │                  └─ Command.execute(ctx) → updates ctx.pending_message
     │
     └─ otherwise → AsyncAgent.chat(user_input)
                        │
-                       ├─ AsyncOpenAIProvider.call() → LLM API (non-streaming)
+                       ├─ AsyncOpenAIProvider.call() → LLM API
                        │
                        └─ Tool calls → _run_tool_async()
                                           │
                                           ├─ PermissionMatcher.check()
-                                          │    └─ ASK → emit PERMISSION_ASK → UI prompt
+                                          │    └─ ASK → emit PERMISSION_ASK
                                           │
                                           └─ ToolRegistry.run() → emit TOOL_START/COMPLETE
-                                                                  → UI updates
 ```
 
 ## Configuration
 
-Configuration is stored at `~/.nanocode/config.json`:
+Config stored at `~/.nanocode/config.json`, or use `Config.from_dict(data)` for in-memory:
 
 ```json
 {
   "current": { "provider": "openai", "model": "gpt-4o" },
   "providers": {
-    "openai": {
-      "name": "OpenAI",
-      "base_url": "https://api.openai.com/v1",
-      "api_key": "...",
-      "models": ["gpt-4o", "gpt-4o-mini"]
-    }
+    "openai": { "name": "OpenAI", "base_url": "...", "api_key": "...", "models": [...] }
   },
   "permission": { "*": "ask", "bash": "allow" },
   "max_tokens": 8192
@@ -106,19 +101,19 @@ Configuration is stored at `~/.nanocode/config.json`:
 
 ## Adding New Tools
 
-1. Create a function `def my_tool(args: dict) -> str`
+1. Create `def my_tool(args: dict) -> str`
 2. Register with `@tool("name", "description", {"param": "string", "optional?": "number?"})`
-3. Call registration function in `tools/__init__.py::register_all_tools()`
+3. Call registration in `tools/__init__.py::register_all_tools()`
 
 ## Adding New Commands
 
-1. Subclass `Command` with `name`, `description`, and `execute(ctx: CommandContext) -> bool`
+1. Subclass `Command` with `name`, `description`, `execute(ctx: CommandContext) -> bool`
 2. Decorate with `@command("/cmd", "/alias", description="...")`
 3. Add to `cli/commands/__init__.py::BUILTIN_COMMANDS`
 
 ## Adding New Skills
 
-Skills are discovered automatically from `~/.claude/skills/`. Create a directory with `SKILL.md`:
+Skills auto-discovered from `~/.claude/skills/`. Create `SKILL.md`:
 
 ```markdown
 ---
@@ -128,5 +123,19 @@ description: What this skill does
 
 # Instructions
 
-Detailed instructions for the LLM to follow when this skill is loaded...
+Detailed instructions for the LLM...
+```
+
+## SDK Usage
+
+```python
+from nanocode import NanoCodeClient, EventType
+
+async def main():
+    client = NanoCodeClient(config={
+        "current": {"provider": "openai", "model": "gpt-4o"},
+        "providers": {"openai": {"api_key": "sk-...", "base_url": "..."}}
+    })
+    client.on_event(EventType.TEXT_COMPLETE, lambda e: print(e.data))
+    response = await client.chat("Hello!")
 ```
