@@ -1,10 +1,18 @@
-# 权限系统
+# Permission System
 
-mocode CLI 提供可配置的权限系统，在工具执行前根据配置规则决定是否允许、询问或拒绝操作。
+mocode provides configurable permission control for tool execution. Before each tool runs, the system checks the permission rules to allow, ask, or deny the operation.
 
-## 配置格式
+## Actions
 
-权限配置位于 `~/.mocode/config.json` 的 `permission` 字段：
+| Action | Description |
+|--------|-------------|
+| `allow` | Execute without prompting |
+| `ask` | Prompt user for confirmation |
+| `deny` | Block execution and return denied message |
+
+## Configuration
+
+Permissions are configured in `~/.mocode/config.json`:
 
 ```json
 {
@@ -20,42 +28,36 @@ mocode CLI 提供可配置的权限系统，在工具执行前根据配置规则
 }
 ```
 
-## 权限动作
+### Available Tools
 
-| 动作 | 说明 |
-|------|------|
-| `allow` | 无需审批直接执行 |
-| `ask` | 弹出选择菜单让用户决定 |
-| `deny` | 阻止操作，返回拒绝消息 |
+| Tool | Description |
+|------|-------------|
+| `bash` | Execute shell commands |
+| `edit` | Edit files |
+| `write` | Write/create files |
+| `read` | Read files |
+| `glob` | Search files by pattern |
+| `grep` | Search file contents |
 
-## 支持的工具
+## Matching Rules
 
-| 工具 | 说明 |
-|------|------|
-| `bash` | 执行 shell 命令 |
-| `edit` | 编辑文件 |
-| `write` | 写入文件 |
-| `read` | 读取文件 |
-| `glob` | 搜索文件 |
-| `grep` | 搜索内容 |
-
-## 匹配优先级
-
-规则按优先级匹配：**具体工具规则 > 通配符 `*`**
+Rules are matched by priority: **specific tool rule > wildcard `*`**
 
 ```json
 {
   "permission": {
-    "*": "ask",      // 默认：询问用户
-    "bash": "allow", // bash 工具：直接允许
-    "edit": "deny"   // edit 工具：直接拒绝
+    "*": "ask",      // Default: ask user
+    "bash": "allow", // bash: auto-allow
+    "edit": "deny"   // edit: always deny
   }
 }
 ```
 
-## 用户交互
+If no permission rules are configured, the default behavior is `ask`.
 
-当权限动作为 `ask` 时，会显示选择菜单：
+## CLI Interaction
+
+When a tool requires permission (`ask`), an interactive menu appears:
 
 ```
 ? Permission required for bash
@@ -66,50 +68,13 @@ mocode CLI 提供可配置的权限系统，在工具执行前根据配置规则
     Type something (provide custom response)
 ```
 
-### 选项说明
+Options:
+- **Allow** - Execute the tool
+- **Deny** - Cancel and return denial message
+- **Type something** - Provide custom input as tool result
 
-| 选项 | 说明 |
-|------|------|
-| **Allow** | 允许执行该工具 |
-| **Deny** | 拒绝执行，返回拒绝消息 |
-| **Type something** | 输入自定义内容作为工具结果 |
+## Recommendations
 
-## 默认行为
-
-如果未配置权限规则，默认行为为 `ask`（询问用户）。
-
-## 完整配置示例
-
-```json
-{
-  "$schema": "https://mocode.ai/config.json",
-  "current": {
-    "provider": "openai",
-    "model": "gpt-4o"
-  },
-  "providers": {
-    "openai": {
-      "name": "OpenAI",
-      "base_url": "https://api.openai.com/v1",
-      "api_key": "",
-      "models": ["gpt-4o", "gpt-4o-mini"]
-    }
-  },
-  "permission": {
-    "*": "ask",
-    "bash": "ask",
-    "edit": "ask",
-    "write": "ask",
-    "read": "allow",
-    "glob": "allow",
-    "grep": "allow"
-  },
-  "max_tokens": 8192
-}
-```
-
-## 安全建议
-
-1. **谨慎配置 `allow`**：建议对 `bash`、`edit`、`write` 使用 `ask`
-2. **读取操作可开放**：`read`、`glob`、`grep` 可以设为 `allow`
-3. **使用 `deny` 保护敏感操作**：如需禁止某些工具，可设为 `deny`
+- Use `ask` for destructive operations: `bash`, `edit`, `write`
+- Use `allow` for read-only operations: `read`, `glob`, `grep`
+- Use `deny` to completely block sensitive tools
