@@ -1,9 +1,9 @@
 """Session 管理命令"""
 
-from .base import Command, CommandContext, command
-from ..ui.widgets import SelectMenu
 from ..ui.colors import DIM, RESET
-from ..ui.components import format_success, format_info, format_error
+from ..ui.components import format_error, format_info, format_success
+from ..ui.widgets import SelectMenu
+from .base import Command, CommandContext, command
 
 
 @command("/session", "/s", description="管理对话会话")
@@ -68,9 +68,6 @@ class SessionCommand(Command):
                     ctx.layout.add_command_output(
                         format_success(f"Restored session: {selected}")
                     )
-                    ctx.layout.add_command_output(
-                        format_info(f"Messages: {session.message_count}, Model: {session.model}")
-                    )
             else:
                 if ctx.layout:
                     ctx.layout.add_command_output(
@@ -91,9 +88,6 @@ class SessionCommand(Command):
             if ctx.layout:
                 ctx.layout.add_command_output(
                     format_success(f"Restored session: {session_id}")
-                )
-                ctx.layout.add_command_output(
-                    format_info(f"Messages: {session.message_count}, Model: {session.model}")
                 )
         else:
             if ctx.layout:
@@ -118,4 +112,6 @@ class SessionCommand(Command):
         except (IndexError, ValueError):
             formatted = session.created_at[:16] if session.created_at else "unknown"
 
-        return f"{formatted} ({session.message_count} msgs) - {session.model or 'unknown'}"
+        return (
+            f"{formatted} ({session.message_count} msgs) - {session.model or 'unknown'}"
+        )
