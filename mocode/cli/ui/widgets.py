@@ -1,9 +1,9 @@
 """交互式 UI 组件"""
 
 import sys
-from typing import TypeVar, Generic
+from typing import Generic, TypeVar
 
-from .colors import RESET, BOLD, DIM, GREEN, CYAN
+from .colors import BOLD, CYAN, DIM, GREEN, RESET
 from .keyboard import getch
 
 T = TypeVar("T")
@@ -36,18 +36,20 @@ def check_esc_key() -> bool:
 
     if sys.platform == "win32":
         import msvcrt
+
         if msvcrt.kbhit():
             ch = msvcrt.getch()
             # ESC 键
-            if ch == b'\x1b':
+            if ch == b"\x1b":
                 return True
         return False
     else:
         import select
+
         # 非阻塞检测标准输入是否有数据
         if select.select([sys.stdin], [], [], 0)[0]:
             ch = sys.stdin.read(1)
-            if ch == '\x1b':
+            if ch == "\x1b":
                 return True
         return False
 
@@ -69,7 +71,7 @@ class SelectMenu(Generic[T]):
 
     def show(self) -> T | None:
         """显示菜单并返回选择结果"""
-        pause_esc_monitor()  # 暂停 ESC 监听
+        pause_esc_monitor()
         try:
             self._render_initial()
 
@@ -89,28 +91,25 @@ class SelectMenu(Generic[T]):
                 except (KeyboardInterrupt, EOFError):
                     return None
         finally:
-            resume_esc_monitor()  # 恢复 ESC 监听
+            resume_esc_monitor()
 
     def _render_initial(self):
         """首次渲染"""
-        # 打印标题（如果有）
         if self.title:
             print(f"{BOLD}{CYAN}?{RESET} {self.title}")
-        # 打印选项
         for i, (key, display) in enumerate(self.choices):
             print(self._format_line(i, key, display))
 
     def _render_update(self):
         """更新渲染"""
-        # 计算需要移动的行数（标题 + 选项）
         lines = len(self.choices) + (1 if self.title else 0)
         print(f"\033[{lines}A", end="")
         print("\033[J", end="")
-        # 重新打印标题和选项
         if self.title:
             print(f"{BOLD}{CYAN}?{RESET} {self.title}")
         for i, (key, display) in enumerate(self.choices):
             print(self._format_line(i, key, display))
+
     def _format_line(self, index: int, key: T, display: str) -> str:
         """格式化单行"""
         if index == self.selected:

@@ -1,6 +1,6 @@
 """UI 组件 - 简洁的消息显示"""
 
-from .colors import CYAN, GREEN, RED, RESET
+from .colors import CYAN, GREEN, RED, RESET, YELLOW
 
 
 def error(text: str):
@@ -15,7 +15,12 @@ def success(text: str):
 
 def info(text: str):
     """显示信息消息"""
-    print(f"{CYAN}=>{RESET} {text}")
+    print(f"{CYAN}→{RESET} {text}")
+
+
+def warn(text: str):
+    """显示警告消息"""
+    print(f"{YELLOW}!{RESET} {text}")
 
 
 def format_error(text: str) -> str:
@@ -30,4 +35,9 @@ def format_success(text: str) -> str:
 
 def format_info(text: str) -> str:
     """格式化信息消息（不打印）"""
-    return f"{CYAN}=>{RESET} {text}"
+    return f"{CYAN}→{RESET} {text}"
+
+
+def format_warn(text: str) -> str:
+    """格式化警告消息（不打印）"""
+    return f"{YELLOW}!{RESET} {text}"

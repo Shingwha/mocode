@@ -34,12 +34,13 @@ class ModelCommand(Command):
 
     def _select_interactive(self, client) -> str | None:
         """交互式选择模型"""
+        from ..ui.colors import DIM, RESET
+
         models = client.models
         current = client.current_model
 
         choices = [(m, m) for m in models]
-        # 添加 "新增 model" 选项
-        choices.append(("__ADD__", "Add new model..."))
+        choices.append(("__ADD__", f"{DIM}Add new model...{RESET}"))
 
         provider_name = client.providers[client.current_provider].name if client.current_provider in client.providers else client.current_provider
         menu = SelectMenu(f"Select model [{provider_name}] (current: {current})", choices, current)

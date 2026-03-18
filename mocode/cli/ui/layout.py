@@ -82,9 +82,9 @@ class Layout:
         self._spacing.print_space_if_needed("assistant")
         lines = content.split("\n")
         if len(lines) == 1:
-            print(f"{CYAN}*{RESET} {content}")
+            print(f"{CYAN}○{RESET} {content}")
         else:
-            print(f"{CYAN}*{RESET} {lines[0]}")
+            print(f"{CYAN}○{RESET} {lines[0]}")
             for line in lines[1:]:
                 print(f"  {line}")
 

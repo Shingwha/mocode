@@ -1,7 +1,7 @@
 """CLI UI 组件"""
 
-from .colors import RESET, BOLD, DIM, BLUE, CYAN, GREEN
-from .components import error, info, success, format_error, format_info, format_success
+from .colors import RESET, BOLD, DIM, BLUE, CYAN, GREEN, YELLOW
+from .components import error, info, success, warn, format_error, format_info, format_success, format_warn
 from .layout import Layout
 from .widgets import SelectMenu
 from .permission_handler import CLIPermissionHandler
@@ -15,14 +15,17 @@ __all__ = [
     "BLUE",
     "CYAN",
     "GREEN",
+    "YELLOW",
     # 消息函数
     "error",
     "success",
     "info",
+    "warn",
     # 格式化函数（不打印）
     "format_error",
     "format_success",
     "format_info",
+    "format_warn",
     # 布局
     "Layout",
     # 组件

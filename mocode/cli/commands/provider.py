@@ -54,15 +54,14 @@ class ProviderCommand(Command):
 
     def _select_interactive(self, client) -> str | None:
         """交互式选择供应商"""
+        from ..ui.colors import DIM, RESET
+
         choices = []
         for key, pconfig in client.providers.items():
             display = f"{pconfig.name} ({key})"
-            if key == client.current_provider:
-                display = f"{display} *"
             choices.append((key, display))
 
-        # 添加 "新增 provider" 选项
-        choices.append(("__ADD__", "Add new provider..."))
+        choices.append(("__ADD__", f"{DIM}Add new provider...{RESET}"))
 
         menu = SelectMenu(
             f"Select provider (current: {client.current_provider})",
@@ -78,7 +77,7 @@ class ProviderCommand(Command):
 
     def _add_provider_interactive(self, client) -> str | None:
         """交互式添加新 provider"""
-        wizard = Wizard()
+        wizard = Wizard(title="Add new provider")
 
         # Step 1: Provider Key
         key = wizard.step(

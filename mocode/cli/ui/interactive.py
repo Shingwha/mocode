@@ -2,8 +2,8 @@
 
 from typing import Callable, TypeVar
 
-from .colors import BOLD, BLUE, DIM, RESET, YELLOW
-from .components import error, info
+from .colors import BOLD, CYAN, DIM, MAGENTA, RESET, YELLOW
+from .components import error
 from .keyboard import getch
 from .widgets import pause_esc_monitor, resume_esc_monitor
 
@@ -54,13 +54,13 @@ def ask(
         The input string, default value, or None if cancelled (ESC/Ctrl+C)
     """
     if message:
-        info(message)
+        print(f"{BOLD}{CYAN}?{RESET} {message}")
     if hint:
         print(f"{DIM}  {hint}{RESET}")
 
     pause_esc_monitor()
     try:
-        print(f"{BOLD}{BLUE}>{RESET} ", end="", flush=True)
+        print(f"{MAGENTA}>{RESET} ", end="", flush=True)
         value = _readline_with_esc()
     except (KeyboardInterrupt, EOFError):
         print(f"{YELLOW}Cancelled{RESET}")
@@ -104,6 +104,7 @@ class Wizard:
     def __init__(self, title: str | None = None):
         self._title = title
         self._cancelled = False
+        self._started = False
 
     @property
     def cancelled(self) -> bool:
@@ -128,6 +129,11 @@ class Wizard:
         """
         if self._cancelled:
             return None
+
+        # Show wizard title on first step
+        if self._title and not self._started:
+            print(f"{BOLD}{CYAN}?{RESET} {self._title}\n")
+            self._started = True
 
         result = ask(
             message,
