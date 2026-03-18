@@ -19,104 +19,83 @@ class SessionCommand(Command):
     def execute(self, ctx: CommandContext) -> bool:
         arg = ctx.args.strip()
 
+        if not ctx.layout:
+            return True
+
         if arg == "list":
             return self._list_sessions(ctx)
-        elif arg.startswith("restore "):
-            session_id = arg[8:].strip()
-            return self._restore_session(ctx, session_id)
-        else:
-            # 默认：显示 SelectMenu 选择 session 恢复
-            return self._restore_interactive(ctx)
+        if arg.startswith("restore "):
+            return self._restore_session(ctx, arg[8:].strip())
+
+        return self._restore_interactive(ctx)
 
     def _list_sessions(self, ctx: CommandContext) -> bool:
         """列出所有 session"""
         sessions = ctx.client.list_sessions()
-
         if not sessions:
-            if ctx.layout:
-                ctx.layout.add_command_output(format_info("No saved sessions"))
+            ctx.layout.add_command_output(format_info("No saved sessions"))
             return True
 
-        if ctx.layout:
-            ctx.layout.add_command_output(format_info("Saved sessions:"))
-            for session in sessions:
-                display = self._format_display(session)
-                ctx.layout.add_command_output(f"  {DIM}{session.id}{RESET} - {display}")
-
+        ctx.layout.add_command_output(format_info("Saved sessions:"))
+        for session in sessions:
+            ctx.layout.add_command_output(
+                f"  {DIM}{session.id}{RESET} - {self._format_display(session)}"
+            )
         return True
 
     def _restore_interactive(self, ctx: CommandContext) -> bool:
         """交互式选择并恢复 session"""
         sessions = ctx.client.list_sessions()
-
         if not sessions:
-            if ctx.layout:
-                ctx.layout.add_command_output(format_info("No saved sessions"))
+            ctx.layout.add_command_output(format_info("No saved sessions"))
             return True
 
-        # 构建选项列表
         choices = [(s.id, self._format_display(s)) for s in sessions]
         choices.append(("__EXIT__", f"{DIM}← Cancel{RESET}"))
 
-        # 使用 SelectMenu 选择
-        menu = SelectMenu("Select session to restore", choices)
-        selected = menu.show()
-
+        selected = SelectMenu("Select session to restore", choices).show()
         if selected and selected != "__EXIT__":
-            session = ctx.client.load_session(selected)
-            if session:
-                if ctx.layout:
-                    # 渲染历史消息
-                    ctx.layout.render_session_history(session.messages)
-                    ctx.layout.add_command_output(
-                        format_success(f"Restored session: {selected}")
-                    )
-            else:
-                if ctx.layout:
-                    ctx.layout.add_command_output(
-                        format_error(f"Failed to load session: {selected}")
-                    )
-
+            self._load_and_display(ctx, selected)
         return True
 
     def _restore_session(self, ctx: CommandContext, session_id: str) -> bool:
         """恢复指定 session"""
         if not session_id:
-            if ctx.layout:
-                ctx.layout.add_command_output(format_error("Session ID required"))
+            ctx.layout.add_command_output(format_error("Session ID required"))
             return True
+        self._load_and_display(ctx, session_id)
+        return True
 
+    def _load_and_display(self, ctx: CommandContext, session_id: str) -> None:
+        """加载 session 并显示结果"""
         session = ctx.client.load_session(session_id)
         if session:
-            if ctx.layout:
-                # 渲染历史消息
-                ctx.layout.render_session_history(session.messages)
-                ctx.layout.add_command_output(
-                    format_success(f"Restored session: {session_id}")
-                )
+            ctx.layout.render_session_history(session.messages)
+            ctx.layout.add_command_output(
+                format_success(f"Restored session: {session_id}")
+            )
         else:
-            if ctx.layout:
-                ctx.layout.add_command_output(
-                    format_error(f"Session not found: {session_id}")
-                )
-
-        return True
+            ctx.layout.add_command_output(
+                format_error(f"Session not found: {session_id}")
+            )
 
     def _format_display(self, session) -> str:
         """格式化 session 显示文本
 
-        格式: 2026-03-18 14:30 (12 msgs) - gpt-4o
+        格式: 03-18 14:30 "这是首个用户消息的预览..."
         """
-        # 提取日期时间部分 (session_20260318_143022 -> 2026-03-18 14:30)
-        try:
-            session_id = session.id
-            # session_YYYYMMDD_HHMMSS
-            date_str = session_id[8:18]  # YYYYMMDD
-            time_str = session_id[19:25]  # HHMMSS
-            formatted = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]} {time_str[:2]}:{time_str[2:4]}"
-        except (IndexError, ValueError):
-            formatted = session.created_at[:16] if session.created_at else "unknown"
+        # 使用更新时间: 2026-03-18T14:30:22 -> 03-18 14:30
+        formatted_time = session.updated_at[5:16].replace("T", " ") if session.updated_at else "unknown"
 
-        return (
-            f"{formatted} ({session.message_count} msgs) - {session.model or 'unknown'}"
-        )
+        # 提取首个 user 消息的预览
+        preview = ""
+        for msg in session.messages:
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    preview = content[:30] + "..." if len(content) > 30 else content
+                break
+
+        if preview:
+            return f'{formatted_time} "{preview}"'
+        return formatted_time
