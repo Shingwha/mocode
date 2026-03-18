@@ -1,6 +1,7 @@
 """RTK 命令 - 管理 Rust Token Killer"""
 
-from ..ui.colors import BOLD, DIM, GREEN, RED, RESET, YELLOW
+from ..ui.colors import BOLD, DIM, RESET
+from ..ui.components import format_error, format_info, format_success
 from ..ui.widgets import SelectMenu
 from .base import Command, CommandContext, command
 
@@ -39,7 +40,7 @@ class RtkCommand(Command):
         elif subcommand == "help":
             self._show_help(ctx)
         else:
-            ctx.layout.add_command_output(f"Unknown subcommand: {subcommand}")
+            ctx.layout.add_command_output(format_error(f"Unknown subcommand: {subcommand}"))
             self._show_help(ctx)
 
         return True
@@ -77,21 +78,14 @@ class RtkCommand(Command):
         from ...tools.rtk_wrapper import check_rtk_installation
 
         is_installed, message = check_rtk_installation()
-
-        # 安装状态
-        if is_installed:
-            status = f"{GREEN}[OK] Installed{RESET}"
-        else:
-            status = f"{YELLOW}[--] Not installed{RESET}"
-
-        # 启用状态
         enabled = ctx.config.rtk.enabled
-        enabled_str = (
-            f"{GREEN}enabled{RESET}" if enabled else f"{YELLOW}disabled{RESET}"
-        )
 
-        ctx.layout.add_command_output(f"RTK Status: {status}")
-        ctx.layout.add_command_output(f"RTK Feature: {enabled_str}")
+        if is_installed and enabled:
+            ctx.layout.add_command_output(format_success("RTK: Installed, Enabled"))
+        elif is_installed and not enabled:
+            ctx.layout.add_command_output(format_info("RTK: Installed, Disabled"))
+        else:
+            ctx.layout.add_command_output(format_error("RTK: Not installed"))
 
         if not is_installed:
             ctx.layout.add_command_output(f"  {message}")
@@ -106,12 +100,10 @@ class RtkCommand(Command):
             install_rtk,
         )
 
-        ctx.layout.add_command_output("Installing RTK...")
+        ctx.layout.add_command_output(format_info("Installing RTK..."))
 
         if install_rtk():
-            ctx.layout.add_command_output(
-                f"{GREEN}[OK] RTK installed successfully!{RESET}"
-            )
+            ctx.layout.add_command_output(format_success("RTK installed successfully!"))
             if platform.system() == "Windows":
                 ctx.layout.add_command_output(
                     f'Add to PATH: setx PATH "%PATH%;{RTK_INSTALL_DIR}"'
@@ -120,9 +112,9 @@ class RtkCommand(Command):
             # 显示手动安装命令
             cmd = get_install_command()
             ctx.layout.add_command_output(
-                f"{YELLOW}Auto-install only supported on Windows.{RESET}\n"
-                f"Install manually with: {cmd}"
+                format_error("Auto-install only supported on Windows.")
             )
+            ctx.layout.add_command_output(f"Install manually with: {cmd}")
 
     def _show_gain(self, ctx: CommandContext):
         """显示 token 节省统计"""
@@ -130,10 +122,10 @@ class RtkCommand(Command):
 
         gain = get_rtk_gain()
         if gain:
-            ctx.layout.add_command_output(f"{gain}")
+            ctx.layout.add_command_output(format_info(gain))
         else:
             ctx.layout.add_command_output(
-                f"{YELLOW}RTK not installed or no statistics available.{RESET}"
+                format_error("RTK not installed or no statistics available.")
             )
 
     def _set_enabled(self, ctx: CommandContext, enabled: bool):
@@ -141,8 +133,10 @@ class RtkCommand(Command):
         ctx.config.rtk.enabled = enabled
         ctx.config.save()
 
-        status = f"{GREEN}enabled{RESET}" if enabled else f"{YELLOW}disabled{RESET}"
-        ctx.layout.add_command_output(f"RTK Feature: {status}")
+        if enabled:
+            ctx.layout.add_command_output(format_success("RTK Feature: enabled"))
+        else:
+            ctx.layout.add_command_output(format_info("RTK Feature: disabled"))
 
     def _show_help(self, ctx: CommandContext):
         """显示帮助信息"""
