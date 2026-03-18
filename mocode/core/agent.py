@@ -7,6 +7,7 @@ from ..providers.openai import AsyncOpenAIProvider
 from ..tools.base import ToolRegistry
 from .events import EventType, EventBus, get_event_bus
 from .permission import PermissionAction, PermissionMatcher
+from .permission_handler import PermissionHandler
 from .interrupt import InterruptToken
 
 if TYPE_CHECKING:
@@ -22,6 +23,7 @@ class AsyncAgent:
         system_prompt: str,
         max_tokens: int = 8192,
         permission_matcher: PermissionMatcher | None = None,
+        permission_handler: PermissionHandler | None = None,
         event_bus: EventBus | None = None,
         interrupt_token: InterruptToken | None = None,
         config: "Config | None" = None,
@@ -31,6 +33,7 @@ class AsyncAgent:
         self.max_tokens = max_tokens
         self.messages: list = []
         self.permission_matcher = permission_matcher
+        self.permission_handler = permission_handler
         self.event_bus = event_bus or get_event_bus()
         self.interrupt_token = interrupt_token
         self.config = config
@@ -169,25 +172,29 @@ class AsyncAgent:
                 return f"User denied tool '{tool_name}'"
 
             if action == PermissionAction.ASK:
-                # 创建等待响应的 Future
-                response_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+                # 使用 permission_handler 或发送事件
+                if self.permission_handler:
+                    # 直接使用 handler
+                    user_response = await self.permission_handler.ask_permission(tool_name, tool_args)
+                else:
+                    # 兼容旧逻辑：发送权限询问事件
+                    response_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
 
-                # 发送权限询问事件
-                self.event_bus.emit(
-                    EventType.PERMISSION_ASK,
-                    {
-                        "tool_name": tool_name,
-                        "tool_args": tool_args,
-                        "response_future": response_future,
-                    },
-                )
+                    self.event_bus.emit(
+                        EventType.PERMISSION_ASK,
+                        {
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "response_future": response_future,
+                        },
+                    )
 
-                # 等待用户响应（可中断）
-                user_response = await self._call_with_interrupt_check(response_future)
+                    # 等待用户响应（可中断）
+                    user_response = await self._call_with_interrupt_check(response_future)
 
-                # 如果被中断
-                if user_response is None:
-                    return "[interrupted]"
+                    # 如果被中断
+                    if user_response is None:
+                        return "[interrupted]"
 
                 # 处理用户响应
                 if user_response == "deny":

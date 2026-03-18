@@ -4,6 +4,7 @@ from .colors import RESET, BOLD, DIM, BLUE, CYAN, GREEN, YELLOW, RED
 from .components import error, info, success, format_error, format_info, format_success
 from .layout import SimpleLayout
 from .widgets import SelectMenu
+from .permission_handler import CLIPermissionHandler
 
 __all__ = [
     # 颜色
@@ -27,4 +28,6 @@ __all__ = [
     "SimpleLayout",
     # 组件
     "SelectMenu",
+    # 权限处理器
+    "CLIPermissionHandler",
 ]

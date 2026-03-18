@@ -124,8 +124,9 @@ class Config:
         if "current" in data:
             self.current = CurrentConfig(**data["current"])
 
-        # 加载供应商配置
+        # 加载供应商配置（替换而非合并）
         if "providers" in data:
+            self.providers = {}
             for key, pdata in data["providers"].items():
                 self.providers[key] = ProviderConfig(**pdata)
 

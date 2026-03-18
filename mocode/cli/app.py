@@ -5,24 +5,22 @@ import os
 import threading
 import time
 
-from ..core import AsyncAgent, Config, EventType, get_event_bus, get_system_prompt
+from ..sdk import MocodeClient
+from ..core import EventType
 from ..core.permission import PermissionMatcher
 from ..core.interrupt import InterruptToken
-from ..providers import AsyncOpenAIProvider
-from ..skills import SkillManager
 from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
-from .ui.colors import BLUE, BOLD, DIM, GREEN, RESET
 from .ui.layout import SimpleLayout
-from .ui.widgets import SelectMenu, check_esc_key
+from .ui.widgets import check_esc_key
+from .ui.permission_handler import CLIPermissionHandler
 
 
 class AsyncApp:
     """CLI 应用主类 - 异步版本（重构版）"""
 
     def __init__(self):
-        self.config: Config = Config.load()
-        self.agent: AsyncAgent | None = None
+        self.client: MocodeClient | None = None
         self.commands = CommandRegistry()
         self.layout = SimpleLayout()
         self._is_running = False
@@ -40,7 +38,7 @@ class AsyncApp:
         self.layout.initialize()
         register_all_tools()
         register_builtin_commands(self.commands)
-        self._init_agent()
+        self._init_client()
         self._setup_event_handlers()
         self._check_rtk()  # 检查 RTK 安装状态
 
@@ -48,7 +46,7 @@ class AsyncApp:
         self._start_esc_monitor()
 
         # 显示欢迎界面
-        self.layout.show_welcome("mocode", self.config.display_name, os.getcwd())
+        self.layout.show_welcome("mocode", self.client.config.display_name, os.getcwd())
 
         # 主循环
         self._is_running = True
@@ -63,33 +61,24 @@ class AsyncApp:
             self._stop_esc_monitor_thread()
             self.layout.cleanup()
 
-    def _init_agent(self):
-        """初始化 Agent"""
-        provider = AsyncOpenAIProvider(
-            api_key=self.config.api_key,
-            model=self.config.model,
-            base_url=self.config.base_url or None,
-        )
+    def _init_client(self):
+        """初始化 MocodeClient"""
+        # 创建 CLI 权限处理器
+        permission_handler = CLIPermissionHandler(layout=self.layout)
 
-        # 创建权限匹配器
-        permission_matcher = PermissionMatcher(self.config.permission)
-
-        # 初始化 SkillManager 并获取系统提示
-        skill_manager = SkillManager.get_instance()
-        system_prompt = get_system_prompt(skill_manager)
-
-        self.agent = AsyncAgent(
-            provider=provider,
-            system_prompt=system_prompt,
-            max_tokens=self.config.max_tokens,
-            permission_matcher=permission_matcher,
+        # 创建 MocodeClient
+        self.client = MocodeClient(
+            permission_handler=permission_handler,
             interrupt_token=self._interrupt_token,
-            config=self.config,
         )
+
+        # 为 Agent 设置权限匹配器
+        permission_matcher = PermissionMatcher(self.client.config.permission)
+        self.client.agent.permission_matcher = permission_matcher
 
     def _check_rtk(self):
         """检查 RTK 安装状态并提示"""
-        if not self.config.rtk.enabled:
+        if not self.client.config.rtk.enabled:
             return  # RTK 未启用，跳过检测
 
         from ..tools.rtk_wrapper import check_rtk_installation
@@ -118,14 +107,12 @@ class AsyncApp:
 
     def _setup_event_handlers(self):
         """设置事件处理器"""
-        event_bus = get_event_bus()
-        event_bus.on(EventType.MESSAGE_ADDED, self._on_message_added)
-        event_bus.on(EventType.TEXT_COMPLETE, self._on_text_complete)
-        event_bus.on(EventType.TOOL_START, self._on_tool_start)
-        event_bus.on(EventType.TOOL_COMPLETE, self._on_tool_complete)
-        event_bus.on(EventType.ERROR, self._on_error)
-        event_bus.on(EventType.PERMISSION_ASK, self._on_permission_ask)
-        event_bus.on(EventType.INTERRUPTED, self._on_interrupted)
+        self.client.event_bus.on(EventType.MESSAGE_ADDED, self._on_message_added)
+        self.client.event_bus.on(EventType.TEXT_COMPLETE, self._on_text_complete)
+        self.client.event_bus.on(EventType.TOOL_START, self._on_tool_start)
+        self.client.event_bus.on(EventType.TOOL_COMPLETE, self._on_tool_complete)
+        self.client.event_bus.on(EventType.ERROR, self._on_error)
+        self.client.event_bus.on(EventType.INTERRUPTED, self._on_interrupted)
 
     # ===== 事件处理器 =====
 
@@ -165,57 +152,6 @@ class AsyncApp:
         self.layout.set_thinking(False)
         self.layout.add_assistant_message("[interrupted]")
 
-    def _on_permission_ask(self, event):
-        """权限询问处理"""
-        self.layout.set_thinking(False)
-
-        tool_name = event.data["tool_name"]
-        tool_args = event.data["tool_args"]
-        response_future = event.data["response_future"]
-
-        # 提取目标用于显示
-        target = (
-            tool_args.get("cmd")
-            or tool_args.get("command")
-            or tool_args.get("path")
-            or ""
-        )
-
-        # 生成标题
-        if target:
-            preview = target[:60] + "..." if len(target) > 60 else target
-            title = f"Permission required for {GREEN}{tool_name}{RESET} ({DIM}{preview}{RESET})"
-        else:
-            title = f"Permission required for {GREEN}{tool_name}{RESET}"
-
-        # 打印前置空行
-        self.layout._spacing.print_space_if_needed("permission")
-
-        # 显示选择菜单
-        menu = SelectMenu(
-            title=title,
-            choices=[
-                ("allow", "Allow (execute the tool)"),
-                ("deny", "Deny (cancel the operation)"),
-                ("input", "Type something (provide custom response)"),
-            ],
-        )
-
-        result = menu.show()
-
-        if result == "allow":
-            response_future.set_result("allow")
-        elif result == "deny" or result is None:
-            response_future.set_result("deny")
-        elif result == "input":
-            # 获取用户输入
-            try:
-                print(f"\n{BOLD}{BLUE}>{RESET} ", end="", flush=True)
-                user_input = input()
-                response_future.set_result(user_input)
-            except (KeyboardInterrupt, EOFError):
-                response_future.set_result("deny")
-
     # ===== 主循环 =====
 
     async def _main_loop(self):
@@ -232,8 +168,7 @@ class AsyncApp:
                 # 处理命令
                 if user_input.startswith("/"):
                     ctx = CommandContext(
-                        config=self.config,
-                        agent=self.agent,
+                        client=self.client,
                         args=user_input,
                         layout=self.layout,
                     )
@@ -241,11 +176,11 @@ class AsyncApp:
                         break
                     # 检查命令是否设置了待发送消息
                     if ctx.pending_message:
-                        await self.agent.chat(ctx.pending_message)
+                        await self.client.chat(ctx.pending_message)
                     continue
 
                 # 运行 Agent（用户输入已由 input() 回显）
-                await self.agent.chat(user_input)
+                await self.client.chat(user_input)
 
             except (KeyboardInterrupt, EOFError, asyncio.CancelledError):
                 break  # 优雅退出

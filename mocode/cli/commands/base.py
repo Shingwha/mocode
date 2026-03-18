@@ -4,20 +4,28 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import ClassVar, TYPE_CHECKING
 
-from ...core import Config, AsyncAgent
-
 if TYPE_CHECKING:
     from ..ui.layout import SimpleLayout
+    from ...sdk import MocodeClient
 
 
 @dataclass
 class CommandContext:
     """命令执行上下文"""
-    config: Config
-    agent: AsyncAgent
+    client: "MocodeClient"
     args: str  # 命令参数
     layout: "SimpleLayout | None" = None
     pending_message: str | None = None  # 命令执行后要发送给 agent 的消息
+
+    @property
+    def config(self):
+        """获取配置"""
+        return self.client.config
+
+    @property
+    def agent(self):
+        """获取 Agent"""
+        return self.client.agent
 
 
 class Command(ABC):

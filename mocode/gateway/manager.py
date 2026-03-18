@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mocode import EventBus, EventType, MocodeClient
+from mocode.core.permission_handler import DefaultPermissionHandler
 
 from .base import BaseChannel
 from .config import GatewayConfig
@@ -74,26 +75,12 @@ class GatewayManager:
 
         return "\n".join(lines)
 
-    def _find_model_in_providers(
-        self, session: UserSession, model_name: str
-    ) -> tuple[str | None, str | None]:
-        """在所有供应商中查找模型
-
-        Returns:
-            (provider_key, model_name) 如果找到，否则 (None, None)
-        """
-        config = session.client.config
-        found_provider = None
-
-        for prov_key, prov_config in config.providers.items():
-            if model_name in prov_config.models:
-                if found_provider is None:
-                    found_provider = prov_key
-                else:
-                    # 在多个供应商中找到
-                    return None, None
-
-        return found_provider, model_name if found_provider else None
+    def _find_model_in_providers(self, client: MocodeClient, model_name: str) -> tuple[str | None, str | None]:
+        """在所有供应商中查找模型"""
+        providers = client.all_models.get(model_name, [])
+        if len(providers) == 1:
+            return providers[0], model_name
+        return None, None
 
     def _format_providers(self, session: UserSession) -> str:
         """格式化供应商列表"""
@@ -190,9 +177,10 @@ class GatewayManager:
             # 创建独立的事件总线
             event_bus = EventBus()
 
-            # 创建 MocodeClient
+            # 创建 MocodeClient，使用 DefaultPermissionHandler（自动允许所有工具）
             client = MocodeClient(
                 event_bus=event_bus,
+                permission_handler=DefaultPermissionHandler(),
             )
 
             # Gateway 模式：不设置权限匹配器，自动允许所有工具
@@ -276,25 +264,19 @@ class GatewayManager:
             if args:
                 model_name = args[0]
                 # 跨供应商搜索模型
-                provider_key, found_model = self._find_model_in_providers(
-                    session, model_name
-                )
+                provider_key, found_model = self._find_model_in_providers(session.client, model_name)
 
                 if provider_key and found_model:
                     session.client.set_model(found_model, provider_key)
-                    session.client.config.save()  # 持久化配置
-                    prov_name = session.client.config.providers[provider_key].name
+                    prov_name = session.client.providers[provider_key].name
                     await ch.send_message(
                         session.user_id,
                         f"Switched to **{found_model}** ({prov_name})",
                     )
                 else:
                     # 尝试在当前供应商中查找
-                    config = session.client.config
-                    current_models = config.models
-                    if model_name in current_models:
+                    if model_name in session.client.models:
                         session.client.set_model(model_name)
-                        session.client.config.save()  # 持久化配置
                         await ch.send_message(
                             session.user_id, f"Switched to **{model_name}**"
                         )
@@ -309,19 +291,14 @@ class GatewayManager:
         elif cmd == "provider":
             if args:
                 provider_key = args[0].lower()
-                config = session.client.config
 
-                if provider_key in config.providers:
-                    prov_config = config.providers[provider_key]
-                    # 切换供应商，使用第一个模型
-                    first_model = (
-                        prov_config.models[0] if prov_config.models else "default"
-                    )
-                    session.client.set_model(first_model, provider_key)
-                    session.client.config.save()  # 持久化配置
+                if provider_key in session.client.providers:
+                    prov_config = session.client.providers[provider_key]
+                    # 使用 SDK 方法切换供应商
+                    session.client.set_provider(provider_key)
                     await ch.send_message(
                         session.user_id,
-                        f"Switched to **{prov_config.name}** ({first_model})",
+                        f"Switched to **{prov_config.name}** ({session.client.current_model})",
                     )
                 else:
                     await ch.send_message(

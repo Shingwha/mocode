@@ -2,7 +2,6 @@
 
 from .base import Command, CommandContext, command
 from ..ui import SelectMenu, error
-from ...providers import AsyncOpenAIProvider
 
 
 @command("/model", "/m", description="切换模型")
@@ -13,12 +12,12 @@ class ModelCommand(Command):
 
         if not arg or quiet:
             # 交互式选择
-            model = self._select_interactive(ctx.config)
+            model = self._select_interactive(ctx.client)
             if not model:
                 return True
         elif arg.isdigit():
             # 数字选择
-            models = ctx.config.models
+            models = ctx.client.models
             num = int(arg)
             if 1 <= num <= len(models):
                 model = models[num - 1]
@@ -33,40 +32,24 @@ class ModelCommand(Command):
         self._switch_model(ctx, model, quiet=quiet)
         return True
 
-    def _select_interactive(self, config) -> str | None:
+    def _select_interactive(self, client) -> str | None:
         """交互式选择模型"""
-        models = config.models
-        current = config.current.model
+        models = client.models
+        current = client.current_model
 
         if not models:
             error("No models available for current provider")
             return None
 
         choices = [(m, m) for m in models]
-        provider_name = config.current_provider.name if config.current_provider else config.current.provider
+        provider_name = client.providers[client.current_provider].name if client.current_provider in client.providers else client.current_provider
         menu = SelectMenu(f"Select model [{provider_name}] (current: {current})", choices, current)
         return menu.show()
 
     def _switch_model(self, ctx: CommandContext, model: str, quiet: bool = False):
         """执行模型切换并保存配置"""
-        ctx.config.current.model = model
+        ctx.client.set_model(model)
 
-        # 如果模型不在当前供应商列表中，添加进去
-        pconfig = ctx.config.current_provider
-        if pconfig and model not in pconfig.models:
-            pconfig.models.append(model)
-
-        # 更新 Agent provider
-        ctx.agent.update_provider(
-            AsyncOpenAIProvider(
-                api_key=ctx.config.api_key,
-                model=model,
-                base_url=ctx.config.base_url,
-            )
-        )
-
-        # 保存配置
-        ctx.config.save()
         if not quiet and ctx.layout:
             from ..ui import format_success
             ctx.layout.add_command_output(format_success(f"Switched to {model}"))
