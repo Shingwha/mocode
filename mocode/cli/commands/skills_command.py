@@ -2,6 +2,7 @@
 
 from .base import Command, CommandContext, command
 from ..ui import SelectMenu, error, format_success
+from ..ui.colors import DIM, RESET
 from ...skills.manager import SkillManager
 
 
@@ -72,6 +73,10 @@ class SkillsCommand(Command):
                     desc = desc[:50] + "..."
                 display = f"{name} - {desc}"
                 choices.append((name, display))
+        choices.append(("__EXIT__", f"{DIM}← Cancel{RESET}"))
 
         menu = SelectMenu("Select a skill to activate", choices)
-        return menu.show()
+        selected = menu.show()
+        if selected == "__EXIT__":
+            return None
+        return selected

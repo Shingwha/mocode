@@ -42,12 +42,13 @@ class ModelCommand(Command):
 
             choices = [(m, m) for m in models]
             choices.append(("__MANAGE__", f"{DIM}Manage models...{RESET}"))
+            choices.append(("__EXIT__", f"{DIM}← Cancel{RESET}"))
 
             provider_name = client.providers[provider_key].name if provider_key in client.providers else provider_key
             menu = SelectMenu(f"Select model [{provider_name}] (current: {current})", choices, current)
             result = menu.show()
 
-            if result is None:
+            if result is None or result == "__EXIT__":
                 return None
             elif result == "__MANAGE__":
                 self._manage_models(client)

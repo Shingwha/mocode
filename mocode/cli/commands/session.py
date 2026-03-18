@@ -56,12 +56,13 @@ class SessionCommand(Command):
 
         # 构建选项列表
         choices = [(s.id, self._format_display(s)) for s in sessions]
+        choices.append(("__EXIT__", f"{DIM}← Cancel{RESET}"))
 
         # 使用 SelectMenu 选择
         menu = SelectMenu("Select session to restore", choices)
         selected = menu.show()
 
-        if selected:
+        if selected and selected != "__EXIT__":
             session = ctx.client.load_session(selected)
             if session:
                 if ctx.layout:

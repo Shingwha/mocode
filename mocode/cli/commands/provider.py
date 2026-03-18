@@ -60,6 +60,7 @@ class ProviderCommand(Command):
                 display = f"{pconfig.name} ({key})"
                 choices.append((key, display))
             choices.append(("__MANAGE__", f"{DIM}Manage providers...{RESET}"))
+            choices.append(("__EXIT__", f"{DIM}← Cancel{RESET}"))
 
             menu = SelectMenu(
                 f"Select provider (current: {client.current_provider})",
@@ -68,7 +69,7 @@ class ProviderCommand(Command):
             )
             result = menu.show()
 
-            if result is None:
+            if result is None or result == "__EXIT__":
                 return None
             elif result == "__MANAGE__":
                 self._manage_providers(client)

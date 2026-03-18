@@ -69,7 +69,7 @@ class Layout:
     def show_welcome(self, name: str, model: str, cwd: str):
         """显示欢迎信息"""
         print(
-            f"{BOLD}{name}{RESET} {DIM}v0.1.0{RESET}  │  {CYAN}{model}{RESET}  │  {DIM}{cwd}{RESET}"
+            f"{BOLD}{name}{RESET}{DIM}v0.1.0{RESET} │ {CYAN}{model}{RESET} │ {DIM}{cwd}{RESET}"
         )
         # 欢迎消息后不重置，第一条输入前不打印空行
 

@@ -53,12 +53,13 @@ class RtkCommand(Command):
             ("enable", "Enable - Enable RTK feature"),
             ("disable", "Disable - Disable RTK feature"),
             ("install", "Install - Install RTK (auto-install on Windows)"),
+            ("__EXIT__", f"{DIM}← Cancel{RESET}"),
         ]
 
         menu = SelectMenu("RTK (Rust Token Killer)", choices)
         selected = menu.show()
 
-        if selected:
+        if selected and selected != "__EXIT__":
             # 执行选中的子命令
             if selected == "status":
                 self._show_status(ctx)
