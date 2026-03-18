@@ -86,7 +86,7 @@ class SelectMenu(Generic[T]):
                         self._render_update()
                     elif key in ("\r", "\n", "RIGHT"):
                         return self.choices[self.selected][0]
-                    elif key == "LEFT" or key == "\x1b":
+                    elif key == "LEFT" or key == "ESC":
                         return None
                 except (KeyboardInterrupt, EOFError):
                     return None

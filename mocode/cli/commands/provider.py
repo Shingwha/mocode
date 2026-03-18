@@ -2,7 +2,7 @@
 
 from .base import Command, CommandContext, command
 from ..ui import SelectMenu, error, success, Wizard, parse_selection_arg
-from ..ui.colors import RESET, CYAN, GREEN
+from ..ui.colors import RESET, CYAN, GREEN, YELLOW, RED
 
 
 @command("/provider", "/p", description="切换供应商")
@@ -61,7 +61,7 @@ class ProviderCommand(Command):
             display = f"{pconfig.name} ({key})"
             choices.append((key, display))
 
-        choices.append(("__ADD__", f"{DIM}Add new provider...{RESET}"))
+        choices.append(("__MANAGE__", f"{DIM}Manage providers...{RESET}"))
 
         menu = SelectMenu(
             f"Select provider (current: {client.current_provider})",
@@ -70,12 +70,42 @@ class ProviderCommand(Command):
         )
         result = menu.show()
 
-        if result == "__ADD__":
-            return self._add_provider_interactive(client)
+        if result == "__MANAGE__":
+            return self._manage_providers(client)
 
         return result
 
-    def _add_provider_interactive(self, client) -> str | None:
+    def _manage_providers(self, client) -> str | None:
+        """管理供应商菜单"""
+        from ..ui.colors import DIM, RESET
+
+        menu = SelectMenu(
+            "Manage providers",
+            [
+                ("__ADD__", f"{GREEN}Add new provider{RESET}"),
+                ("__EDIT__", f"{YELLOW}Edit provider{RESET}"),
+                ("__DELETE__", f"{RED}Delete provider{RESET}"),
+                ("__BACK__", f"{DIM}← Back{RESET}"),
+            ],
+        )
+        action = menu.show()
+
+        if action == "__ADD__":
+            self._add_provider_interactive(client)
+            # 添加后返回 None，让用户回到主列表选择
+            return None
+        elif action == "__EDIT__":
+            self._edit_provider_interactive(client)
+            # 编辑后返回 None
+            return None
+        elif action == "__DELETE__":
+            self._delete_provider_interactive(client)
+            # 删除后返回 None
+            return None
+        # __BACK__ 或 ESC 返回 None
+        return None
+
+    def _add_provider_interactive(self, client) -> None:
         """交互式添加新 provider"""
         wizard = Wizard(title="Add new provider")
 
@@ -87,7 +117,7 @@ class ProviderCommand(Command):
             validator=lambda k: True if k not in client.providers else f"Provider '{k}' already exists",
         )
         if key is None:
-            return None
+            return
 
         # Step 2: Display Name
         name = wizard.step(
@@ -95,7 +125,7 @@ class ProviderCommand(Command):
             default=key,
         )
         if wizard.cancelled:
-            return None
+            return
 
         # Step 3: Base URL
         base_url = wizard.step(
@@ -104,12 +134,12 @@ class ProviderCommand(Command):
             required=True,
         )
         if base_url is None:
-            return None
+            return
 
         # Step 4: API Key (optional)
         api_key = wizard.step("API Key (optional, press Enter to skip)")
         if wizard.cancelled:
-            return None
+            return
 
         # Step 5: Models
         models_input = wizard.step(
@@ -117,17 +147,113 @@ class ProviderCommand(Command):
             hint="Press Enter to skip and add later via /model",
         )
         if wizard.cancelled:
-            return None
+            return
         models = [m.strip() for m in models_input.split(",") if m.strip()] if models_input else []
 
         # Add provider
         try:
             client.add_provider(key, name, base_url, api_key, models)
             success(f"Added provider '{key}'")
-            return key
         except ValueError as e:
             error(str(e))
-            return None
+
+    def _edit_provider_interactive(self, client) -> None:
+        """交互式编辑 provider"""
+        from ..ui.colors import DIM, RESET
+
+        # 选择要编辑的 provider
+        choices = []
+        for key, pconfig in client.providers.items():
+            display = f"{pconfig.name} ({key})"
+            choices.append((key, display))
+        choices.append(("__BACK__", f"{DIM}← Back{RESET}"))
+
+        menu = SelectMenu("Select provider to edit", choices)
+        key = menu.show()
+
+        if key is None or key == "__BACK__":
+            return
+
+        pconfig = client.providers[key]
+
+        # 编辑向导
+        wizard = Wizard(title=f"Edit provider '{key}'")
+
+        # Step 1: Display Name
+        name = wizard.step(
+            "Display name",
+            default=pconfig.name,
+        )
+        if name is None:
+            return
+
+        # Step 2: Base URL
+        base_url = wizard.step(
+            "Base URL",
+            default=pconfig.base_url,
+            required=True,
+        )
+        if base_url is None:
+            return
+
+        # Step 3: API Key
+        api_key = wizard.step(
+            "API Key",
+            default=pconfig.api_key,
+        )
+        if api_key is None:
+            return
+
+        # 更新 provider
+        try:
+            client.update_provider(key, name=name or None, base_url=base_url, api_key=api_key)
+            success(f"Updated provider '{key}'")
+        except ValueError as e:
+            error(str(e))
+
+    def _delete_provider_interactive(self, client) -> None:
+        """交互式删除 provider"""
+        from ..ui.colors import DIM, RESET
+
+        # 选择要删除的 provider
+        choices = []
+        for key, pconfig in client.providers.items():
+            # 不能删除最后一个 provider
+            if len(client.providers) <= 1:
+                display = f"{DIM}{pconfig.name} ({key}) - cannot delete last provider{RESET}"
+                choices.append(("__DISABLED__", display))
+            else:
+                display = f"{pconfig.name} ({key})"
+                choices.append((key, display))
+        choices.append(("__BACK__", f"{DIM}← Back{RESET}"))
+
+        menu = SelectMenu("Select provider to delete", choices)
+        key = menu.show()
+
+        if key is None or key == "__BACK__" or key == "__DISABLED__":
+            return
+
+        pconfig = client.providers[key]
+
+        # 确认删除
+        confirm_menu = SelectMenu(
+            f"{YELLOW}Delete provider '{pconfig.name}' ({key})?{RESET}",
+            [
+                ("__CONFIRM__", f"{RED}Yes, delete{RESET}"),
+                ("__CANCEL__", f"{GREEN}No, cancel{RESET}"),
+            ],
+        )
+        confirm = confirm_menu.show()
+
+        if confirm != "__CONFIRM__":
+            return
+
+        # 删除 provider
+        try:
+            client.remove_provider(key)
+            success(f"Deleted provider '{key}'")
+        except ValueError as e:
+            error(str(e))
 
     def _switch_provider(self, ctx: CommandContext, provider_key: str):
         """切换供应商"""

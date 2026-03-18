@@ -351,7 +351,7 @@ class MocodeClient:
         base_url: str,
         api_key: str = "",
         models: list[str] | None = None,
-        set_current: bool = True,
+        set_current: bool = False,
     ) -> None:
         """添加新的供应商配置
 
@@ -384,7 +384,7 @@ class MocodeClient:
             self.save_config()
 
     def add_model(
-        self, model: str, provider: str | None = None, set_current: bool = True
+        self, model: str, provider: str | None = None, set_current: bool = False
     ) -> None:
         """添加新模型到供应商
 
@@ -411,6 +411,98 @@ class MocodeClient:
                 self.set_model(model)
         else:
             self.save_config()
+
+    def remove_provider(self, key: str) -> None:
+        """删除供应商
+
+        Args:
+            key: 供应商 key
+
+        Raises:
+            ValueError: 如果供应商不存在或是最后一个供应商
+        """
+        if key not in self.config.providers:
+            raise ValueError(f"Provider '{key}' does not exist")
+
+        if len(self.config.providers) <= 1:
+            raise ValueError("Cannot remove the last provider")
+
+        # 如果删除的是当前使用的 provider，切换到第一个可用的
+        if self.current_provider == key:
+            other_key = next(k for k in self.config.providers.keys() if k != key)
+            self.set_provider(other_key)
+
+        # 删除 provider
+        del self.config.providers[key]
+        self.save_config()
+
+    def update_provider(
+        self,
+        key: str,
+        name: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
+        """更新供应商配置
+
+        Args:
+            key: 供应商 key
+            name: 新的显示名称（可选）
+            base_url: 新的 API 端点（可选）
+            api_key: 新的 API 密钥（可选）
+
+        Raises:
+            ValueError: 如果供应商不存在
+        """
+        if key not in self.config.providers:
+            raise ValueError(f"Provider '{key}' does not exist")
+
+        pconfig = self.config.providers[key]
+
+        if name is not None:
+            pconfig.name = name
+        if base_url is not None:
+            pconfig.base_url = base_url
+        if api_key is not None:
+            pconfig.api_key = api_key
+
+        # 如果是当前 provider，更新 provider 实例
+        if self.current_provider == key:
+            self.provider = AsyncOpenAIProvider(
+                base_url=pconfig.base_url or None,
+                api_key=pconfig.api_key,
+                model=self.current_model,
+            )
+            self.agent.update_provider(self.provider)
+
+        self.save_config()
+
+    def remove_model(self, model: str, provider: str | None = None) -> None:
+        """从供应商删除模型
+
+        Args:
+            model: 模型名称
+            provider: 供应商 key（可选，默认当前供应商）
+
+        Raises:
+            ValueError: 如果供应商不存在或模型不存在
+        """
+        provider_key = provider or self.current_provider
+        if provider_key not in self.config.providers:
+            raise ValueError(f"Provider '{provider_key}' does not exist")
+
+        pconfig = self.config.providers[provider_key]
+        if model not in pconfig.models:
+            raise ValueError(f"Model '{model}' does not exist in provider '{provider_key}'")
+
+        # 如果删除的是当前模型，切换到该 provider 的第一个可用模型
+        if self.current_provider == provider_key and self.current_model == model:
+            if pconfig.models:
+                new_model = pconfig.models[0] if pconfig.models[0] != model else (pconfig.models[1] if len(pconfig.models) > 1 else "default")
+                self.set_model(new_model)
+
+        pconfig.models.remove(model)
+        self.save_config()
 
     @property
     def prompt_builder(self) -> "PromptBuilder":
