@@ -1,8 +1,8 @@
 """供应商切换命令"""
 
 from .base import Command, CommandContext, command
-from ..ui import SelectMenu, error, info
-from ..ui.colors import RESET, CYAN, GREEN
+from ..ui import SelectMenu, error, info, success
+from ..ui.colors import RESET, CYAN, GREEN, BOLD, BLUE, DIM
 
 
 @command("/provider", "/p", description="切换供应商")
@@ -63,12 +63,87 @@ class ProviderCommand(Command):
                 display = f"{display} *"
             choices.append((key, display))
 
+        # 添加 "新增 provider" 选项
+        choices.append(("__ADD__", "Add new provider..."))
+
         menu = SelectMenu(
             f"Select provider (current: {client.current_provider})",
             choices,
             client.current_provider,
         )
-        return menu.show()
+        result = menu.show()
+
+        if result == "__ADD__":
+            return self._add_provider_interactive(client)
+
+        return result
+
+    def _add_provider_interactive(self, client) -> str | None:
+        """交互式添加新 provider"""
+        # Step 1: Provider Key
+        info("Provider key (e.g., 'anthropic', 'deepseek')")
+        print(f"{DIM}  Internal identifier for the provider{RESET}")
+        try:
+            print(f"{BOLD}{BLUE}>{RESET} ", end="", flush=True)
+            key = input().strip()
+        except (KeyboardInterrupt, EOFError):
+            return None
+
+        if not key:
+            error("Provider key cannot be empty")
+            return None
+        if key in client.providers:
+            error(f"Provider '{key}' already exists")
+            return None
+
+        # Step 2: Display Name
+        info("Display name (e.g., 'Anthropic', 'DeepSeek')")
+        try:
+            print(f"{BOLD}{BLUE}>{RESET} ", end="", flush=True)
+            name = input().strip()
+        except (KeyboardInterrupt, EOFError):
+            return None
+        if not name:
+            name = key
+
+        # Step 3: Base URL
+        info("Base URL")
+        print(f"{DIM}  e.g., 'https://api.anthropic.com/v1'{RESET}")
+        try:
+            print(f"{BOLD}{BLUE}>{RESET} ", end="", flush=True)
+            base_url = input().strip()
+        except (KeyboardInterrupt, EOFError):
+            return None
+        if not base_url:
+            error("Base URL cannot be empty")
+            return None
+
+        # Step 4: API Key (optional)
+        info("API Key (optional, press Enter to skip)")
+        try:
+            print(f"{BOLD}{BLUE}>{RESET} ", end="", flush=True)
+            api_key = input().strip()
+        except (KeyboardInterrupt, EOFError):
+            return None
+
+        # Step 5: Models
+        info("Models (comma-separated, e.g., 'claude-3-opus,claude-3-sonnet')")
+        print(f"{DIM}  Press Enter to skip and add later via /model{RESET}")
+        try:
+            print(f"{BOLD}{BLUE}>{RESET} ", end="", flush=True)
+            models_input = input().strip()
+        except (KeyboardInterrupt, EOFError):
+            return None
+        models = [m.strip() for m in models_input.split(",") if m.strip()] if models_input else []
+
+        # Add provider
+        try:
+            client.add_provider(key, name, base_url, api_key, models)
+            success(f"Added provider '{key}'")
+            return key
+        except ValueError as e:
+            error(str(e))
+            return None
 
     def _switch_provider(self, ctx: CommandContext, provider_key: str):
         """切换供应商"""

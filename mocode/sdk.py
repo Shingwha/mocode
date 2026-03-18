@@ -373,6 +373,72 @@ class MocodeClient:
         # 自动保存配置
         self.save_config()
 
+    def add_provider(
+        self,
+        key: str,
+        name: str,
+        base_url: str,
+        api_key: str = "",
+        models: list[str] | None = None,
+        set_current: bool = True,
+    ) -> None:
+        """添加新的供应商配置
+
+        Args:
+            key: 供应商唯一标识符（如 'openai', 'anthropic'）
+            name: 显示名称
+            base_url: API 端点 URL
+            api_key: API 密钥，可为空
+            models: 支持的模型列表
+            set_current: 是否切换到此供应商
+
+        Raises:
+            ValueError: 如果 key 已存在
+        """
+        from .core.config import ProviderConfig
+
+        if key in self.config.providers:
+            raise ValueError(f"Provider '{key}' already exists")
+
+        self.config.providers[key] = ProviderConfig(
+            name=name,
+            base_url=base_url,
+            api_key=api_key,
+            models=models or [],
+        )
+
+        if set_current:
+            self.set_provider(key)
+        else:
+            self.save_config()
+
+    def add_model(self, model: str, provider: str | None = None, set_current: bool = True) -> None:
+        """添加新模型到供应商
+
+        Args:
+            model: 模型名称
+            provider: 供应商 key（可选，默认当前供应商）
+            set_current: 是否切换到此模型
+
+        Raises:
+            ValueError: 如果供应商不存在
+        """
+        provider_key = provider or self.current_provider
+        if provider_key not in self.config.providers:
+            raise ValueError(f"Provider '{provider_key}' does not exist")
+
+        pconfig = self.config.providers[provider_key]
+        if model not in pconfig.models:
+            pconfig.models.append(model)
+
+        if set_current:
+            if provider:
+                self.set_provider(provider, model)
+            else:
+                self.set_model(model)
+        else:
+            self.save_config()
+
     @property
     def prompt_builder(self) -> "PromptBuilder":
         """Prompt 构建器"""

@@ -1,7 +1,8 @@
 """模型切换命令"""
 
 from .base import Command, CommandContext, command
-from ..ui import SelectMenu, error
+from ..ui import SelectMenu, error, info, success
+from ..ui.colors import RESET, CYAN, GREEN, BOLD, BLUE, DIM
 
 
 @command("/model", "/m", description="切换模型")
@@ -37,14 +38,40 @@ class ModelCommand(Command):
         models = client.models
         current = client.current_model
 
-        if not models:
-            error("No models available for current provider")
-            return None
-
         choices = [(m, m) for m in models]
+        # 添加 "新增 model" 选项
+        choices.append(("__ADD__", "Add new model..."))
+
         provider_name = client.providers[client.current_provider].name if client.current_provider in client.providers else client.current_provider
         menu = SelectMenu(f"Select model [{provider_name}] (current: {current})", choices, current)
-        return menu.show()
+        result = menu.show()
+
+        if result == "__ADD__":
+            return self._add_model_interactive(client)
+
+        return result
+
+    def _add_model_interactive(self, client) -> str | None:
+        """交互式添加新 model"""
+        info("Model name (e.g., 'gpt-4o', 'claude-3-opus')")
+        try:
+            print(f"{BOLD}{BLUE}>{RESET} ", end="", flush=True)
+            model = input().strip()
+        except (KeyboardInterrupt, EOFError):
+            return None
+
+        if not model:
+            error("Model name cannot be empty")
+            return None
+
+        # Add model
+        try:
+            client.add_model(model)
+            success(f"Added model '{model}'")
+            return model
+        except ValueError as e:
+            error(str(e))
+            return None
 
     def _switch_model(self, ctx: CommandContext, model: str, quiet: bool = False):
         """执行模型切换并保存配置"""
