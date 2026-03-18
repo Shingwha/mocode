@@ -1,8 +1,8 @@
 """供应商切换命令"""
 
 from .base import Command, CommandContext, command
-from ..ui import SelectMenu, Action, navigable, error, success, Wizard, ask, parse_selection_arg
-from ..ui.colors import RESET, CYAN, GREEN, YELLOW, RED
+from ..ui import SelectMenu, error, success, Wizard, ask, parse_selection_arg
+from ..ui.colors import RESET, CYAN, GREEN, YELLOW, RED, DIM
 
 
 @command("/provider", "/p", description="切换供应商")
@@ -12,7 +12,7 @@ class ProviderCommand(Command):
 
         if not arg:
             # 使用导航模式的交互式选择
-            provider = self._select_interactive_navigable(ctx.client)
+            provider = self._select_interactive(ctx.client)
             if not provider:
                 return True
             # 先切换 provider（不输出）
@@ -52,14 +52,8 @@ class ProviderCommand(Command):
             ctx.layout.add_command_output(f"{CYAN}{old_provider}{RESET} → {GREEN}{provider}{RESET} | {CYAN}{ctx.client.current_model}{RESET}")
         return True
 
-    @navigable
-    def _select_interactive_navigable(self, client) -> str | None:
-        """交互式选择供应商 - 导航模式
-
-        使用内部循环保持菜单状态，避免 Action.STAY 导致函数重新执行
-        """
-        from ..ui.colors import DIM
-
+    def _select_interactive(self, client) -> str | None:
+        """交互式选择供应商"""
         while True:
             choices = []
             for key, pconfig in client.providers.items():
@@ -74,25 +68,16 @@ class ProviderCommand(Command):
             )
             result = menu.show()
 
-            if result is Action.BACK or result is None:
-                # ESC/Back 退出导航
+            if result is None:
                 return None
             elif result == "__MANAGE__":
-                # 进入管理子菜单
-                sub_result = self._manage_providers(client)
-                # 子菜单返回后继续循环（在下方重新显示主菜单）
+                self._manage_providers(client)
                 continue
             else:
-                # 选择了 provider，返回结果
                 return result
 
-    def _manage_providers(self, client) -> Action:
-        """管理供应商菜单
-
-        使用内部循环保持菜单状态
-        """
-        from ..ui.colors import DIM
-
+    def _manage_providers(self, client) -> None:
+        """管理供应商菜单"""
         while True:
             menu = SelectMenu(
                 "Manage providers",
@@ -105,21 +90,16 @@ class ProviderCommand(Command):
             )
             result = menu.show()
 
-            if result is Action.BACK or result is None or result == "__BACK__":
-                # 返回上一层级
-                return Action.BACK
+            if result is None or result == "__BACK__":
+                return None
             elif result == "__ADD__":
                 self._add_provider_interactive(client)
-                # 操作后继续显示管理菜单
                 continue
             elif result == "__EDIT__":
                 self._edit_provider_interactive(client)
                 continue
             elif result == "__DELETE__":
                 self._delete_provider_interactive(client)
-                continue
-            else:
-                # 其他情况，继续显示菜单
                 continue
 
     def _add_provider_interactive(self, client) -> None:
@@ -176,8 +156,6 @@ class ProviderCommand(Command):
 
     def _edit_provider_interactive(self, client) -> None:
         """交互式编辑 provider - 选择字段编辑模式"""
-        from ..ui.colors import DIM
-
         # 选择要编辑的 provider
         choices = []
         for key, pconfig in client.providers.items():
@@ -217,8 +195,7 @@ class ProviderCommand(Command):
             )
             field = menu.show()
 
-            if field is Action.BACK or field is None or field == "__BACK__":
-                # 取消编辑
+            if field is None or field == "__BACK__":
                 return
             elif field == "__DONE__":
                 # 保存并退出
@@ -250,7 +227,6 @@ class ProviderCommand(Command):
 
     def _delete_provider_interactive(self, client) -> None:
         """交互式删除 provider"""
-        from ..ui.colors import DIM, RESET
 
         # 选择要删除的 provider
         choices = []

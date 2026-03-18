@@ -6,7 +6,6 @@ from .layout import Layout
 from .widgets import SelectMenu
 from .permission_handler import CLIPermissionHandler
 from .interactive import ask, Wizard, parse_selection_arg
-from .navigation import Action, navigable
 
 __all__ = [
     # 颜色
@@ -37,9 +36,6 @@ __all__ = [
     "ask",
     "Wizard",
     "parse_selection_arg",
-    # 导航
-    "Action",
-    "navigable",
 ]
 
 # Backward compatibility alias
