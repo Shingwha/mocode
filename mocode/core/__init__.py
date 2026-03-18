@@ -3,7 +3,20 @@
 from .config import Config
 from .events import EventBus, EventType, Event, get_event_bus
 from .agent import AsyncAgent
-from .prompts import get_system_prompt
+from .prompt import (
+    PromptBuilder,
+    StaticSection,
+    DynamicSection,
+    PromptSection,
+    default_prompt,
+    minimal_prompt,
+    custom_prompt,
+    IDENTITY_SECTION,
+    ENVIRONMENT_SECTION,
+    TOOLS_SECTION,
+    SKILLS_SECTION,
+    BEHAVIOR_SECTION,
+)
 from .permission import (
     PermissionAction,
     PermissionConfig,
@@ -22,13 +35,27 @@ __all__ = [
     "Event",
     "get_event_bus",
     "AsyncAgent",
-    "get_system_prompt",
+    # Prompt system
+    "PromptBuilder",
+    "StaticSection",
+    "DynamicSection",
+    "PromptSection",
+    "default_prompt",
+    "minimal_prompt",
+    "custom_prompt",
+    "IDENTITY_SECTION",
+    "ENVIRONMENT_SECTION",
+    "TOOLS_SECTION",
+    "SKILLS_SECTION",
+    "BEHAVIOR_SECTION",
+    # Permission
     "PermissionAction",
     "PermissionMatcher",
     "PermissionConfig",
     "PermissionHandler",
     "DefaultPermissionHandler",
     "DenyAllPermissionHandler",
+    # Other
     "InterruptToken",
     "Session",
     "SessionManager",

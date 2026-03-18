@@ -78,6 +78,11 @@ class ToolRegistry:
         return cls._tools.get(name)
 
     @classmethod
+    def all(cls) -> list[Tool]:
+        """获取所有工具"""
+        return list(cls._tools.values())
+
+    @classmethod
     def all_schemas(cls) -> list[dict]:
         """获取所有工具的 schema"""
         return [t.to_schema() for t in cls._tools.values()]

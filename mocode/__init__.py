@@ -8,6 +8,14 @@ from .core import Config, AsyncAgent
 from .core import PermissionMatcher, PermissionHandler, DefaultPermissionHandler, DenyAllPermissionHandler, PermissionConfig
 from .core import InterruptToken
 from .core.session import Session, SessionManager
+from .core.prompt import (
+    PromptBuilder,
+    StaticSection,
+    DynamicSection,
+    default_prompt,
+    minimal_prompt,
+    custom_prompt,
+)
 
 # Gateway (lazy import to avoid dependency issues)
 def get_gateway():
@@ -36,6 +44,13 @@ __all__ = [
     # Session
     "Session",
     "SessionManager",
+    # Prompt system
+    "PromptBuilder",
+    "StaticSection",
+    "DynamicSection",
+    "default_prompt",
+    "minimal_prompt",
+    "custom_prompt",
     # Gateway
     "get_gateway",
 ]

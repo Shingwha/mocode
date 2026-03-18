@@ -31,16 +31,18 @@
 """
 
 import os
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from .core import AsyncAgent, Config, EventBus, EventType, get_event_bus
-from .core.prompts import get_system_prompt
 from .core.permission import PermissionMatcher, PermissionHandler, DefaultPermissionHandler
 from .core.interrupt import InterruptToken
 from .core.session import Session, SessionManager
 from .providers import AsyncOpenAIProvider
 from .skills import SkillManager
 from .tools import register_all_tools
+
+if TYPE_CHECKING:
+    from .core.prompt import PromptBuilder
 
 
 class MocodeClient:
@@ -53,6 +55,7 @@ class MocodeClient:
     - 自动加载 Skills
     - 中断支持（通过 interrupt() 方法）
     - 可选的配置持久化
+    - 自定义 Prompt 构建
     """
 
     def __init__(
@@ -66,6 +69,7 @@ class MocodeClient:
         persistence: bool = True,
         auto_register_tools: bool = True,
         workdir: str | None = None,
+        prompt_builder: "PromptBuilder | None" = None,
     ):
         """初始化 mocode 客户端
 
@@ -79,6 +83,7 @@ class MocodeClient:
             persistence: 是否启用配置持久化，为 False 时不保存配置文件
             auto_register_tools: 是否自动注册工具（幂等操作）
             workdir: 工作目录，用于 session 隔离，默认为当前目录
+            prompt_builder: Prompt 构建器，为 None 时使用默认配置
         """
         # 注册工具（幂等操作，可安全多次调用）
         if auto_register_tools:
@@ -118,9 +123,21 @@ class MocodeClient:
             model=self.config.model,
         )
 
-        # 初始化 SkillManager 并获取系统提示
+        # 初始化 SkillManager
         skill_manager = SkillManager.get_instance()
-        system_prompt = get_system_prompt(skill_manager)
+
+        # 初始化 Prompt 构建器
+        if prompt_builder:
+            self._prompt_builder = prompt_builder
+        else:
+            from .core.prompt import default_prompt
+            self._prompt_builder = default_prompt()
+
+        # 构建系统提示
+        system_prompt = self._prompt_builder.context(
+            skill_manager=skill_manager,
+            cwd=self._workdir,
+        ).build()
 
         # 初始化 Agent
         self.agent = AsyncAgent(
@@ -356,6 +373,37 @@ class MocodeClient:
         # 自动保存配置
         self.save_config()
 
+    @property
+    def prompt_builder(self) -> "PromptBuilder":
+        """Prompt 构建器"""
+        return self._prompt_builder
+
+    def rebuild_system_prompt(self, context: dict | None = None, clear_history: bool = False) -> None:
+        """重新构建系统提示
+
+        Args:
+            context: 额外的上下文变量
+            clear_history: 是否清除历史消息
+        """
+        ctx = context or {}
+        skill_manager = SkillManager.get_instance()
+        self._prompt_builder.clear_caches()
+        system_prompt = self._prompt_builder.context(
+            skill_manager=skill_manager,
+            cwd=self._workdir,
+            **ctx
+        ).build()
+        self.agent.update_system_prompt(system_prompt, clear_history=clear_history)
+
+    def update_system_prompt(self, prompt: str, clear_history: bool = False) -> None:
+        """直接更新系统提示
+
+        Args:
+            prompt: 新的系统提示
+            clear_history: 是否清除历史消息
+        """
+        self.agent.update_system_prompt(prompt, clear_history=clear_history)
+
 
 # 便捷导出
 __all__ = [
@@ -368,4 +416,21 @@ __all__ = [
     "InterruptToken",
     "Session",
     "SessionManager",
+    # Prompt system (re-exported from core)
+    "PromptBuilder",
+    "StaticSection",
+    "DynamicSection",
+    "default_prompt",
+    "minimal_prompt",
+    "custom_prompt",
 ]
+
+# Re-export prompt types for convenience
+from .core.prompt import (
+    PromptBuilder,
+    StaticSection,
+    DynamicSection,
+    default_prompt,
+    minimal_prompt,
+    custom_prompt,
+)

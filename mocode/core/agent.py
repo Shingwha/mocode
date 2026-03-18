@@ -226,3 +226,14 @@ class AsyncAgent:
         """更新 provider（切换模型时）"""
         self.provider = provider
         self.messages.clear()
+
+    def update_system_prompt(self, prompt: str, clear_history: bool = False) -> None:
+        """动态更新系统提示
+
+        Args:
+            prompt: 新的系统提示
+            clear_history: 是否清除历史消息 (避免 prompt 切换后上下文混乱)
+        """
+        self.system_prompt = prompt
+        if clear_history:
+            self.messages.clear()
