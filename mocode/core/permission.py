@@ -1,14 +1,15 @@
 """权限系统 - 工具执行前的权限检查"""
 
-from abc import ABC, abstractmethod
-from enum import Enum
-from dataclasses import dataclass, field
 import fnmatch
 import re
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import Enum
 
 
 class PermissionAction(Enum):
     """权限动作"""
+
     ALLOW = "allow"
     ASK = "ask"
     DENY = "deny"
@@ -17,6 +18,7 @@ class PermissionAction(Enum):
 @dataclass
 class ToolPermissionRules:
     """单个工具的详细权限规则"""
+
     rules: dict[str, str] = field(default_factory=dict)
 
     def get_action(self, target: str) -> PermissionAction:
@@ -61,8 +63,8 @@ class ToolPermissionRules:
             regex_pattern = ""
             i = 0
             while i < len(pattern):
-                if pattern[i:i+2] == "**":
-                    if i + 2 < len(pattern) and pattern[i+2] == "/":
+                if pattern[i : i + 2] == "**":
+                    if i + 2 < len(pattern) and pattern[i + 2] == "/":
                         regex_pattern += "(?:.*/)?"
                         i += 3
                     else:
@@ -90,11 +92,14 @@ class ToolPermissionRules:
 @dataclass
 class PermissionConfig:
     """权限配置 - 支持扁平格式和嵌套格式"""
+
     # 扁平格式: {"*": "ask", "bash": "allow"}
     # 嵌套格式: {"bash": {"*": "ask", "git *": "allow"}}
     rules: dict = field(default_factory=dict)
 
-    def get_action(self, tool_name: str, tool_args: dict | None = None) -> PermissionAction:
+    def get_action(
+        self, tool_name: str, tool_args: dict | None = None
+    ) -> PermissionAction:
         """
         获取工具对应的权限动作
 
@@ -195,7 +200,7 @@ class DefaultPermissionHandler(PermissionHandler):
 
     async def ask_permission(self, tool_name: str, tool_args: dict) -> str:
         """默认允许所有工具执行"""
-        return "allow"
+        return "ask"
 
 
 class DenyAllPermissionHandler(PermissionHandler):
