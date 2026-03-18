@@ -15,17 +15,15 @@ def getch(with_arrows: bool = False) -> str:
     """
     if sys.platform == "win32":
         import msvcrt
-        ch = msvcrt.getch()
-        if ch == b'\xe0':
-            ch = msvcrt.getch()
+        ch = msvcrt.getwch()  # Unicode version, supports Chinese natively
+        if ch == '\x00' or ch == '\xe0':  # Special key prefix
+            ch = msvcrt.getwch()
             if with_arrows:
-                return {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT"}.get(
-                    ch.decode("latin-1"), ""
-                )
+                return {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT"}.get(ch, "")
             return ""
-        if ch == b'\x1b':
+        if ch == '\x1b':
             return "ESC"
-        return ch.decode("utf-8", errors="ignore")
+        return ch
     else:
         import tty
         import termios
