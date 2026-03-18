@@ -181,13 +181,12 @@ class GatewayManager:
             event_bus = EventBus()
 
             # 创建 MocodeClient，使用 DefaultPermissionHandler（自动允许所有工具）
+            # Gateway 模式：不设置权限匹配器，自动允许所有工具
             client = MocodeClient(
                 event_bus=event_bus,
                 permission_handler=DefaultPermissionHandler(),
+                permission_matcher=None,
             )
-
-            # Gateway 模式：不设置权限匹配器，自动允许所有工具
-            client.agent.permission_matcher = None
 
             # 创建会话
             session = UserSession(

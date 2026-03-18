@@ -34,6 +34,7 @@ from typing import Callable
 
 from .core import AsyncAgent, Config, EventBus, EventType, get_event_bus
 from .core.prompts import get_system_prompt
+from .core.permission import PermissionMatcher
 from .core.permission_handler import PermissionHandler, DefaultPermissionHandler
 from .core.interrupt import InterruptToken
 from .providers import AsyncOpenAIProvider
@@ -59,8 +60,10 @@ class MocodeClient:
         config_path: str | None = None,
         event_bus: EventBus | None = None,
         permission_handler: PermissionHandler | None = None,
+        permission_matcher: PermissionMatcher | None = None,
         interrupt_token: InterruptToken | None = None,
         persistence: bool = True,
+        auto_register_tools: bool = True,
     ):
         """初始化 mocode 客户端
 
@@ -69,11 +72,14 @@ class MocodeClient:
             config_path: 配置文件路径
             event_bus: 事件总线实例，为 None 时使用默认实例
             permission_handler: 权限处理器，为 NULL 时使用默认处理器（自动允许）
+            permission_matcher: 权限匹配器，用于检查工具权限
             interrupt_token: 中断信号，为 None 时创建新实例
             persistence: 是否启用配置持久化，为 False 时不保存配置文件
+            auto_register_tools: 是否自动注册工具（幂等操作）
         """
-        # 注册工具（确保工具已注册）
-        register_all_tools()
+        # 注册工具（幂等操作，可安全多次调用）
+        if auto_register_tools:
+            register_all_tools()
 
         # 初始化事件总线
         self.event_bus = event_bus or get_event_bus()
@@ -86,6 +92,9 @@ class MocodeClient:
 
         # 权限处理器（必须在 Agent 初始化前设置）
         self._permission_handler = permission_handler or DefaultPermissionHandler()
+
+        # 权限匹配器
+        self._permission_matcher = permission_matcher
 
         # 加载配置
         self.config = Config.load(path=config_path, data=config)
@@ -110,6 +119,7 @@ class MocodeClient:
             interrupt_token=self._interrupt_token,
             config=self.config,
             permission_handler=self._permission_handler,
+            permission_matcher=self._permission_matcher,
         )
 
     async def chat(self, message: str) -> str:
@@ -260,6 +270,7 @@ __all__ = [
     "MocodeClient",
     "EventBus",
     "EventType",
+    "PermissionMatcher",
     "PermissionHandler",
     "DefaultPermissionHandler",
     "InterruptToken",

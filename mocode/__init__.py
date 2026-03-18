@@ -5,6 +5,7 @@ __version__ = "0.2.0"
 from .sdk import MocodeClient
 from .core import EventBus, EventType, Event, get_event_bus
 from .core import Config, AsyncAgent
+from .core import PermissionMatcher
 from .core import PermissionHandler, DefaultPermissionHandler
 from .core import InterruptToken
 
@@ -25,6 +26,7 @@ __all__ = [
     "Config",
     "AsyncAgent",
     # Permission
+    "PermissionMatcher",
     "PermissionHandler",
     "DefaultPermissionHandler",
     # Interrupt

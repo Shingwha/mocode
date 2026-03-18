@@ -172,29 +172,11 @@ class AsyncAgent:
                 return f"User denied tool '{tool_name}'"
 
             if action == PermissionAction.ASK:
-                # 使用 permission_handler 或发送事件
-                if self.permission_handler:
-                    # 直接使用 handler
-                    user_response = await self.permission_handler.ask_permission(tool_name, tool_args)
-                else:
-                    # 兼容旧逻辑：发送权限询问事件
-                    response_future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+                # 必须有 permission_handler
+                if not self.permission_handler:
+                    return f"Permission handler required for tool '{tool_name}'"
 
-                    self.event_bus.emit(
-                        EventType.PERMISSION_ASK,
-                        {
-                            "tool_name": tool_name,
-                            "tool_args": tool_args,
-                            "response_future": response_future,
-                        },
-                    )
-
-                    # 等待用户响应（可中断）
-                    user_response = await self._call_with_interrupt_check(response_future)
-
-                    # 如果被中断
-                    if user_response is None:
-                        return "[interrupted]"
+                user_response = await self.permission_handler.ask_permission(tool_name, tool_args)
 
                 # 处理用户响应
                 if user_response == "deny":

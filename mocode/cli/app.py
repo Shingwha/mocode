@@ -7,9 +7,9 @@ import time
 
 from ..sdk import MocodeClient
 from ..core import EventType
+from ..core.config import Config
 from ..core.permission import PermissionMatcher
 from ..core.interrupt import InterruptToken
-from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
 from .ui.layout import SimpleLayout
 from .ui.widgets import check_esc_key
@@ -66,15 +66,16 @@ class AsyncApp:
         # 创建 CLI 权限处理器
         permission_handler = CLIPermissionHandler(layout=self.layout)
 
-        # 创建 MocodeClient
+        # 加载配置创建 PermissionMatcher
+        config = Config.load()
+        permission_matcher = PermissionMatcher(config.permission)
+
+        # 创建 MocodeClient（使用封装好的 API）
         self.client = MocodeClient(
             permission_handler=permission_handler,
+            permission_matcher=permission_matcher,
             interrupt_token=self._interrupt_token,
         )
-
-        # 为 Agent 设置权限匹配器
-        permission_matcher = PermissionMatcher(self.client.config.permission)
-        self.client.agent.permission_matcher = permission_matcher
 
     def _check_rtk(self):
         """检查 RTK 安装状态并提示"""
