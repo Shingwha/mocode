@@ -10,6 +10,7 @@ from ..core import EventType
 from ..core.config import Config
 from ..core.permission import PermissionMatcher
 from ..core.interrupt import InterruptToken
+from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
 from .ui.layout import SimpleLayout
 from .ui.widgets import check_esc_key
