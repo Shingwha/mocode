@@ -68,6 +68,10 @@ class SessionCommand(Command):
 
     def _load_and_display(self, ctx: CommandContext, session_id: str) -> None:
         """加载 session 并显示结果"""
+        # 先保存当前 session（如果有对话）
+        if ctx.client.agent.messages:
+            ctx.client.save_session()
+
         session = ctx.client.load_session(session_id)
         if session:
             ctx.layout.render_session_history(session.messages)
