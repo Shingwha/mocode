@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import ClassVar, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..ui.layout import SimpleLayout
+    from ..ui.layout import Layout
     from ...sdk import MocodeClient
 
 
@@ -14,7 +14,7 @@ class CommandContext:
     """命令执行上下文"""
     client: "MocodeClient"
     args: str  # 命令参数
-    layout: "SimpleLayout | None" = None
+    layout: "Layout | None" = None
     pending_message: str | None = None  # 命令执行后要发送给 agent 的消息
 
     @property

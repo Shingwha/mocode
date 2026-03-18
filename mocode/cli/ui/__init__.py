@@ -1,8 +1,8 @@
 """CLI UI 组件"""
 
-from .colors import RESET, BOLD, DIM, BLUE, CYAN, GREEN, YELLOW, RED
+from .colors import RESET, BOLD, DIM, BLUE, CYAN, GREEN
 from .components import error, info, success, format_error, format_info, format_success
-from .layout import SimpleLayout
+from .layout import Layout
 from .widgets import SelectMenu
 from .permission_handler import CLIPermissionHandler
 from .interactive import ask, Wizard, parse_selection_arg
@@ -15,8 +15,6 @@ __all__ = [
     "BLUE",
     "CYAN",
     "GREEN",
-    "YELLOW",
-    "RED",
     # 消息函数
     "error",
     "success",
@@ -26,7 +24,7 @@ __all__ = [
     "format_success",
     "format_info",
     # 布局
-    "SimpleLayout",
+    "Layout",
     # 组件
     "SelectMenu",
     # 权限处理器
@@ -36,3 +34,6 @@ __all__ = [
     "Wizard",
     "parse_selection_arg",
 ]
+
+# Backward compatibility alias
+SimpleLayout = Layout

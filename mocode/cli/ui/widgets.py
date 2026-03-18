@@ -4,6 +4,7 @@ import sys
 from typing import TypeVar, Generic
 
 from .colors import RESET, BOLD, DIM, GREEN, CYAN
+from .keyboard import getch
 
 T = TypeVar("T")
 
@@ -124,29 +125,5 @@ class SelectMenu(Generic[T]):
         return f"  {marker} {text}"
 
     def _getch(self) -> str:
-        """跨平台获取按键"""
-        if sys.platform == "win32":
-            import msvcrt
-            ch = msvcrt.getch()
-            if ch == b'\xe0':
-                ch = msvcrt.getch()
-                return {"H": "UP", "P": "DOWN", "K": "LEFT", "M": "RIGHT"}.get(
-                    ch.decode("latin-1"), ""
-                )
-            return ch.decode("utf-8", errors="ignore")
-        else:
-            import tty
-            import termios
-            fd = sys.stdin.fileno()
-            old = termios.tcgetattr(fd)
-            try:
-                tty.setraw(fd)
-                ch = sys.stdin.read(1)
-                if ch == "\x1b":
-                    seq = sys.stdin.read(2)
-                    return {"[A": "UP", "[B": "DOWN", "[C": "RIGHT", "[D": "LEFT"}.get(
-                        seq, ""
-                    )
-                return ch
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        """获取按键（使用统一的 keyboard 模块）"""
+        return getch(with_arrows=True)

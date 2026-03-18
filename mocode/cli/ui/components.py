@@ -1,6 +1,6 @@
 """UI 组件 - 简洁的消息显示"""
 
-from .colors import CYAN, GREEN, RED, RESET, YELLOW
+from .colors import CYAN, GREEN, RED, RESET
 
 
 def error(text: str):

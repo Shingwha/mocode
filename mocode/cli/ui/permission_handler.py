@@ -1,8 +1,8 @@
 """CLI 权限处理器 - 使用 SelectMenu 进行交互"""
 
 from ...core.permission import PermissionHandler
-from .widgets import SelectMenu
 from .colors import BLUE, BOLD, DIM, GREEN, RESET
+from .widgets import SelectMenu
 
 
 class CLIPermissionHandler(PermissionHandler):
@@ -15,7 +15,7 @@ class CLIPermissionHandler(PermissionHandler):
         """初始化 CLI 权限处理器
 
         Args:
-            layout: SimpleLayout 实例，用于输出格式化（可选）
+            layout: Layout 实例，用于输出格式化（可选）
         """
         self.layout = layout
 
@@ -46,7 +46,7 @@ class CLIPermissionHandler(PermissionHandler):
 
         # 打印前置空行（如果有 layout）
         if self.layout:
-            self.layout._spacing.print_space_if_needed("permission")
+            self.layout.print_space_if_needed("permission")
 
         # 显示选择菜单
         menu = SelectMenu(

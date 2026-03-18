@@ -12,7 +12,7 @@ from ..core.permission import PermissionMatcher
 from ..core.interrupt import InterruptToken
 from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
-from .ui.layout import SimpleLayout
+from .ui.layout import Layout
 from .ui.widgets import check_esc_key
 from .ui.permission_handler import CLIPermissionHandler
 
@@ -23,7 +23,7 @@ class AsyncApp:
     def __init__(self):
         self.client: MocodeClient | None = None
         self.commands = CommandRegistry()
-        self.layout = SimpleLayout()
+        self.layout = Layout()
         self._is_running = False
         # 中断信号
         self._interrupt_token = InterruptToken()

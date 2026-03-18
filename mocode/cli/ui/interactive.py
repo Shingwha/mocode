@@ -1,51 +1,20 @@
 """Interactive prompt utilities for CLI"""
 
-import sys
 from typing import Callable, TypeVar
 
 from .colors import BOLD, BLUE, DIM, RESET, YELLOW
 from .components import error, info
+from .keyboard import getch
 from .widgets import pause_esc_monitor, resume_esc_monitor
 
 T = TypeVar("T")
-
-
-def _getch() -> str:
-    """Cross-platform getch with ESC detection."""
-    if sys.platform == "win32":
-        import msvcrt
-        ch = msvcrt.getch()
-        if ch == b'\xe0':
-            ch = msvcrt.getch()
-            return ""  # Ignore arrow keys
-        if ch == b'\x1b':
-            return "ESC"
-        return ch.decode("utf-8", errors="ignore")
-    else:
-        import tty
-        import termios
-        fd = sys.stdin.fileno()
-        old = termios.tcgetattr(fd)
-        try:
-            tty.setraw(fd)
-            ch = sys.stdin.read(1)
-            if ch == "\x1b":
-                # Check for arrow key sequence
-                import select
-                if select.select([sys.stdin], [], [], 0.1)[0]:
-                    seq = sys.stdin.read(2)
-                    return ""  # Arrow key, ignore
-                return "ESC"
-            return ch
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def _readline_with_esc() -> str | None:
     """Read a line with ESC support. Returns None if ESC pressed."""
     chars = []
     while True:
-        ch = _getch()
+        ch = getch(with_arrows=False)
         if ch == "ESC":
             return None
         elif ch in ("\r", "\n"):
