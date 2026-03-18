@@ -75,7 +75,23 @@ class Layout:
 
     def add_user_message(self, content: str):
         """添加用户消息（用于历史记录显示）"""
-        pass  # 用户输入已由 input() 回显
+        self._spacing.print_space_if_needed("user_history")
+
+        # 复用背景色高亮逻辑
+        width = shutil.get_terminal_size().columns
+        prompt_width = 2  # "> " 的显示宽度
+
+        # 计算实际占用行数
+        text_width = self._display_width(content)
+        total_width = prompt_width + text_width
+        num_lines = (total_width + width - 1) // width
+
+        # 构造带背景色的显示行
+        display_line = f"{BG_BLUE}{BOLD}{WHITE}>{RESET}{BG_BLUE}{BOLD} {content} {RESET}"
+        padding_width = width * num_lines - text_width - prompt_width
+        padding = " " * max(0, padding_width)
+
+        print(f"{display_line}{padding}{RESET}")
 
     def add_assistant_message(self, content: str):
         """添加助手消息"""
@@ -177,6 +193,52 @@ class Layout:
     def reset_spacing(self):
         """重置 spacing manager（用于命令执行后）"""
         self._spacing.reset()
+
+    def render_session_history(self, messages: list[dict]):
+        """渲染 session 历史消息
+
+        Args:
+            messages: OpenAI 格式的消息列表
+        """
+        if not messages:
+            return
+
+        # 重置 spacing 状态
+        self._spacing.reset()
+
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            tool_calls = msg.get("tool_calls", [])
+
+            # 跳过 system 消息
+            if role == "system":
+                continue
+
+            if role == "user":
+                self.add_user_message(content)
+
+            elif role == "assistant":
+                # 助手文本内容
+                if content:
+                    self.add_assistant_message(content)
+                # 工具调用
+                for tool_call in tool_calls:
+                    func = tool_call.get("function", {})
+                    name = func.get("name", "unknown")
+                    args = func.get("arguments", "{}")
+                    # 解析参数获取预览
+                    try:
+                        import json
+                        args_dict = json.loads(args)
+                        preview = str(list(args_dict.values())[0])[:50] if args_dict else ""
+                    except:
+                        preview = ""
+                    self.add_tool_call(name, preview)
+
+            elif role == "tool":
+                # 工具结果跳过，不显示
+                pass
 
     def print_space_if_needed(self, current_type: str):
         """打印前置空行（公共接口，供外部调用）"""

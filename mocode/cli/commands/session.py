@@ -66,6 +66,8 @@ class SessionCommand(Command):
             session = ctx.client.load_session(selected)
             if session:
                 if ctx.layout:
+                    # 渲染历史消息
+                    ctx.layout.render_session_history(session.messages)
                     ctx.layout.add_command_output(
                         format_success(f"Restored session: {selected}")
                     )
@@ -87,6 +89,8 @@ class SessionCommand(Command):
         session = ctx.client.load_session(session_id)
         if session:
             if ctx.layout:
+                # 渲染历史消息
+                ctx.layout.render_session_history(session.messages)
                 ctx.layout.add_command_output(
                     format_success(f"Restored session: {session_id}")
                 )
