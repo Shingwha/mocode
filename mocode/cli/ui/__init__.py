@@ -5,6 +5,7 @@ from .components import error, info, success, format_error, format_info, format_
 from .layout import SimpleLayout
 from .widgets import SelectMenu
 from .permission_handler import CLIPermissionHandler
+from .interactive import ask, Wizard, parse_selection_arg
 
 __all__ = [
     # 颜色
@@ -30,4 +31,8 @@ __all__ = [
     "SelectMenu",
     # 权限处理器
     "CLIPermissionHandler",
+    # 交互式提示
+    "ask",
+    "Wizard",
+    "parse_selection_arg",
 ]

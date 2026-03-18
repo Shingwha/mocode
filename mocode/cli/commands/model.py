@@ -1,8 +1,7 @@
 """模型切换命令"""
 
 from .base import Command, CommandContext, command
-from ..ui import SelectMenu, error, info, success
-from ..ui.colors import RESET, CYAN, GREEN, BOLD, BLUE, DIM
+from ..ui import SelectMenu, error, success, ask
 
 
 @command("/model", "/m", description="切换模型")
@@ -53,15 +52,11 @@ class ModelCommand(Command):
 
     def _add_model_interactive(self, client) -> str | None:
         """交互式添加新 model"""
-        info("Model name (e.g., 'gpt-4o', 'claude-3-opus')")
-        try:
-            print(f"{BOLD}{BLUE}>{RESET} ", end="", flush=True)
-            model = input().strip()
-        except (KeyboardInterrupt, EOFError):
-            return None
-
-        if not model:
-            error("Model name cannot be empty")
+        model = ask(
+            "Model name (e.g., 'gpt-4o', 'claude-3-opus')",
+            required=True,
+        )
+        if model is None:
             return None
 
         # Add model
