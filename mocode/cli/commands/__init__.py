@@ -6,6 +6,7 @@ from .model import ModelCommand
 from .provider import ProviderCommand
 from .skills_command import SkillsCommand
 from .rtk import RtkCommand
+from .session import SessionCommand
 
 __all__ = [
     "Command",
@@ -21,6 +22,7 @@ __all__ = [
     "ProviderCommand",
     "SkillsCommand",
     "RtkCommand",
+    "SessionCommand",
 ]
 
 # 自动注册的内置命令
@@ -32,6 +34,7 @@ BUILTIN_COMMANDS = [
     ProviderCommand,
     SkillsCommand,
     RtkCommand,
+    SessionCommand,
 ]
 
 

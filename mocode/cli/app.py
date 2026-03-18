@@ -58,6 +58,7 @@ class AsyncApp:
         except Exception as e:
             self.layout.add_error_message(str(e))
         finally:
+            self._auto_save_session()
             self._is_running = False
             self._stop_esc_monitor_thread()
             self.layout.cleanup()
@@ -106,6 +107,11 @@ class AsyncApp:
         self._stop_esc_monitor_flag = True
         if self._esc_monitor_thread and self._esc_monitor_thread.is_alive():
             self._esc_monitor_thread.join(timeout=1.0)
+
+    def _auto_save_session(self):
+        """退出时自动保存 session"""
+        if self.client and self.client.agent.messages:
+            self.client.save_session()
 
     def _setup_event_handlers(self):
         """设置事件处理器"""

@@ -30,6 +30,7 @@
     asyncio.run(main())
 """
 
+import os
 from typing import Callable
 
 from .core import AsyncAgent, Config, EventBus, EventType, get_event_bus
@@ -37,6 +38,7 @@ from .core.prompts import get_system_prompt
 from .core.permission import PermissionMatcher
 from .core.permission_handler import PermissionHandler, DefaultPermissionHandler
 from .core.interrupt import InterruptToken
+from .core.session import Session, SessionManager
 from .providers import AsyncOpenAIProvider
 from .skills import SkillManager
 from .tools import register_all_tools
@@ -64,6 +66,7 @@ class MocodeClient:
         interrupt_token: InterruptToken | None = None,
         persistence: bool = True,
         auto_register_tools: bool = True,
+        workdir: str | None = None,
     ):
         """初始化 mocode 客户端
 
@@ -76,6 +79,7 @@ class MocodeClient:
             interrupt_token: 中断信号，为 None 时创建新实例
             persistence: 是否启用配置持久化，为 False 时不保存配置文件
             auto_register_tools: 是否自动注册工具（幂等操作）
+            workdir: 工作目录，用于 session 隔离，默认为当前目录
         """
         # 注册工具（幂等操作，可安全多次调用）
         if auto_register_tools:
@@ -89,6 +93,15 @@ class MocodeClient:
 
         # 持久化控制
         self._persistence = persistence
+
+        # 工作目录
+        self._workdir = workdir or os.getcwd()
+
+        # Session 管理器（懒加载）
+        self._session_manager: SessionManager | None = None
+
+        # 当前加载的 session ID（用于更新而非新建）
+        self._current_session_id: str | None = None
 
         # 权限处理器（必须在 Agent 初始化前设置）
         self._permission_handler = permission_handler or DefaultPermissionHandler()
@@ -154,6 +167,86 @@ class MocodeClient:
     def clear_history(self):
         """清空对话历史"""
         self.agent.clear()
+
+    @property
+    def workdir(self) -> str:
+        """当前工作目录"""
+        return self._workdir
+
+    @property
+    def session_manager(self) -> SessionManager:
+        """Session 管理器（懒加载）"""
+        if self._session_manager is None:
+            self._session_manager = SessionManager(self._workdir)
+        return self._session_manager
+
+    def list_sessions(self) -> list[Session]:
+        """列出当前工作目录的所有 session
+
+        Returns:
+            Session 列表，按更新时间降序排列
+        """
+        return self.session_manager.list_sessions()
+
+    def save_session(self) -> Session:
+        """保存当前对话为 session
+
+        如果已加载 session 则更新，否则新建。
+
+        Returns:
+            保存的 Session 对象
+        """
+        if self._current_session_id:
+            # 更新已存在的 session
+            session = self.session_manager.update_session(
+                session_id=self._current_session_id,
+                messages=self.agent.messages,
+                model=self.current_model,
+                provider=self.current_provider,
+            )
+            if session:
+                return session
+            # 如果更新失败（session 被删除），则新建
+
+        # 新建 session
+        session = self.session_manager.save_session(
+            messages=self.agent.messages,
+            model=self.current_model,
+            provider=self.current_provider,
+        )
+        self._current_session_id = session.id
+        return session
+
+    def load_session(self, session_id: str) -> Session | None:
+        """加载指定 session
+
+        Args:
+            session_id: session ID
+
+        Returns:
+            Session 对象，如果不存在则返回 None
+        """
+        session = self.session_manager.load_session(session_id)
+        if session:
+            # 只恢复 messages，不切换 model/provider
+            self.agent.messages = session.messages.copy()
+            # 记录当前 session ID
+            self._current_session_id = session_id
+        return session
+
+    def clear_history_with_save(self) -> Session | None:
+        """清空历史并自动保存
+
+        Returns:
+            保存的 session（如果有消息的话），否则返回 None
+        """
+        saved = None
+        if self.agent.messages:
+            saved = self.save_session()
+        self.agent.clear()
+        # 清空后重置 session ID，下次对话从新 session 开始
+        self._current_session_id = None
+        return saved
 
     def interrupt(self):
         """中断当前操作"""
@@ -274,4 +367,6 @@ __all__ = [
     "PermissionHandler",
     "DefaultPermissionHandler",
     "InterruptToken",
+    "Session",
+    "SessionManager",
 ]

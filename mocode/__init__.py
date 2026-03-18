@@ -8,6 +8,7 @@ from .core import Config, AsyncAgent
 from .core import PermissionMatcher
 from .core import PermissionHandler, DefaultPermissionHandler
 from .core import InterruptToken
+from .core.session import Session, SessionManager
 
 # Gateway (lazy import to avoid dependency issues)
 def get_gateway():
@@ -31,6 +32,9 @@ __all__ = [
     "DefaultPermissionHandler",
     # Interrupt
     "InterruptToken",
+    # Session
+    "Session",
+    "SessionManager",
     # Gateway
     "get_gateway",
 ]

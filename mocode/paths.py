@@ -17,5 +17,8 @@ CONFIG_PATH: Path = MOCODE_HOME / "config.json"
 # Skills 目录
 SKILLS_DIR: Path = MOCODE_HOME / "skills"
 
+# Sessions 目录
+SESSIONS_DIR: Path = MOCODE_HOME / "sessions"
+
 # 项目级 skills 目录名（相对于当前工作目录）
 PROJECT_SKILLS_DIRNAME: str = ".mocode"

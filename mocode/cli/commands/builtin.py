@@ -11,10 +11,12 @@ class QuitCommand(Command):
         return False
 
 
-@command("/c", description="清空对话历史")
+@command("/c", description="清空对话历史 (自动保存)")
 class ClearCommand(Command):
     def execute(self, ctx: CommandContext) -> bool:
-        ctx.agent.clear()
+        saved = ctx.client.clear_history_with_save()
+        if saved and ctx.layout:
+            ctx.layout.add_command_output(format_info(f"Session saved: {saved.id}"))
         if ctx.layout:
             ctx.layout.add_command_output(format_success("Cleared conversation"))
         return True

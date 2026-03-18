@@ -7,6 +7,7 @@ from .prompts import get_system_prompt
 from .permission import PermissionAction, PermissionMatcher, PermissionConfig
 from .permission_handler import PermissionHandler, DefaultPermissionHandler, DenyAllPermissionHandler
 from .interrupt import InterruptToken
+from .session import Session, SessionManager
 
 __all__ = [
     "Config",
@@ -23,4 +24,6 @@ __all__ = [
     "DefaultPermissionHandler",
     "DenyAllPermissionHandler",
     "InterruptToken",
+    "Session",
+    "SessionManager",
 ]
