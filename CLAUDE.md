@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 mocode is a CLI coding assistant powered by LLM (OpenAI-compatible APIs). It provides an interactive terminal interface with tool-calling capabilities for file operations, search, and shell execution. Can also be embedded as an SDK in other applications.
 
+Requires Python >= 3.10.
+
+## Code Style
+
+Do not use emojis in code or commit messages. Keep code clean and simple.
+
 ## Commands
 
 ```bash
@@ -69,7 +75,7 @@ mocode/
 
 ### Key Patterns
 
-1. **Event System**: `EventBus` instances decouple `AsyncAgent` from UI. Use `get_event_bus()` for default instance. Events: `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `PERMISSION_ASK`, `INTERRUPTED`. Agent uses `self.event_bus.emit()`; UI subscribes via `event_bus.on(EventType.X, handler)`.
+1. **Event System**: `EventBus` instances decouple `AsyncAgent` from UI. Use `get_event_bus()` for default instance. Key events: `TEXT_STREAMING`, `TEXT_DELTA`, `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `PERMISSION_ASK`, `INTERRUPTED`, `ERROR`. Agent uses `self.event_bus.emit()`; UI subscribes via `event_bus.on(EventType.X, handler)`.
 
 2. **Interrupt Mechanism**: `InterruptToken` provides thread-safe cancellation for AI responses. Used by CLI (ESC key), Gateway (`/cancel` command), and SDK (`interrupt()` API). Agent checks `token.is_interrupted` during API calls and tool execution.
 
@@ -135,8 +141,8 @@ Config stored at `~/.mocode/config.json`, or use `Config.from_dict(data)` for in
 ## Adding New Tools
 
 1. Create `def my_tool(args: dict) -> str`
-2. Register with `@tool("name", "description", {"param": "string", "optional?": "number?"})`
-3. Call registration in `tools/__init__.py::register_all_tools()`
+2. Register with `@tool("name", "description", {"param": "string", "optional?": "number?"})` - use `?` suffix for optional params
+3. Tools are registered in `ToolRegistry` (class-level registry) and called in `tools/__init__.py::register_all_tools()`
 
 ## Adding New Commands
 
