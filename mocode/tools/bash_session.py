@@ -60,7 +60,7 @@ class SimpleBashSession:
         """执行命令"""
         # 处理 cd 命令（在 Python 层维护状态）
         stripped = command.strip()
-        if stripped.startswith("cd "):
+        if stripped.startswith("cd ") and "&&" not in stripped and ";" not in stripped:
             new_dir = stripped[3:].strip()
             return self._handle_cd(new_dir)
 
