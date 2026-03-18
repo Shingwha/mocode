@@ -1,6 +1,6 @@
 """CLI 权限处理器 - 使用 SelectMenu 进行交互"""
 
-from ...core.permission_handler import PermissionHandler
+from ...core.permission import PermissionHandler
 from .widgets import SelectMenu
 from .colors import BLUE, BOLD, DIM, GREEN, RESET
 

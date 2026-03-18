@@ -6,8 +6,7 @@ from typing import TYPE_CHECKING, Callable
 from ..providers.openai import AsyncOpenAIProvider
 from ..tools.base import ToolRegistry
 from .events import EventType, EventBus, get_event_bus
-from .permission import PermissionAction, PermissionMatcher
-from .permission_handler import PermissionHandler
+from .permission import PermissionAction, PermissionMatcher, PermissionHandler
 from .interrupt import InterruptToken
 
 if TYPE_CHECKING:

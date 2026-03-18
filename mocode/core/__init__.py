@@ -4,8 +4,14 @@ from .config import Config
 from .events import EventBus, EventType, Event, get_event_bus
 from .agent import AsyncAgent
 from .prompts import get_system_prompt
-from .permission import PermissionAction, PermissionMatcher, PermissionConfig
-from .permission_handler import PermissionHandler, DefaultPermissionHandler, DenyAllPermissionHandler
+from .permission import (
+    PermissionAction,
+    PermissionConfig,
+    PermissionMatcher,
+    PermissionHandler,
+    DefaultPermissionHandler,
+    DenyAllPermissionHandler,
+)
 from .interrupt import InterruptToken
 from .session import Session, SessionManager
 

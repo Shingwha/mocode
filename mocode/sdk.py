@@ -35,8 +35,7 @@ from typing import Callable
 
 from .core import AsyncAgent, Config, EventBus, EventType, get_event_bus
 from .core.prompts import get_system_prompt
-from .core.permission import PermissionMatcher
-from .core.permission_handler import PermissionHandler, DefaultPermissionHandler
+from .core.permission import PermissionMatcher, PermissionHandler, DefaultPermissionHandler
 from .core.interrupt import InterruptToken
 from .core.session import Session, SessionManager
 from .providers import AsyncOpenAIProvider

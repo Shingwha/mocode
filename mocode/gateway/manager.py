@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mocode import EventBus, EventType, MocodeClient
-from mocode.core.permission_handler import DefaultPermissionHandler
+from mocode.core.permission import DefaultPermissionHandler
 
 from .base import BaseChannel
 from .config import GatewayConfig
