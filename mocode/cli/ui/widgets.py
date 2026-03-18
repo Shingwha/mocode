@@ -1,10 +1,11 @@
 """交互式 UI 组件"""
 
 import sys
-from typing import Generic, TypeVar
+from typing import Callable, Generic, TypeVar
 
 from .colors import BOLD, CYAN, DIM, GREEN, RESET
 from .keyboard import getch
+from .navigation import Action
 
 T = TypeVar("T")
 
@@ -54,14 +55,39 @@ def check_esc_key() -> bool:
         return False
 
 
+def clear_screen():
+    """清屏（保留光标位置）"""
+    # 清屏并移动光标到左上角
+    print("\033[2J\033[H", end="")
+
+
 class SelectMenu(Generic[T]):
     """交互式选择菜单"""
 
-    def __init__(self, title: str, choices: list[tuple[T, str]], current: T = None):
+    def __init__(
+        self,
+        title: str,
+        choices: list[tuple[T, str]],
+        current: T = None,
+        on_select: Callable[[T], Action | T | None] = None,
+    ):
+        """
+        Args:
+            title: 菜单标题
+            choices: 选项列表 [(key, display), ...]
+            current: 当前选中值
+            on_select: 选择后的回调函数，接收选中的 key，返回：
+                      - Action.BACK: 返回上一层级
+                      - Action.STAY: 保持当前层级（重绘）
+                      - Action.EXIT: 完全退出导航
+                      - 其他值: 作为结果返回
+                      - None: 默认行为（返回上一层级）
+        """
         self.title = title
         self.choices = choices
         self.current = current
         self.selected = 0
+        self.on_select = on_select
 
         if current:
             for i, (key, _) in enumerate(choices):
@@ -69,8 +95,17 @@ class SelectMenu(Generic[T]):
                     self.selected = i
                     break
 
-    def show(self) -> T | None:
-        """显示菜单并返回选择结果"""
+    def show(self) -> T | Action | None:
+        """显示菜单并返回选择结果
+
+        Returns:
+            - 如果注册了 on_select:
+              - Action: 导航控制信号
+              - 其他: on_select 的返回值
+            - 如果没有 on_select:
+              - 选中的 key
+              - None: 用户取消（ESC/LEFT）
+        """
         pause_esc_monitor()
         try:
             self._render_initial()
@@ -85,11 +120,25 @@ class SelectMenu(Generic[T]):
                         self.selected = (self.selected + 1) % len(self.choices)
                         self._render_update()
                     elif key in ("\r", "\n", "RIGHT"):
-                        return self.choices[self.selected][0]
+                        selected_key = self.choices[self.selected][0]
+
+                        if self.on_select:
+                            result = self.on_select(selected_key)
+
+                            # 处理 Action 类型
+                            if isinstance(result, Action):
+                                if result is Action.STAY:
+                                    self._render_update()  # 重绘当前
+                                    continue
+                                return result  # BACK or EXIT
+                            return result  # 普通返回值
+
+                        # 兼容旧代码：直接返回 key
+                        return selected_key
                     elif key == "LEFT" or key == "ESC":
-                        return None
+                        return Action.BACK  # 使用 Action 信号
                 except (KeyboardInterrupt, EOFError):
-                    return None
+                    return Action.EXIT
         finally:
             resume_esc_monitor()
 

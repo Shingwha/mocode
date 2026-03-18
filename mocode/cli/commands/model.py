@@ -1,7 +1,7 @@
 """模型切换命令"""
 
 from .base import Command, CommandContext, command
-from ..ui import SelectMenu, error, success, ask
+from ..ui import SelectMenu, Action, navigable, error, success, ask
 from ..ui.colors import RESET, GREEN, YELLOW, RED
 
 
@@ -12,8 +12,8 @@ class ModelCommand(Command):
         quiet = arg == "--quiet"
 
         if not arg or quiet:
-            # 交互式选择
-            model = self._select_interactive(ctx.client)
+            # 使用导航模式的交互式选择
+            model = self._select_interactive_navigable(ctx.client)
             if not model:
                 return True
         elif arg.isdigit():
@@ -33,50 +33,69 @@ class ModelCommand(Command):
         self._switch_model(ctx, model, quiet=quiet)
         return True
 
-    def _select_interactive(self, client) -> str | None:
-        """交互式选择模型"""
-        from ..ui.colors import DIM, RESET
+    @navigable
+    def _select_interactive_navigable(self, client) -> str | None:
+        """交互式选择模型 - 导航模式
 
-        models = client.models
-        current = client.current_model
-        provider_key = client.current_provider
+        使用内部循环保持菜单状态
+        """
+        from ..ui.colors import DIM
 
-        choices = [(m, m) for m in models]
-        choices.append(("__MANAGE__", f"{DIM}Manage models...{RESET}"))
+        while True:
+            models = client.models
+            current = client.current_model
+            provider_key = client.current_provider
 
-        provider_name = client.providers[provider_key].name if provider_key in client.providers else provider_key
-        menu = SelectMenu(f"Select model [{provider_name}] (current: {current})", choices, current)
-        result = menu.show()
+            choices = [(m, m) for m in models]
+            choices.append(("__MANAGE__", f"{DIM}Manage models...{RESET}"))
 
-        if result == "__MANAGE__":
-            return self._manage_models(client)
+            provider_name = client.providers[provider_key].name if provider_key in client.providers else provider_key
+            menu = SelectMenu(f"Select model [{provider_name}] (current: {current})", choices, current)
+            result = menu.show()
 
-        return result
+            if result is Action.BACK or result is None:
+                # ESC/Back 退出导航
+                return None
+            elif result == "__MANAGE__":
+                # 进入管理子菜单
+                sub_result = self._manage_models(client)
+                # 子菜单返回后继续循环（在下方重新显示主菜单）
+                continue
+            else:
+                # 选择了模型，返回结果
+                return result
 
-    def _manage_models(self, client) -> str | None:
-        """管理模型菜单"""
-        from ..ui.colors import DIM, RESET
+    def _manage_models(self, client) -> Action:
+        """管理模型菜单
 
-        menu = SelectMenu(
-            "Manage models",
-            [
-                ("__ADD__", f"{GREEN}Add new model{RESET}"),
-                ("__DELETE__", f"{RED}Delete model{RESET}"),
-                ("__BACK__", f"{DIM}← Back{RESET}"),
-            ],
-        )
-        action = menu.show()
+        使用内部循环保持菜单状态
+        """
+        from ..ui.colors import DIM
 
-        if action == "__ADD__":
-            self._add_model_interactive(client)
-            # 添加后返回 None，让用户回到主列表选择
-            return None
-        elif action == "__DELETE__":
-            self._delete_model_interactive(client)
-            # 删除后返回 None
-            return None
-        # __BACK__ 或 ESC 返回 None
-        return None
+        while True:
+            menu = SelectMenu(
+                "Manage models",
+                [
+                    ("__ADD__", f"{GREEN}Add new model{RESET}"),
+                    ("__DELETE__", f"{RED}Delete model{RESET}"),
+                    ("__BACK__", f"{DIM}← Back{RESET}"),
+                ],
+            )
+            result = menu.show()
+
+            if result is Action.BACK or result is None or result == "__BACK__":
+                # 返回上一层级
+                return Action.BACK
+            elif result == "__ADD__":
+                self._add_model_interactive(client)
+                # 操作后继续显示管理菜单
+                continue
+            elif result == "__DELETE__":
+                self._delete_model_interactive(client)
+                continue
+            else:
+                # 其他情况，继续显示菜单
+                continue
 
     def _add_model_interactive(self, client) -> None:
         """交互式添加新 model"""

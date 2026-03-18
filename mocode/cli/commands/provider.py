@@ -1,7 +1,7 @@
 """供应商切换命令"""
 
 from .base import Command, CommandContext, command
-from ..ui import SelectMenu, error, success, Wizard, parse_selection_arg
+from ..ui import SelectMenu, Action, navigable, error, success, Wizard, ask, parse_selection_arg
 from ..ui.colors import RESET, CYAN, GREEN, YELLOW, RED
 
 
@@ -11,8 +11,8 @@ class ProviderCommand(Command):
         arg = ctx.args.strip()
 
         if not arg:
-            # 交互式选择 provider
-            provider = self._select_interactive(ctx.client)
+            # 使用导航模式的交互式选择
+            provider = self._select_interactive_navigable(ctx.client)
             if not provider:
                 return True
             # 先切换 provider（不输出）
@@ -52,58 +52,75 @@ class ProviderCommand(Command):
             ctx.layout.add_command_output(f"{CYAN}{old_provider}{RESET} → {GREEN}{provider}{RESET} | {CYAN}{ctx.client.current_model}{RESET}")
         return True
 
-    def _select_interactive(self, client) -> str | None:
-        """交互式选择供应商"""
-        from ..ui.colors import DIM, RESET
+    @navigable
+    def _select_interactive_navigable(self, client) -> str | None:
+        """交互式选择供应商 - 导航模式
 
-        choices = []
-        for key, pconfig in client.providers.items():
-            display = f"{pconfig.name} ({key})"
-            choices.append((key, display))
+        使用内部循环保持菜单状态，避免 Action.STAY 导致函数重新执行
+        """
+        from ..ui.colors import DIM
 
-        choices.append(("__MANAGE__", f"{DIM}Manage providers...{RESET}"))
+        while True:
+            choices = []
+            for key, pconfig in client.providers.items():
+                display = f"{pconfig.name} ({key})"
+                choices.append((key, display))
+            choices.append(("__MANAGE__", f"{DIM}Manage providers...{RESET}"))
 
-        menu = SelectMenu(
-            f"Select provider (current: {client.current_provider})",
-            choices,
-            client.current_provider,
-        )
-        result = menu.show()
+            menu = SelectMenu(
+                f"Select provider (current: {client.current_provider})",
+                choices,
+                client.current_provider,
+            )
+            result = menu.show()
 
-        if result == "__MANAGE__":
-            return self._manage_providers(client)
+            if result is Action.BACK or result is None:
+                # ESC/Back 退出导航
+                return None
+            elif result == "__MANAGE__":
+                # 进入管理子菜单
+                sub_result = self._manage_providers(client)
+                # 子菜单返回后继续循环（在下方重新显示主菜单）
+                continue
+            else:
+                # 选择了 provider，返回结果
+                return result
 
-        return result
+    def _manage_providers(self, client) -> Action:
+        """管理供应商菜单
 
-    def _manage_providers(self, client) -> str | None:
-        """管理供应商菜单"""
-        from ..ui.colors import DIM, RESET
+        使用内部循环保持菜单状态
+        """
+        from ..ui.colors import DIM
 
-        menu = SelectMenu(
-            "Manage providers",
-            [
-                ("__ADD__", f"{GREEN}Add new provider{RESET}"),
-                ("__EDIT__", f"{YELLOW}Edit provider{RESET}"),
-                ("__DELETE__", f"{RED}Delete provider{RESET}"),
-                ("__BACK__", f"{DIM}← Back{RESET}"),
-            ],
-        )
-        action = menu.show()
+        while True:
+            menu = SelectMenu(
+                "Manage providers",
+                [
+                    ("__ADD__", f"{GREEN}Add new provider{RESET}"),
+                    ("__EDIT__", f"{YELLOW}Edit provider{RESET}"),
+                    ("__DELETE__", f"{RED}Delete provider{RESET}"),
+                    ("__BACK__", f"{DIM}← Back{RESET}"),
+                ],
+            )
+            result = menu.show()
 
-        if action == "__ADD__":
-            self._add_provider_interactive(client)
-            # 添加后返回 None，让用户回到主列表选择
-            return None
-        elif action == "__EDIT__":
-            self._edit_provider_interactive(client)
-            # 编辑后返回 None
-            return None
-        elif action == "__DELETE__":
-            self._delete_provider_interactive(client)
-            # 删除后返回 None
-            return None
-        # __BACK__ 或 ESC 返回 None
-        return None
+            if result is Action.BACK or result is None or result == "__BACK__":
+                # 返回上一层级
+                return Action.BACK
+            elif result == "__ADD__":
+                self._add_provider_interactive(client)
+                # 操作后继续显示管理菜单
+                continue
+            elif result == "__EDIT__":
+                self._edit_provider_interactive(client)
+                continue
+            elif result == "__DELETE__":
+                self._delete_provider_interactive(client)
+                continue
+            else:
+                # 其他情况，继续显示菜单
+                continue
 
     def _add_provider_interactive(self, client) -> None:
         """交互式添加新 provider"""
@@ -158,8 +175,8 @@ class ProviderCommand(Command):
             error(str(e))
 
     def _edit_provider_interactive(self, client) -> None:
-        """交互式编辑 provider"""
-        from ..ui.colors import DIM, RESET
+        """交互式编辑 provider - 选择字段编辑模式"""
+        from ..ui.colors import DIM
 
         # 选择要编辑的 provider
         choices = []
@@ -176,37 +193,57 @@ class ProviderCommand(Command):
 
         pconfig = client.providers[key]
 
-        # 编辑向导
-        wizard = Wizard(title=f"Edit provider '{key}'")
+        # 使用局部变量存储修改
+        name = pconfig.name
+        base_url = pconfig.base_url
+        api_key = pconfig.api_key
 
-        # Step 1: Display Name
-        name = wizard.step(
-            "Display name",
-            default=pconfig.name,
-        )
-        if name is None:
-            return
+        # 编辑字段选择菜单循环
+        while True:
+            # 构建字段选项，显示当前值（包括未保存的修改）
+            name_display = f"{name} {DIM}(current){RESET}"
+            base_url_display = f"{base_url} {DIM}(current){RESET}"
+            api_key_display = f"{'*' * min(len(api_key), 8) if api_key else '(not set)'} {DIM}(current){RESET}"
 
-        # Step 2: Base URL
-        base_url = wizard.step(
-            "Base URL",
-            default=pconfig.base_url,
-            required=True,
-        )
-        if base_url is None:
-            return
+            menu = SelectMenu(
+                f"Edit provider '{key}' - Select field",
+                [
+                    ("name", f"Display name: {name_display}"),
+                    ("base_url", f"Base URL: {base_url_display}"),
+                    ("api_key", f"API Key: {api_key_display}"),
+                    ("__DONE__", f"{GREEN}✓ Save and exit{RESET}"),
+                    ("__BACK__", f"{DIM}← Cancel{RESET}"),
+                ],
+            )
+            field = menu.show()
 
-        # Step 3: API Key
-        api_key = wizard.step(
-            "API Key",
-            default=pconfig.api_key,
-        )
-        if api_key is None:
-            return
+            if field is Action.BACK or field is None or field == "__BACK__":
+                # 取消编辑
+                return
+            elif field == "__DONE__":
+                # 保存并退出
+                break
+            elif field == "name":
+                new_name = ask("Display name", default=name)
+                if new_name is not None:
+                    name = new_name
+            elif field == "base_url":
+                new_base_url = ask("Base URL", default=base_url, required=True)
+                if new_base_url is not None:
+                    base_url = new_base_url
+            elif field == "api_key":
+                new_api_key = ask("API Key", default=api_key)
+                if new_api_key is not None:
+                    api_key = new_api_key
 
-        # 更新 provider
+        # 保存修改
         try:
-            client.update_provider(key, name=name or None, base_url=base_url, api_key=api_key)
+            client.update_provider(
+                key,
+                name=name,
+                base_url=base_url,
+                api_key=api_key,
+            )
             success(f"Updated provider '{key}'")
         except ValueError as e:
             error(str(e))
