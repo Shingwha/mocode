@@ -61,15 +61,16 @@ class GatewayManager:
     def _format_models(self, session: UserSession) -> str:
         """格式化模型列表"""
         lines = []
-        config = session.client.config
+        client = session.client
 
-        for prov_key, prov_config in config.providers.items():
-            is_current = prov_key == config.current.provider
+        for prov_key in client.providers:
+            prov_config = client.providers[prov_key]
+            is_current = prov_key == client.current_provider
             marker = " *" if is_current else ""
             lines.append(f"**{prov_config.name}**{marker}")
 
-            for model in prov_config.models:
-                is_current_model = is_current and model == config.current.model
+            for model in client.get_provider_models(prov_key):
+                is_current_model = is_current and model == client.current_model
                 check = " *" if is_current_model else ""
                 lines.append(f"- {model}{check}")
 
@@ -77,18 +78,20 @@ class GatewayManager:
 
     def _find_model_in_providers(self, client: MocodeClient, model_name: str) -> tuple[str | None, str | None]:
         """在所有供应商中查找模型"""
-        providers = client.all_models.get(model_name, [])
-        if len(providers) == 1:
-            return providers[0], model_name
+        for provider_key in client.providers:
+            models = client.get_provider_models(provider_key)
+            if model_name in models:
+                return provider_key, model_name
         return None, None
 
     def _format_providers(self, session: UserSession) -> str:
         """格式化供应商列表"""
         lines = []
-        config = session.client.config
+        client = session.client
 
-        for prov_key, prov_config in config.providers.items():
-            is_current = prov_key == config.current.provider
+        for prov_key in client.providers:
+            prov_config = client.providers[prov_key]
+            is_current = prov_key == client.current_provider
             check = " *" if is_current else ""
             lines.append(f"{prov_key} - {prov_config.name}{check}")
 

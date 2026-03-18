@@ -174,14 +174,17 @@ class MocodeClient:
         """当前供应商的模型列表"""
         return self.config.models
 
-    @property
-    def all_models(self) -> dict[str, list[str]]:
-        """所有模型及其供应商映射 {model_name: [provider_keys]}"""
-        result: dict[str, list[str]] = {}
-        for prov_key, prov_config in self.providers.items():
-            for model in prov_config.models:
-                result.setdefault(model, []).append(prov_key)
-        return result
+    def get_provider_models(self, provider_key: str) -> list[str]:
+        """获取指定供应商的模型列表
+
+        Args:
+            provider_key: 供应商 key
+
+        Returns:
+            该供应商的模型列表，如果供应商不存在则返回空列表
+        """
+        prov_config = self.providers.get(provider_key)
+        return prov_config.models if prov_config else []
 
     def save_config(self) -> None:
         """手动保存配置（如果启用了持久化）"""
