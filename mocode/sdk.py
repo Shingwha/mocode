@@ -1,48 +1,18 @@
-"""mocode SDK - 嵌入式 AI 编程助手
-
-提供便捷的 SDK 入口，用于将 mocode 嵌入到其他应用中。
-
-使用示例:
-    import asyncio
-    from mocode import MocodeClient, EventType
-
-    async def main():
-        # 使用内存配置
-        client = MocodeClient(config={
-            "current": {"provider": "openai", "model": "gpt-4o"},
-            "providers": {
-                "openai": {
-                    "name": "OpenAI",
-                    "api_key": "sk-...",
-                    "base_url": "https://api.openai.com/v1",
-                    "models": ["gpt-4o", "gpt-4o-mini"]
-                }
-            }
-        })
-
-        # 订阅事件
-        client.on_event(EventType.TEXT_COMPLETE, lambda e: print(f"[响应] {e.data}"))
-
-        # 发送消息
-        response = await client.chat("Hello!")
-        print(f"Response: {response}")
-
-    asyncio.run(main())
-"""
-
 import os
 from typing import TYPE_CHECKING, Callable
 
 from .core import AsyncAgent, Config, EventBus, EventType, get_event_bus
-from .core.permission import PermissionMatcher, PermissionHandler, DefaultPermissionHandler
 from .core.interrupt import InterruptToken
+from .core.permission import (
+    DefaultPermissionHandler,
+    PermissionHandler,
+    PermissionMatcher,
+)
+from .core.prompt import PromptBuilder
 from .core.session import Session, SessionManager
 from .providers import AsyncOpenAIProvider
 from .skills import SkillManager
 from .tools import register_all_tools
-
-if TYPE_CHECKING:
-    from .core.prompt import PromptBuilder
 
 
 class MocodeClient:
@@ -131,6 +101,7 @@ class MocodeClient:
             self._prompt_builder = prompt_builder
         else:
             from .core.prompt import default_prompt
+
             self._prompt_builder = default_prompt()
 
         # 构建系统提示
@@ -412,7 +383,9 @@ class MocodeClient:
         else:
             self.save_config()
 
-    def add_model(self, model: str, provider: str | None = None, set_current: bool = True) -> None:
+    def add_model(
+        self, model: str, provider: str | None = None, set_current: bool = True
+    ) -> None:
         """添加新模型到供应商
 
         Args:
@@ -444,7 +417,9 @@ class MocodeClient:
         """Prompt 构建器"""
         return self._prompt_builder
 
-    def rebuild_system_prompt(self, context: dict | None = None, clear_history: bool = False) -> None:
+    def rebuild_system_prompt(
+        self, context: dict | None = None, clear_history: bool = False
+    ) -> None:
         """重新构建系统提示
 
         Args:
@@ -455,9 +430,7 @@ class MocodeClient:
         skill_manager = SkillManager.get_instance()
         self._prompt_builder.clear_caches()
         system_prompt = self._prompt_builder.context(
-            skill_manager=skill_manager,
-            cwd=self._workdir,
-            **ctx
+            skill_manager=skill_manager, cwd=self._workdir, **ctx
         ).build()
         self.agent.update_system_prompt(system_prompt, clear_history=clear_history)
 
@@ -493,10 +466,10 @@ __all__ = [
 
 # Re-export prompt types for convenience
 from .core.prompt import (
+    DynamicSection,
     PromptBuilder,
     StaticSection,
-    DynamicSection,
+    custom_prompt,
     default_prompt,
     minimal_prompt,
-    custom_prompt,
 )
