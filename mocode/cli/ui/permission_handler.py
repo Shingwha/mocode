@@ -29,6 +29,10 @@ class CLIPermissionHandler(PermissionHandler):
         Returns:
             用户响应: "allow", "deny", 或自定义输入
         """
+        # 停止 thinking spinner（避免与菜单输出冲突）
+        if self.layout:
+            self.layout.set_thinking(False)
+
         # 提取目标用于显示
         target = (
             tool_args.get("cmd")
