@@ -1,12 +1,12 @@
 """命令系统"""
 
 from .base import Command, CommandContext, CommandRegistry, command
-from .builtin import QuitCommand, ClearCommand, HelpCommand
+from .builtin import ClearCommand, HelpCommand, QuitCommand
 from .model import ModelCommand
+from .plugin import PluginCommand
 from .provider import ProviderCommand
-from .skills_command import SkillsCommand
 from .session import SessionCommand
-from .plugin_command import PluginCommand
+from .skills import SkillsCommand
 
 __all__ = [
     "Command",
