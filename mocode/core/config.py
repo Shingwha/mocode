@@ -192,3 +192,199 @@ class Config:
         provider = self.current_provider
         name = provider.name if provider else self.current.provider
         return f"{self.current.model} ({name})"
+
+    # Mutation methods
+
+    def set_model(self, model: str, provider: str | None = None) -> bool:
+        """Set current model, optionally switching provider
+
+        Args:
+            model: Model name
+            provider: Provider key (optional)
+
+        Returns:
+            True if current provider was updated
+        """
+        if provider:
+            self.current.provider = provider
+        self.current.model = model
+
+        # Add model to provider's list if not present
+        pconfig = self.current_provider
+        if pconfig and model not in pconfig.models:
+            pconfig.models.append(model)
+
+        return provider is None or provider == self.current.provider
+
+    def set_provider(self, provider_key: str, model: str | None = None) -> bool:
+        """Switch to a provider
+
+        Args:
+            provider_key: Provider key
+            model: Model name (optional, defaults to first model)
+
+        Returns:
+            True if successful
+
+        Raises:
+            ValueError: If provider doesn't exist
+        """
+        if provider_key not in self.providers:
+            raise ValueError(f"Unknown provider: {provider_key}")
+
+        self.current.provider = provider_key
+        pconfig = self.providers[provider_key]
+
+        # Default to first model if not specified
+        if model is None:
+            model = pconfig.models[0] if pconfig.models else "default"
+
+        # Add model to provider's list if not present
+        if model not in pconfig.models:
+            pconfig.models.append(model)
+
+        self.current.model = model
+        return True
+
+    def add_provider(
+        self,
+        key: str,
+        name: str,
+        base_url: str,
+        api_key: str = "",
+        models: list[str] | None = None,
+    ) -> None:
+        """Add a new provider
+
+        Args:
+            key: Provider unique key
+            name: Display name
+            base_url: API endpoint URL
+            api_key: API key
+            models: List of supported models
+
+        Raises:
+            ValueError: If key already exists
+        """
+        if key in self.providers:
+            raise ValueError(f"Provider '{key}' already exists")
+
+        self.providers[key] = ProviderConfig(
+            name=name,
+            base_url=base_url,
+            api_key=api_key,
+            models=models or [],
+        )
+
+    def add_model(self, model: str, provider: str | None = None) -> None:
+        """Add model to provider's list
+
+        Args:
+            model: Model name
+            provider: Provider key (optional, defaults to current)
+
+        Raises:
+            ValueError: If provider doesn't exist
+        """
+        provider_key = provider or self.current.provider
+        if provider_key not in self.providers:
+            raise ValueError(f"Provider '{provider_key}' does not exist")
+
+        pconfig = self.providers[provider_key]
+        if model not in pconfig.models:
+            pconfig.models.append(model)
+
+    def remove_provider(self, key: str) -> str | None:
+        """Remove a provider
+
+        Args:
+            key: Provider key
+
+        Returns:
+            New current provider key if current was removed, None otherwise
+
+        Raises:
+            ValueError: If provider doesn't exist or is the last one
+        """
+        if key not in self.providers:
+            raise ValueError(f"Provider '{key}' does not exist")
+
+        if len(self.providers) <= 1:
+            raise ValueError("Cannot remove the last provider")
+
+        new_current = None
+        if self.current.provider == key:
+            # Switch to another provider
+            other_key = next(k for k in self.providers.keys() if k != key)
+            self.current.provider = other_key
+            pconfig = self.providers[other_key]
+            self.current.model = pconfig.models[0] if pconfig.models else "default"
+            new_current = other_key
+
+        del self.providers[key]
+        return new_current
+
+    def remove_model(self, model: str, provider: str | None = None) -> str | None:
+        """Remove model from provider's list
+
+        Args:
+            model: Model name
+            provider: Provider key (optional, defaults to current)
+
+        Returns:
+            New model if current was removed, None otherwise
+
+        Raises:
+            ValueError: If provider or model doesn't exist
+        """
+        provider_key = provider or self.current.provider
+        if provider_key not in self.providers:
+            raise ValueError(f"Provider '{provider_key}' does not exist")
+
+        pconfig = self.providers[provider_key]
+        if model not in pconfig.models:
+            raise ValueError(f"Model '{model}' does not exist in provider '{provider_key}'")
+
+        new_model = None
+        if self.current.provider == provider_key and self.current.model == model:
+            # Switch to another model
+            remaining = [m for m in pconfig.models if m != model]
+            new_model = remaining[0] if remaining else "default"
+            self.current.model = new_model
+
+        pconfig.models.remove(model)
+        return new_model
+
+    def update_provider(
+        self,
+        key: str,
+        name: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> bool:
+        """Update provider configuration
+
+        Args:
+            key: Provider key
+            name: New display name (optional)
+            base_url: New API endpoint (optional)
+            api_key: New API key (optional)
+
+        Returns:
+            True if current provider was updated
+
+        Raises:
+            ValueError: If provider doesn't exist
+        """
+        if key not in self.providers:
+            raise ValueError(f"Provider '{key}' does not exist")
+
+        pconfig = self.providers[key]
+        if name is not None:
+            pconfig.name = name
+        if base_url is not None:
+            pconfig.base_url = base_url
+        if api_key is not None:
+            pconfig.api_key = api_key
+
+        return self.current.provider == key
