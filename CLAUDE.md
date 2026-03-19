@@ -40,34 +40,32 @@ mocode uses a layered architecture with event-driven communication. Core is inde
 
 ```
 mocode/
-├── sdk.py              # SDK entry point (MocodeClient)
+├── sdk.py              # MocodeClient - thin facade over MocodeCore
 ├── main.py             # Entry point (CLI or gateway mode)
 ├── paths.py            # Centralized path configuration
 ├── core/               # Business logic (independent of UI)
-│   ├── agent.py        # AsyncAgent - LLM conversation loop
-│   ├── config.py       # Multi-provider config (file or in-memory)
-│   ├── events.py       # EventBus - instance-based for multi-tenant
-│   ├── interrupt.py    # InterruptToken - cancel AI responses
-│   ├── permission.py   # PermissionMatcher (allow/ask/deny)
-│   ├── permission_handler.py  # PermissionHandler abstraction
-│   ├── session.py      # SessionManager - conversation persistence
-│   └── prompt/         # Modular prompt system
-│       ├── builder.py  # PromptBuilder with caching
-│       ├── sections.py # Built-in prompt sections
-│       └── templates.py
+│   ├── orchestrator.py      # MocodeCore - central coordinator
+│   ├── agent_facade.py      # AgentFacade - high-level agent ops
+│   ├── session_coordinator.py # SessionCoordinator
+│   ├── plugin_coordinator.py  # PluginCoordinator
+│   ├── agent.py             # AsyncAgent - LLM conversation loop
+│   ├── config.py            # Multi-provider config
+│   ├── events.py            # EventBus - instance-based
+│   ├── interrupt.py         # InterruptToken - cancel responses
+│   ├── permission.py        # PermissionMatcher, PermissionHandler
+│   ├── session.py           # SessionManager - persistence
+│   └── prompt/              # Modular prompt system
 ├── plugins/            # Plugin/hook system
 │   ├── base.py         # Plugin, Hook, HookPoint, PluginState
-│   ├── manager.py      # PluginManager - lifecycle management
-│   ├── registry.py     # HookRegistry, PluginRegistry
+│   ├── manager.py      # PluginManager - lifecycle
+│   ├── registry.py     # HookRegistry
 │   ├── loader.py       # PluginLoader - discovery
-│   ├── decorators.py   # @hook decorator
-│   └── builtin/        # Built-in plugins
-│       └── rtk/        # RTK plugin (token optimizer)
+│   └── builtin/rtk/    # RTK plugin (token optimizer)
 ├── gateway/            # Multi-channel bot support
 │   ├── base.py         # BaseChannel abstract class
-│   ├── config.py       # GatewayConfig, TelegramConfig
-│   ├── manager.py      # GatewayManager - manages channels & sessions
-│   └── telegram.py     # TelegramChannel implementation
+│   ├── config.py       # GatewayConfig
+│   ├── manager.py      # GatewayManager
+│   └── telegram.py     # TelegramChannel
 ├── providers/          # LLM providers
 │   └── openai.py       # AsyncOpenAIProvider
 ├── tools/              # Tool implementations
@@ -75,83 +73,63 @@ mocode/
 │   ├── file_tools.py   # read, write, edit
 │   ├── search_tools.py # glob, grep
 │   ├── shell_tools.py  # bash
-│   ├── bash_session.py # SimpleBashSession (stateful)
-│   └── context.py      # ContextVar for tool config
-├── skills/             # Skill system (pluggable extensions)
+│   └── bash_session.py # SimpleBashSession
+├── skills/             # Skill system
 │   ├── manager.py      # SkillManager
 │   ├── schema.py       # Skill dataclasses
 │   └── tool.py         # skill tool implementation
 └── cli/                # Terminal interface
     ├── app.py          # AsyncApp main entry
-    ├── commands/       # Slash command system
+    ├── commands/       # Slash commands
     │   ├── base.py     # Command base class
     │   ├── builtin.py  # /help, /clear, /exit
-    │   ├── model.py    # /model command
-    │   ├── provider.py # /provider command
-    │   ├── session.py  # /session command
-    │   ├── plugin_command.py  # /plugin command
-    │   └── skills_command.py
+    │   ├── model.py    # /model
+    │   ├── provider.py # /provider
+    │   ├── session.py  # /session
+    │   ├── plugin.py   # /plugin
+    │   └── skills.py   # /skills
     └── ui/             # Layout, colors, widgets
         ├── colors.py   # ANSI color codes
-        ├── components.py
-        ├── interactive.py  # Wizard, ask() prompts
-        ├── keyboard.py     # getch, ESC monitoring
-        ├── layout.py       # Terminal layout
-        ├── permission_handler.py
-        └── widgets.py      # SelectMenu
+        ├── layout.py   # Terminal layout
+        ├── prompt.py   # SelectMenu, ask, Wizard
+        ├── menu.py     # MenuItem, MenuAction
+        └── permission.py # CLIPermissionHandler
 ```
 
 ### Key Patterns
 
-1. **Event System**: `EventBus` instances decouple `AsyncAgent` from UI. Use `get_event_bus()` for default instance. Key events: `TEXT_STREAMING`, `TEXT_DELTA`, `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `PERMISSION_ASK`, `INTERRUPTED`, `ERROR`. Agent uses `self.event_bus.emit()`; UI subscribes via `event_bus.on(EventType.X, handler)`.
+1. **Layered Architecture**: `MocodeClient` (SDK) -> `MocodeCore` (orchestrator) -> Facades/Coordinators -> `AsyncAgent`. SDK is a thin facade; `MocodeCore` coordinates all components.
 
-2. **Interrupt Mechanism**: `InterruptToken` provides thread-safe cancellation for AI responses. Used by CLI (ESC key), Gateway (`/cancel` command), and SDK (`interrupt()` API). Agent checks `token.is_interrupted` during API calls and tool execution.
+2. **Event System**: `EventBus` decouples `AsyncAgent` from UI. Key events: `TEXT_STREAMING`, `TEXT_DELTA`, `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `PERMISSION_ASK`, `INTERRUPTED`.
 
-3. **Tool Registry**: Tools registered via `@tool(name, description, params)` decorator. Schema auto-generated for OpenAI function calling. Params use `"type?"` syntax for optional parameters.
+3. **Interrupt Mechanism**: `InterruptToken` provides thread-safe cancellation. Used by CLI (ESC), Gateway (`/cancel`), SDK (`interrupt()`).
 
-4. **Permission System**: `PermissionMatcher` checks tool permissions (allow/ask/deny). `PermissionHandler` abstracts user interaction - CLI uses Future-based prompt, SDK can use custom handlers, Gateway auto-approves all (set `permission_matcher=None`).
+4. **Tool Registry**: Tools registered via `@tool(name, description, params)` decorator. Params use `"type?"` suffix for optional.
 
-5. **Command Pattern**: Slash commands (`/help`, `/model`, `/provider`, `/session`, `/plugin`, `/skills`) via `@command` decorator and `CommandRegistry`.
+5. **Permission System**: `PermissionMatcher` checks permissions (allow/ask/deny). `PermissionHandler` abstracts interaction - CLI uses `CLIPermissionHandler`, Gateway auto-approves.
 
-6. **Skill System**: Skills discovered from `~/.mocode/skills/`. Each skill has `SKILL.md` with YAML frontmatter. Listed in system prompt; loaded on demand via `skill` tool.
+6. **Plugin System**: `PluginManager` manages plugins, hooks intercept at `HookPoint`s (`TOOL_BEFORE_RUN`, `TOOL_AFTER_RUN`, etc.). RTK is a built-in plugin. Plugins discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`.
 
-7. **Gateway System**: `GatewayManager` manages multiple channels (Telegram, etc.) with per-user sessions. Each session gets isolated `MocodeClient` with its own `EventBus`. Channels implement `BaseChannel` interface.
+7. **Command Pattern**: Slash commands via `@command` decorator and `CommandRegistry`. Commands: `/help`, `/model`, `/provider`, `/session`, `/plugin`, `/skills`, `/rtk`, `/clear`, `/exit`.
 
-8. **Plugin System**: `PluginManager` manages plugins, `HookRegistry` tracks hooks, hooks intercept at `HookPoint`s (`AGENT_CHAT_START`, `TOOL_BEFORE_RUN`, `TOOL_AFTER_RUN`, `AGENT_CHAT_END`, etc.). RTK is now a built-in plugin. Plugins are discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`.
-
-9. **Session Management**: `SessionManager` stores conversations per working directory with auto-save. Sessions are saved when clearing history and can be restored later.
-
-10. **Prompt Builder**: `PromptBuilder` with `StaticSection`/`DynamicSection` supports caching and conditional rendering. Built-in sections include system prompt, skills, and context.
+8. **Skill System**: Skills from `~/.mocode/skills/`. Each has `SKILL.md` with YAML frontmatter. Listed in system prompt; loaded on demand via `skill` tool.
 
 ### Data Flow
 
 ```
-User Input -> AsyncApp._main_loop() | GatewayManager._handle_message()
+User Input -> MocodeClient.chat()
     |
-    +- "/" prefix -> CommandRegistry.execute() | _handle_command()
+    +- MocodeCore.chat() -> AgentFacade.chat() -> AsyncAgent.chat()
+    |       |
+    |       +- AsyncOpenAIProvider.call() -> LLM API
+    |       |
+    |       +- Tool calls -> PermissionMatcher.check() -> ToolRegistry.run()
+    |                               |                        |
+    |                               +- ASK -> emit PERMISSION_ASK
+    |                               |
+    |                               +- interrupt check
     |
-    +- otherwise -> AsyncAgent.chat(user_input)
-                       |
-                       +- trigger AGENT_CHAT_START hook
-                       |
-                       +- interrupt_token.reset() -> Reset cancellation state
-                       |
-                       +- AsyncOpenAIProvider.call() -> LLM API (interruptible)
-                       |
-                       +- Tool calls -> _run_tool_async()
-                                          |
-                                          +- trigger TOOL_BEFORE_RUN hook
-                                          |
-                                          +- PermissionMatcher.check()
-                                          |    +- ASK -> emit PERMISSION_ASK
-                                          |
-                                          +- interrupt_token.is_interrupted -> INTERRUPTED
-                                          |
-                                          +- ToolRegistry.run() -> emit TOOL_START/COMPLETE
-                                          |
-                                          +- trigger TOOL_AFTER_RUN hook
-                       |
-                       +- trigger AGENT_CHAT_END hook
+    +- Events: TEXT_STREAMING, TEXT_DELTA, TOOL_START, TOOL_COMPLETE
 ```
 
 ## Configuration

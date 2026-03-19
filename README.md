@@ -162,30 +162,31 @@ Detailed instructions for the LLM...
 
 ## Architecture
 
+mocode uses a layered architecture with event-driven communication. Core is independent of CLI and can be used as a library.
+
 ```
 mocode/
-├── sdk.py              # MocodeClient - SDK entry point
+├── sdk.py              # MocodeClient - thin facade over MocodeCore
 ├── main.py             # Entry point (CLI or gateway mode)
 ├── paths.py            # Centralized path configuration
 ├── core/               # Business logic (independent of UI)
-│   ├── agent.py        # AsyncAgent - LLM conversation loop
-│   ├── config.py       # Multi-provider config
-│   ├── events.py       # EventBus - event-driven communication
-│   ├── interrupt.py    # InterruptToken - cancellation support
-│   ├── permission.py   # PermissionMatcher, PermissionHandler
-│   ├── session.py      # SessionManager - conversation persistence
-│   └── prompt/         # Modular prompt system
-│       ├── builder.py  # PromptBuilder with caching
-│       ├── sections.py # Built-in prompt sections
-│       └── templates.py
+│   ├── orchestrator.py      # MocodeCore - central coordinator
+│   ├── agent_facade.py      # AgentFacade - high-level agent ops
+│   ├── session_coordinator.py # SessionCoordinator
+│   ├── plugin_coordinator.py  # PluginCoordinator
+│   ├── agent.py             # AsyncAgent - LLM conversation loop
+│   ├── config.py            # Multi-provider config
+│   ├── events.py            # EventBus - instance-based
+│   ├── interrupt.py         # InterruptToken - cancel responses
+│   ├── permission.py        # PermissionMatcher, PermissionHandler
+│   ├── session.py           # SessionManager - persistence
+│   └── prompt/              # Modular prompt system
 ├── plugins/            # Plugin/hook system
 │   ├── base.py         # Plugin, Hook, HookPoint, PluginState
-│   ├── manager.py      # PluginManager - lifecycle management
-│   ├── registry.py     # HookRegistry, PluginRegistry
+│   ├── manager.py      # PluginManager - lifecycle
+│   ├── registry.py     # HookRegistry
 │   ├── loader.py       # PluginLoader - discovery
-│   ├── decorators.py   # @hook decorator
-│   └── builtin/        # Built-in plugins
-│       └── rtk/        # RTK plugin (token optimizer)
+│   └── builtin/rtk/    # RTK plugin (token optimizer)
 ├── gateway/            # Multi-channel bot support
 │   ├── base.py         # BaseChannel abstract class
 │   ├── config.py       # GatewayConfig
@@ -198,46 +199,46 @@ mocode/
 │   ├── file_tools.py   # read, write, edit
 │   ├── search_tools.py # glob, grep
 │   ├── shell_tools.py  # bash
-│   ├── bash_session.py # SimpleBashSession
-│   └── context.py      # ContextVar for tool config
-├── skills/             # Skill system (pluggable extensions)
+│   └── bash_session.py # SimpleBashSession
+├── skills/             # Skill system
 │   ├── manager.py      # SkillManager
 │   ├── schema.py       # Skill dataclasses
 │   └── tool.py         # skill tool implementation
 └── cli/                # Terminal interface
     ├── app.py          # AsyncApp main entry
-    ├── commands/       # Slash command system
+    ├── commands/       # Slash commands
+    │   ├── base.py     # Command base class
     │   ├── builtin.py  # /help, /clear, /exit
-    │   ├── model.py    # /model command
-    │   ├── provider.py # /provider command
-    │   ├── session.py  # /session command
-    │   ├── plugin_command.py  # /plugin command
-    │   └── skills_command.py
+    │   ├── model.py    # /model
+    │   ├── provider.py # /provider
+    │   ├── session.py  # /session
+    │   ├── plugin.py   # /plugin
+    │   └── skills.py   # /skills
     └── ui/             # Layout, colors, widgets
         ├── colors.py   # ANSI color codes
-        ├── components.py
-        ├── interactive.py  # Wizard, ask() prompts
-        ├── keyboard.py     # getch, ESC monitoring
-        ├── layout.py       # Terminal layout
-        ├── permission_handler.py
-        └── widgets.py      # SelectMenu
+        ├── layout.py   # Terminal layout
+        ├── prompt.py   # SelectMenu, ask, Wizard
+        ├── menu.py     # MenuItem, MenuAction
+        └── permission.py # CLIPermissionHandler
 ```
 
 ### Key Patterns
 
-1. **Event System**: `EventBus` decouples `AsyncAgent` from UI. Key events: `TEXT_STREAMING`, `TEXT_DELTA`, `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `PERMISSION_ASK`, `INTERRUPTED`.
+1. **Layered Architecture**: `MocodeClient` (SDK) -> `MocodeCore` (orchestrator) -> Facades/Coordinators -> `AsyncAgent`. SDK is a thin facade; `MocodeCore` coordinates all components.
 
-2. **Interrupt Mechanism**: `InterruptToken` provides thread-safe cancellation for AI responses. Used by CLI (ESC), Gateway (`/cancel`), and SDK (`interrupt()`).
+2. **Event System**: `EventBus` decouples `AsyncAgent` from UI. Key events: `TEXT_STREAMING`, `TEXT_DELTA`, `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `PERMISSION_ASK`, `INTERRUPTED`.
 
-3. **Tool Registry**: Tools registered via `@tool()` decorator. Params use `"type?"` syntax for optional parameters.
+3. **Interrupt Mechanism**: `InterruptToken` provides thread-safe cancellation. Used by CLI (ESC), Gateway (`/cancel`), SDK (`interrupt()`).
 
-4. **Permission System**: `PermissionMatcher` checks tool permissions (allow/ask/deny). `PermissionHandler` abstracts user interaction.
+4. **Tool Registry**: Tools registered via `@tool(name, description, params)` decorator. Params use `"type?"` suffix for optional.
 
-5. **Session Management**: `SessionManager` stores conversations per working directory with auto-save on clear.
+5. **Permission System**: `PermissionMatcher` checks permissions (allow/ask/deny). `PermissionHandler` abstracts interaction - CLI uses `CLIPermissionHandler`, Gateway auto-approves.
 
-6. **Prompt Builder**: Modular prompt construction with `StaticSection` and `DynamicSection`. Supports caching and conditional rendering.
+6. **Plugin System**: `PluginManager` manages plugins, hooks intercept at `HookPoint`s (`TOOL_BEFORE_RUN`, `TOOL_AFTER_RUN`, etc.). RTK is a built-in plugin. Plugins discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`.
 
-7. **Plugin System**: `PluginManager` manages plugins, `HookRegistry` tracks hooks. Hooks intercept at `HookPoint`s (`AGENT_CHAT_START`, `TOOL_BEFORE_RUN`, etc.). RTK is now a built-in plugin.
+7. **Command Pattern**: Slash commands via `@command` decorator and `CommandRegistry`. Commands: `/help`, `/model`, `/provider`, `/session`, `/plugin`, `/skills`, `/rtk`, `/clear`, `/exit`.
+
+8. **Skill System**: Skills from `~/.mocode/skills/`. Each has `SKILL.md` with YAML frontmatter. Listed in system prompt; loaded on demand via `skill` tool.
 
 ## Requirements
 

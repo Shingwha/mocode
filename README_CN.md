@@ -160,32 +160,33 @@ description: 技能描述
 详细的 LLM 指令内容...
 ```
 
-## 项目结构
+## 架构
+
+mocode 采用分层架构，核心独立于 CLI，可作为库使用。
 
 ```
 mocode/
-├── sdk.py              # MocodeClient - SDK 入口
+├── sdk.py              # MocodeClient - MocodeCore 的薄外观层
 ├── main.py             # 入口（CLI 或 gateway 模式）
 ├── paths.py            # 集中式路径配置
 ├── core/               # 核心逻辑（独立于 UI）
-│   ├── agent.py        # AsyncAgent - LLM 对话循环
-│   ├── config.py       # 多供应商配置
-│   ├── events.py       # EventBus - 事件驱动通信
-│   ├── interrupt.py    # InterruptToken - 中断支持
-│   ├── permission.py   # PermissionMatcher, PermissionHandler
-│   ├── session.py      # SessionManager - 对话持久化
-│   └── prompt/         # 模块化 prompt 系统
-│       ├── builder.py  # PromptBuilder（带缓存）
-│       ├── sections.py # 内置 prompt 片段
-│       └── templates.py
+│   ├── orchestrator.py      # MocodeCore - 核心协调器
+│   ├── agent_facade.py      # AgentFacade - 高级 agent 操作
+│   ├── session_coordinator.py # SessionCoordinator
+│   ├── plugin_coordinator.py  # PluginCoordinator
+│   ├── agent.py             # AsyncAgent - LLM 对话循环
+│   ├── config.py            # 多供应商配置
+│   ├── events.py            # EventBus - 实例化事件总线
+│   ├── interrupt.py         # InterruptToken - 中断响应
+│   ├── permission.py        # PermissionMatcher, PermissionHandler
+│   ├── session.py           # SessionManager - 持久化
+│   └── prompt/              # 模块化 prompt 系统
 ├── plugins/            # 插件/hook 系统
 │   ├── base.py         # Plugin, Hook, HookPoint, PluginState
-│   ├── manager.py      # PluginManager - 生命周期管理
-│   ├── registry.py     # HookRegistry, PluginRegistry
+│   ├── manager.py      # PluginManager - 生命周期
+│   ├── registry.py     # HookRegistry
 │   ├── loader.py       # PluginLoader - 发现
-│   ├── decorators.py   # @hook 装饰器
-│   └── builtin/        # 内置插件
-│       └── rtk/        # RTK 插件（token 优化器）
+│   └── builtin/rtk/    # RTK 插件（token 优化器）
 ├── gateway/            # 多渠道机器人支持
 │   ├── base.py         # BaseChannel 抽象类
 │   ├── config.py       # GatewayConfig
@@ -198,46 +199,46 @@ mocode/
 │   ├── file_tools.py   # read, write, edit
 │   ├── search_tools.py # glob, grep
 │   ├── shell_tools.py  # bash
-│   ├── bash_session.py # SimpleBashSession
-│   └── context.py      # ContextVar 工具配置
-├── skills/             # 技能系统（可插拔扩展）
+│   └── bash_session.py # SimpleBashSession
+├── skills/             # 技能系统
 │   ├── manager.py      # SkillManager
 │   ├── schema.py       # Skill 数据类
 │   └── tool.py         # skill 工具实现
 └── cli/                # 终端界面
     ├── app.py          # AsyncApp 主入口
-    ├── commands/       # 斜杠命令系统
+    ├── commands/       # 斜杠命令
+    │   ├── base.py     # Command 基类
     │   ├── builtin.py  # /help, /clear, /exit
-    │   ├── model.py    # /model 命令
-    │   ├── provider.py # /provider 命令
-    │   ├── session.py  # /session 命令
-    │   ├── plugin_command.py  # /plugin 命令
-    │   └── skills_command.py
+    │   ├── model.py    # /model
+    │   ├── provider.py # /provider
+    │   ├── session.py  # /session
+    │   ├── plugin.py   # /plugin
+    │   └── skills.py   # /skills
     └── ui/             # 布局、颜色、组件
         ├── colors.py   # ANSI 颜色码
-        ├── components.py
-        ├── interactive.py  # Wizard, ask() 提示
-        ├── keyboard.py     # getch, ESC 监控
-        ├── layout.py       # 终端布局
-        ├── permission_handler.py
-        └── widgets.py      # SelectMenu
+        ├── layout.py   # 终端布局
+        ├── prompt.py   # SelectMenu, ask, Wizard
+        ├── menu.py     # MenuItem, MenuAction
+        └── permission.py # CLIPermissionHandler
 ```
 
 ### 核心设计模式
 
-1. **事件系统**: `EventBus` 解耦 `AsyncAgent` 与 UI。关键事件：`TEXT_STREAMING`、`TEXT_DELTA`、`TEXT_COMPLETE`、`TOOL_START`、`TOOL_COMPLETE`、`PERMISSION_ASK`、`INTERRUPTED`。
+1. **分层架构**: `MocodeClient` (SDK) -> `MocodeCore` (协调器) -> Facades/Coordinators -> `AsyncAgent`。SDK 是薄外观层，`MocodeCore` 协调所有组件。
 
-2. **中断机制**: `InterruptToken` 提供线程安全的中断支持。CLI 使用 ESC 键，Gateway 使用 `/cancel` 命令，SDK 使用 `interrupt()` 方法。
+2. **事件系统**: `EventBus` 解耦 `AsyncAgent` 与 UI。关键事件：`TEXT_STREAMING`、`TEXT_DELTA`、`TEXT_COMPLETE`、`TOOL_START`、`TOOL_COMPLETE`、`PERMISSION_ASK`、`INTERRUPTED`。
 
-3. **工具注册**: 通过 `@tool()` 装饰器注册工具。可选参数使用 `"type?"` 语法。
+3. **中断机制**: `InterruptToken` 提供线程安全的中断支持。CLI 使用 ESC 键，Gateway 使用 `/cancel` 命令，SDK 使用 `interrupt()` 方法。
 
-4. **权限系统**: `PermissionMatcher` 检查工具权限（allow/ask/deny）。`PermissionHandler` 抽象用户交互。
+4. **工具注册**: 通过 `@tool(name, description, params)` 装饰器注册工具。可选参数使用 `"type?"` 语法。
 
-5. **Session 管理**: `SessionManager` 按工作目录存储对话，清空历史时自动保存。
+5. **权限系统**: `PermissionMatcher` 检查权限（allow/ask/deny）。`PermissionHandler` 抽象用户交互 - CLI 使用 `CLIPermissionHandler`，Gateway 自动批准。
 
-6. **Prompt 构建器**: 模块化 prompt 构建，支持 `StaticSection` 和 `DynamicSection`，带缓存和条件渲染。
+6. **插件系统**: `PluginManager` 管理插件，hooks 在 `HookPoint`（`TOOL_BEFORE_RUN`、`TOOL_AFTER_RUN` 等）处拦截。RTK 是内置插件。插件从 `~/.mocode/plugins/` 和 `<project>/.mocode/plugins/` 发现。
 
-7. **插件系统**: `PluginManager` 管理插件，`HookRegistry` 跟踪 hooks。Hooks 在 `HookPoint`（`AGENT_CHAT_START`、`TOOL_BEFORE_RUN` 等）处拦截。RTK 现在是一个内置插件。
+7. **命令模式**: 斜杠命令通过 `@command` 装饰器和 `CommandRegistry`。命令：`/help`、`/model`、`/provider`、`/session`、`/plugin`、`/skills`、`/rtk`、`/clear`、`/exit`。
+
+8. **技能系统**: 技能来自 `~/.mocode/skills/`。每个技能有 `SKILL.md` 和 YAML frontmatter。列在系统提示中，通过 `skill` 工具按需加载。
 
 ## 系统要求
 
