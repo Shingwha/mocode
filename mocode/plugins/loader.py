@@ -10,6 +10,9 @@ import yaml
 from .base import Plugin, PluginInfo, PluginMetadata, PluginState
 from ..paths import PLUGINS_DIR, PROJECT_SKILLS_DIRNAME
 
+# Built-in plugins directory
+BUILTIN_DIR = Path(__file__).parent / "builtin"
+
 
 class PluginLoader:
     """Discovers and loads plugins from directories"""
@@ -26,6 +29,7 @@ class PluginLoader:
         """
         if plugins_dirs is None:
             plugins_dirs = [
+                BUILTIN_DIR,  # Built-in plugins (highest priority)
                 PLUGINS_DIR,  # Global plugins
             ]
             # Add project-level plugins directory
@@ -103,7 +107,11 @@ class PluginLoader:
         if info.state == PluginState.ENABLED:
             return info.instance
 
+        # Check if it's a builtin plugin
         plugin_path = Path(info.path)
+        if str(plugin_path).startswith(str(BUILTIN_DIR)):
+            return self._load_builtin(info)
+
         plugin_file = plugin_path / self.PLUGIN_FILE
 
         if not plugin_file.exists():
@@ -139,6 +147,47 @@ class PluginLoader:
             if plugin_class is None:
                 info.state = PluginState.ERROR
                 info.error = "No Plugin subclass found in plugin module"
+                return None
+
+            # Instantiate plugin
+            instance = plugin_class()
+
+            # Set metadata if not already set
+            if not hasattr(instance, "metadata") or instance.metadata is None:
+                instance.metadata = info.metadata or PluginMetadata(name=plugin_name)
+
+            info.instance = instance
+            info.state = PluginState.LOADED
+
+            return instance
+
+        except Exception as e:
+            info.state = PluginState.ERROR
+            info.error = str(e)
+            return None
+
+    def _load_builtin(self, info: PluginInfo) -> Plugin | None:
+        """Load a built-in plugin using relative import
+
+        Args:
+            info: Plugin info for the plugin to load
+
+        Returns:
+            Plugin instance if successful, None otherwise
+        """
+        plugin_name = info.name
+
+        try:
+            # Built-in plugins use relative import
+            module = __import__(
+                f"mocode.plugins.builtin.{plugin_name}",
+                fromlist=["plugin_class"],
+            )
+            plugin_class = getattr(module, "plugin_class", None)
+
+            if plugin_class is None:
+                info.state = PluginState.ERROR
+                info.error = "No plugin_class found in builtin plugin module"
                 return None
 
             # Instantiate plugin

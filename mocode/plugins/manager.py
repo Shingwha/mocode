@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING
 
 from .base import Hook, Plugin, PluginInfo, PluginState
-from .loader import PluginLoader
+from .loader import BUILTIN_DIR, PluginLoader
 from .registry import HookRegistry, PluginRegistry
 
 if TYPE_CHECKING:
@@ -47,6 +47,28 @@ class PluginManager:
 
         for info in plugins:
             self.plugin_registry.register(info)
+
+        return plugins
+
+    def discover_and_enable_builtins(
+        self, disabled_list: list[str] | None = None
+    ) -> list[PluginInfo]:
+        """Discover plugins and auto-enable builtin plugins
+
+        Args:
+            disabled_list: List of plugin names to skip auto-enabling
+
+        Returns:
+            List of discovered plugin infos
+        """
+        plugins = self.discover()
+        disabled_list = disabled_list or []
+
+        # Auto-enable builtin plugins (unless in disabled list)
+        for info in plugins:
+            if str(BUILTIN_DIR) in info.path or info.path.startswith(str(BUILTIN_DIR)):
+                if info.name not in disabled_list:
+                    self.enable(info.name)
 
         return plugins
 
@@ -238,13 +260,14 @@ class PluginManager:
         self._plugin_commands[plugin_name] = command_names
 
     def _unregister_commands(self, plugin_name: str) -> None:
-        """Unregister commands from a plugin
+        """Unregister commands from a plugin"""
+        from ..cli.commands.base import CommandRegistry
 
-        Note: CommandRegistry doesn't have unregister method,
-        so commands remain registered for now.
-        """
-        # Store command names for potential future use
-        self._plugin_commands.pop(plugin_name, None)
+        command_names = self._plugin_commands.pop(plugin_name, [])
+
+        registry = CommandRegistry()
+        for name in command_names:
+            registry.unregister(name)
 
     def get_plugin_info(self, name: str) -> PluginInfo | None:
         """Get plugin info by name"""

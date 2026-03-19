@@ -19,24 +19,6 @@ class PluginConfig:
 
 
 @dataclass
-class RtkConfig:
-    """RTK (Rust Token Killer) 配置"""
-    enabled: bool = True  # 默认启用
-    # RTK 支持的命令前缀
-    commands: list[str] = field(default_factory=lambda: [
-        "ls", "tree", "dir",
-        "cat", "head", "tail",
-        "find", "grep", "rg",
-        "git status", "git log", "git diff", "git show",
-        "cargo test", "cargo build", "cargo clippy",
-        "npm test", "npm run", "yarn test",
-        "pytest", "vitest", "jest",
-        "docker", "kubectl",
-        "tsc", "eslint", "ruff",
-    ])
-
-
-@dataclass
 class ProviderConfig:
     """供应商配置"""
     name: str  # 显示名称
@@ -60,7 +42,6 @@ class Config:
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     max_tokens: int = 8192
-    rtk: RtkConfig = field(default_factory=RtkConfig)
     plugins: PluginConfig = field(default_factory=PluginConfig)
 
     CONFIG_PATH: Path = CONFIG_PATH
@@ -147,10 +128,6 @@ class Config:
         if "permission" in data:
             self.permission = PermissionConfig.from_dict(data["permission"])
 
-        # 加载 RTK 配置
-        if "rtk" in data:
-            self.rtk = RtkConfig(**data["rtk"])
-
         # 加载 Plugin 配置
         if "plugins" in data:
             self.plugins = PluginConfig(**data["plugins"])
@@ -167,7 +144,6 @@ class Config:
             },
             "permission": self.permission.to_dict(),
             "max_tokens": self.max_tokens,
-            "rtk": asdict(self.rtk),
             "plugins": asdict(self.plugins),
         }
 

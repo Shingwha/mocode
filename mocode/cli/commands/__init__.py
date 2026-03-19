@@ -5,7 +5,6 @@ from .builtin import QuitCommand, ClearCommand, HelpCommand
 from .model import ModelCommand
 from .provider import ProviderCommand
 from .skills_command import SkillsCommand
-from .rtk import RtkCommand
 from .session import SessionCommand
 from .plugin_command import PluginCommand
 
@@ -22,7 +21,6 @@ __all__ = [
     "ModelCommand",
     "ProviderCommand",
     "SkillsCommand",
-    "RtkCommand",
     "SessionCommand",
     "PluginCommand",
 ]
@@ -35,7 +33,6 @@ BUILTIN_COMMANDS = [
     ModelCommand,
     ProviderCommand,
     SkillsCommand,
-    RtkCommand,
     SessionCommand,
     PluginCommand,
 ]

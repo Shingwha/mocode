@@ -30,7 +30,7 @@ from .base import (
     PluginState,
 )
 from .decorators import HookBuilder, async_hook, hook
-from .loader import PluginLoader
+from .loader import BUILTIN_DIR, PluginLoader
 from .manager import PluginManager
 from .registry import HookRegistry, PluginRegistry
 
@@ -54,4 +54,6 @@ __all__ = [
     # Manager
     "PluginManager",
     "PluginLoader",
+    # Constants
+    "BUILTIN_DIR",
 ]

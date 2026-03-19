@@ -68,14 +68,6 @@ class SimpleBashSession:
         if stripped.startswith("export "):
             return self._handle_export(stripped[7:])
 
-        # RTK 包装（从上下文获取配置）
-        from .context import get_tool_context
-        config = get_tool_context()
-        if config and config.rtk.enabled:
-            from .rtk_wrapper import should_wrap_command, wrap_with_rtk, find_rtk
-            if find_rtk() and should_wrap_command(command, config.rtk.commands):
-                command = wrap_with_rtk(command)
-
         # 构建带环境变量的命令
         full_cmd = command
         if self._env_vars:

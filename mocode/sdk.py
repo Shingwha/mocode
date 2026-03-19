@@ -145,10 +145,12 @@ class MocodeClient:
 
     def _init_plugins(self) -> None:
         """Initialize plugins from config"""
-        # Discover plugins
-        self.plugin_manager.discover()
+        # Discover plugins and auto-enable builtins (respecting disabled list)
+        self.plugin_manager.discover_and_enable_builtins(
+            disabled_list=self.config.plugins.disabled
+        )
 
-        # Enable plugins from config
+        # Enable plugins from config (user preferences override defaults)
         enabled_plugins = self.config.plugins.enabled
         for plugin_name in enabled_plugins:
             self.plugin_manager.enable(plugin_name)

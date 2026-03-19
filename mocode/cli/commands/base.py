@@ -68,6 +68,25 @@ class CommandRegistry:
         for alias in cmd.aliases:
             self._commands[alias] = cmd
 
+    def unregister(self, name: str) -> bool:
+        """注销命令
+
+        Args:
+            name: 命令名（如 "/rtk"）
+
+        Returns:
+            True 如果命令存在并被注销
+        """
+        cmd = self._commands.get(name)
+        if cmd is None:
+            return False
+
+        # 删除命令名和所有别名
+        keys_to_remove = [name] + cmd.aliases
+        for key in keys_to_remove:
+            self._commands.pop(key, None)
+        return True
+
     def get(self, name: str) -> Command | None:
         """获取命令"""
         return self._commands.get(name)

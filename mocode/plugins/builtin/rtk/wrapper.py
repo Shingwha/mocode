@@ -1,7 +1,7 @@
-"""RTK (Rust Token Killer) 命令包装器
+"""RTK (Rust Token Killer) wrapper utilities
 
-RTK 是一个高性能 CLI 代理工具，可以将 LLM token 消耗降低 60-90%。
-它通过智能过滤、分组、截断、去重等策略压缩命令输出。
+RTK is a high-performance CLI proxy that reduces LLM token consumption by 60-90%.
+It compresses command output through smart filtering, grouping, truncation, and deduplication.
 
 GitHub: https://github.com/rtk-ai/rtk
 """
@@ -14,32 +14,32 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-# RTK 安装目录（MoCode 管理）
+# RTK installation directory (managed by MoCode)
 RTK_INSTALL_DIR = Path.home() / ".mocode" / "bin"
 
-# 全局 RTK 路径缓存
+# Global RTK path cache
 _rtk_path: Optional[str] = None
 
 
 def find_rtk() -> Optional[str]:
-    """查找 RTK 可执行文件
+    """Find RTK executable
 
     Returns:
-        RTK 可执行文件路径，未找到则返回 None
+        RTK executable path, or None if not found
     """
     global _rtk_path
 
-    # 返回缓存结果
+    # Return cached result
     if _rtk_path is not None:
         return _rtk_path if _rtk_path else None
 
-    # 1. 检查系统 PATH
+    # 1. Check system PATH
     rtk = shutil.which("rtk")
     if rtk:
         _rtk_path = rtk
         return rtk
 
-    # 2. 检查 MoCode 安装目录（Windows 优先）
+    # 2. Check MoCode installation directory (Windows priority)
     if platform.system() == "Windows":
         rtk_exe = RTK_INSTALL_DIR / "rtk.exe"
     else:
@@ -49,71 +49,71 @@ def find_rtk() -> Optional[str]:
         _rtk_path = str(rtk_exe)
         return _rtk_path
 
-    # 标记为未找到
+    # Mark as not found
     _rtk_path = ""
     return None
 
 
-def should_wrap_command(command: str, enabled_commands: list[str]) -> bool:
-    """判断命令是否应该被 RTK 包装
+# Blacklist: commands that should NOT be wrapped
+EXCLUDE_PREFIXES = (
+    # Interactive commands
+    "vim ",
+    "nano ",
+    "less ",
+    "more ",
+    "man ",
+    # Real-time update commands
+    "top ",
+    "htop ",
+    "watch ",
+    # Avoid double-wrapping
+    "rtk ",
+)
+
+
+def should_wrap(command: str) -> bool:
+    """Check if a command should be wrapped with RTK
+
+    Uses blacklist mode: wrap all commands except those in EXCLUDE_PREFIXES.
 
     Args:
-        command: 要执行的命令
-        enabled_commands: RTK 支持的命令列表
+        command: The command to check
 
     Returns:
-        是否应该包装
+        True if the command should be wrapped
     """
     stripped = command.strip()
     if not stripped:
         return False
 
-    # 避免重复包装
-    if stripped.startswith("rtk "):
-        return False
-
-    # 避免包装交互式命令
-    interactive_prefixes = ("vim ", "nano ", "less ", "more ", "man ", "top ", "htop ")
-    if any(stripped.startswith(prefix) for prefix in interactive_prefixes):
-        return False
-
-    cmd_parts = stripped.split()
-    if not cmd_parts:
-        return False
-
-    cmd_start = cmd_parts[0]
-    # 处理带空格的命令如 "git status"
-    first_two = " ".join(cmd_parts[:2]) if len(cmd_parts) >= 2 else cmd_start
-
-    for pattern in enabled_commands:
-        if cmd_start == pattern or first_two == pattern:
-            return True
-    return False
+    # Check against blacklist
+    return not any(stripped.startswith(p) for p in EXCLUDE_PREFIXES)
 
 
-def wrap_with_rtk(command: str) -> str:
-    """用 RTK 包装命令
+def wrap(command: str) -> str:
+    """Wrap a command with RTK
 
     Args:
-        command: 原始命令
+        command: The original command
 
     Returns:
-        包装后的命令，如果 RTK 未安装则返回原命令
+        The wrapped command, or original if RTK is not installed
     """
     rtk_path = find_rtk()
     if not rtk_path:
         return command
-    # 使用完整路径，避免 PATH 问题
-    # 转换为正斜杠以兼容 Git Bash
+
+    # Use full path to avoid PATH issues
+    # Convert to forward slashes for Git Bash compatibility
     rtk_path = rtk_path.replace("\\", "/")
     return f'"{rtk_path}" {command}'
 
 
 def get_rtk_download_url() -> Optional[str]:
-    """获取当前平台的 RTK 下载链接
+    """Get the download URL for RTK for the current platform
 
     Returns:
-        下载链接，不支持的平台返回 None
+        Download URL, or None for unsupported platforms
     """
     system = platform.system()
     machine = platform.machine().lower()
@@ -135,10 +135,10 @@ def get_rtk_download_url() -> Optional[str]:
 
 
 def get_install_command() -> str:
-    """获取适合当前平台的 RTK 安装命令
+    """Get the platform-appropriate RTK install command
 
     Returns:
-        安装命令字符串
+        Install command string
     """
     system = platform.system()
 
@@ -153,18 +153,18 @@ def get_install_command() -> str:
 
 
 def install_rtk() -> bool:
-    """自动安装 RTK（跨平台）
+    """Auto-install RTK (cross-platform)
 
-    Windows: 下载 zip 解压到 ~/.mocode/bin/
-    macOS/Linux: 建议使用包管理器，返回 False 引导用户
+    Windows: Download zip and extract to ~/.mocode/bin/
+    macOS/Linux: Recommend package manager, return False to guide user
 
     Returns:
-        安装是否成功
+        True if installation succeeded
     """
     system = platform.system()
 
     if system != "Windows":
-        # macOS/Linux 建议使用包管理器
+        # macOS/Linux recommend package manager
         return False
 
     url = get_rtk_download_url()
@@ -172,24 +172,24 @@ def install_rtk() -> bool:
         return False
 
     try:
-        # 创建安装目录
+        # Create installation directory
         RTK_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
 
-        # 下载
+        # Download
         zip_path = RTK_INSTALL_DIR / "rtk.zip"
         urllib.request.urlretrieve(url, zip_path)
 
-        # 解压
+        # Extract
         with zipfile.ZipFile(zip_path, "r") as z:
             z.extractall(RTK_INSTALL_DIR)
 
-        # 清理
+        # Cleanup
         zip_path.unlink()
 
-        # 验证
+        # Verify
         rtk_exe = RTK_INSTALL_DIR / "rtk.exe"
         if rtk_exe.exists():
-            # 重置缓存
+            # Reset cache
             global _rtk_path
             _rtk_path = str(rtk_exe)
             return True
@@ -200,15 +200,15 @@ def install_rtk() -> bool:
     return False
 
 
-def check_rtk_installation() -> tuple[bool, str]:
-    """检查 RTK 安装状态
+def check_installation() -> tuple[bool, str]:
+    """Check RTK installation status
 
     Returns:
-        (is_installed, message) 元组
+        (is_installed, message) tuple
     """
     rtk = find_rtk()
     if rtk:
-        # 验证是否是正确的 RTK（有 rtk gain 命令）
+        # Verify it's the correct RTK (has 'rtk gain' command)
         try:
             result = subprocess.run(
                 [rtk, "gain"],
@@ -228,11 +228,11 @@ def check_rtk_installation() -> tuple[bool, str]:
         return False, f"RTK not installed. Install with: {get_install_command()}"
 
 
-def get_rtk_gain() -> Optional[str]:
-    """获取 RTK 的 token 节省统计
+def get_gain() -> Optional[str]:
+    """Get RTK token savings statistics
 
     Returns:
-        统计信息字符串，失败返回 None
+        Statistics string, or None if failed
     """
     rtk = find_rtk()
     if not rtk:
