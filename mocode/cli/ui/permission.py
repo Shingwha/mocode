@@ -2,7 +2,7 @@
 
 from ...core.permission import PermissionHandler
 from .colors import BLUE, BOLD, DIM, GREEN, RESET
-from .widgets import SelectMenu
+from .prompt import SelectMenu
 
 
 class CLIPermissionHandler(PermissionHandler):

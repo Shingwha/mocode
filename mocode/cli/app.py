@@ -13,8 +13,8 @@ from ..core.interrupt import InterruptToken
 from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, register_builtin_commands
 from .ui.layout import Layout
-from .ui.widgets import check_esc_key
-from .ui.permission_handler import CLIPermissionHandler
+from .ui.prompt import check_esc_key
+from .ui.permission import CLIPermissionHandler
 
 
 class AsyncApp:

@@ -2,7 +2,7 @@
 
 from enum import Enum, auto
 from .colors import RESET, GREEN, YELLOW, RED, DIM
-from .widgets import SelectMenu
+from .prompt import SelectMenu
 
 
 class MenuAction(Enum):

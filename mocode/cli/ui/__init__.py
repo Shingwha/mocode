@@ -15,10 +15,10 @@ from .components import (
     print_message,
 )
 from .layout import Layout
-from .widgets import SelectMenu
+from .prompt import SelectMenu, ask, Wizard, clear_screen
 from .menu import MenuAction, MenuItem, is_action, is_cancelled, confirm_dialog
-from .permission_handler import CLIPermissionHandler
-from .interactive import ask, Wizard, parse_selection_arg
+from .permission import CLIPermissionHandler
+from .utils import parse_selection_arg
 
 __all__ = [
     # Colors
@@ -44,8 +44,11 @@ __all__ = [
     "MessageType",
     # Layout
     "Layout",
-    # Components
+    # Interactive prompts
     "SelectMenu",
+    "ask",
+    "Wizard",
+    "clear_screen",
     # Menu system
     "MenuAction",
     "MenuItem",
@@ -54,9 +57,7 @@ __all__ = [
     "confirm_dialog",
     # Permission handler
     "CLIPermissionHandler",
-    # Interactive prompts
-    "ask",
-    "Wizard",
+    # Utils
     "parse_selection_arg",
 ]
 
