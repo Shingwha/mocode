@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from .agent_facade import AgentFacade
 from .config import Config
-from .events import EventBus, get_event_bus
+from .events import EventBus
 from .interrupt import InterruptToken
 from .permission import DefaultPermissionHandler, PermissionHandler, PermissionMatcher
 from .session import Session, SessionManager

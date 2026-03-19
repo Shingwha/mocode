@@ -11,7 +11,7 @@ from .core import (
     Config,
     EventBus,
     EventType,
-    get_event_bus,
+    EventBus,
     InterruptToken,
     PermissionHandler,
     PermissionMatcher,
@@ -75,7 +75,7 @@ class MocodeClient:
         loaded_config = Config.load(path=config_path, data=config)
 
         # Initialize event bus
-        bus = event_bus or get_event_bus()
+        bus = event_bus or EventBus()
 
         # Initialize interrupt token
         token = interrupt_token or InterruptToken()

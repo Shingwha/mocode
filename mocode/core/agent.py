@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ..providers.openai import AsyncOpenAIProvider
 from ..tools.base import ToolRegistry
-from .events import EventType, EventBus, get_event_bus
+from .events import EventType, EventBus
 from .permission import PermissionAction, PermissionMatcher, PermissionHandler
 from .interrupt import InterruptToken
 from ..plugins import HookRegistry, HookPoint
@@ -35,7 +35,7 @@ class AsyncAgent:
         self.messages: list = []
         self.permission_matcher = permission_matcher
         self.permission_handler = permission_handler
-        self.event_bus = event_bus or get_event_bus()
+        self.event_bus = event_bus or EventBus()
         self.interrupt_token = interrupt_token
         self.config = config
         self.hook_registry = hook_registry

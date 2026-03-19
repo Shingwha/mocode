@@ -60,24 +60,3 @@ class EventBus:
             handlers.clear()
 
 
-# 全局默认事件总线实例（向后兼容）
-_default_bus: EventBus | None = None
-
-
-def get_event_bus() -> EventBus:
-    """获取默认事件总线实例（延迟初始化）"""
-    global _default_bus
-    if _default_bus is None:
-        _default_bus = EventBus()
-    return _default_bus
-
-
-# 向后兼容：保留全局 events 变量作为属性访问
-class _EventsProxy:
-    """代理类，向后兼容 events 全局变量"""
-
-    def __getattr__(self, name):
-        return getattr(get_event_bus(), name)
-
-
-events = _EventsProxy()

@@ -1,7 +1,7 @@
 """Core layer - 业务逻辑核心，独立于 UI"""
 
 from .config import Config, PluginConfig, ProviderConfig, CurrentConfig
-from .events import EventBus, EventType, Event, get_event_bus
+from .events import EventBus, EventType, Event
 from .agent import AsyncAgent
 from .prompt import (
     PromptBuilder,
@@ -40,7 +40,6 @@ __all__ = [
     "EventBus",
     "EventType",
     "Event",
-    "get_event_bus",
     "AsyncAgent",
     # Prompt system
     "PromptBuilder",
