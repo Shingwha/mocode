@@ -74,9 +74,9 @@ class RtkPlugin(Plugin):
     def get_commands(self) -> list:
         """Provide /rtk command"""
         from mocode.cli.commands.base import Command, CommandContext, command
-        from mocode.cli.ui.colors import BOLD, DIM, RESET
+        from mocode.cli.ui import SelectMenu, MenuAction, MenuItem, is_cancelled
+        from mocode.cli.ui.colors import BOLD, RESET
         from mocode.cli.ui.components import format_error, format_info, format_success
-        from mocode.cli.ui.widgets import SelectMenu
 
         @command("/rtk", description="Manage RTK - compress command output")
         class RtkCommand(Command):
@@ -93,7 +93,6 @@ class RtkPlugin(Plugin):
             def execute(self, ctx: CommandContext) -> bool:
                 args = ctx.args.split() if ctx.args else []
 
-                # Show interactive menu if no arguments
                 if not args:
                     return self._show_menu(ctx)
 
@@ -119,14 +118,13 @@ class RtkPlugin(Plugin):
                     ("status", "Status - Show RTK installation and plugin status"),
                     ("gain", "Gain - Show token savings statistics"),
                     ("install", "Install - Install RTK (auto-install on Windows)"),
-                    ("__EXIT__", f"{DIM}← Cancel{RESET}"),
                 ]
+                choices.append(MenuItem.exit_())
 
                 menu = SelectMenu("RTK (Rust Token Killer)", choices)
                 selected = menu.show()
 
-                if selected and selected != "__EXIT__":
-                    # Execute selected subcommand
+                if not is_cancelled(selected):
                     if selected == "status":
                         self._show_status(ctx)
                     elif selected == "gain":
@@ -142,12 +140,9 @@ class RtkPlugin(Plugin):
 
                 is_installed, message = check_installation()
 
-                # Get plugin state from client's plugin manager
-                plugin_manager = ctx.client.plugin_manager
-                is_enabled = False
-                if plugin_manager:
-                    info = plugin_manager.get_plugin_info("rtk")
-                    is_enabled = info and info.state == PluginState.ENABLED
+                # Get plugin state via client API
+                info = ctx.client.get_plugin_info("rtk")
+                is_enabled = info and info.state == PluginState.ENABLED
 
                 if is_installed and is_enabled:
                     ctx.layout.add_command_output(format_success("RTK: Installed, Plugin Enabled"))
@@ -174,7 +169,6 @@ class RtkPlugin(Plugin):
                             f'Add to PATH: setx PATH "%PATH%;{RTK_INSTALL_DIR}"'
                         )
                 else:
-                    # Show manual install command
                     cmd = get_install_command()
                     ctx.layout.add_command_output(
                         format_error("Auto-install only supported on Windows.")

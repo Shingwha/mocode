@@ -1,7 +1,18 @@
 """Plugin management command"""
 
 from .base import Command, CommandContext, command
-from ..ui import SelectMenu, error, success, ask, parse_selection_arg
+from ..ui import (
+    SelectMenu,
+    MenuAction,
+    MenuItem,
+    is_cancelled,
+    is_action,
+    error,
+    success,
+    info,
+    ask,
+    parse_selection_arg,
+)
 from ..ui.colors import RESET, GREEN, YELLOW, RED, DIM, CYAN
 from ...plugins import PluginInfo, PluginState
 
@@ -11,10 +22,8 @@ class PluginCommand(Command):
     """Plugin management command"""
 
     def execute(self, ctx: CommandContext) -> bool:
-        """Execute the plugin command"""
         arg = ctx.args.strip()
 
-        # Check for legacy subcommands first
         if arg.startswith("list"):
             return self._list_plugins(ctx)
         elif arg.startswith("info "):
@@ -23,7 +32,6 @@ class PluginCommand(Command):
         elif arg == "help":
             return self._show_help(ctx)
 
-        # Get plugin list
         plugins = ctx.client.list_plugins()
 
         if not plugins:
@@ -34,28 +42,20 @@ class PluginCommand(Command):
         plugin_names = [p.name for p in plugins]
 
         if not arg:
-            # Interactive mode
             plugin_name = self._select_interactive(ctx.client, plugins)
             if not plugin_name:
                 return True
-            # Toggle plugin state
             self._toggle_plugin(ctx, plugin_name)
         else:
-            # Parse argument (supports index or name)
-            plugin_name = parse_selection_arg(
-                arg,
-                plugin_names,
-                error_handler=error,
-            )
+            plugin_name = parse_selection_arg(arg, plugin_names, error_handler=error)
             if plugin_name is None:
                 return True
-            # Toggle plugin state
             self._toggle_plugin(ctx, plugin_name)
 
         return True
 
     def _select_interactive(self, client, plugins: list[PluginInfo]) -> str | None:
-        """Interactive plugin selection"""
+        """Interactive plugin selection."""
         while True:
             choices = []
             for info in plugins:
@@ -66,57 +66,53 @@ class PluginCommand(Command):
                 display = f"{info.name} v{version} [{status}]{desc_display}"
                 choices.append((info.name, display))
 
-            choices.append(("__MANAGE__", f"{DIM}Manage plugins...{RESET}"))
-            choices.append(("__EXIT__", f"{DIM}← Cancel{RESET}"))
+            choices.append(MenuItem.manage())
+            choices.append(MenuItem.exit_())
 
             menu = SelectMenu("Select plugin", choices)
             result = menu.show()
 
-            if result is None or result == "__EXIT__":
+            if is_cancelled(result):
                 return None
-            elif result == "__MANAGE__":
+            if is_action(result, MenuAction.MANAGE):
                 self._manage_plugins(client, plugins)
-                # Refresh plugin list after management
                 plugins = client.list_plugins()
                 continue
-            else:
-                return result
+            return result
 
     def _manage_plugins(self, client, plugins: list[PluginInfo]) -> None:
-        """Manage plugins menu"""
+        """Manage plugins menu."""
         while True:
             menu = SelectMenu(
                 "Manage plugins",
                 [
-                    ("__LIST__", "List all plugins"),
-                    ("__INFO__", "View plugin info"),
-                    ("__BACK__", f"{DIM}← Back{RESET}"),
+                    MenuItem.list_("List all plugins"),
+                    MenuItem.info("View plugin info"),
+                    MenuItem.back(),
                 ],
             )
             result = menu.show()
 
-            if result is None or result == "__BACK__":
+            if is_cancelled(result):
                 return
-            elif result == "__LIST__":
+            if is_action(result, MenuAction.LIST):
                 self._print_plugin_list(plugins)
-                continue
-            elif result == "__INFO__":
+            elif is_action(result, MenuAction.INFO):
                 self._select_and_show_info(client, plugins)
-                continue
 
     def _select_and_show_info(self, client, plugins: list[PluginInfo]) -> None:
-        """Select a plugin and show its info"""
+        """Select a plugin and show its info."""
         if not plugins:
             error("No plugins available")
             return
 
         choices = [(p.name, p.name) for p in plugins]
-        choices.append(("__BACK__", f"{DIM}← Back{RESET}"))
+        choices.append(MenuItem.back())
 
         menu = SelectMenu("Select plugin to view", choices)
         name = menu.show()
 
-        if name is None or name == "__BACK__":
+        if is_cancelled(name):
             return
 
         info = client.get_plugin_info(name)
@@ -124,7 +120,7 @@ class PluginCommand(Command):
             self._print_plugin_info(info)
 
     def _toggle_plugin(self, ctx: CommandContext, name: str) -> None:
-        """Toggle plugin enabled/disabled state"""
+        """Toggle plugin enabled/disabled state."""
         info = ctx.client.get_plugin_info(name)
 
         if info is None:
@@ -132,28 +128,22 @@ class PluginCommand(Command):
             return
 
         if info.state == PluginState.ENABLED:
-            # Disable it
-            success_flag = ctx.client.disable_plugin(name)
-            if success_flag:
+            if ctx.client.disable_plugin(name):
                 success(f"Plugin '{name}' disabled")
             else:
-                error_msg = info.error or "Unknown error"
-                error(f"Failed to disable plugin '{name}': {error_msg}")
+                error(f"Failed to disable plugin '{name}': {info.error or 'Unknown error'}")
         else:
-            # Enable it
             if info.state == PluginState.ERROR:
                 error(f"Plugin '{name}' has errors: {info.error}")
                 return
 
-            success_flag = ctx.client.enable_plugin(name)
-            if success_flag:
+            if ctx.client.enable_plugin(name):
                 success(f"Plugin '{name}' enabled")
             else:
-                error_msg = info.error or "Unknown error"
-                error(f"Failed to enable plugin '{name}': {error_msg}")
+                error(f"Failed to enable plugin '{name}': {info.error or 'Unknown error'}")
 
     def _list_plugins(self, ctx: CommandContext) -> bool:
-        """List all discovered plugins"""
+        """List all discovered plugins."""
         plugins = ctx.client.list_plugins()
 
         if not plugins:
@@ -161,30 +151,25 @@ class PluginCommand(Command):
                 ctx.layout.add_command_output(f"{DIM}No plugins discovered.{RESET}")
             return True
 
-        lines = []
-        lines.append(f"{CYAN}Discovered plugins:{RESET}")
-        lines.append("-" * 50)
+        lines = [f"{CYAN}Discovered plugins:{RESET}", "-" * 50]
 
         for info in plugins:
             status = self._format_status(info.state)
             version = info.metadata.version if info.metadata else "-"
             description = info.metadata.description if info.metadata else ""
             desc_display = f" - {description}" if description else ""
-
             lines.append(f"  {info.name} v{version} [{status}]{desc_display}")
-
             if info.has_error:
                 lines.append(f"    {RED}Error: {info.error}{RESET}")
 
-        lines.append("-" * 50)
-        lines.append(f"Total: {len(plugins)} plugin(s)")
+        lines.extend(["-" * 50, f"Total: {len(plugins)} plugin(s)"])
 
         if ctx.layout:
             ctx.layout.add_command_output("\n".join(lines))
         return True
 
     def _show_info(self, ctx: CommandContext, name: str) -> bool:
-        """Show plugin information"""
+        """Show plugin information."""
         if not name:
             error("Usage: /plugin info <name>")
             return True
@@ -202,7 +187,7 @@ class PluginCommand(Command):
         return True
 
     def _print_plugin_list(self, plugins: list[PluginInfo]) -> None:
-        """Print plugin list to console"""
+        """Print plugin list to console."""
         if not plugins:
             info("No plugins discovered")
             return
@@ -210,32 +195,30 @@ class PluginCommand(Command):
         print(f"{CYAN}Discovered plugins:{RESET}")
         print("-" * 50)
 
-        for info in plugins:
-            status = self._format_status(info.state)
-            version = info.metadata.version if info.metadata else "-"
-            description = info.metadata.description if info.metadata else ""
+        for p in plugins:
+            status = self._format_status(p.state)
+            version = p.metadata.version if p.metadata else "-"
+            description = p.metadata.description if p.metadata else ""
             desc_display = f" - {description}" if description else ""
-
-            print(f"  {info.name} v{version} [{status}]{desc_display}")
-
-            if info.has_error:
-                print(f"    {RED}Error: {info.error}{RESET}")
+            print(f"  {p.name} v{version} [{status}]{desc_display}")
+            if p.has_error:
+                print(f"    {RED}Error: {p.error}{RESET}")
 
         print("-" * 50)
         print(f"Total: {len(plugins)} plugin(s)")
 
     def _print_plugin_info(self, info: PluginInfo) -> None:
-        """Print plugin info to console"""
-        lines = self._format_plugin_info(info)
-        for line in lines:
+        """Print plugin info to console."""
+        for line in self._format_plugin_info(info):
             print(line)
 
     def _format_plugin_info(self, info: PluginInfo) -> list[str]:
-        """Format plugin info for display"""
-        lines = []
-        lines.append(f"{CYAN}Plugin: {info.name}{RESET}")
-        lines.append(f"Status: {self._format_status(info.state)}")
-        lines.append(f"Path: {info.path}")
+        """Format plugin info for display."""
+        lines = [
+            f"{CYAN}Plugin: {info.name}{RESET}",
+            f"Status: {self._format_status(info.state)}",
+            f"Path: {info.path}",
+        ]
 
         if info.metadata:
             lines.append(f"Version: {info.metadata.version}")
@@ -254,7 +237,7 @@ class PluginCommand(Command):
         return lines
 
     def _format_status(self, state: PluginState) -> str:
-        """Format plugin status for display with colors"""
+        """Format plugin status for display with colors."""
         status_map = {
             PluginState.DISCOVERED: f"{DIM}discovered{RESET}",
             PluginState.LOADED: f"{YELLOW}loaded{RESET}",
@@ -265,7 +248,7 @@ class PluginCommand(Command):
         return status_map.get(state, str(state.value))
 
     def _show_help(self, ctx: CommandContext) -> bool:
-        """Show help message"""
+        """Show help message."""
         help_text = f"""{CYAN}Plugin management commands:{RESET}
 
 /plugin              Interactive plugin selection

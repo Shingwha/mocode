@@ -1,4 +1,4 @@
-"""命令基类"""
+"""Command base class"""
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -6,48 +6,54 @@ from typing import ClassVar, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..ui.layout import Layout
+    from ..ui.menu import MenuAction
     from ...sdk import MocodeClient
 
 
 @dataclass
 class CommandContext:
-    """命令执行上下文"""
+    """Command execution context"""
     client: "MocodeClient"
-    args: str  # 命令参数
+    args: str  # Command arguments
     layout: "Layout | None" = None
-    pending_message: str | None = None  # 命令执行后要发送给 agent 的消息
+    pending_message: str | None = None  # Message to send to agent after command
 
     @property
     def config(self):
-        """获取配置"""
+        """Get config"""
         return self.client.config
 
     @property
     def agent(self):
-        """获取 Agent"""
+        """Get Agent"""
         return self.client.agent
 
 
 class Command(ABC):
-    """命令基类"""
+    """Command base class"""
 
-    name: ClassVar[str] = ""  # 命令名，如 "/help"
-    aliases: ClassVar[list[str]] = []  # 别名
-    description: ClassVar[str] = ""  # 描述
+    name: ClassVar[str] = ""  # Command name, e.g., "/help"
+    aliases: ClassVar[list[str]] = []  # Aliases
+    description: ClassVar[str] = ""  # Description
 
     @abstractmethod
     def execute(self, ctx: CommandContext) -> bool:
-        """执行命令
+        """Execute command
 
         Returns:
-            True: 继续运行
-            False: 退出程序
+            True: Continue running
+            False: Exit program
         """
         pass
 
     def match(self, cmd: str) -> bool:
-        """匹配命令"""
+        """Match command"""
         return cmd == self.name or cmd in self.aliases
+
+    def confirm_delete(self, item_name: str) -> bool:
+        """Standard delete confirmation dialog."""
+        from ..ui import confirm_dialog, YELLOW, RESET
+        return confirm_dialog(f"{YELLOW}Delete '{item_name}'?{RESET}")
 
 
 class CommandRegistry:

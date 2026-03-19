@@ -74,24 +74,10 @@ class Layout:
         # 欢迎消息后不重置，第一条输入前不打印空行
 
     def add_user_message(self, content: str):
-        """添加用户消息（用于历史记录显示）"""
+        """Add user message (for history display)"""
         self._spacing.print_space_if_needed("user_history")
-
-        # 复用背景色高亮逻辑
-        width = shutil.get_terminal_size().columns
-        prompt_width = 2  # "> " 的显示宽度
-
-        # 计算实际占用行数
-        text_width = self._display_width(content)
-        total_width = prompt_width + text_width
-        num_lines = (total_width + width - 1) // width
-
-        # 构造带背景色的显示行
-        display_line = f"{BG_BLUE}{BOLD}{WHITE}>{RESET}{BG_BLUE}{BOLD} {content} {RESET}"
-        padding_width = width * num_lines - text_width - prompt_width
-        padding = " " * max(0, padding_width)
-
-        print(f"{display_line}{padding}{RESET}")
+        display_line, _ = self._highlight_line(content)
+        print(display_line)
 
     def add_assistant_message(self, content: str):
         """添加助手消息"""
@@ -245,10 +231,10 @@ class Layout:
         self._spacing.print_space_if_needed(current_type)
 
     def _display_width(self, text: str) -> int:
-        """计算字符串的显示宽度（中文字符占 2 个宽度）"""
+        """Calculate display width (CJK chars take 2 width)"""
         width = 0
         for char in text:
-            # 中文字符（CJK）占 2 个宽度
+            # CJK chars take 2 width
             if (
                 "\u4e00" <= char <= "\u9fff"
                 or "\u3000" <= char <= "\u303f"
@@ -261,42 +247,49 @@ class Layout:
                 width += 1
         return width
 
+    def _highlight_line(self, content: str, prefix: str = ">") -> tuple[str, int]:
+        """Create a highlighted line with background color.
+
+        Args:
+            content: Text content to highlight
+            prefix: Prefix character (default ">")
+
+        Returns:
+            Tuple of (highlighted_line, num_lines_occupied)
+        """
+        width = shutil.get_terminal_size().columns
+        prefix_width = len(prefix) + 1  # prefix + space
+
+        text_width = self._display_width(content)
+        total_width = prefix_width + text_width
+        num_lines = (total_width + width - 1) // width
+
+        display_line = f"{BG_BLUE}{BOLD}{WHITE}{prefix}{RESET}{BG_BLUE}{BOLD} {content} {RESET}"
+        padding_width = width * num_lines - text_width - prefix_width
+        padding = " " * max(0, padding_width)
+
+        return f"{display_line}{padding}{RESET}", num_lines
+
     async def get_input(self) -> str:
-        """获取用户输入（带背景色显示）"""
-        # 确保 spinner 已停止
+        """Get user input with background highlighting."""
+        # Ensure spinner is stopped
         self._stop_spinner()
 
-        # 打印前置空行并记录类型
+        # Print leading space and record type
         self._spacing.print_space_if_needed("user_input")
 
-        # 显示输入提示（input 会回显用户输入）
+        # Show input prompt (input echoes user input)
         prompt = f"{BOLD}{BLUE}>{RESET} "
-        prompt_width = 2  # "> " 的显示宽度
 
         try:
-            # 使用标准输入（用户输入会被回显）
+            # Use standard input (user input is echoed)
             user_input = await asyncio.to_thread(input, prompt)
 
-            # 输入完成后，用背景色覆盖原行
+            # After input, highlight the line with background
             if user_input.strip():
-                import shutil
-
-                width = shutil.get_terminal_size().columns
-
-                # 计算实际占用行数（使用显示宽度）
-                text_width = self._display_width(user_input)
-                total_width = prompt_width + text_width
-                num_lines = (total_width + width - 1) // width  # 向上取整
-
-                # 构造带背景色的显示行（前面带 >，用白色确保可见）
-                display_line = f"{BG_BLUE}{BOLD}{WHITE}>{RESET}{BG_BLUE}{BOLD} {user_input} {RESET}"
-                # 填充到行尾（填满所有占用的行）
-                padding_width = width * num_lines - text_width - prompt_width
-                padding = " " * max(0, padding_width)
-
-                # 光标上移 num_lines 行，回到行首，清空行，打印背景色版本
-                print(f"\033[{num_lines}A\r\033[K{display_line}{padding}{RESET}")
-            # 注意：input() 本身已经有一个换行，所以这里不加 print()
+                display_line, num_lines = self._highlight_line(user_input)
+                # Move cursor up, clear line, print highlighted version
+                print(f"\033[{num_lines}A\r\033[K{display_line}")
 
             return user_input
         except EOFError:

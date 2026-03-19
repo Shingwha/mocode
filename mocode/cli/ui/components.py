@@ -1,43 +1,57 @@
-"""UI 组件 - 简洁的消息显示"""
+"""UI components - Unified message handling."""
 
+from enum import Enum
 from .colors import CYAN, GREEN, RED, RESET, YELLOW
 
 
-def error(text: str):
-    """显示错误消息"""
-    print(f"{RED}✗{RESET} {text}")
+class MessageType(Enum):
+    """Message types for styling."""
+    ERROR = ("x", RED)
+    SUCCESS = ("*", GREEN)
+    INFO = ("->", CYAN)
+    WARN = ("!", YELLOW)
 
 
-def success(text: str):
-    """显示成功消息"""
-    print(f"{GREEN}✓{RESET} {text}")
+def format_message(text: str, msg_type: MessageType) -> str:
+    """Format a message with type-specific styling."""
+    symbol, color = msg_type.value
+    return f"{color}{symbol}{RESET} {text}"
 
 
-def info(text: str):
-    """显示信息消息"""
-    print(f"{CYAN}→{RESET} {text}")
+def print_message(text: str, msg_type: MessageType) -> None:
+    """Format and print a message."""
+    print(format_message(text, msg_type))
 
 
-def warn(text: str):
-    """显示警告消息"""
-    print(f"{YELLOW}!{RESET} {text}")
+# Convenience functions
+def error(text: str) -> None:
+    print_message(text, MessageType.ERROR)
 
 
+def success(text: str) -> None:
+    print_message(text, MessageType.SUCCESS)
+
+
+def info(text: str) -> None:
+    print_message(text, MessageType.INFO)
+
+
+def warn(text: str) -> None:
+    print_message(text, MessageType.WARN)
+
+
+# Format-only versions (return string, no print)
 def format_error(text: str) -> str:
-    """格式化错误消息（不打印）"""
-    return f"{RED}✗{RESET} {text}"
+    return format_message(text, MessageType.ERROR)
 
 
 def format_success(text: str) -> str:
-    """格式化成功消息（不打印）"""
-    return f"{GREEN}✓{RESET} {text}"
+    return format_message(text, MessageType.SUCCESS)
 
 
 def format_info(text: str) -> str:
-    """格式化信息消息（不打印）"""
-    return f"{CYAN}→{RESET} {text}"
+    return format_message(text, MessageType.INFO)
 
 
 def format_warn(text: str) -> str:
-    """格式化警告消息（不打印）"""
-    return f"{YELLOW}!{RESET} {text}"
+    return format_message(text, MessageType.WARN)

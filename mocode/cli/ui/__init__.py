@@ -1,14 +1,27 @@
-"""CLI UI 组件"""
+"""CLI UI components"""
 
 from .colors import RESET, BOLD, DIM, BLUE, CYAN, GREEN, YELLOW
-from .components import error, info, success, warn, format_error, format_info, format_success, format_warn
+from .components import (
+    MessageType,
+    error,
+    info,
+    success,
+    warn,
+    format_error,
+    format_info,
+    format_success,
+    format_warn,
+    format_message,
+    print_message,
+)
 from .layout import Layout
 from .widgets import SelectMenu
+from .menu import MenuAction, MenuItem, is_action, is_cancelled, confirm_dialog
 from .permission_handler import CLIPermissionHandler
 from .interactive import ask, Wizard, parse_selection_arg
 
 __all__ = [
-    # 颜色
+    # Colors
     "RESET",
     "BOLD",
     "DIM",
@@ -16,23 +29,32 @@ __all__ = [
     "CYAN",
     "GREEN",
     "YELLOW",
-    # 消息函数
+    # Message functions
     "error",
     "success",
     "info",
     "warn",
-    # 格式化函数（不打印）
+    # Format functions (no print)
     "format_error",
     "format_success",
     "format_info",
     "format_warn",
-    # 布局
+    "format_message",
+    "print_message",
+    "MessageType",
+    # Layout
     "Layout",
-    # 组件
+    # Components
     "SelectMenu",
-    # 权限处理器
+    # Menu system
+    "MenuAction",
+    "MenuItem",
+    "is_action",
+    "is_cancelled",
+    "confirm_dialog",
+    # Permission handler
     "CLIPermissionHandler",
-    # 交互式提示
+    # Interactive prompts
     "ask",
     "Wizard",
     "parse_selection_arg",

@@ -1,19 +1,17 @@
-"""Session 管理命令"""
+"""Session management command"""
 
-from ..ui.colors import DIM, RESET
-from ..ui.components import format_error, format_info, format_success
-from ..ui.widgets import SelectMenu
+from ..ui import SelectMenu, MenuAction, MenuItem, is_cancelled, format_error, format_info, format_success
 from .base import Command, CommandContext, command
 
 
-@command("/session", "/s", description="管理对话会话")
+@command("/session", "/s", description="Manage conversation sessions")
 class SessionCommand(Command):
-    """Session 管理命令
+    """Session management command
 
-    支持以下用法:
-        /session         - 显示 SelectMenu 选择并恢复历史 session
-        /session list    - 列出所有 session
-        /session restore <id> - 恢复指定 session
+    Usage:
+        /session         - Show SelectMenu to select and restore session
+        /session list    - List all sessions
+        /session restore <id> - Restore specific session
     """
 
     def execute(self, ctx: CommandContext) -> bool:
@@ -30,7 +28,7 @@ class SessionCommand(Command):
         return self._restore_interactive(ctx)
 
     def _list_sessions(self, ctx: CommandContext) -> bool:
-        """列出所有 session"""
+        """List all sessions."""
         sessions = ctx.client.list_sessions()
         if not sessions:
             ctx.layout.add_command_output(format_info("No saved sessions"))
@@ -38,28 +36,26 @@ class SessionCommand(Command):
 
         ctx.layout.add_command_output(format_info("Saved sessions:"))
         for session in sessions:
-            ctx.layout.add_command_output(
-                f"  {DIM}{session.id}{RESET} - {self._format_display(session)}"
-            )
+            ctx.layout.add_command_output(f"  {session.id} - {self._format_display(session)}")
         return True
 
     def _restore_interactive(self, ctx: CommandContext) -> bool:
-        """交互式选择并恢复 session"""
+        """Interactively select and restore session."""
         sessions = ctx.client.list_sessions()
         if not sessions:
             ctx.layout.add_command_output(format_info("No saved sessions"))
             return True
 
         choices = [(s.id, self._format_display(s)) for s in sessions]
-        choices.append(("__EXIT__", f"{DIM}← Cancel{RESET}"))
+        choices.append(MenuItem.exit_())
 
         selected = SelectMenu("Select session to restore", choices).show()
-        if selected and selected != "__EXIT__":
+        if selected and not is_cancelled(selected):
             self._load_and_display(ctx, selected)
         return True
 
     def _restore_session(self, ctx: CommandContext, session_id: str) -> bool:
-        """恢复指定 session"""
+        """Restore specific session."""
         if not session_id:
             ctx.layout.add_command_output(format_error("Session ID required"))
             return True
@@ -67,31 +63,25 @@ class SessionCommand(Command):
         return True
 
     def _load_and_display(self, ctx: CommandContext, session_id: str) -> None:
-        """加载 session 并显示结果"""
-        # 先保存当前 session（如果有对话）
+        """Load session and display result."""
+        # Save current session if there are messages
         if ctx.client.agent.messages:
             ctx.client.save_session()
 
         session = ctx.client.load_session(session_id)
         if session:
             ctx.layout.render_session_history(session.messages)
-            ctx.layout.add_command_output(
-                format_success(f"Restored session: {session_id}")
-            )
+            ctx.layout.add_command_output(format_success(f"Restored session: {session_id}"))
         else:
-            ctx.layout.add_command_output(
-                format_error(f"Session not found: {session_id}")
-            )
+            ctx.layout.add_command_output(format_error(f"Session not found: {session_id}"))
 
     def _format_display(self, session) -> str:
-        """格式化 session 显示文本
+        """Format session display text.
 
-        格式: 03-18 14:30 "这是首个用户消息的预览..."
+        Format: 03-18 14:30 "First user message preview..."
         """
-        # 使用更新时间: 2026-03-18T14:30:22 -> 03-18 14:30
         formatted_time = session.updated_at[5:16].replace("T", " ") if session.updated_at else "unknown"
 
-        # 提取首个 user 消息的预览
         preview = ""
         for msg in session.messages:
             if msg.get("role") == "user":
