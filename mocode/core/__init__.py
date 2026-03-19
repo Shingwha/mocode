@@ -1,6 +1,6 @@
 """Core layer - 业务逻辑核心，独立于 UI"""
 
-from .config import Config
+from .config import Config, PluginConfig
 from .events import EventBus, EventType, Event, get_event_bus
 from .agent import AsyncAgent
 from .prompt import (
@@ -30,6 +30,7 @@ from .session import Session, SessionManager
 
 __all__ = [
     "Config",
+    "PluginConfig",
     "EventBus",
     "EventType",
     "Event",

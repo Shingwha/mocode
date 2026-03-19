@@ -11,6 +11,14 @@ from ..paths import CONFIG_PATH
 
 
 @dataclass
+class PluginConfig:
+    """Plugin configuration"""
+    enabled: list[str] = field(default_factory=list)
+    disabled: list[str] = field(default_factory=list)
+    settings: dict[str, dict] = field(default_factory=dict)
+
+
+@dataclass
 class RtkConfig:
     """RTK (Rust Token Killer) 配置"""
     enabled: bool = True  # 默认启用
@@ -53,6 +61,7 @@ class Config:
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     max_tokens: int = 8192
     rtk: RtkConfig = field(default_factory=RtkConfig)
+    plugins: PluginConfig = field(default_factory=PluginConfig)
 
     CONFIG_PATH: Path = CONFIG_PATH
 
@@ -142,6 +151,10 @@ class Config:
         if "rtk" in data:
             self.rtk = RtkConfig(**data["rtk"])
 
+        # 加载 Plugin 配置
+        if "plugins" in data:
+            self.plugins = PluginConfig(**data["plugins"])
+
     def save(self):
         """保存配置"""
         self.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -155,6 +168,7 @@ class Config:
             "permission": self.permission.to_dict(),
             "max_tokens": self.max_tokens,
             "rtk": asdict(self.rtk),
+            "plugins": asdict(self.plugins),
         }
 
         self.CONFIG_PATH.write_text(

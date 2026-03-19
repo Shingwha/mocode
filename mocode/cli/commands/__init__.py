@@ -7,6 +7,7 @@ from .provider import ProviderCommand
 from .skills_command import SkillsCommand
 from .rtk import RtkCommand
 from .session import SessionCommand
+from .plugin_command import PluginCommand
 
 __all__ = [
     "Command",
@@ -23,6 +24,7 @@ __all__ = [
     "SkillsCommand",
     "RtkCommand",
     "SessionCommand",
+    "PluginCommand",
 ]
 
 # 自动注册的内置命令
@@ -35,6 +37,7 @@ BUILTIN_COMMANDS = [
     SkillsCommand,
     RtkCommand,
     SessionCommand,
+    PluginCommand,
 ]
 
 

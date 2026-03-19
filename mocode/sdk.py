@@ -10,6 +10,7 @@ from .core.permission import (
 )
 from .core.prompt import PromptBuilder
 from .core.session import Session, SessionManager
+from .plugins import HookRegistry, PluginManager, PluginInfo
 from .providers import AsyncOpenAIProvider
 from .skills import SkillManager
 from .tools import register_all_tools
@@ -26,6 +27,7 @@ class MocodeClient:
     - 中断支持（通过 interrupt() 方法）
     - 可选的配置持久化
     - 自定义 Prompt 构建
+    - 插件系统支持（Hook 和 Plugin）
     """
 
     def __init__(
@@ -40,6 +42,9 @@ class MocodeClient:
         auto_register_tools: bool = True,
         workdir: str | None = None,
         prompt_builder: "PromptBuilder | None" = None,
+        hook_registry: HookRegistry | None = None,
+        plugin_manager: PluginManager | None = None,
+        auto_discover_plugins: bool = True,
     ):
         """初始化 mocode 客户端
 
@@ -54,6 +59,9 @@ class MocodeClient:
             auto_register_tools: 是否自动注册工具（幂等操作）
             workdir: 工作目录，用于 session 隔离，默认为当前目录
             prompt_builder: Prompt 构建器，为 None 时使用默认配置
+            hook_registry: Hook 注册表，为 None 时创建新实例
+            plugin_manager: Plugin 管理器，为 None 时创建新实例
+            auto_discover_plugins: 是否自动发现和启用插件
         """
         # 注册工具（幂等操作，可安全多次调用）
         if auto_register_tools:
@@ -64,6 +72,14 @@ class MocodeClient:
 
         # 初始化中断信号
         self._interrupt_token = interrupt_token or InterruptToken()
+
+        # 初始化 Hook 注册表
+        self.hook_registry = hook_registry or HookRegistry()
+
+        # 初始化 Plugin 管理器
+        self.plugin_manager = plugin_manager or PluginManager(
+            hook_registry=self.hook_registry
+        )
 
         # 持久化控制
         self._persistence = persistence
@@ -120,7 +136,22 @@ class MocodeClient:
             config=self.config,
             permission_handler=self._permission_handler,
             permission_matcher=self._permission_matcher,
+            hook_registry=self.hook_registry,
         )
+
+        # 自动发现和启用插件
+        if auto_discover_plugins:
+            self._init_plugins()
+
+    def _init_plugins(self) -> None:
+        """Initialize plugins from config"""
+        # Discover plugins
+        self.plugin_manager.discover()
+
+        # Enable plugins from config
+        enabled_plugins = self.config.plugins.enabled
+        for plugin_name in enabled_plugins:
+            self.plugin_manager.enable(plugin_name)
 
     async def chat(self, message: str) -> str:
         """发送消息并获取响应
@@ -535,6 +566,61 @@ class MocodeClient:
         """
         self.agent.update_system_prompt(prompt, clear_history=clear_history)
 
+    # Plugin management methods
+
+    def list_plugins(self) -> list[PluginInfo]:
+        """List all discovered plugins"""
+        return self.plugin_manager.list_plugins()
+
+    def enable_plugin(self, name: str) -> bool:
+        """Enable a plugin by name
+
+        Args:
+            name: Plugin name
+
+        Returns:
+            True if successful
+        """
+        success = self.plugin_manager.enable(name)
+        if success:
+            # Update config
+            if name not in self.config.plugins.enabled:
+                self.config.plugins.enabled.append(name)
+            if name in self.config.plugins.disabled:
+                self.config.plugins.disabled.remove(name)
+            self.save_config()
+        return success
+
+    def disable_plugin(self, name: str) -> bool:
+        """Disable a plugin by name
+
+        Args:
+            name: Plugin name
+
+        Returns:
+            True if successful
+        """
+        success = self.plugin_manager.disable(name)
+        if success:
+            # Update config
+            if name not in self.config.plugins.disabled:
+                self.config.plugins.disabled.append(name)
+            if name in self.config.plugins.enabled:
+                self.config.plugins.enabled.remove(name)
+            self.save_config()
+        return success
+
+    def get_plugin_info(self, name: str) -> PluginInfo | None:
+        """Get plugin info by name
+
+        Args:
+            name: Plugin name
+
+        Returns:
+            PluginInfo if found, None otherwise
+        """
+        return self.plugin_manager.get_plugin_info(name)
+
 
 # 便捷导出
 __all__ = [
@@ -554,6 +640,10 @@ __all__ = [
     "default_prompt",
     "minimal_prompt",
     "custom_prompt",
+    # Plugin system
+    "HookRegistry",
+    "PluginManager",
+    "PluginInfo",
 ]
 
 # Re-export prompt types for convenience

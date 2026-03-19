@@ -8,6 +8,7 @@ from ..tools.base import ToolRegistry
 from .events import EventType, EventBus, get_event_bus
 from .permission import PermissionAction, PermissionMatcher, PermissionHandler
 from .interrupt import InterruptToken
+from ..plugins import HookRegistry, HookPoint
 
 if TYPE_CHECKING:
     from .config import Config, PermissionConfig
@@ -26,6 +27,7 @@ class AsyncAgent:
         event_bus: EventBus | None = None,
         interrupt_token: InterruptToken | None = None,
         config: "Config | None" = None,
+        hook_registry: HookRegistry | None = None,
     ):
         self.provider = provider
         self.system_prompt = system_prompt
@@ -36,12 +38,24 @@ class AsyncAgent:
         self.event_bus = event_bus or get_event_bus()
         self.interrupt_token = interrupt_token
         self.config = config
+        self.hook_registry = hook_registry
 
     async def chat(self, user_input: str) -> str:
         """运行一轮异步对话（非流式，工具顺序执行）"""
         # 重置中断状态
         if self.interrupt_token:
             self.interrupt_token.reset()
+
+        # Trigger AGENT_CHAT_START hook
+        if self.hook_registry and self.hook_registry.has_hooks(HookPoint.AGENT_CHAT_START):
+            ctx = await self.hook_registry.trigger(
+                HookPoint.AGENT_CHAT_START,
+                {"input": user_input}
+            )
+            if ctx.modified and ctx.result:
+                user_input = ctx.result
+            if ctx.has_error:
+                return f"Hook error: {ctx._error}"
 
         self.messages.append({"role": "user", "content": user_input})
         self.event_bus.emit(EventType.MESSAGE_ADDED, {"role": "user", "content": user_input})
@@ -117,6 +131,13 @@ class AsyncAgent:
             # 添加工具结果
             self.messages.extend(tool_results)
 
+        # Trigger AGENT_CHAT_END hook
+        if self.hook_registry and self.hook_registry.has_hooks(HookPoint.AGENT_CHAT_END):
+            await self.hook_registry.trigger(
+                HookPoint.AGENT_CHAT_END,
+                {"response": final_response, "messages": self.messages}
+            )
+
         return final_response
 
     async def _call_with_interrupt_check(self, coro, check_interval: float = 0.1):
@@ -186,6 +207,17 @@ class AsyncAgent:
                     # 用户输入了自定义内容，作为工具结果返回
                     return user_response
 
+        # Trigger TOOL_BEFORE_RUN hook
+        if self.hook_registry and self.hook_registry.has_hooks(HookPoint.TOOL_BEFORE_RUN):
+            ctx = await self.hook_registry.trigger(
+                HookPoint.TOOL_BEFORE_RUN,
+                {"name": tool_name, "args": tool_args}
+            )
+            if ctx.modified and "args" in ctx.data:
+                tool_args = ctx.data["args"]
+            if ctx.has_error:
+                return f"Hook error: {ctx._error}"
+
         # 执行工具
         self.event_bus.emit(
             EventType.TOOL_START,
@@ -207,6 +239,15 @@ class AsyncAgent:
 
         if result is None:
             return "[interrupted]"
+
+        # Trigger TOOL_AFTER_RUN hook
+        if self.hook_registry and self.hook_registry.has_hooks(HookPoint.TOOL_AFTER_RUN):
+            ctx = await self.hook_registry.trigger(
+                HookPoint.TOOL_AFTER_RUN,
+                {"name": tool_name, "result": result, "args": tool_args}
+            )
+            if ctx.modified and ctx.result:
+                result = ctx.result
 
         self.event_bus.emit(
             EventType.TOOL_COMPLETE,

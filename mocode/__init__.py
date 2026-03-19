@@ -16,6 +16,18 @@ from .core.prompt import (
     minimal_prompt,
     custom_prompt,
 )
+from .plugins import (
+    Hook,
+    HookContext,
+    HookPoint,
+    Plugin,
+    PluginManager,
+    PluginInfo,
+    PluginMetadata,
+    PluginState,
+    HookRegistry,
+    hook,
+)
 
 # Gateway (lazy import to avoid dependency issues)
 def get_gateway():
@@ -51,6 +63,17 @@ __all__ = [
     "default_prompt",
     "minimal_prompt",
     "custom_prompt",
+    # Plugin system
+    "Hook",
+    "HookContext",
+    "HookPoint",
+    "Plugin",
+    "PluginManager",
+    "PluginInfo",
+    "PluginMetadata",
+    "PluginState",
+    "HookRegistry",
+    "hook",
     # Gateway
     "get_gateway",
 ]
