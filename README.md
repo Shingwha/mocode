@@ -24,6 +24,7 @@ A CLI coding assistant powered by LLM with tool-calling capabilities.
 - [Permission System](docs/permission.md)
 - [Gateway Mode](docs/gateway.md)
 - [CLI Commands](docs/cli.md)
+- [Plugin System](docs/plugins.md)
 
 ## Installation
 
@@ -67,6 +68,7 @@ Config stored at `~/.mocode/config.json`:
 | `/session` | `/s` | Manage conversation sessions |
 | `/clear` | `/c` | Clear history (auto-save session) |
 | `/skills` | | List skills |
+| `/plugin` | | Manage plugins |
 | `/rtk` | | Manage RTK (token optimizer) |
 | `/exit` | `/q`, `quit` | Exit |
 
@@ -126,6 +128,12 @@ async def main():
     # Clear history with auto-save
     client.clear_history_with_save()
 
+    # Plugin management
+    plugins = client.list_plugins()
+    client.enable_plugin("my-plugin")
+    client.disable_plugin("my-plugin")
+    info = client.get_plugin_info("my-plugin")
+
 asyncio.run(main())
 ```
 
@@ -170,6 +178,14 @@ mocode/
 │       ├── builder.py  # PromptBuilder with caching
 │       ├── sections.py # Built-in prompt sections
 │       └── templates.py
+├── plugins/            # Plugin/hook system
+│   ├── base.py         # Plugin, Hook, HookPoint, PluginState
+│   ├── manager.py      # PluginManager - lifecycle management
+│   ├── registry.py     # HookRegistry, PluginRegistry
+│   ├── loader.py       # PluginLoader - discovery
+│   ├── decorators.py   # @hook decorator
+│   └── builtin/        # Built-in plugins
+│       └── rtk/        # RTK plugin (token optimizer)
 ├── gateway/            # Multi-channel bot support
 │   ├── base.py         # BaseChannel abstract class
 │   ├── config.py       # GatewayConfig
@@ -183,7 +199,6 @@ mocode/
 │   ├── search_tools.py # glob, grep
 │   ├── shell_tools.py  # bash
 │   ├── bash_session.py # SimpleBashSession
-│   ├── rtk_wrapper.py  # RTK integration
 │   └── context.py      # ContextVar for tool config
 ├── skills/             # Skill system (pluggable extensions)
 │   ├── manager.py      # SkillManager
@@ -196,7 +211,7 @@ mocode/
     │   ├── model.py    # /model command
     │   ├── provider.py # /provider command
     │   ├── session.py  # /session command
-    │   ├── rtk.py      # /rtk command
+    │   ├── plugin_command.py  # /plugin command
     │   └── skills_command.py
     └── ui/             # Layout, colors, widgets
         ├── colors.py   # ANSI color codes
@@ -221,6 +236,8 @@ mocode/
 5. **Session Management**: `SessionManager` stores conversations per working directory with auto-save on clear.
 
 6. **Prompt Builder**: Modular prompt construction with `StaticSection` and `DynamicSection`. Supports caching and conditional rendering.
+
+7. **Plugin System**: `PluginManager` manages plugins, `HookRegistry` tracks hooks. Hooks intercept at `HookPoint`s (`AGENT_CHAT_START`, `TOOL_BEFORE_RUN`, etc.). RTK is now a built-in plugin.
 
 ## Requirements
 

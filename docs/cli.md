@@ -22,8 +22,10 @@ uv run mocode
 | `/help` | `/h`, `/?`, `/` | Show commands or interactive menu |
 | `/model` | `/m` | Switch model |
 | `/provider` | `/p` | Switch provider |
+| `/session` | `/s` | Manage conversation sessions |
 | `/clear` | `/c` | Clear conversation history |
 | `/skills` | | List and activate skills |
+| `/plugin` | | Manage plugins |
 | `/rtk` | | Manage RTK (Token Killer) |
 | `/exit` | `/q`, `quit` | Exit application |
 
@@ -62,12 +64,27 @@ Shows available models for the current provider and allows switching.
 
 After switching provider, automatically prompts for model selection.
 
+### `/session` - Manage Sessions
+
+```bash
+/session          # Interactive session selection
+/s                # Alias
+/session list     # List all sessions
+/session save     # Save current session
+/session restore <id>  # Restore specific session
+/session delete <id>   # Delete specific session
+```
+
+Sessions are stored per working directory in `~/.mocode/sessions/`. When you clear history with `/clear`, the conversation is automatically saved as a session.
+
 ### `/clear` - Clear History
 
 ```bash
 /clear         # Clear conversation history
 /c             # Alias
 ```
+
+Automatically saves the current conversation as a session before clearing.
 
 ### `/skills` - List Skills
 
@@ -79,9 +96,32 @@ After switching provider, automatically prompts for model selection.
 
 Lists available skills from `~/.mocode/skills/` directory and allows activation.
 
+### `/plugin` - Manage Plugins
+
+```bash
+/plugin              # Interactive plugin selection
+/plugin list         # List all discovered plugins
+/plugin enable <name>    # Enable a plugin
+/plugin disable <name>   # Disable a plugin
+/plugin info <name>      # Show plugin information
+/plugin help         # Show help message
+```
+
+Plugins are discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`. When selected interactively, plugins can be toggled on/off.
+
+Output example for `/plugin list`:
+```
+Discovered plugins:
+--------------------------------------------------
+  rtk v1.0.0 [enabled] - RTK token optimizer
+  my-plugin v1.0.0 [disabled] - A sample plugin
+--------------------------------------------------
+Total: 2 plugin(s)
+```
+
 ### `/rtk` - Manage RTK
 
-RTK (Rust Token Killer) compresses command output to save tokens.
+RTK (Rust Token Killer) compresses command output to save tokens. RTK is now a built-in plugin.
 
 ```bash
 /rtk           # Interactive menu
@@ -151,11 +191,25 @@ Configuration is stored at `~/.mocode/config.json`:
     "read": "allow"
   },
   "max_tokens": 8192,
+  "plugins": {
+    "enabled": ["rtk"],
+    "disabled": []
+  },
   "rtk": {
     "enabled": true
   }
 }
 ```
+
+### Plugin Configuration
+
+The `plugins` section controls plugin behavior:
+
+| Field | Description |
+|-------|-------------|
+| `enabled` | List of plugins to enable automatically |
+| `disabled` | List of plugins to disable |
+| `settings` | Plugin-specific settings (optional) |
 
 ## Interactive Menus
 

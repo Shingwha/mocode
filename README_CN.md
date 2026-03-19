@@ -24,6 +24,7 @@
 - [权限系统](docs/permission.md)
 - [Gateway 模式](docs/gateway.md)
 - [CLI 命令](docs/cli.md)
+- [插件系统](docs/plugins.md)
 
 ## 安装
 
@@ -67,6 +68,7 @@ mocode gateway   # Gateway 模式（Telegram 机器人）
 | `/session` | `/s` | 管理对话会话 |
 | `/clear` | `/c` | 清空历史（自动保存 session） |
 | `/skills` | | 列出技能 |
+| `/plugin` | | 管理插件 |
 | `/rtk` | | 管理 RTK（token 优化器） |
 | `/exit` | `/q`, `quit` | 退出 |
 
@@ -126,6 +128,12 @@ async def main():
     # 清空历史并自动保存
     client.clear_history_with_save()
 
+    # 插件管理
+    plugins = client.list_plugins()
+    client.enable_plugin("my-plugin")
+    client.disable_plugin("my-plugin")
+    info = client.get_plugin_info("my-plugin")
+
 asyncio.run(main())
 ```
 
@@ -170,6 +178,14 @@ mocode/
 │       ├── builder.py  # PromptBuilder（带缓存）
 │       ├── sections.py # 内置 prompt 片段
 │       └── templates.py
+├── plugins/            # 插件/hook 系统
+│   ├── base.py         # Plugin, Hook, HookPoint, PluginState
+│   ├── manager.py      # PluginManager - 生命周期管理
+│   ├── registry.py     # HookRegistry, PluginRegistry
+│   ├── loader.py       # PluginLoader - 发现
+│   ├── decorators.py   # @hook 装饰器
+│   └── builtin/        # 内置插件
+│       └── rtk/        # RTK 插件（token 优化器）
 ├── gateway/            # 多渠道机器人支持
 │   ├── base.py         # BaseChannel 抽象类
 │   ├── config.py       # GatewayConfig
@@ -183,7 +199,6 @@ mocode/
 │   ├── search_tools.py # glob, grep
 │   ├── shell_tools.py  # bash
 │   ├── bash_session.py # SimpleBashSession
-│   ├── rtk_wrapper.py  # RTK 集成
 │   └── context.py      # ContextVar 工具配置
 ├── skills/             # 技能系统（可插拔扩展）
 │   ├── manager.py      # SkillManager
@@ -196,7 +211,7 @@ mocode/
     │   ├── model.py    # /model 命令
     │   ├── provider.py # /provider 命令
     │   ├── session.py  # /session 命令
-    │   ├── rtk.py      # /rtk 命令
+    │   ├── plugin_command.py  # /plugin 命令
     │   └── skills_command.py
     └── ui/             # 布局、颜色、组件
         ├── colors.py   # ANSI 颜色码
@@ -221,6 +236,8 @@ mocode/
 5. **Session 管理**: `SessionManager` 按工作目录存储对话，清空历史时自动保存。
 
 6. **Prompt 构建器**: 模块化 prompt 构建，支持 `StaticSection` 和 `DynamicSection`，带缓存和条件渲染。
+
+7. **插件系统**: `PluginManager` 管理插件，`HookRegistry` 跟踪 hooks。Hooks 在 `HookPoint`（`AGENT_CHAT_START`、`TOOL_BEFORE_RUN` 等）处拦截。RTK 现在是一个内置插件。
 
 ## 系统要求
 
