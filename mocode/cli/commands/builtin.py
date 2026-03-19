@@ -5,13 +5,13 @@ from ..ui.colors import DIM, RESET
 from .base import Command, CommandContext, command
 
 
-@command("/exit", "q", "quit", description="Exit program")
+@command("/exit", "/q", "/quit", description="Exit program")
 class QuitCommand(Command):
     def execute(self, ctx: CommandContext) -> bool:
         return False
 
 
-@command("/clear", "c", description="Clear conversation history (auto-save)")
+@command("/clear", "/c", description="Clear conversation history (auto-save)")
 class ClearCommand(Command):
     def execute(self, ctx: CommandContext) -> bool:
         saved = ctx.client.clear_history_with_save()

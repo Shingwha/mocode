@@ -186,17 +186,45 @@ class AsyncApp:
 
     async def _execute_command(self, ctx: CommandContext) -> bool:
         """执行命令（异步包装）"""
+        from .ui import SelectMenu, MenuItem, is_cancelled
+
         command_name = ctx.args.split()[0] if ctx.args else ""
+        matches = self.commands.find_matches(command_name)
 
-        # 特殊处理退出命令
-        if command_name in ["/exit", "/quit"]:
-            self.layout.add_exit_message("Goodbye!")
-            return False
+        if len(matches) == 0:
+            self.layout.add_command_output(f"Unknown command: {command_name}")
+            return True
 
-        # 将同步命令执行放入线程池
-        result = await asyncio.to_thread(self.commands.execute, ctx)
+        if len(matches) == 1:
+            cmd = matches[0]
+            # Check exit command
+            if cmd.name == "/exit":
+                self.layout.add_exit_message("Goodbye!")
+                return False
+            # Execute command with remaining args
+            parts = ctx.args.split(maxsplit=1)
+            ctx.args = parts[1] if len(parts) > 1 else ""
+            return await asyncio.to_thread(cmd.execute, ctx)
 
-        return result
+        # Multiple matches: show menu
+        # When showing all commands (prefix="/"), exclude "/" itself
+        choices = [
+            (cmd.name, f"{cmd.name} - {cmd.description}")
+            for cmd in matches
+            if command_name != "/" or cmd.name != "/"
+        ]
+        choices.append(MenuItem.exit_())
+
+        selected = SelectMenu(f"Commands matching '{command_name}'", choices).show()
+
+        if not is_cancelled(selected):
+            # Preserve original arguments after selection
+            parts = ctx.args.split(maxsplit=1)
+            original_args = parts[1] if len(parts) > 1 else ""
+            ctx.args = f"{selected} {original_args}" if original_args else selected
+            return await asyncio.to_thread(self.commands.execute, ctx)
+
+        return True
 
     def _preview_result(self, result: str) -> str:
         """生成结果预览"""

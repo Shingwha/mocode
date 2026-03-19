@@ -107,6 +107,16 @@ class CommandRegistry:
                 result.append(cmd)
         return sorted(result, key=lambda c: c.name)
 
+    def find_matches(self, prefix: str) -> list[Command]:
+        """Find all commands matching the prefix (name or alias)"""
+        seen = set()
+        result = []
+        for name, cmd in self._commands.items():
+            if name.startswith(prefix) and cmd.name not in seen:
+                seen.add(cmd.name)
+                result.append(cmd)
+        return sorted(result, key=lambda c: c.name)
+
     def execute(self, ctx: CommandContext) -> bool:
         """执行命令"""
         cmd = self.get(ctx.args.split()[0] if ctx.args else "")
