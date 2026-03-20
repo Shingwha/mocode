@@ -8,7 +8,7 @@ from typing import Callable, Generic, TypeVar
 from .colors import BOLD, CYAN, DIM, GREEN, MAGENTA, RESET, YELLOW
 from .components import error
 from .keyboard import getch
-from .textwrap import display_width, wrap_text
+from .textwrap import truncate_text
 
 T = TypeVar("T")
 
@@ -78,14 +78,15 @@ class SelectMenu(Generic[T]):
         choices: list[tuple[T, str]],
         current: T = None,
         max_width: int | None = None,
+        page_size: int = 8,
     ):
         self.title = title
         self.choices = choices
         self.current = current
         self.selected = 0
         self.max_width = max_width
-        self._wrapped_choices: list[list[str]] = []  # Cache wrapped lines
-        self._prepare_wrapped_choices()
+        self.page_size = page_size
+        self.scroll_offset = 0
 
         if current:
             for i, (key, _) in enumerate(choices):
@@ -93,24 +94,57 @@ class SelectMenu(Generic[T]):
                     self.selected = i
                     break
 
-    def _get_effective_width(self) -> int | None:
-        """Get effective max_width for wrapping."""
-        if self.max_width is None:
-            return None
+    def _get_effective_width(self) -> int:
+        """Get effective width for text truncation."""
+        terminal_width = shutil.get_terminal_size().columns
         # Account for "  > " prefix (4 chars)
-        return max(20, self.max_width - 4)
+        if self.max_width is None:
+            return max(20, terminal_width - 4)
+        return max(20, min(self.max_width, terminal_width) - 4)
 
-    def _prepare_wrapped_choices(self) -> None:
-        """Pre-wrap all choices and cache results."""
-        width = self._get_effective_width()
-        self._wrapped_choices = []
+    def _get_effective_page_size(self) -> int:
+        """Calculate effective page size based on terminal height."""
+        terminal_height = shutil.get_terminal_size().lines
+        # Reserve: title(1) + bottom space for errors/prompts(2)
+        available = max(3, terminal_height - 3)
+        return min(self.page_size, available)
 
-        for _, display in self.choices:
-            if width is None:
-                lines = display.split('\n')
-            else:
-                lines = wrap_text(display, width)
-            self._wrapped_choices.append(lines)
+    def _get_visible_range(self) -> tuple[int, int]:
+        """Calculate current visible option index range."""
+        total = len(self.choices)
+        page_size = self._get_effective_page_size()
+
+        if total <= page_size:
+            return 0, total
+
+        # Ensure selected is within visible area
+        if self.selected < self.scroll_offset:
+            self.scroll_offset = self.selected
+        elif self.selected >= self.scroll_offset + page_size:
+            self.scroll_offset = self.selected - page_size + 1
+
+        # Boundary check
+        self.scroll_offset = max(0, min(self.scroll_offset, total - page_size))
+        return self.scroll_offset, self.scroll_offset + page_size
+
+    def _format_title(self) -> str:
+        """Format title with position indicator."""
+        terminal_width = shutil.get_terminal_size().columns
+        page_size = self._get_effective_page_size()
+
+        if len(self.choices) <= page_size:
+            # Reserve 3 for "? " prefix
+            max_title_width = terminal_width - 3
+            title = truncate_text(self.title, max_title_width)
+            return f"{BOLD}{CYAN}?{RESET} {title}"
+
+        pos = self.selected + 1
+        total = len(self.choices)
+        pos_text = f" ({pos}/{total})"
+        # Reserve 3 for "? " prefix + pos_text length
+        max_title_width = terminal_width - 3 - len(pos_text)
+        title = truncate_text(self.title, max_title_width)
+        return f"{BOLD}{CYAN}?{RESET} {title} {DIM}{pos_text}{RESET}"
 
     def show(self) -> T | None:
         """显示菜单并返回选择结果
@@ -120,7 +154,7 @@ class SelectMenu(Generic[T]):
             - None: 用户取消（ESC/LEFT）
         """
         with esc_paused():
-            self._render_initial()
+            self._render()
 
             while True:
                 key = self._getch()
@@ -131,55 +165,48 @@ class SelectMenu(Generic[T]):
                     self.selected = (self.selected + 1) % len(self.choices)
                     self._render_update()
                 elif key in ("\r", "\n", "RIGHT"):
-                    return self.choices[self.selected][0]
+                    result = self.choices[self.selected][0]
+                    self._clear()
+                    return result
                 elif key == "LEFT" or key == "ESC":
+                    self._clear()
                     return None
 
-    def _render_initial(self):
-        """首次渲染"""
-        if self.title:
-            print(f"{BOLD}{CYAN}?{RESET} {self.title}")
-        for i, (key, _) in enumerate(self.choices):
-            for line in self._format_choice(i, key, self._wrapped_choices[i]):
-                print(line)
+    def _get_rendered_lines(self) -> int:
+        """Calculate how many lines were rendered."""
+        start, end = self._get_visible_range()
+        return (1 if self.title else 0) + (end - start)
 
-    def _render_update(self):
-        """更新渲染"""
-        total_lines = sum(len(lines) for lines in self._wrapped_choices)
-        if self.title:
-            total_lines += 1
-
-        print(f"\033[{total_lines}A", end="")
+    def _clear(self):
+        """Clear menu content."""
+        lines = self._get_rendered_lines()
+        print(f"\033[{lines}A", end="")
         print("\033[J", end="")
 
+    def _render(self):
+        """Render menu."""
+        start, end = self._get_visible_range()
         if self.title:
-            print(f"{BOLD}{CYAN}?{RESET} {self.title}")
-        for i, (key, _) in enumerate(self.choices):
-            for line in self._format_choice(i, key, self._wrapped_choices[i]):
-                print(line)
+            print(self._format_title())
+        for i in range(start, end):
+            print(self._format_choice(i, self.choices[i][0], self.choices[i][1]))
 
-    def _format_choice(self, index: int, key: T, lines: list[str]) -> list[str]:
-        """Format a choice (potentially multi-line) with proper styling."""
-        result = []
+    def _render_update(self):
+        """Update render after selection change."""
+        self._clear()
+        self._render()
 
-        for line_idx, line in enumerate(lines):
-            if index == self.selected:
-                marker = f"{GREEN}>{RESET}" if line_idx == 0 else " "
-                text = f"{BOLD}{line}{RESET}"
-            elif key == self.current:
-                marker = f"{DIM}*{RESET}" if line_idx == 0 else " "
-                text = line
-            else:
-                marker = f"{DIM} {RESET}" if line_idx == 0 else " "
-                text = f"{DIM}{line}{RESET}"
+    def _format_choice(self, index: int, key: T, text: str) -> str:
+        """Format a single-line choice."""
+        width = self._get_effective_width()
+        text = truncate_text(text, width)
 
-            # Continuation marker for wrapped lines
-            if line_idx == 0:
-                result.append(f"  {marker} {text}")
-            else:
-                result.append(f"    {DIM}│{RESET} {text}")
-
-        return result
+        if index == self.selected:
+            return f"  {GREEN}>{RESET} {BOLD}{text}{RESET}"
+        elif key == self.current:
+            return f"  {DIM}*{RESET} {text}"
+        else:
+            return f"  {DIM} {RESET} {DIM}{text}{RESET}"
 
     def _getch(self) -> str:
         """获取按键（使用统一的 keyboard 模块）"""

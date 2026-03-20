@@ -113,3 +113,55 @@ def _split_words(text: str) -> list[tuple[str, int]]:
         words.append((current, display_width(current)))
 
     return words
+
+
+def _is_cjk(char: str) -> bool:
+    """Check if character is CJK (double-width)."""
+    return (
+        "\u4e00" <= char <= "\u9fff"
+        or "\u3000" <= char <= "\u303f"
+        or "\uff00" <= char <= "\uffef"
+        or "\u3040" <= char <= "\u309f"
+        or "\u30a0" <= char <= "\u30ff"
+    )
+
+
+def truncate_text(text: str, width: int, suffix: str = "...") -> str:
+    """Truncate text to fit display width, adding suffix if truncated.
+
+    Handles CJK characters (2-width) and ANSI codes (0-width).
+
+    Args:
+        text: Text to truncate
+        width: Maximum display width
+        suffix: Suffix to add when truncated (default "...")
+
+    Returns:
+        Truncated text with suffix if needed, or original text if it fits
+    """
+    if display_width(text) <= width:
+        return text
+
+    suffix_width = display_width(suffix)
+    target_width = width - suffix_width
+
+    result = ""
+    result_width = 0
+    in_ansi = False
+
+    for char in text:
+        if char == '\033':
+            in_ansi = True
+            result += char
+        elif in_ansi:
+            result += char
+            if char == 'm':
+                in_ansi = False
+        else:
+            char_width = 2 if _is_cjk(char) else 1
+            if result_width + char_width > target_width:
+                break
+            result += char
+            result_width += char_width
+
+    return result + suffix
