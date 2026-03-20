@@ -1,5 +1,6 @@
 """交互式提示组件 - SelectMenu, ask(), Wizard"""
 
+import shutil
 import sys
 from contextlib import contextmanager
 from typing import Callable, Generic, TypeVar
@@ -7,6 +8,7 @@ from typing import Callable, Generic, TypeVar
 from .colors import BOLD, CYAN, DIM, GREEN, MAGENTA, RESET, YELLOW
 from .components import error
 from .keyboard import getch
+from .textwrap import display_width, wrap_text
 
 T = TypeVar("T")
 
@@ -75,17 +77,40 @@ class SelectMenu(Generic[T]):
         title: str,
         choices: list[tuple[T, str]],
         current: T = None,
+        max_width: int | None = None,
     ):
         self.title = title
         self.choices = choices
         self.current = current
         self.selected = 0
+        self.max_width = max_width
+        self._wrapped_choices: list[list[str]] = []  # Cache wrapped lines
+        self._prepare_wrapped_choices()
 
         if current:
             for i, (key, _) in enumerate(choices):
                 if key == current:
                     self.selected = i
                     break
+
+    def _get_effective_width(self) -> int | None:
+        """Get effective max_width for wrapping."""
+        if self.max_width is None:
+            return None
+        # Account for "  > " prefix (4 chars)
+        return max(20, self.max_width - 4)
+
+    def _prepare_wrapped_choices(self) -> None:
+        """Pre-wrap all choices and cache results."""
+        width = self._get_effective_width()
+        self._wrapped_choices = []
+
+        for _, display in self.choices:
+            if width is None:
+                lines = display.split('\n')
+            else:
+                lines = wrap_text(display, width)
+            self._wrapped_choices.append(lines)
 
     def show(self) -> T | None:
         """显示菜单并返回选择结果
@@ -114,31 +139,47 @@ class SelectMenu(Generic[T]):
         """首次渲染"""
         if self.title:
             print(f"{BOLD}{CYAN}?{RESET} {self.title}")
-        for i, (key, display) in enumerate(self.choices):
-            print(self._format_line(i, key, display))
+        for i, (key, _) in enumerate(self.choices):
+            for line in self._format_choice(i, key, self._wrapped_choices[i]):
+                print(line)
 
     def _render_update(self):
         """更新渲染"""
-        lines = len(self.choices) + (1 if self.title else 0)
-        print(f"\033[{lines}A", end="")
+        total_lines = sum(len(lines) for lines in self._wrapped_choices)
+        if self.title:
+            total_lines += 1
+
+        print(f"\033[{total_lines}A", end="")
         print("\033[J", end="")
+
         if self.title:
             print(f"{BOLD}{CYAN}?{RESET} {self.title}")
-        for i, (key, display) in enumerate(self.choices):
-            print(self._format_line(i, key, display))
+        for i, (key, _) in enumerate(self.choices):
+            for line in self._format_choice(i, key, self._wrapped_choices[i]):
+                print(line)
 
-    def _format_line(self, index: int, key: T, display: str) -> str:
-        """格式化单行"""
-        if index == self.selected:
-            marker = f"{GREEN}>{RESET}"
-            text = f"{BOLD}{display}{RESET}"
-        elif key == self.current:
-            marker = f"{DIM}*{RESET}"
-            text = display
-        else:
-            marker = f"{DIM} {RESET}"
-            text = f"{DIM}{display}{RESET}"
-        return f"  {marker} {text}"
+    def _format_choice(self, index: int, key: T, lines: list[str]) -> list[str]:
+        """Format a choice (potentially multi-line) with proper styling."""
+        result = []
+
+        for line_idx, line in enumerate(lines):
+            if index == self.selected:
+                marker = f"{GREEN}>{RESET}" if line_idx == 0 else " "
+                text = f"{BOLD}{line}{RESET}"
+            elif key == self.current:
+                marker = f"{DIM}*{RESET}" if line_idx == 0 else " "
+                text = line
+            else:
+                marker = f"{DIM} {RESET}" if line_idx == 0 else " "
+                text = f"{DIM}{line}{RESET}"
+
+            # Continuation marker for wrapped lines
+            if line_idx == 0:
+                result.append(f"  {marker} {text}")
+            else:
+                result.append(f"    {DIM}│{RESET} {text}")
+
+        return result
 
     def _getch(self) -> str:
         """获取按键（使用统一的 keyboard 模块）"""

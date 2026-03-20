@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .colors import BG_BLUE, BLUE, BOLD, CYAN, DIM, GREEN, RED, RESET, WHITE
+from .textwrap import display_width
 
 
 class SpacingManager:
@@ -230,23 +231,6 @@ class Layout:
         """打印前置空行（公共接口，供外部调用）"""
         self._spacing.print_space_if_needed(current_type)
 
-    def _display_width(self, text: str) -> int:
-        """Calculate display width (CJK chars take 2 width)"""
-        width = 0
-        for char in text:
-            # CJK chars take 2 width
-            if (
-                "\u4e00" <= char <= "\u9fff"
-                or "\u3000" <= char <= "\u303f"
-                or "\uff00" <= char <= "\uffef"
-                or "\u3040" <= char <= "\u309f"
-                or "\u30a0" <= char <= "\u30ff"
-            ):
-                width += 2
-            else:
-                width += 1
-        return width
-
     def _highlight_line(self, content: str, prefix: str = ">") -> tuple[str, int]:
         """Create a highlighted line with background color.
 
@@ -260,7 +244,7 @@ class Layout:
         width = shutil.get_terminal_size().columns
         prefix_width = len(prefix) + 1  # prefix + space
 
-        text_width = self._display_width(content)
+        text_width = display_width(content)
         total_width = prefix_width + text_width
         num_lines = (total_width + width - 1) // width
 
