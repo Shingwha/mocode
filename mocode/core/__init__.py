@@ -31,6 +31,7 @@ from .session_coordinator import SessionCoordinator, SessionState
 from .agent_facade import AgentFacade
 from .plugin_coordinator import PluginCoordinator
 from .orchestrator import MocodeCore
+from .utils import preview_result
 
 __all__ = [
     "Config",
@@ -71,4 +72,6 @@ __all__ = [
     "AgentFacade",
     "PluginCoordinator",
     "MocodeCore",
+    # Utils
+    "preview_result",
 ]

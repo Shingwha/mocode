@@ -2,6 +2,7 @@
 
 from .base import Command, CommandContext, CommandRegistry, command
 from .builtin import ClearCommand, HelpCommand, QuitCommand
+from .executor import CommandExecutor
 from .model import ModelCommand
 from .plugin import PluginCommand
 from .provider import ProviderCommand
@@ -12,6 +13,7 @@ __all__ = [
     "Command",
     "CommandContext",
     "CommandRegistry",
+    "CommandExecutor",
     "command",
     "register_builtin_commands",
     # 内置命令

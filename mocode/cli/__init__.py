@@ -1,5 +1,5 @@
 """CLI layer - 界面和交互"""
 
-from .app import AsyncApp
+from .app import CLIApp
 
-__all__ = ["AsyncApp"]
+__all__ = ["CLIApp"]

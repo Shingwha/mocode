@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from mocode import EventBus, EventType, MocodeClient
+from mocode import EventBus, EventType, MocodeClient, preview_result
 from mocode.core.permission import DefaultPermissionHandler
 
 from .base import BaseChannel
@@ -366,22 +366,12 @@ class GatewayManager:
 
     async def _on_tool_complete(self, channel: str, user_id: str, event) -> None:
         """工具完成 - 记录结果到控制台"""
-        result = self._preview_result(event.data.get("result", ""))
+        result = preview_result(event.data.get("result", ""))
         print(f"[{channel}:{user_id}] Tool result: {result}")
 
     async def _on_error(self, channel: str, user_id: str, event) -> None:
         """错误处理 - 记录到控制台"""
         print(f"[{channel}:{user_id}] Error: {event.data}")
-
-    def _preview_result(self, result: str) -> str:
-        """生成结果预览"""
-        lines = result.split("\n")
-        preview = lines[0][:60]
-        if len(lines) > 1:
-            preview += f" ... +{len(lines) - 1} lines"
-        elif len(lines[0]) > 60:
-            preview += "..."
-        return preview
 
 
 async def run_gateway() -> None:

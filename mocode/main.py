@@ -11,9 +11,9 @@ def main():
         return run_gateway()
 
     # 正常 CLI 模式
-    from .cli import AsyncApp
+    from .cli import CLIApp
 
-    app = AsyncApp()
+    app = CLIApp()
     try:
         asyncio.run(app.run())
     except KeyboardInterrupt:
