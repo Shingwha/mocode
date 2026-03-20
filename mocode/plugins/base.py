@@ -124,7 +124,11 @@ class Hook(Protocol):
 
 
 class HookBase:
-    """Base class for hooks with default implementations"""
+    """Base class for hooks - inherit from this, not from Hook Protocol
+
+    Hook is a Protocol for type checking, HookBase provides default implementations.
+    Subclasses should set _name, _hook_point, _priority and implement execute().
+    """
 
     _name: str = ""
     _hook_point: HookPoint = HookPoint.AGENT_CHAT_START

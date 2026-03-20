@@ -32,26 +32,30 @@ class PluginCoordinator:
         self._config = config
         self._on_change = on_change
 
-    def initialize(self, disabled_list: list[str] | None = None) -> list[PluginInfo]:
+    def initialize(self) -> list[PluginInfo]:
         """Initialize plugins from config
 
         Discovers plugins, auto-enables builtins, and enables
         plugins marked as enabled in config.
 
-        Args:
-            disabled_list: List of plugins to skip auto-enabling
-
         Returns:
             List of discovered plugins
         """
+        # Get disabled list from config
+        disabled_list = [
+            name for name, state in self._config.plugins.items()
+            if state == "disable"
+        ]
+
         # Discover and auto-enable builtins
         plugins = self._plugin_manager.discover_and_enable_builtins(
             disabled_list=disabled_list
         )
 
-        # Enable plugins from config
-        for plugin_name in self._config.plugins.enabled:
-            self._plugin_manager.enable(plugin_name)
+        # Enable plugins marked as enable in config
+        for plugin_name, state in self._config.plugins.items():
+            if state == "enable":
+                self._plugin_manager.enable(plugin_name)
 
         return plugins
 
@@ -67,10 +71,7 @@ class PluginCoordinator:
         success = self._plugin_manager.enable(name)
         if success:
             # Update config
-            if name not in self._config.plugins.enabled:
-                self._config.plugins.enabled.append(name)
-            if name in self._config.plugins.disabled:
-                self._config.plugins.disabled.remove(name)
+            self._config.plugins[name] = "enable"
 
             # Trigger persistence
             if self._on_change:
@@ -90,10 +91,7 @@ class PluginCoordinator:
         success = self._plugin_manager.disable(name)
         if success:
             # Update config
-            if name not in self._config.plugins.disabled:
-                self._config.plugins.disabled.append(name)
-            if name in self._config.plugins.enabled:
-                self._config.plugins.enabled.remove(name)
+            self._config.plugins[name] = "disable"
 
             # Trigger persistence
             if self._on_change:

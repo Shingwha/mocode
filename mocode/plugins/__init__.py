@@ -3,7 +3,7 @@
 Provides a hook/plugin architecture for extending mocode functionality.
 
 Usage:
-    from mocode.plugins import Plugin, Hook, HookPoint, hook
+    from mocode.plugins import Plugin, HookBase, HookPoint, hook
 
     # Create a plugin
     class MyPlugin(Plugin):
@@ -12,7 +12,17 @@ Usage:
         def on_disable(self): print("Disabled")
         def on_unload(self): print("Unloaded")
 
-    # Create a hook using decorator
+    # Create a hook by inheriting HookBase (recommended)
+    class MyHook(HookBase):
+        _name = "my-hook"
+        _hook_point = HookPoint.TOOL_AFTER_RUN
+        _priority = 25
+
+        def execute(self, context: HookContext) -> HookContext:
+            print(f"Tool executed: {context.data['name']}")
+            return context
+
+    # Or create a hook using decorator
     @hook(HookPoint.TOOL_AFTER_RUN, priority=25)
     def log_tool(context: HookContext) -> HookContext:
         print(f"Tool executed: {context.data['name']}")

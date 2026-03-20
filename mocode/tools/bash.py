@@ -162,10 +162,9 @@ def close_session():
 
 def _bash(args: dict) -> str:
     """执行 shell 命令（使用 Git Bash 持久化会话）"""
-    # 支持 cmd 或 command 作为参数名
-    cmd = args.get("cmd") or args.get("command")
+    cmd = args.get("command")
     if not cmd:
-        return "error: missing required parameter 'cmd'"
+        return "error: missing required parameter 'command'"
 
     # 检查是否是重启命令
     if args.get("restart"):
@@ -191,7 +190,6 @@ def register_bash_tools():
             "bash",
             "Run shell command in persistent Git Bash session",
             {
-                "cmd": "string?",
                 "command": "string?",
                 "restart": "boolean?",
                 "timeout": "number?",

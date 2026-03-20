@@ -1,24 +1,16 @@
 """RTK Plugin - Rust Token Killer integration for mocode"""
 
-from mocode.plugins import Hook, HookContext, HookPoint, Plugin, PluginMetadata
+from mocode.plugins import HookBase, HookContext, HookPoint, Plugin, PluginMetadata
 
 from .wrapper import check_installation, find_rtk, get_gain, install_rtk, should_wrap, wrap
 
 
-class RtkHook(Hook):
+class RtkHook(HookBase):
     """Hook that intercepts bash tool calls and wraps commands with RTK"""
 
-    @property
-    def name(self) -> str:
-        return "rtk-wrap"
-
-    @property
-    def hook_point(self) -> HookPoint:
-        return HookPoint.TOOL_BEFORE_RUN
-
-    @property
-    def priority(self) -> int:
-        return 10  # Execute early
+    _name = "rtk-wrap"
+    _hook_point = HookPoint.TOOL_BEFORE_RUN
+    _priority = 10  # Execute early
 
     def should_execute(self, context: HookContext) -> bool:
         # Only intercept bash tool calls
@@ -32,7 +24,7 @@ class RtkHook(Hook):
         args = context.data.get("args", {})
         command = args.get("command", "")
 
-        if should_wrap(command):
+        if command and should_wrap(command):
             args["command"] = wrap(command)
             context.modified = True
 
@@ -68,7 +60,7 @@ class RtkPlugin(Plugin):
     def on_unload(self) -> None:
         pass
 
-    def get_hooks(self) -> list[Hook]:
+    def get_hooks(self) -> list[HookBase]:
         return [RtkHook()]
 
     def get_commands(self) -> list:

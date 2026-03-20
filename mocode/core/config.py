@@ -10,12 +10,12 @@ from .permission import PermissionConfig
 from ..paths import CONFIG_PATH
 
 
-@dataclass
-class PluginConfig:
-    """Plugin configuration"""
-    enabled: list[str] = field(default_factory=list)
-    disabled: list[str] = field(default_factory=list)
-    settings: dict[str, dict] = field(default_factory=dict)
+class PluginConfig(dict):
+    """Plugin configuration - maps plugin name to 'enable' or 'disable'
+
+    Example: {"rtk": "enable", "test-plugin": "disable"}
+    """
+    pass
 
 
 @dataclass
@@ -130,7 +130,7 @@ class Config:
 
         # 加载 Plugin 配置
         if "plugins" in data:
-            self.plugins = PluginConfig(**data["plugins"])
+            self.plugins = PluginConfig(data["plugins"])
 
     def save(self):
         """保存配置"""
@@ -144,7 +144,7 @@ class Config:
             },
             "permission": self.permission.to_dict(),
             "max_tokens": self.max_tokens,
-            "plugins": asdict(self.plugins),
+            "plugins": dict(self.plugins),
         }
 
         self.CONFIG_PATH.write_text(

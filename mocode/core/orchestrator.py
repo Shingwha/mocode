@@ -110,9 +110,7 @@ class MocodeCore:
 
         # Auto-discover plugins
         if auto_discover_plugins:
-            self._plugin_coordinator.initialize(
-                disabled_list=self._config.plugins.disabled
-            )
+            self._plugin_coordinator.initialize()
 
     def _save_config(self) -> None:
         """Save config if persistence is enabled"""
