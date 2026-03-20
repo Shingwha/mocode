@@ -105,6 +105,10 @@ class AsyncAgent:
                     # 顺序执行工具（可中断）
                     result = await self._run_tool_async(tool_name, tool_args)
 
+                    # 如果工具执行被中断（包括用户 deny），直接返回
+                    if result == "[interrupted]":
+                        return "[interrupted]"
+
                     tool_results.append(
                         {
                             "role": "tool",
@@ -189,7 +193,11 @@ class AsyncAgent:
             action = self.permission_matcher.check(tool_name, tool_args)
 
             if action == PermissionAction.DENY:
-                return f"User denied tool '{tool_name}'"
+                # 显示工具名称和拒绝信息
+                self.event_bus.emit(EventType.TOOL_START, {"name": tool_name, "args": tool_args})
+                self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": "User denied this operation"})
+                self.event_bus.emit(EventType.INTERRUPTED, {"reason": "denied", "tool": tool_name})
+                return "[interrupted]"
 
             if action == PermissionAction.ASK:
                 # 必须有 permission_handler
@@ -200,11 +208,29 @@ class AsyncAgent:
 
                 # 处理用户响应
                 if user_response == "deny":
-                    return f"User denied tool '{tool_name}'"
+                    # 显示工具名称和拒绝信息
+                    self.event_bus.emit(EventType.TOOL_START, {"name": tool_name, "args": tool_args})
+                    self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": "User denied this operation"})
+                    self.event_bus.emit(EventType.INTERRUPTED, {"reason": "denied", "tool": tool_name})
+                    return "[interrupted]"
+                elif user_response == "interrupt":
+                    # ESC 中断
+                    self.event_bus.emit(EventType.TOOL_START, {"name": tool_name, "args": tool_args})
+                    self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": "User interrupted this operation"})
+                    self.event_bus.emit(EventType.INTERRUPTED, {"reason": "interrupted", "tool": tool_name})
+                    return "[interrupted]"
                 elif user_response == "allow":
                     pass  # 继续执行
                 else:
-                    # 用户输入了自定义内容，作为工具结果返回
+                    # 用户输入了自定义内容，发射事件让 UI 显示
+                    self.event_bus.emit(
+                        EventType.TOOL_START,
+                        {"name": tool_name, "args": tool_args},
+                    )
+                    self.event_bus.emit(
+                        EventType.TOOL_COMPLETE,
+                        {"name": tool_name, "result": user_response},
+                    )
                     return user_response
 
         # Trigger TOOL_BEFORE_RUN hook
@@ -238,6 +264,9 @@ class AsyncAgent:
         )
 
         if result is None:
+            # 工具执行被中断（ESC）
+            self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": "User interrupted this operation"})
+            self.event_bus.emit(EventType.INTERRUPTED, {"reason": "interrupted", "tool": tool_name})
             return "[interrupted]"
 
         # Trigger TOOL_AFTER_RUN hook

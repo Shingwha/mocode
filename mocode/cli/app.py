@@ -146,6 +146,9 @@ class AsyncApp:
     def _on_interrupted(self, event):
         """中断处理"""
         self.layout.set_thinking(False)
+        # 如果是工具被拒绝或中断，已经显示了消息，不需要再显示 [interrupted]
+        if event.data and event.data.get("reason") in ("denied", "interrupted"):
+            return
         self.layout.add_assistant_message("[interrupted]")
 
     # ===== 主循环 =====

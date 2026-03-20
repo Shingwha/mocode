@@ -27,7 +27,7 @@ class CLIPermissionHandler(PermissionHandler):
             tool_args: 工具参数
 
         Returns:
-            用户响应: "allow", "deny", 或自定义输入
+            用户响应: "allow", "deny", "interrupt", 或自定义输入
         """
         # 停止 thinking spinner（避免与菜单输出冲突）
         if self.layout:
@@ -48,10 +48,6 @@ class CLIPermissionHandler(PermissionHandler):
         else:
             title = f"Permission required for {GREEN}{tool_name}{RESET}"
 
-        # 打印前置空行（如果有 layout）
-        if self.layout:
-            self.layout.print_space_if_needed("permission")
-
         # 显示选择菜单
         menu = SelectMenu(
             title=title,
@@ -66,7 +62,10 @@ class CLIPermissionHandler(PermissionHandler):
 
         if result == "allow":
             return "allow"
-        elif result == "deny" or result is None:
+        elif result is None:
+            # ESC pressed = interrupt
+            return "interrupt"
+        elif result == "deny":
             return "deny"
         elif result == "input":
             # 获取用户输入
