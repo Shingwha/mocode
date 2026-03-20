@@ -72,8 +72,7 @@ mocode/
 │   ├── base.py         # Tool class and ToolRegistry
 │   ├── file_tools.py   # read, write, edit
 │   ├── search_tools.py # glob, grep
-│   ├── shell_tools.py  # bash
-│   └── bash_session.py # SimpleBashSession
+│   └── bash.py         # BashSession, bash tool
 ├── skills/             # Skill system
 │   ├── manager.py      # SkillManager
 │   ├── schema.py       # Skill dataclasses
@@ -145,8 +144,7 @@ Config stored at `~/.mocode/config.json`, or use `Config.from_dict(data)` for in
   "permission": { "*": "ask", "bash": "allow" },
   "max_tokens": 8192,
   "plugins": {
-    "enabled": ["rtk"],
-    "disabled": []
+    "rtk": "enable"
   },
   "gateway": {
     "channels": {

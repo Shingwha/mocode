@@ -23,11 +23,11 @@ uv run mocode
 | `/model` | `/m` | Switch model |
 | `/provider` | `/p` | Switch provider |
 | `/session` | `/s` | Manage conversation sessions |
-| `/clear` | `c` | Clear conversation history |
+| `/clear` | `/c` | Clear conversation history |
 | `/skills` | | List and activate skills |
 | `/plugin` | | Manage plugins |
 | `/rtk` | | Manage RTK (Token Killer) |
-| `/exit` | `q`, `quit` | Exit application |
+| `/exit` | `/q`, `/quit` | Exit application |
 
 ## Command Details
 
@@ -188,8 +188,7 @@ Configuration is stored at `~/.mocode/config.json`:
   },
   "max_tokens": 8192,
   "plugins": {
-    "enabled": ["rtk"],
-    "disabled": []
+    "rtk": "enable"
   }
 }
 ```
@@ -198,10 +197,18 @@ Configuration is stored at `~/.mocode/config.json`:
 
 The `plugins` section controls plugin behavior:
 
+```json
+{
+  "plugins": {
+    "rtk": "enable",
+    "my-plugin": "disable"
+  }
+}
+```
+
 | Field | Description |
 |-------|-------------|
-| `enabled` | List of plugins to enable automatically |
-| `disabled` | List of plugins to disable |
+| `plugin_name` | Set to `"enable"` or `"disable"` |
 
 ## Interactive Menus
 

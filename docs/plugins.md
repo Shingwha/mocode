@@ -139,10 +139,10 @@ plugin_class = MyPlugin
 ```python
 # ~/.mocode/plugins/my-plugin/plugin.py
 
-from mocode.plugins import Plugin, PluginMetadata, Hook, HookContext, HookPoint
+from mocode.plugins import Plugin, PluginMetadata, HookBase, HookContext, HookPoint
 
-class LogToolHook(Hook):
-    """A hook that logs tool executions"""
+class LogToolHook(HookBase):
+    """A hook that logs tool executions - inherit from HookBase, not Hook Protocol"""
 
     @property
     def name(self) -> str:
@@ -348,13 +348,9 @@ Enable plugins automatically in `~/.mocode/config.json`:
 ```json
 {
   "plugins": {
-    "enabled": ["my-plugin", "another-plugin"],
-    "disabled": ["old-plugin"],
-    "settings": {
-      "my-plugin": {
-        "option1": "value1"
-      }
-    }
+    "my-plugin": "enable",
+    "another-plugin": "enable",
+    "old-plugin": "disable"
   }
 }
 ```

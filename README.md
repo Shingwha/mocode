@@ -70,7 +70,7 @@ Config stored at `~/.mocode/config.json`:
 | `/skills` | | List skills |
 | `/plugin` | | Manage plugins |
 | `/rtk` | | Manage RTK (token optimizer) |
-| `/exit` | `/q`, `quit` | Exit |
+| `/exit` | `/q`, `/quit` | Exit |
 
 ### Interactive Menus
 
@@ -198,8 +198,7 @@ mocode/
 │   ├── base.py         # Tool class and ToolRegistry
 │   ├── file_tools.py   # read, write, edit
 │   ├── search_tools.py # glob, grep
-│   ├── shell_tools.py  # bash
-│   └── bash_session.py # SimpleBashSession
+│   └── bash.py         # BashSession, bash tool
 ├── skills/             # Skill system
 │   ├── manager.py      # SkillManager
 │   ├── schema.py       # Skill dataclasses
