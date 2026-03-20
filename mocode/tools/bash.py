@@ -1,11 +1,12 @@
-"""Git Bash 会话管理 - 简化版"""
+"""Git Bash 会话管理和工具"""
 
 import os
-import sys
 import subprocess
 import shutil
 from pathlib import Path
 from typing import Optional
+
+from .base import Tool, ToolRegistry
 
 
 def find_git_bash() -> Optional[Path]:
@@ -41,8 +42,18 @@ def _decode_bytes(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-class SimpleBashSession:
-    """简化的 Bash 会话 - 在 Python 层维护状态"""
+class BashSession:
+    """Bash 会话 - 在 Python 层维护状态
+
+    工作目录限制：
+    - cd 命令只在独立执行时更新会话工作目录
+    - 命令链中的 cd (如 "cd /path && ls") 不会持久化到下一条命令
+    - 建议使用独立的 cd 命令切换目录
+
+    示例：
+        cd /tmp           # 正确：工作目录切换到 /tmp
+        cd /tmp && ls     # 限制：ls 在 /tmp 执行，但下条命令仍用原目录
+    """
 
     def __init__(self):
         self.bash_path = find_git_bash()
@@ -73,9 +84,6 @@ class SimpleBashSession:
         if self._env_vars:
             exports = "; ".join([f'export {k}="{v}"' for k, v in self._env_vars.items()])
             full_cmd = f"{exports}; {command}"
-
-        # 调试输出（已关闭）
-        # print(f"[DEBUG] Executing: {full_cmd}", file=sys.stderr)
 
         try:
             result = subprocess.run(
@@ -132,14 +140,14 @@ class SimpleBashSession:
 
 
 # 全局会话
-_session: Optional[SimpleBashSession] = None
+_session: Optional[BashSession] = None
 
 
-def get_session() -> SimpleBashSession:
+def get_session() -> BashSession:
     """获取或创建会话"""
     global _session
     if _session is None:
-        _session = SimpleBashSession()
+        _session = BashSession()
     return _session
 
 
@@ -147,3 +155,47 @@ def close_session():
     """关闭会话"""
     global _session
     _session = None
+
+
+# ============ Tool ============
+
+
+def _bash(args: dict) -> str:
+    """执行 shell 命令（使用 Git Bash 持久化会话）"""
+    # 支持 cmd 或 command 作为参数名
+    cmd = args.get("cmd") or args.get("command")
+    if not cmd:
+        return "error: missing required parameter 'cmd'"
+
+    # 检查是否是重启命令
+    if args.get("restart"):
+        global _session
+        if _session:
+            _session.restart()
+            return "Bash session restarted"
+        return "error: no active session to restart"
+
+    try:
+        session = get_session()
+        return session.execute(cmd, timeout=args.get("timeout", 30))
+    except RuntimeError as e:
+        return f"error: {e}"
+    except Exception as e:
+        return f"error: {e}"
+
+
+def register_bash_tools():
+    """注册 bash 工具"""
+    ToolRegistry.register(
+        Tool(
+            "bash",
+            "Run shell command in persistent Git Bash session",
+            {
+                "cmd": "string?",
+                "command": "string?",
+                "restart": "boolean?",
+                "timeout": "number?",
+            },
+            _bash,
+        )
+    )

@@ -7,12 +7,16 @@ GitHub: https://github.com/rtk-ai/rtk
 """
 
 import platform
+import re
 import shutil
 import subprocess
 import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Optional
+
+# Command separators: &&, ||, ;
+COMMAND_SEPARATORS = re.compile(r'(\s*&&\s*|\s*\|\|\s*|\s*;\s*)')
 
 # RTK installation directory (managed by MoCode)
 RTK_INSTALL_DIR = Path.home() / ".mocode" / "bin"
@@ -90,11 +94,29 @@ def should_wrap(command: str) -> bool:
     return not any(stripped.startswith(p) for p in EXCLUDE_PREFIXES)
 
 
-def wrap(command: str) -> str:
-    """Wrap a command with RTK
+def _already_wrapped(command: str, rtk_path: str) -> bool:
+    """Check if command is already wrapped with RTK
 
     Args:
-        command: The original command
+        command: The command to check
+        rtk_path: RTK executable path
+
+    Returns:
+        True if command is already wrapped
+    """
+    stripped = command.strip()
+    # Check for "rtk " prefix or full path prefix
+    return stripped.startswith("rtk ") or stripped.startswith(f'"{rtk_path}"')
+
+
+def wrap(command: str) -> str:
+    """Wrap a command with RTK, handling command chains
+
+    Supports command chains with &&, ||, ; separators.
+    Each command in the chain is independently evaluated for wrapping.
+
+    Args:
+        command: The original command (may contain command chains)
 
     Returns:
         The wrapped command, or original if RTK is not installed
@@ -106,7 +128,29 @@ def wrap(command: str) -> str:
     # Use full path to avoid PATH issues
     # Convert to forward slashes for Git Bash compatibility
     rtk_path = rtk_path.replace("\\", "/")
-    return f'"{rtk_path}" {command}'
+
+    # Split command chain (preserving separators)
+    parts = COMMAND_SEPARATORS.split(command)
+    result = []
+
+    for part in parts:
+        stripped = part.strip()
+
+        # Separator or empty - preserve as-is
+        if stripped in ("&&", "||", ";") or not stripped:
+            result.append(part)
+        # Check if command should be wrapped
+        elif should_wrap(stripped):
+            # Avoid double-wrapping
+            if not _already_wrapped(stripped, rtk_path):
+                result.append(f'"{rtk_path}" {part}')
+            else:
+                result.append(part)
+        else:
+            # Blacklisted command - preserve as-is
+            result.append(part)
+
+    return "".join(result)
 
 
 def get_rtk_download_url() -> Optional[str]:
