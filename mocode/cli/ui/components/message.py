@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from ..base import Component, ComponentStyle
+from ..base import Component, ComponentState, ComponentStyle
 from .styles import MessagePreset, MessageStyle, MESSAGE_STYLES
 
 
