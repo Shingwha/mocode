@@ -1,6 +1,7 @@
 """Provider switch command"""
 
 from .base import Command, CommandContext, command
+from .utils import parse_selection_arg
 from ..ui import (
     SelectMenu,
     MenuAction,
@@ -11,7 +12,6 @@ from ..ui import (
     success,
     ask,
     Wizard,
-    parse_selection_arg,
 )
 from ..ui.colors import RESET, CYAN, GREEN, DIM
 

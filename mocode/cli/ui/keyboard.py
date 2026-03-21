@@ -1,6 +1,46 @@
 """Unified keyboard input utilities"""
 
 import sys
+from contextlib import contextmanager
+
+# Module-level pause flag for ESC monitoring
+_esc_monitor_paused = False
+
+
+@contextmanager
+def esc_paused():
+    """Context manager: pause ESC monitoring."""
+    global _esc_monitor_paused
+    _esc_monitor_paused = True
+    try:
+        yield
+    finally:
+        _esc_monitor_paused = False
+
+
+def check_esc_key() -> bool:
+    """Non-blocking check for ESC key.
+
+    Returns:
+        True if ESC pressed, False otherwise
+    """
+    if _esc_monitor_paused:
+        return False
+
+    if sys.platform == "win32":
+        import msvcrt
+        if msvcrt.kbhit():
+            ch = msvcrt.getch()
+            if ch == b"\x1b":
+                return True
+        return False
+    else:
+        import select
+        if select.select([sys.stdin], [], [], 0)[0]:
+            ch = sys.stdin.read(1)
+            if ch == "\x1b":
+                return True
+        return False
 
 
 def getch(with_arrows: bool = False) -> str:

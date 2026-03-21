@@ -1,30 +1,15 @@
 """Select component for interactive selection menus."""
 
 import shutil
-from contextlib import contextmanager
 from typing import Generic, TypeVar
 
 from ..base import Component, ComponentState
 from ..colors import RESET
-from ..keyboard import getch
+from ..keyboard import getch, esc_paused
 from ..textwrap import truncate_text
 from .styles import SelectStyle, DEFAULT_SELECT_STYLE
 
 T = TypeVar("T")
-
-# Module-level ESC monitor pause flag (shared with prompt.py compatibility)
-_esc_monitor_paused = False
-
-
-@contextmanager
-def _esc_paused():
-    """Context manager to pause ESC monitoring during interactive input."""
-    global _esc_monitor_paused
-    _esc_monitor_paused = True
-    try:
-        yield
-    finally:
-        _esc_monitor_paused = False
 
 
 class Select(Generic[T], Component):
@@ -133,7 +118,7 @@ class Select(Generic[T], Component):
         Returns:
             Selected value or None if cancelled
         """
-        with _esc_paused():
+        with esc_paused():
             self._render_menu()
 
             while True:

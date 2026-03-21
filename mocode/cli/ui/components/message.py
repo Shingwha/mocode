@@ -131,3 +131,24 @@ def info(text: str) -> None:
 def warn(text: str) -> None:
     """Print warning message."""
     print_message(text, MessagePreset.WARN)
+
+
+# Backward compatible format functions
+def format_error(text: str) -> str:
+    """Format error message."""
+    return format_message(text, MessagePreset.ERROR)
+
+
+def format_success(text: str) -> str:
+    """Format success message."""
+    return format_message(text, MessagePreset.SUCCESS)
+
+
+def format_info(text: str) -> str:
+    """Format info message."""
+    return format_message(text, MessagePreset.INFO)
+
+
+def format_warn(text: str) -> str:
+    """Format warning message."""
+    return format_message(text, MessagePreset.WARN)

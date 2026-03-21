@@ -68,7 +68,7 @@ class RtkPlugin(Plugin):
         from mocode.cli.commands.base import Command, CommandContext, command
         from mocode.cli.ui import SelectMenu, MenuAction, MenuItem, is_cancelled
         from mocode.cli.ui.colors import BOLD, RESET
-        from mocode.cli.ui.components import format_error, format_info, format_success
+        from mocode.cli.ui import format_error, format_info, format_success
 
         @command("/rtk", description="Manage RTK - compress command output")
         class RtkCommand(Command):

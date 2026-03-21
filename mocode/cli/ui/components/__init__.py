@@ -12,7 +12,19 @@ from .styles import (
     AnimatedStyle,
     DEFAULT_ANIMATED_STYLE,
 )
-from .message import Message, format_message, print_message, error, success, info, warn
+from .message import (
+    Message,
+    format_message,
+    print_message,
+    error,
+    success,
+    info,
+    warn,
+    format_error,
+    format_success,
+    format_info,
+    format_warn,
+)
 from .input import Input
 from .select import Select
 from .animated import Animated
@@ -39,27 +51,6 @@ def _convert_message_type(msg_type: MessageType) -> MessagePreset:
         MessageType.WARN: MessagePreset.WARN,
     }
     return mapping.get(msg_type, MessagePreset.INFO)
-
-
-# Backward compatible format functions
-def format_error(text: str) -> str:
-    """Format error message."""
-    return format_message(text, MessagePreset.ERROR)
-
-
-def format_success(text: str) -> str:
-    """Format success message."""
-    return format_message(text, MessagePreset.SUCCESS)
-
-
-def format_info(text: str) -> str:
-    """Format info message."""
-    return format_message(text, MessagePreset.INFO)
-
-
-def format_warn(text: str) -> str:
-    """Format warning message."""
-    return format_message(text, MessagePreset.WARN)
 
 
 __all__ = [

@@ -1,6 +1,7 @@
 """Plugin management command"""
 
 from .base import Command, CommandContext, command
+from .utils import parse_selection_arg
 from ..ui import (
     SelectMenu,
     MenuAction,
@@ -11,7 +12,6 @@ from ..ui import (
     success,
     info,
     ask,
-    parse_selection_arg,
 )
 from ..ui.colors import RESET, GREEN, YELLOW, RED, DIM, CYAN
 from ...plugins import PluginInfo, PluginState

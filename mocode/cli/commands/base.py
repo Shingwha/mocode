@@ -6,7 +6,7 @@ from typing import ClassVar, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..ui.layout import Layout
-    from ..ui.menu import MenuAction
+    from ..ui import MenuAction
     from ...sdk import MocodeClient
 
 

@@ -1,4 +1,4 @@
-"""命令工具函数"""
+"""Command utility functions"""
 
 from typing import Callable, TypeVar
 

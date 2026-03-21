@@ -3,9 +3,8 @@
 import asyncio
 
 from ..commands.base import CommandContext, CommandRegistry
-from ..ui import SelectMenu, is_cancelled
+from ..ui import SelectMenu, is_cancelled, MenuItem
 from ..ui.layout import Layout
-from ..ui.menu import MenuItem
 
 
 class CommandExecutor:

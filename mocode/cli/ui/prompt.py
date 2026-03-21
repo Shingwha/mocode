@@ -4,55 +4,15 @@ This module provides backward-compatible functions and classes that internally
 use the new component system.
 """
 
-import sys
-from contextlib import contextmanager
+from enum import Enum, auto
 from typing import Callable, Generic, TypeVar
 
 from .colors import BOLD, CYAN, DIM, GREEN, MAGENTA, RESET, YELLOW
 from .components import Message, Input, Select, MessagePreset
-from .keyboard import getch
+from .keyboard import getch, esc_paused, check_esc_key
 from .textwrap import truncate_text
 
 T = TypeVar("T")
-
-# Module-level pause flag for ESC monitoring
-_esc_monitor_paused = False
-
-
-@contextmanager
-def esc_paused():
-    """Context manager: pause ESC monitoring."""
-    global _esc_monitor_paused
-    _esc_monitor_paused = True
-    try:
-        yield
-    finally:
-        _esc_monitor_paused = False
-
-
-def check_esc_key() -> bool:
-    """Non-blocking check for ESC key.
-
-    Returns:
-        True if ESC pressed, False otherwise
-    """
-    if _esc_monitor_paused:
-        return False
-
-    if sys.platform == "win32":
-        import msvcrt
-        if msvcrt.kbhit():
-            ch = msvcrt.getch()
-            if ch == b"\x1b":
-                return True
-        return False
-    else:
-        import select
-        if select.select([sys.stdin], [], [], 0)[0]:
-            ch = sys.stdin.read(1)
-            if ch == "\x1b":
-                return True
-        return False
 
 
 def clear_screen():
@@ -209,3 +169,90 @@ class Wizard:
             self._cancelled = True
 
         return result
+
+
+# Menu system (merged from menu.py)
+
+class MenuAction(Enum):
+    """Standard menu action identifiers."""
+    EXIT = auto()
+    BACK = auto()
+    MANAGE = auto()
+    CONFIRM = auto()
+    CANCEL = auto()
+    ADD = auto()
+    EDIT = auto()
+    DELETE = auto()
+    DONE = auto()
+    DISABLED = auto()
+    LIST = auto()
+    INFO = auto()
+
+
+class MenuItem:
+    """Builder for menu items with consistent styling."""
+
+    @staticmethod
+    def exit_() -> tuple[MenuAction, str]:
+        return (MenuAction.EXIT, f"{DIM}<- Cancel{RESET}")
+
+    @staticmethod
+    def back() -> tuple[MenuAction, str]:
+        return (MenuAction.BACK, f"{DIM}<- Back{RESET}")
+
+    @staticmethod
+    def manage() -> tuple[MenuAction, str]:
+        return (MenuAction.MANAGE, f"{DIM}Manage...{RESET}")
+
+    @staticmethod
+    def add(label: str = "Add new") -> tuple[MenuAction, str]:
+        return (MenuAction.ADD, f"{GREEN}+ {label}{RESET}")
+
+    @staticmethod
+    def delete(label: str = "Delete") -> tuple[MenuAction, str]:
+        return (MenuAction.DELETE, f"{RED}- {label}{RESET}")
+
+    @staticmethod
+    def edit(label: str = "Edit") -> tuple[MenuAction, str]:
+        return (MenuAction.EDIT, f"{YELLOW}* {label}{RESET}")
+
+    @staticmethod
+    def confirm(label: str = "Yes, confirm") -> tuple[MenuAction, str]:
+        return (MenuAction.CONFIRM, f"{RED}x {label}{RESET}")
+
+    @staticmethod
+    def cancel(label: str = "No, cancel") -> tuple[MenuAction, str]:
+        return (MenuAction.CANCEL, f"{GREEN}o {label}{RESET}")
+
+    @staticmethod
+    def done(label: str = "Save and exit") -> tuple[MenuAction, str]:
+        return (MenuAction.DONE, f"{GREEN}* {label}{RESET}")
+
+    @staticmethod
+    def disabled(display: str) -> tuple[MenuAction, str]:
+        return (MenuAction.DISABLED, f"{DIM}{display}{RESET}")
+
+    @staticmethod
+    def list_(label: str = "List all") -> tuple[MenuAction, str]:
+        return (MenuAction.LIST, label)
+
+    @staticmethod
+    def info(label: str = "View info") -> tuple[MenuAction, str]:
+        return (MenuAction.INFO, label)
+
+
+def is_action(result, action: MenuAction) -> bool:
+    """Check if menu result matches an action."""
+    return result == action
+
+
+def is_cancelled(result) -> bool:
+    """Check if user cancelled (exit/back/None)."""
+    return result is None or result in (MenuAction.EXIT, MenuAction.BACK)
+
+
+def confirm_dialog(title: str) -> bool:
+    """Show yes/no confirmation dialog. Returns True if confirmed."""
+    menu = SelectMenu(title, [MenuItem.confirm(), MenuItem.cancel()])
+    result = menu.show()
+    return result == MenuAction.CONFIRM
