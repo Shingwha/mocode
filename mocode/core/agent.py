@@ -243,6 +243,18 @@ class AsyncAgent:
                 tool_args = ctx.data["args"]
             if ctx.has_error:
                 return f"Hook error: {ctx._error}"
+            # 如果 hook 已经提供了结果，跳过工具执行
+            if ctx.result is not None:
+                # 先发送 TOOL_START 事件（UI 需要显示工具调用）
+                self.event_bus.emit(
+                    EventType.TOOL_START,
+                    {"name": tool_name, "args": tool_args},
+                )
+                self.event_bus.emit(
+                    EventType.TOOL_COMPLETE,
+                    {"name": tool_name, "result": ctx.result},
+                )
+                return ctx.result
 
         # 执行工具
         self.event_bus.emit(
