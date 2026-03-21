@@ -18,8 +18,8 @@ from typing import Optional
 # Command separators: &&, ||, ;
 COMMAND_SEPARATORS = re.compile(r'(\s*&&\s*|\s*\|\|\s*|\s*;\s*)')
 
-# RTK installation directory (managed by MoCode)
-RTK_INSTALL_DIR = Path.home() / ".mocode" / "bin"
+# MoCode binary directory (managed by MoCode)
+MOCODE_BIN_DIR = Path.home() / ".mocode" / "bin"
 
 # Global RTK path cache
 _rtk_path: Optional[str] = None
@@ -27,6 +27,8 @@ _rtk_path: Optional[str] = None
 
 def find_rtk() -> Optional[str]:
     """Find RTK executable
+
+    Priority: ~/.mocode/bin > system PATH
 
     Returns:
         RTK executable path, or None if not found
@@ -37,21 +39,21 @@ def find_rtk() -> Optional[str]:
     if _rtk_path is not None:
         return _rtk_path if _rtk_path else None
 
-    # 1. Check system PATH
-    rtk = shutil.which("rtk")
-    if rtk:
-        _rtk_path = rtk
-        return rtk
-
-    # 2. Check MoCode installation directory (Windows priority)
+    # 1. Check MoCode installation directory first (higher priority)
     if platform.system() == "Windows":
-        rtk_exe = RTK_INSTALL_DIR / "rtk.exe"
+        rtk_exe = MOCODE_BIN_DIR / "rtk.exe"
     else:
-        rtk_exe = RTK_INSTALL_DIR / "rtk"
+        rtk_exe = MOCODE_BIN_DIR / "rtk"
 
     if rtk_exe.exists():
         _rtk_path = str(rtk_exe)
         return _rtk_path
+
+    # 2. Fallback to system PATH
+    rtk = shutil.which("rtk")
+    if rtk:
+        _rtk_path = rtk
+        return rtk
 
     # Mark as not found
     _rtk_path = ""
@@ -217,21 +219,21 @@ def install_rtk() -> bool:
 
     try:
         # Create installation directory
-        RTK_INSTALL_DIR.mkdir(parents=True, exist_ok=True)
+        MOCODE_BIN_DIR.mkdir(parents=True, exist_ok=True)
 
         # Download
-        zip_path = RTK_INSTALL_DIR / "rtk.zip"
+        zip_path = MOCODE_BIN_DIR / "rtk.zip"
         urllib.request.urlretrieve(url, zip_path)
 
         # Extract
         with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(RTK_INSTALL_DIR)
+            z.extractall(MOCODE_BIN_DIR)
 
         # Cleanup
         zip_path.unlink()
 
         # Verify
-        rtk_exe = RTK_INSTALL_DIR / "rtk.exe"
+        rtk_exe = MOCODE_BIN_DIR / "rtk.exe"
         if rtk_exe.exists():
             # Reset cache
             global _rtk_path

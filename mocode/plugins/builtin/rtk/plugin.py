@@ -150,7 +150,7 @@ class RtkPlugin(Plugin):
                 """Install RTK"""
                 import platform
 
-                from .wrapper import RTK_INSTALL_DIR, get_install_command
+                from .wrapper import MOCODE_BIN_DIR, get_install_command
 
                 ctx.layout.add_command_output(format_info("Installing RTK..."))
 
@@ -158,7 +158,7 @@ class RtkPlugin(Plugin):
                     ctx.layout.add_command_output(format_success("RTK installed successfully!"))
                     if platform.system() == "Windows":
                         ctx.layout.add_command_output(
-                            f'Add to PATH: setx PATH "%PATH%;{RTK_INSTALL_DIR}"'
+                            f'Add to PATH: setx PATH "%PATH%;{MOCODE_BIN_DIR}"'
                         )
                 else:
                     cmd = get_install_command()
