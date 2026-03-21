@@ -1,24 +1,27 @@
-"""交互式提示组件 - SelectMenu, ask(), Wizard"""
+"""Interactive prompt components - Backward compatible interface.
 
-import shutil
+This module provides backward-compatible functions and classes that internally
+use the new component system.
+"""
+
 import sys
 from contextlib import contextmanager
 from typing import Callable, Generic, TypeVar
 
 from .colors import BOLD, CYAN, DIM, GREEN, MAGENTA, RESET, YELLOW
-from .components import error
+from .components import Message, Input, Select, MessagePreset
 from .keyboard import getch
 from .textwrap import truncate_text
 
 T = TypeVar("T")
 
-# 模块级暂停标志，用于在交互组件显示期间暂停 ESC 监听
+# Module-level pause flag for ESC monitoring
 _esc_monitor_paused = False
 
 
 @contextmanager
 def esc_paused():
-    """上下文管理器：暂停 ESC 监听"""
+    """Context manager: pause ESC monitoring."""
     global _esc_monitor_paused
     _esc_monitor_paused = True
     try:
@@ -28,28 +31,23 @@ def esc_paused():
 
 
 def check_esc_key() -> bool:
-    """非阻塞检测 ESC 键
+    """Non-blocking check for ESC key.
 
     Returns:
-        True 如果检测到 ESC 键，False 否则
+        True if ESC pressed, False otherwise
     """
-    # 暂停时直接返回，不消费任何按键
     if _esc_monitor_paused:
         return False
 
     if sys.platform == "win32":
         import msvcrt
-
         if msvcrt.kbhit():
             ch = msvcrt.getch()
-            # ESC 键
             if ch == b"\x1b":
                 return True
         return False
     else:
         import select
-
-        # 非阻塞检测标准输入是否有数据
         if select.select([sys.stdin], [], [], 0)[0]:
             ch = sys.stdin.read(1)
             if ch == "\x1b":
@@ -58,18 +56,14 @@ def check_esc_key() -> bool:
 
 
 def clear_screen():
-    """清屏（保留光标位置）"""
-    # 清屏并移动光标到左上角
+    """Clear screen (preserve cursor position)."""
     print("\033[2J\033[H", end="")
 
 
 class SelectMenu(Generic[T]):
-    """交互式选择菜单
+    """Interactive selection menu - backward compatible wrapper.
 
-    Returns:
-        - 选中的 key: 用户选择了某个选项
-        - None: 用户取消（ESC/LEFT）
-        - KeyboardInterrupt: Ctrl+C
+    Uses the new Select component internally.
     """
 
     def __init__(
@@ -80,12 +74,29 @@ class SelectMenu(Generic[T]):
         max_width: int | None = None,
         page_size: int = 8,
     ):
+        """Initialize SelectMenu.
+
+        Args:
+            title: Menu title
+            choices: List of (value, label) tuples
+            current: Currently selected value
+            max_width: Maximum text width
+            page_size: Items per page
+        """
+        self._select = Select(
+            title,
+            choices,
+            current=current,
+            max_width=max_width,
+            page_size=page_size
+        )
+        # Expose properties for backward compatibility
         self.title = title
         self.choices = choices
         self.current = current
-        self.selected = 0
         self.max_width = max_width
         self.page_size = page_size
+        self.selected = 0
         self.scroll_offset = 0
 
         if current:
@@ -94,144 +105,17 @@ class SelectMenu(Generic[T]):
                     self.selected = i
                     break
 
-    def _get_effective_width(self) -> int:
-        """Get effective width for text truncation."""
-        terminal_width = shutil.get_terminal_size().columns
-        # Account for "  > " prefix (4 chars)
-        if self.max_width is None:
-            return max(20, terminal_width - 4)
-        return max(20, min(self.max_width, terminal_width) - 4)
-
-    def _get_effective_page_size(self) -> int:
-        """Calculate effective page size based on terminal height."""
-        terminal_height = shutil.get_terminal_size().lines
-        # Reserve: title(1) + bottom space for errors/prompts(2)
-        available = max(3, terminal_height - 3)
-        return min(self.page_size, available)
-
-    def _get_visible_range(self) -> tuple[int, int]:
-        """Calculate current visible option index range."""
-        total = len(self.choices)
-        page_size = self._get_effective_page_size()
-
-        if total <= page_size:
-            return 0, total
-
-        # Ensure selected is within visible area
-        if self.selected < self.scroll_offset:
-            self.scroll_offset = self.selected
-        elif self.selected >= self.scroll_offset + page_size:
-            self.scroll_offset = self.selected - page_size + 1
-
-        # Boundary check
-        self.scroll_offset = max(0, min(self.scroll_offset, total - page_size))
-        return self.scroll_offset, self.scroll_offset + page_size
-
-    def _format_title(self) -> str:
-        """Format title with position indicator."""
-        terminal_width = shutil.get_terminal_size().columns
-        page_size = self._get_effective_page_size()
-
-        if len(self.choices) <= page_size:
-            # Reserve 3 for "? " prefix
-            max_title_width = terminal_width - 3
-            title = truncate_text(self.title, max_title_width)
-            return f"{BOLD}{CYAN}?{RESET} {title}"
-
-        pos = self.selected + 1
-        total = len(self.choices)
-        pos_text = f" ({pos}/{total})"
-        # Reserve 3 for "? " prefix + pos_text length
-        max_title_width = terminal_width - 3 - len(pos_text)
-        title = truncate_text(self.title, max_title_width)
-        return f"{BOLD}{CYAN}?{RESET} {title} {DIM}{pos_text}{RESET}"
-
     def show(self) -> T | None:
-        """显示菜单并返回选择结果
+        """Show menu and return selection.
 
         Returns:
-            - 选中的 key
-            - None: 用户取消（ESC/LEFT）
+            Selected value or None if cancelled
         """
-        with esc_paused():
-            self._render()
-
-            while True:
-                key = self._getch()
-                if key == "UP":
-                    self.selected = (self.selected - 1) % len(self.choices)
-                    self._render_update()
-                elif key == "DOWN":
-                    self.selected = (self.selected + 1) % len(self.choices)
-                    self._render_update()
-                elif key in ("\r", "\n", "RIGHT"):
-                    result = self.choices[self.selected][0]
-                    self._clear()
-                    return result
-                elif key == "LEFT" or key == "ESC":
-                    self._clear()
-                    return None
-
-    def _get_rendered_lines(self) -> int:
-        """Calculate how many lines were rendered."""
-        start, end = self._get_visible_range()
-        return (1 if self.title else 0) + (end - start)
-
-    def _clear(self):
-        """Clear menu content."""
-        lines = self._get_rendered_lines()
-        print(f"\033[{lines}A", end="")
-        print("\033[J", end="")
-
-    def _render(self):
-        """Render menu."""
-        start, end = self._get_visible_range()
-        if self.title:
-            print(self._format_title())
-        for i in range(start, end):
-            print(self._format_choice(i, self.choices[i][0], self.choices[i][1]))
-
-    def _render_update(self):
-        """Update render after selection change."""
-        self._clear()
-        self._render()
-
-    def _format_choice(self, index: int, key: T, text: str) -> str:
-        """Format a single-line choice."""
-        width = self._get_effective_width()
-        text = truncate_text(text, width)
-
-        if index == self.selected:
-            return f"  {GREEN}>{RESET} {BOLD}{text}{RESET}"
-        elif key == self.current:
-            return f"  {DIM}*{RESET} {text}"
-        else:
-            return f"  {DIM} {RESET} {DIM}{text}{RESET}"
-
-    def _getch(self) -> str:
-        """获取按键（使用统一的 keyboard 模块）"""
-        return getch(with_arrows=True)
-
-
-def _readline_with_esc() -> str | None:
-    """Read a line with ESC support. Returns None if ESC pressed."""
-    chars = []
-    while True:
-        ch = getch(with_arrows=False)
-        if ch == "ESC":
-            return None
-        elif ch in ("\r", "\n"):
-            print()  # New line after enter
-            return "".join(chars)
-        elif ch == "\x7f" or ch == "\x08":  # Backspace (Unix/Windows)
-            if chars:
-                chars.pop()
-                print("\b \b", end="", flush=True)  # Erase character
-        elif ch == "\x03":  # Ctrl+C
-            return None
-        elif ch:  # Printable character
-            chars.append(ch)
-            print(ch, end="", flush=True)
+        result = self._select.show()
+        # Sync state
+        self.selected = self._select.selected
+        self.scroll_offset = self._select.scroll_offset
+        return result
 
 
 def ask(
@@ -242,74 +126,46 @@ def ask(
     required: bool = False,
     validator: Callable[[str], bool | str] | None = None,
 ) -> str | None:
-    """
-    Unified input prompt function with ESC support.
+    """Unified input prompt with ESC support.
+
+    Uses the new Input component internally.
 
     Args:
-        message: The prompt message to display
-        hint: Optional hint text shown in dim color
-        default: Default value if user presses Enter (implies not required)
+        message: Prompt message
+        hint: Optional hint text
+        default: Default value if Enter pressed
         required: If True, empty input returns None
-        validator: Optional validation function. Returns True for valid,
-                   False for invalid (shows generic error), or str for custom error message
+        validator: Validation function
 
     Returns:
-        The input string, default value, or None if cancelled (ESC/Ctrl+C)
+        Input string, default, or None if cancelled
     """
-    if message:
-        print(f"{BOLD}{CYAN}?{RESET} {message}")
-    if hint:
-        print(f"{DIM}  {hint}{RESET}")
-
-    with esc_paused():
-        try:
-            print(f"{MAGENTA}>{RESET} ", end="", flush=True)
-            value = _readline_with_esc()
-        except (KeyboardInterrupt, EOFError):
-            print(f"{YELLOW}Cancelled{RESET}")
-            return None
-
-    if value is None:
-        print(f"{YELLOW}Cancelled{RESET}")
-        return None  # ESC pressed
-
-    value = value.strip()
-
-    # Handle empty input
-    if not value:
-        if default is not None:
-            return default
-        if required:
-            error("Value cannot be empty")
-            return None
-        return ""
-
-    # Validate if provided
-    if validator:
-        result = validator(value)
-        if result is True:
-            return value
-        if result is False:
-            error("Invalid value")
-            return None
-        # result is a custom error message string
-        error(result)
-        return None
-
-    return value
+    inp = Input(
+        message,
+        hint=hint,
+        default=default,
+        required=required,
+        validator=validator
+    )
+    return inp.show()
 
 
 class Wizard:
-    """Manages multi-step input flows with automatic cancellation tracking."""
+    """Multi-step input flow manager with cancellation tracking."""
 
     def __init__(self, title: str | None = None):
+        """Initialize wizard.
+
+        Args:
+            title: Optional wizard title
+        """
         self._title = title
         self._cancelled = False
         self._started = False
 
     @property
     def cancelled(self) -> bool:
-        """Returns True if any step was cancelled."""
+        """Whether any step was cancelled."""
         return self._cancelled
 
     def step(
@@ -321,17 +177,22 @@ class Wizard:
         required: bool = False,
         validator: Callable[[str], bool | str] | None = None,
     ) -> str | None:
-        """
-        Execute one step of the wizard.
+        """Execute one wizard step.
 
-        Returns None and marks wizard as cancelled if input fails.
-        Note: Empty input for optional fields returns "" (not None).
-        None always indicates cancellation or validation failure.
+        Args:
+            message: Prompt message
+            hint: Optional hint
+            default: Default value
+            required: Whether input is required
+            validator: Validation function
+
+        Returns:
+            Input value or None if cancelled
         """
         if self._cancelled:
             return None
 
-        # Show wizard title on first step
+        # Show title on first step
         if self._title and not self._started:
             print(f"{BOLD}{CYAN}?{RESET} {self._title}\n")
             self._started = True
@@ -344,7 +205,6 @@ class Wizard:
             validator=validator,
         )
 
-        # None means cancelled (Ctrl+C) or validation failed
         if result is None:
             self._cancelled = True
 

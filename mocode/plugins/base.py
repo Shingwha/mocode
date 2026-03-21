@@ -31,6 +31,12 @@ class HookPoint(Enum):
     PROMPT_BUILD_START = auto()
     PROMPT_BUILD_END = auto()
 
+    # UI Component lifecycle
+    UI_COMPONENT_CREATED = auto()
+    UI_COMPONENT_RENDERED = auto()
+    UI_COMPONENT_COMPLETED = auto()
+    UI_COMPONENT_CLEARED = auto()
+
 
 class PluginState(Enum):
     """Plugin state machine"""

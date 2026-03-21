@@ -19,6 +19,9 @@ class EventType(Enum):
     STATUS_UPDATE = auto()    # 状态栏更新
     PERMISSION_ASK = auto()   # 权限询问
     INTERRUPTED = auto()      # 中断完成
+    # Component events
+    COMPONENT_STATE_CHANGE = auto()  # 组件状态变化
+    COMPONENT_COMPLETE = auto()      # 组件完成
 
 
 @dataclass

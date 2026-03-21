@@ -1,57 +1,66 @@
-"""UI components - Unified message handling."""
+"""UI components - Backward compatible interface.
 
-from enum import Enum
-from .colors import CYAN, GREEN, RED, RESET, YELLOW
+This module provides backward-compatible functions and types that internally
+use the new component system.
+"""
 
-
-class MessageType(Enum):
-    """Message types for styling."""
-    ERROR = ("x", RED)
-    SUCCESS = ("*", GREEN)
-    INFO = ("->", CYAN)
-    WARN = ("!", YELLOW)
-
-
-def format_message(text: str, msg_type: MessageType) -> str:
-    """Format a message with type-specific styling."""
-    symbol, color = msg_type.value
-    return f"{color}{symbol}{RESET} {text}"
-
-
-def print_message(text: str, msg_type: MessageType) -> None:
-    """Format and print a message."""
-    print(format_message(text, msg_type))
+from .components import (
+    MessageType,
+    Message,
+    MessagePreset,
+    MESSAGE_STYLES,
+    Input,
+    Select,
+    Animated,
+    format_message,
+    print_message,
+    error,
+    success,
+    info,
+    warn,
+)
 
 
-# Convenience functions
-def error(text: str) -> None:
-    print_message(text, MessageType.ERROR)
-
-
-def success(text: str) -> None:
-    print_message(text, MessageType.SUCCESS)
-
-
-def info(text: str) -> None:
-    print_message(text, MessageType.INFO)
-
-
-def warn(text: str) -> None:
-    print_message(text, MessageType.WARN)
-
-
-# Format-only versions (return string, no print)
+# Backward compatible format functions
 def format_error(text: str) -> str:
-    return format_message(text, MessageType.ERROR)
+    """Format error message."""
+    return format_message(text, MessagePreset.ERROR)
 
 
 def format_success(text: str) -> str:
-    return format_message(text, MessageType.SUCCESS)
+    """Format success message."""
+    return format_message(text, MessagePreset.SUCCESS)
 
 
 def format_info(text: str) -> str:
-    return format_message(text, MessageType.INFO)
+    """Format info message."""
+    return format_message(text, MessagePreset.INFO)
 
 
 def format_warn(text: str) -> str:
-    return format_message(text, MessageType.WARN)
+    """Format warning message."""
+    return format_message(text, MessagePreset.WARN)
+
+
+# Export all
+__all__ = [
+    # Backward compatible
+    "MessageType",
+    "format_message",
+    "print_message",
+    "error",
+    "success",
+    "info",
+    "warn",
+    "format_error",
+    "format_success",
+    "format_info",
+    "format_warn",
+    # New components
+    "Message",
+    "MessagePreset",
+    "MESSAGE_STYLES",
+    "Input",
+    "Select",
+    "Animated",
+]
