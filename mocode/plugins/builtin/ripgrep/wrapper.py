@@ -85,8 +85,11 @@ def run_ripgrep(pattern: str, path: str = ".", limit: int = 100) -> Optional[str
         if not lines or lines == [""]:
             return "none"
 
-        # Limit results
-        return "\n".join(lines[:limit])
+        # Add header to show ripgrep was used
+        header = f"# ripgrep: {len(lines)} results for '{pattern}' in '{path}'"
+        results = "\n".join(lines[:limit])
+
+        return f"{header}\n{results}"
     except subprocess.TimeoutExpired:
         return None
     except Exception:
@@ -129,18 +132,18 @@ def get_download_url() -> Optional[str]:
     system = platform.system()
     machine = platform.machine().lower()
 
-    # GitHub releases URL
-    base_url = "https://github.com/BurntSushi/ripgrep/releases/latest/download"
+    # GitHub releases URL (use specific version for reliability)
+    base_url = "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0"
 
     if system == "Darwin":  # macOS
         if machine in ["arm64", "aarch64"]:
-            return f"{base_url}/ripgrep-14.1.0-aarch64-apple-darwin.tar.gz"
+            return f"{base_url}/ripgrep-15.1.0-aarch64-apple-darwin.tar.gz"
         else:
-            return f"{base_url}/ripgrep-14.1.0-x86_64-apple-darwin.tar.gz"
+            return f"{base_url}/ripgrep-15.1.0-x86_64-apple-darwin.tar.gz"
     elif system == "Linux":
-        return f"{base_url}/ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz"
+        return f"{base_url}/ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz"
     elif system == "Windows":
-        return f"{base_url}/ripgrep-14.1.0-x86_64-pc-windows-msvc.zip"
+        return f"{base_url}/ripgrep-15.1.0-x86_64-pc-windows-msvc.zip"
 
     return None
 
