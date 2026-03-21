@@ -15,7 +15,7 @@ class MessagePreset(Enum):
 
     ERROR = ("x", RED, "")
     SUCCESS = ("*", GREEN, "")
-    INFO = ("->", CYAN, "")
+    INFO = ("○", CYAN, "")
     WARN = ("!", YELLOW, "")
     QUESTION = ("?", CYAN, BOLD)
 
@@ -39,7 +39,7 @@ MESSAGE_STYLES: dict[MessagePreset, MessageStyle] = {
         completed=ComponentStyle(symbol="*", color=GREEN, bg_color=BG_GREEN)
     ),
     MessagePreset.INFO: MessageStyle(
-        active=ComponentStyle(symbol="->", color=CYAN)
+        active=ComponentStyle(symbol="○", color=CYAN)
     ),
     MessagePreset.WARN: MessageStyle(
         active=ComponentStyle(symbol="!", color=YELLOW)
@@ -94,24 +94,10 @@ DEFAULT_SELECT_STYLE = SelectStyle()
 class AnimatedStyle:
     """Style configuration for Animated component."""
 
-    frames: tuple[str, ...] = ("|", "/", "-", "\\")
+    frames: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
     color: str = CYAN
     text_style: str = DIM
     interval: float = 0.08  # seconds
 
 
-# Spinner frames (Braille patterns)
-SPINNER_FRAMES = ("|", "/", "-", "\\")
-
-# Dots frames
-DOTS_FRAMES = (".  ", ".. ", "...", "   ")
-
-# Braille spinner (more elegant)
-BRAILLE_FRAMES = ("|", "/", "-", "\\")
-
-DEFAULT_ANIMATED_STYLE = AnimatedStyle(
-    frames=BRAILLE_FRAMES,
-    color=CYAN,
-    text_style=DIM,
-    interval=0.08
-)
+DEFAULT_ANIMATED_STYLE = AnimatedStyle()

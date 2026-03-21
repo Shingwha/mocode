@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from .base import Component, ComponentState
 
 if TYPE_CHECKING:
-    from .components import Message, Input, Select, Animated
+    from .components import Animated, Input, Message, Select
     from .components.styles import MessagePreset
 
 
@@ -15,14 +15,26 @@ class SpacingRule:
     """Rules for spacing between components."""
 
     # Types that need leading space
-    before_types: set[str] = field(default_factory=lambda: {
-        "assistant", "tool_call", "tool_result", "permission", "error", "exit", "command"
-    })
+    before_types: set[str] = field(
+        default_factory=lambda: {
+            "assistant",
+            "tool_call",
+            "tool_result",
+            "permission",
+            "error",
+            "exit",
+            "command",
+            "user_input",
+        }
+    )
     # Pairs that don't need space between them (previous, current)
-    no_space_pairs: set[tuple[str, str]] = field(default_factory=lambda: {
-        ("tool_call", "tool_result"),
-        ("user_input", "assistant"),
-    })
+    no_space_pairs: set[tuple[str, str]] = field(
+        default_factory=lambda: {
+            ("tool_call", "tool_result"),
+            ("user_input", "assistant"),
+            ("user_input", "tool_call"),
+        }
+    )
 
 
 class ComponentCoordinator:
@@ -75,7 +87,9 @@ class ComponentCoordinator:
         if component_id in self._components:
             del self._components[component_id]
 
-    def _on_component_state_change(self, old_state: ComponentState, new_state: ComponentState) -> None:
+    def _on_component_state_change(
+        self, old_state: ComponentState, new_state: ComponentState
+    ) -> None:
         """Handle component state changes."""
         pass  # Can be extended for event emission
 
@@ -91,8 +105,10 @@ class ComponentCoordinator:
             pair = (self._last_type, current_type)
             if pair not in self._spacing_rule.no_space_pairs:
                 # Check if current type needs space
-                if (current_type in self._spacing_rule.before_types or
-                    self._last_type not in self._spacing_rule.before_types):
+                if (
+                    current_type in self._spacing_rule.before_types
+                    or self._last_type not in self._spacing_rule.before_types
+                ):
                     print()
         self._last_type = current_type
 
@@ -110,7 +126,9 @@ class ComponentCoordinator:
 
     # Factory methods for creating components
 
-    def message(self, text: str, preset: "MessagePreset", type_hint: str = "") -> "Message":
+    def message(
+        self, text: str, preset: "MessagePreset", type_hint: str = ""
+    ) -> "Message":
         """Create and register a Message component.
 
         Args:
@@ -122,11 +140,14 @@ class ComponentCoordinator:
             Registered Message component
         """
         from .components import Message
+
         msg = Message(text, preset)
         self.register(msg, type_hint or "message")
         return msg
 
-    def input(self, message: str = "", type_hint: str = "user_input", **kwargs) -> "Input":
+    def input(
+        self, message: str = "", type_hint: str = "user_input", **kwargs
+    ) -> "Input":
         """Create and register an Input component.
 
         Args:
@@ -138,11 +159,14 @@ class ComponentCoordinator:
             Registered Input component
         """
         from .components import Input
+
         inp = Input(message, **kwargs)
         self.register(inp, type_hint)
         return inp
 
-    def select(self, title: str, choices: list, type_hint: str = "select", **kwargs) -> "Select":
+    def select(
+        self, title: str, choices: list, type_hint: str = "select", **kwargs
+    ) -> "Select":
         """Create and register a Select component.
 
         Args:
@@ -155,11 +179,14 @@ class ComponentCoordinator:
             Registered Select component
         """
         from .components import Select
+
         sel = Select(title, choices, **kwargs)
         self.register(sel, type_hint)
         return sel
 
-    def animated(self, text: str = "Thinking", type_hint: str = "thinking", **kwargs) -> "Animated":
+    def animated(
+        self, text: str = "Thinking", type_hint: str = "thinking", **kwargs
+    ) -> "Animated":
         """Create and register an Animated component.
 
         Args:
@@ -171,6 +198,7 @@ class ComponentCoordinator:
             Registered Animated component
         """
         from .components import Animated
+
         anim = Animated(text, **kwargs)
         self.register(anim, type_hint)
         return anim

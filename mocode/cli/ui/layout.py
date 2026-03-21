@@ -126,7 +126,7 @@ class Layout:
         """
         self._coordinator.print_space_if_needed("tool_call")
         args_str = f"{DIM}({args_preview}){RESET}" if args_preview else ""
-        print(f"{CYAN}*{RESET} {GREEN}{name}{RESET}{args_str}")
+        print(f"{CYAN}●{RESET} {GREEN}{name}{RESET}{args_str}")
 
     def add_tool_result(self, preview: str, max_length: int = 60) -> None:
         """Add tool result display.
@@ -139,7 +139,7 @@ class Layout:
         text = preview
         if len(text) > max_length:
             text = text[:max_length - 3] + "..."
-        print(f"  {DIM}| {text}{RESET}")
+        print(f"  {DIM}⎿ {text}{RESET}")
 
     def add_tool_error(self, error: str) -> None:
         """Add tool error display.
