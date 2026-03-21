@@ -33,6 +33,7 @@ class SpacingRule:
             ("tool_call", "tool_result"),
             ("user_input", "assistant"),
             ("user_input", "tool_call"),
+            ("user_input", "user_input"),
         }
     )
 
