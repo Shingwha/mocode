@@ -103,6 +103,14 @@ class PluginCoordinator:
         """
         return self._plugin_manager.get_plugin_info(name)
 
+    def discover_plugins(self) -> list[PluginInfo]:
+        """Re-discover plugins after installation
+
+        Returns:
+            List of discovered plugins
+        """
+        return self._plugin_manager.discover()
+
     @property
     def plugin_manager(self) -> PluginManager:
         """Underlying plugin manager"""

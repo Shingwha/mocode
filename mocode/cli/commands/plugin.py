@@ -12,18 +12,60 @@ from ..ui import (
     success,
     info,
     ask,
+    MultiSelect,
+    confirm_dialog,
 )
 from ..ui.colors import RESET, GREEN, YELLOW, RED, DIM, CYAN
 from ...plugins import PluginInfo, PluginState
+from ...plugins.installer import PluginInstaller, PluginSourceType
+from ...paths import PLUGINS_DIR
 
 
 @command("/plugin", description="Manage plugins")
 class PluginCommand(Command):
     """Plugin management command"""
 
+    def __init__(self):
+        self._installer = None
+
+    def _get_installer(self) -> PluginInstaller:
+        """Get or create plugin installer."""
+        if self._installer is None:
+            self._installer = PluginInstaller(plugins_dir=PLUGINS_DIR)
+        return self._installer
+
     def execute(self, ctx: CommandContext) -> bool:
         arg = ctx.args.strip()
 
+        # Install command
+        if arg.startswith("install "):
+            url = arg[8:].strip()
+            return self._install_plugin(ctx, url)
+        elif arg == "install":
+            error("Usage: /plugin install <github-url>")
+            return True
+
+        # Uninstall command
+        if arg.startswith("uninstall "):
+            name = arg[10:].strip()
+            return self._uninstall_plugin(ctx, name)
+        elif arg == "uninstall":
+            error("Usage: /plugin uninstall <name>")
+            return True
+
+        # Update command
+        if arg.startswith("update "):
+            name = arg[7:].strip()
+            return self._update_plugin(ctx, name)
+        elif arg == "update":
+            error("Usage: /plugin update <name>")
+            return True
+
+        # Installed list
+        if arg == "installed":
+            return self._list_installed(ctx)
+
+        # Existing commands
         if arg.startswith("list"):
             return self._list_plugins(ctx)
         elif arg.startswith("info "):
@@ -52,6 +94,187 @@ class PluginCommand(Command):
                 return True
             self._toggle_plugin(ctx, plugin_name)
 
+        return True
+
+    def _install_plugin(self, ctx: CommandContext, url: str) -> bool:
+        """Install plugin from GitHub URL."""
+        if not url:
+            error("Usage: /plugin install <github-url>")
+            return True
+
+        installer = self._get_installer()
+
+        try:
+            # Discover plugins in repository
+            source_type, candidates = installer.discover_from_repo(url)
+
+            if not candidates:
+                error("No valid plugin found in repository")
+                return True
+
+            # Single plugin: install directly
+            if source_type == PluginSourceType.SINGLE:
+                candidate = candidates[0]
+                info(f"Installing {candidate.name}...")
+
+                result = installer.install(url, candidate=candidate)
+
+                if result.success:
+                    if result.already_installed:
+                        info(f"Plugin '{result.plugin_name}' is already installed")
+                    else:
+                        success(f"Plugin '{result.plugin_name}' installed successfully")
+                        # Refresh plugin list
+                        ctx.client.discover_plugins()
+                else:
+                    error(result.error)
+
+                return True
+
+            # Multi-plugin: show selection
+            info(f"Found {len(candidates)} plugins in repository")
+
+            choices = [
+                (c.name, f"{c.name} - {c.description}" if c.description else c.name)
+                for c in candidates
+            ]
+
+            multi_select = MultiSelect(
+                "Select plugins to install",
+                choices,
+                min_selections=1,
+            )
+
+            selected = multi_select.show()
+
+            if not selected:
+                info("Installation cancelled")
+                return True
+
+            # Install selected plugins
+            selected_candidates = [c for c in candidates if c.name in selected]
+
+            results = installer.install_multiple(url, selected_candidates)
+
+            # Show results
+            success_count = sum(1 for r in results if r.success)
+            for r in results:
+                if r.success:
+                    success(f"  + {r.plugin_name}")
+                else:
+                    error(f"  - {r.plugin_name}: {r.error}")
+
+            if success_count > 0:
+                ctx.client.discover_plugins()
+                success(f"Installed {success_count} plugin(s)")
+
+            return True
+
+        except ValueError as e:
+            error(str(e))
+            return True
+        except Exception as e:
+            error(f"Installation failed: {e}")
+            return True
+
+    def _uninstall_plugin(self, ctx: CommandContext, name: str) -> bool:
+        """Uninstall a plugin."""
+        if not name:
+            error("Usage: /plugin uninstall <name>")
+            return True
+
+        installer = self._get_installer()
+
+        # Check if plugin exists
+        plugin_info = ctx.client.get_plugin_info(name)
+        if not plugin_info:
+            error(f"Plugin '{name}' not found")
+            return True
+
+        # Check if it was installed via /plugin install
+        installed_info = installer.get_installed_info(name)
+        if not installed_info:
+            error(f"Plugin '{name}' was not installed via /plugin install")
+            info("You can manually remove it from ~/.mocode/plugins/")
+            return True
+
+        # Confirm uninstall
+        if not confirm_dialog(f"Uninstall plugin '{name}'?"):
+            info("Cancelled")
+            return True
+
+        # Disable first if enabled
+        if plugin_info.state == PluginState.ENABLED:
+            ctx.client.disable_plugin(name)
+
+        # Uninstall
+        if installer.uninstall(name):
+            success(f"Plugin '{name}' uninstalled")
+            ctx.client.discover_plugins()
+        else:
+            error(f"Failed to uninstall '{name}'")
+
+        return True
+
+    def _update_plugin(self, ctx: CommandContext, name: str) -> bool:
+        """Update a plugin to latest version."""
+        if not name:
+            error("Usage: /plugin update <name>")
+            return True
+
+        installer = self._get_installer()
+
+        # Check if plugin exists
+        plugin_info = ctx.client.get_plugin_info(name)
+        if not plugin_info:
+            error(f"Plugin '{name}' not found")
+            return True
+
+        # Check if it was installed via /plugin install
+        installed_info = installer.get_installed_info(name)
+        if not installed_info:
+            error(f"Plugin '{name}' was not installed via /plugin install")
+            return True
+
+        info(f"Updating {name}...")
+
+        # Disable first if enabled
+        if plugin_info.state == PluginState.ENABLED:
+            ctx.client.disable_plugin(name)
+
+        # Update
+        result = installer.update(name)
+
+        if result.success:
+            success(f"Plugin '{name}' updated successfully")
+            ctx.client.discover_plugins()
+        else:
+            error(result.error)
+
+        return True
+
+    def _list_installed(self, ctx: CommandContext) -> bool:
+        """List plugins installed via /plugin install."""
+        installer = self._get_installer()
+        installed = installer.list_installed()
+
+        if not installed:
+            if ctx.layout:
+                ctx.layout.add_command_output(f"{DIM}No plugins installed via /plugin install{RESET}")
+            return True
+
+        lines = [f"{CYAN}Installed plugins:{RESET}", "-" * 50]
+
+        for info in installed:
+            lines.append(f"  {info.name}")
+            lines.append(f"    Source: {info.source}")
+            lines.append(f"    Version: {info.version}")
+            lines.append(f"    Method: {info.method}")
+
+        lines.extend(["-" * 50, f"Total: {len(installed)} plugin(s)"])
+
+        if ctx.layout:
+            ctx.layout.add_command_output("\n".join(lines))
         return True
 
     def _select_interactive(self, client, plugins: list[PluginInfo]) -> str | None:
@@ -251,12 +474,21 @@ class PluginCommand(Command):
         """Show help message."""
         help_text = f"""{CYAN}Plugin management commands:{RESET}
 
-/plugin              Interactive plugin selection
-/plugin <n>          Select by index (toggle enable/disable)
-/plugin <name>       Select by name (toggle enable/disable)
-/plugin list         List all discovered plugins
-/plugin info <name>  Show plugin information
-/plugin help         Show this help message"""
+/plugin                Interactive plugin selection
+/plugin <n>            Select by index (toggle enable/disable)
+/plugin <name>         Select by name (toggle enable/disable)
+/plugin list           List all discovered plugins
+/plugin info <name>    Show plugin information
+/plugin install <url>  Install plugin from GitHub
+/plugin uninstall <name> Uninstall a plugin
+/plugin update <name>  Update a plugin to latest version
+/plugin installed      List plugins installed via /plugin install
+/plugin help           Show this help message
+
+{DIM}GitHub URL formats:
+  owner/repo
+  https://github.com/owner/repo
+  https://github.com/owner/repo/tree/branch{RESET}"""
         if ctx.layout:
             ctx.layout.add_command_output(help_text)
         return True

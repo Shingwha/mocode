@@ -338,6 +338,10 @@ class MocodeCore:
         """Get plugin info by name"""
         return self._plugin_coordinator.get_plugin_info(name)
 
+    def discover_plugins(self) -> list[PluginInfo]:
+        """Re-discover plugins after installation"""
+        return self._plugin_coordinator.discover_plugins()
+
     # Properties
 
     @property

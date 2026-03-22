@@ -28,6 +28,7 @@ from .message import (
 from .input import Input
 from .select import Select
 from .animated import Animated
+from .multiselect import MultiSelect
 
 # Backward compatible MessageType enum
 from enum import Enum
@@ -68,6 +69,7 @@ __all__ = [
     "Message",
     "Input",
     "Select",
+    "MultiSelect",
     "Animated",
     # Convenience functions
     "format_message",

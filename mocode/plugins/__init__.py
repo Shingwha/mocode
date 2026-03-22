@@ -43,6 +43,13 @@ from .decorators import HookBuilder, async_hook, hook
 from .loader import BUILTIN_DIR, PluginLoader
 from .manager import PluginManager
 from .registry import HookRegistry, PluginRegistry
+from .installer import (
+    PluginInstaller,
+    PluginCandidate,
+    InstallResult,
+    InstallMethod,
+    PluginSourceType,
+)
 
 __all__ = [
     # Base classes
@@ -64,6 +71,12 @@ __all__ = [
     # Manager
     "PluginManager",
     "PluginLoader",
+    # Installer
+    "PluginInstaller",
+    "PluginCandidate",
+    "InstallResult",
+    "InstallMethod",
+    "PluginSourceType",
     # Constants
     "BUILTIN_DIR",
 ]

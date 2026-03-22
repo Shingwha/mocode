@@ -254,6 +254,10 @@ class MocodeClient:
         """Get plugin info by name"""
         return self._core.get_plugin_info(name)
 
+    def discover_plugins(self) -> list[PluginInfo]:
+        """Re-discover plugins after installation"""
+        return self._core.discover_plugins()
+
     # Properties
 
     @property

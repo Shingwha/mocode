@@ -16,6 +16,7 @@ from .components import (
     MESSAGE_STYLES,
     Input,
     Select,
+    MultiSelect,
     Animated,
     error,
     info,
@@ -81,6 +82,7 @@ __all__ = [
     "MESSAGE_STYLES",
     "Input",
     "Select",
+    "MultiSelect",
     "Animated",
     # Message functions
     "error",
