@@ -3,7 +3,10 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from .context import PluginContext
 
 
 class HookPoint(Enum):
@@ -168,6 +171,7 @@ class Plugin(ABC):
     metadata: PluginMetadata
     state: PluginState = PluginState.DISCOVERED
     _hooks: list[Hook] = field(default_factory=list, init=False)
+    _context: "PluginContext | None" = field(default=None, init=False, repr=False)
 
     def on_load(self) -> None:
         """Called when plugin is loaded into memory. Override if needed."""
@@ -184,6 +188,15 @@ class Plugin(ABC):
     def on_unload(self) -> None:
         """Called when plugin is unloaded from memory. Override if needed."""
         pass
+
+    def set_context(self, context: "PluginContext") -> None:
+        """Called by PluginManager to inject context after on_enable"""
+        self._context = context
+
+    @property
+    def context(self) -> "PluginContext | None":
+        """Access to plugin context (available after on_enable)"""
+        return self._context
 
     def get_hooks(self) -> list[Hook]:
         """Return list of hooks provided by this plugin"""

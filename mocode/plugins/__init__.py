@@ -39,6 +39,7 @@ from .base import (
     PluginMetadata,
     PluginState,
 )
+from .context import PluginContext
 from .decorators import HookBuilder, async_hook, hook
 from .loader import BUILTIN_DIR, PluginLoader
 from .manager import PluginManager
@@ -61,6 +62,8 @@ __all__ = [
     "PluginInfo",
     "PluginMetadata",
     "PluginState",
+    # Context
+    "PluginContext",
     # Decorators
     "hook",
     "async_hook",

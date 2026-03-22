@@ -39,6 +39,7 @@ class AsyncAgent:
         self.interrupt_token = interrupt_token
         self.config = config
         self.hook_registry = hook_registry
+        self.conversation_id: str | None = None
 
     async def _trigger_hook(
         self,
@@ -73,7 +74,11 @@ class AsyncAgent:
                 return f"Hook error: {ctx._error}"
 
         self.messages.append({"role": "user", "content": user_input})
-        self.event_bus.emit(EventType.MESSAGE_ADDED, {"role": "user", "content": user_input})
+        self.event_bus.emit(EventType.MESSAGE_ADDED, {
+            "role": "user",
+            "content": user_input,
+            "conversation_id": self.conversation_id,
+        })
 
         final_response = ""
 
@@ -102,7 +107,10 @@ class AsyncAgent:
             # 处理文本内容
             if message.content:
                 final_response = message.content
-                self.event_bus.emit(EventType.TEXT_COMPLETE, message.content)
+                self.event_bus.emit(EventType.TEXT_COMPLETE, {
+                    "content": message.content,
+                    "conversation_id": self.conversation_id,
+                })
 
             # 处理工具调用（顺序执行）
             if message.tool_calls:
@@ -208,8 +216,16 @@ class AsyncAgent:
 
             if action == PermissionAction.DENY:
                 # 显示工具名称和拒绝信息
-                self.event_bus.emit(EventType.TOOL_START, {"name": tool_name, "args": tool_args})
-                self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": "User denied this operation"})
+                self.event_bus.emit(EventType.TOOL_START, {
+                    "name": tool_name,
+                    "args": tool_args,
+                    "conversation_id": self.conversation_id,
+                })
+                self.event_bus.emit(EventType.TOOL_COMPLETE, {
+                    "name": tool_name,
+                    "result": "User denied this operation",
+                    "conversation_id": self.conversation_id,
+                })
                 self.event_bus.emit(EventType.INTERRUPTED, {"reason": "denied", "tool": tool_name})
                 return "[interrupted]"
 
@@ -223,14 +239,30 @@ class AsyncAgent:
                 # 处理用户响应
                 if user_response == "deny":
                     # 显示工具名称和拒绝信息
-                    self.event_bus.emit(EventType.TOOL_START, {"name": tool_name, "args": tool_args})
-                    self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": "User denied this operation"})
+                    self.event_bus.emit(EventType.TOOL_START, {
+                        "name": tool_name,
+                        "args": tool_args,
+                        "conversation_id": self.conversation_id,
+                    })
+                    self.event_bus.emit(EventType.TOOL_COMPLETE, {
+                        "name": tool_name,
+                        "result": "User denied this operation",
+                        "conversation_id": self.conversation_id,
+                    })
                     self.event_bus.emit(EventType.INTERRUPTED, {"reason": "denied", "tool": tool_name})
                     return "[interrupted]"
                 elif user_response == "interrupt":
                     # ESC 中断
-                    self.event_bus.emit(EventType.TOOL_START, {"name": tool_name, "args": tool_args})
-                    self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": "User interrupted this operation"})
+                    self.event_bus.emit(EventType.TOOL_START, {
+                        "name": tool_name,
+                        "args": tool_args,
+                        "conversation_id": self.conversation_id,
+                    })
+                    self.event_bus.emit(EventType.TOOL_COMPLETE, {
+                        "name": tool_name,
+                        "result": "User interrupted this operation",
+                        "conversation_id": self.conversation_id,
+                    })
                     self.event_bus.emit(EventType.INTERRUPTED, {"reason": "interrupted", "tool": tool_name})
                     return "[interrupted]"
                 elif user_response == "allow":
@@ -239,11 +271,19 @@ class AsyncAgent:
                     # 用户输入了自定义内容，发射事件让 UI 显示
                     self.event_bus.emit(
                         EventType.TOOL_START,
-                        {"name": tool_name, "args": tool_args},
+                        {
+                            "name": tool_name,
+                            "args": tool_args,
+                            "conversation_id": self.conversation_id,
+                        },
                     )
                     self.event_bus.emit(
                         EventType.TOOL_COMPLETE,
-                        {"name": tool_name, "result": user_response},
+                        {
+                            "name": tool_name,
+                            "result": user_response,
+                            "conversation_id": self.conversation_id,
+                        },
                     )
                     return user_response
 
@@ -264,8 +304,16 @@ class AsyncAgent:
                 if self.config and self.config.tool_result_limit > 0:
                     from ..tools.utils import truncate_result
                     result = truncate_result(result, self.config.tool_result_limit)
-                self.event_bus.emit(EventType.TOOL_START, {"name": tool_name, "args": tool_args})
-                self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": result})
+                self.event_bus.emit(EventType.TOOL_START, {
+                    "name": tool_name,
+                    "args": tool_args,
+                    "conversation_id": self.conversation_id,
+                })
+                self.event_bus.emit(EventType.TOOL_COMPLETE, {
+                    "name": tool_name,
+                    "result": result,
+                    "conversation_id": self.conversation_id,
+                })
                 return result
 
         # 执行工具
@@ -274,6 +322,7 @@ class AsyncAgent:
             {
                 "name": tool_name,
                 "args": tool_args,
+                "conversation_id": self.conversation_id,
             },
         )
 
@@ -289,7 +338,11 @@ class AsyncAgent:
 
         if result is None:
             # 工具执行被中断（ESC）
-            self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": "User interrupted this operation"})
+            self.event_bus.emit(EventType.TOOL_COMPLETE, {
+                "name": tool_name,
+                "result": "User interrupted this operation",
+                "conversation_id": self.conversation_id,
+            })
             self.event_bus.emit(EventType.INTERRUPTED, {"reason": "interrupted", "tool": tool_name})
             return "[interrupted]"
 
@@ -311,6 +364,7 @@ class AsyncAgent:
             {
                 "name": tool_name,
                 "result": result,
+                "conversation_id": self.conversation_id,
             },
         )
 

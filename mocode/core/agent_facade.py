@@ -33,6 +33,7 @@ class AgentFacade:
         workdir: str,
         on_chat: Callable[[], None] | None = None,
         on_clear_history: Callable[[], None] | None = None,
+        get_conversation_id: Callable[[], str | None] | None = None,
     ):
         """Initialize agent facade
 
@@ -47,6 +48,7 @@ class AgentFacade:
             workdir: Working directory
             on_chat: Callback after chat message
             on_clear_history: Callback after clearing history
+            get_conversation_id: Callback to get current conversation ID
         """
         self._config = config
         self._event_bus = event_bus
@@ -58,6 +60,7 @@ class AgentFacade:
         self._workdir = workdir
         self._on_chat = on_chat
         self._on_clear_history = on_clear_history
+        self._get_conversation_id = get_conversation_id
 
         # Initialize provider
         self._provider = AsyncOpenAIProvider(
@@ -102,6 +105,9 @@ class AgentFacade:
         """
         if self._on_chat:
             self._on_chat()
+        # Set conversation_id if callback is provided
+        if self._get_conversation_id:
+            self._agent.conversation_id = self._get_conversation_id()
         return await self._agent.chat(message)
 
     def clear_history(self) -> None:

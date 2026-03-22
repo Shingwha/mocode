@@ -1,9 +1,10 @@
 """Plugin Manager - Lifecycle management"""
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from .base import Hook, Plugin, PluginInfo, PluginState
+from .context import PluginContext
 from .loader import BUILTIN_DIR, PluginLoader
 from .registry import HookRegistry, PluginRegistry
 from .venv_manager import PluginVenvManager, VenvError
@@ -25,6 +26,7 @@ class PluginManager:
         hook_registry: HookRegistry | None = None,
         plugin_registry: PluginRegistry | None = None,
         loader: PluginLoader | None = None,
+        create_plugin_context: Callable[[], PluginContext] | None = None,
     ):
         """Initialize plugin manager
 
@@ -32,10 +34,12 @@ class PluginManager:
             hook_registry: Hook registry instance (creates new if None)
             plugin_registry: Plugin registry instance (creates new if None)
             loader: Plugin loader instance (creates new if None)
+            create_plugin_context: Callback to create PluginContext for plugins
         """
         self.hook_registry = hook_registry or HookRegistry()
         self.plugin_registry = plugin_registry or PluginRegistry()
         self.loader = loader or PluginLoader()
+        self._create_plugin_context = create_plugin_context
 
         # Track registered hooks/tools/commands by plugin
         self._plugin_hooks: dict[str, list[str]] = {}
@@ -152,6 +156,11 @@ class PluginManager:
         try:
             # Call on_enable lifecycle method
             plugin.on_enable()
+
+            # Inject PluginContext after on_enable
+            if self._create_plugin_context:
+                context = self._create_plugin_context()
+                plugin.set_context(context)
 
             # Register hooks
             self._register_hooks(name, plugin.get_hooks())

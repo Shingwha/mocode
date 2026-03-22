@@ -38,7 +38,12 @@ class CLIEventHandler:
     def _on_text_complete(self, event) -> None:
         """Text complete - stop thinking and show response."""
         self._layout.set_thinking(False)
-        self._layout.add_assistant_message(event.data)
+        # Handle both dict format (with conversation_id) and string format
+        if isinstance(event.data, dict):
+            content = event.data.get("content", "")
+        else:
+            content = event.data
+        self._layout.add_assistant_message(content)
 
     def _on_tool_start(self, event) -> None:
         """Tool started - stop thinking and show tool call."""

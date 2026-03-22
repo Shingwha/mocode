@@ -1,17 +1,20 @@
 """Mocode Core - Central orchestrator for business logic"""
 
+import asyncio
+from collections import deque
 import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from .agent_facade import AgentFacade
 from .config import Config
-from .events import EventBus
+from .events import EventBus, EventType
 from .interrupt import InterruptToken
 from .permission import DefaultPermissionHandler, PermissionHandler, PermissionMatcher
 from .session import Session, SessionManager
 from .prompt import PromptBuilder, default_prompt
 from ..plugins import HookRegistry, PluginInfo, PluginManager
+from ..plugins.context import PluginContext
 from ..providers import AsyncOpenAIProvider
 from ..tools import register_all_tools
 from ..skills import SkillManager
@@ -79,6 +82,12 @@ class MocodeCore:
         self._persistence = persistence
         self._workdir = workdir or os.getcwd()
 
+        # Message queue for external injections
+        self._current_conversation_id: str | None = None
+        self._message_queue: deque[tuple[str, str | None]] = deque()
+        self._is_processing: bool = False
+        self._queue_lock: asyncio.Lock = asyncio.Lock()
+
         # Permission handling
         self._permission_handler = permission_handler or DefaultPermissionHandler()
         self._permission_matcher = permission_matcher
@@ -105,11 +114,13 @@ class MocodeCore:
             workdir=self._workdir,
             on_chat=self._mark_unsaved,
             on_clear_history=self._clear_session_state,
+            get_conversation_id=lambda: self._current_conversation_id,
         )
 
         # Plugin management
         self._plugin_manager = plugin_manager or PluginManager(
-            hook_registry=self._hook_registry
+            hook_registry=self._hook_registry,
+            create_plugin_context=self.create_plugin_context,
         )
         self._plugin_coordinator = PluginCoordinator(
             plugin_manager=self._plugin_manager,
@@ -146,6 +157,75 @@ class MocodeCore:
             Assistant response
         """
         return await self._agent_facade.chat(message)
+
+    @property
+    def is_agent_busy(self) -> bool:
+        """Check if agent is processing a message"""
+        return self._is_processing
+
+    async def inject_message(
+        self,
+        message: str,
+        conversation_id: str | None = None
+    ) -> str:
+        """Inject message from external source, blocks until processed
+
+        Args:
+            message: User message
+            conversation_id: Optional conversation ID for tracking
+
+        Returns:
+            Assistant response
+        """
+        async with self._queue_lock:
+            self._is_processing = True
+            self._current_conversation_id = conversation_id
+            try:
+                return await self._agent_facade.chat(message)
+            finally:
+                self._is_processing = False
+                self._current_conversation_id = None
+                # Emit IDLE event for queue processing
+                self._event_bus.emit(EventType.AGENT_IDLE, None)
+                # Process next message in queue
+                await self._process_queue()
+
+    def queue_message(
+        self,
+        message: str,
+        conversation_id: str | None = None
+    ) -> None:
+        """Non-blocking: add message to queue for later processing
+
+        Args:
+            message: User message
+            conversation_id: Optional conversation ID for tracking
+        """
+        self._message_queue.append((message, conversation_id))
+        # If agent is idle, trigger processing
+        if not self._is_processing:
+            asyncio.create_task(self._process_queue())
+
+    async def _process_queue(self) -> None:
+        """Process queued messages when agent is idle"""
+        if self._is_processing or not self._message_queue:
+            return
+
+        message, conv_id = self._message_queue.popleft()
+        await self.inject_message(message, conv_id)
+
+    def create_plugin_context(self) -> PluginContext:
+        """Create context for plugins"""
+        return PluginContext(
+            event_bus=self._event_bus,
+            on_event=self._event_bus.on,
+            inject_message=self.inject_message,
+            queue_message=self.queue_message,
+            get_messages=lambda: self._agent_facade.messages.copy(),
+            workdir=self._workdir,
+            is_agent_busy=lambda: self._is_processing,
+            current_conversation_id=self._current_conversation_id,
+        )
 
     def interrupt(self) -> None:
         """Interrupt current operation"""
