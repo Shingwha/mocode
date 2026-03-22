@@ -58,6 +58,7 @@ class PluginMetadata:
     author: str = ""
     dependencies: list[str] = field(default_factory=list)
     permissions: list[str] = field(default_factory=list)
+    replaces_tools: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> "PluginMetadata":
@@ -68,6 +69,7 @@ class PluginMetadata:
             author=data.get("author", ""),
             dependencies=data.get("dependencies", []),
             permissions=data.get("permissions", []),
+            replaces_tools=data.get("replaces_tools", []),
         )
 
 

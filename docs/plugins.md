@@ -12,6 +12,13 @@ The plugin system consists of three main components:
 | **Hook** | A function or class that executes at a specific HookPoint |
 | **Plugin** | A collection of hooks, tools, and commands with lifecycle management |
 
+### Key Features
+
+- **Hooks**: Intercept and modify behavior at various lifecycle points
+- **Tools**: Provide new tools or replace existing ones
+- **Commands**: Add custom slash commands to the CLI
+- **Prompt Sections**: Extend the system prompt with custom sections
+
 ## Hook Points
 
 mocode provides the following hook points for interception:
@@ -82,6 +89,9 @@ dependencies:
   - other-plugin
 permissions:
   - tools.bash
+replaces_tools:        # Tools this plugin replaces (optional)
+  - write
+  - bash
 ```
 
 ## Creating a Plugin
@@ -185,6 +195,131 @@ class MyPlugin(Plugin):
         return [LogToolHook()]
 
 plugin_class = MyPlugin
+```
+
+## Tool Replacement
+
+Plugins can replace built-in tools with enhanced versions. When the plugin is disabled, the original tool is automatically restored.
+
+### How It Works
+
+1. Plugin provides a tool with the same name as an existing tool
+2. Original tool is saved in a replacement stack
+3. New tool replaces the original in `ToolRegistry`
+4. When plugin is disabled, original tool is restored
+
+### Declaring Tool Replacements
+
+```yaml
+# plugin.yaml
+name: better-write
+version: 1.0.0
+description: Enhanced write tool
+replaces_tools:
+  - write
+```
+
+Or in code:
+
+```python
+from mocode.plugins import Plugin, PluginMetadata
+from mocode.tools.base import Tool
+
+class BetterWritePlugin(Plugin):
+    def __init__(self):
+        self.metadata = PluginMetadata(
+            name="better-write",
+            version="1.0.0",
+            description="Enhanced write tool",
+            replaces_tools=["write"],  # Declare replacement
+        )
+
+    def get_tools(self) -> list[Tool]:
+        return [
+            Tool(
+                "write",  # Same name as original
+                "Enhanced write with backup",
+                {"path": "string", "content": "string"},
+                self._better_write,
+            )
+        ]
+
+    def _better_write(self, args: dict) -> str:
+        # Enhanced implementation
+        pass
+```
+
+### Multiple Plugins Replacing Same Tool
+
+When multiple plugins replace the same tool, they form a stack:
+
+```
+Original Tool (built-in)
+    ↓ replaced by Plugin A
+Plugin A's Tool
+    ↓ replaced by Plugin B
+Plugin B's Tool (current)
+```
+
+Disabling order matters:
+- Disable Plugin B → restores Plugin A's tool
+- Disable Plugin A → restores original tool
+
+### Example: Enhanced Write Plugin
+
+```python
+# ~/.mocode/plugins/better-write/plugin.py
+
+from pathlib import Path
+from mocode.plugins import Plugin, PluginMetadata
+from mocode.tools.base import Tool, ToolError
+
+def _better_write(args: dict) -> str:
+    """Enhanced write with backup"""
+    p = Path(args["path"])
+    content = args["content"]
+
+    if p.is_dir():
+        raise ToolError(f"Path is a directory: {p}", "invalid_path")
+
+    # Create backup if file exists
+    if p.exists():
+        backup = p.with_suffix(p.suffix + ".bak")
+        backup.write_text(p.read_text(), encoding="utf-8")
+        print(f"[BetterWrite] Backup created: {backup}")
+
+    # Write with validation
+    p.write_text(content, encoding="utf-8")
+    print(f"[BetterWrite] Wrote {len(content)} chars to {p}")
+
+    return f"Success: {len(content)} chars written (backup created)"
+
+class BetterWritePlugin(Plugin):
+    def __init__(self):
+        self.metadata = PluginMetadata(
+            name="better-write",
+            version="1.0.0",
+            description="Write tool with automatic backup",
+            replaces_tools=["write"],
+        )
+
+    def on_enable(self) -> None:
+        print("[BetterWrite] Enabled - write tool replaced")
+
+    def on_disable(self) -> None:
+        print("[BetterWrite] Disabled - original write tool restored")
+
+    def get_tools(self) -> list[Tool]:
+        return [
+            Tool(
+                "write",
+                "Write with automatic backup",
+                {"path": "string", "content": "string"},
+                _better_write,
+            )
+        ]
+
+plugin_class = BetterWritePlugin
 ```
 
 ## HookContext

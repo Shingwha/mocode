@@ -11,6 +11,9 @@ if TYPE_CHECKING:
     from ..cli.commands.base import Command
     from ..core.prompt import PromptSection
 
+# Type alias for tool replacement tracking: (plugin_name, original_tool)
+ToolReplacement = tuple[str, "Tool"]
+
 
 class PluginManager:
     """Manages plugin lifecycle and integration"""
@@ -36,6 +39,9 @@ class PluginManager:
         self._plugin_hooks: dict[str, list[str]] = {}
         self._plugin_tools: dict[str, list[str]] = {}
         self._plugin_commands: dict[str, list[str]] = {}
+
+        # Track tool replacements: {tool_name: [(plugin_name, original_tool), ...]}
+        self._tool_replacements: dict[str, list[ToolReplacement]] = {}
 
     def discover(self) -> list[PluginInfo]:
         """Discover all available plugins
@@ -227,22 +233,59 @@ class PluginManager:
             self.hook_registry.unregister(name)
 
     def _register_tools(self, plugin_name: str, tools: list["Tool"]) -> None:
-        """Register tools from a plugin"""
+        """Register tools from a plugin and save replaced tools for restoration"""
         from ..tools.base import ToolRegistry
 
         tool_names = []
 
         for tool in tools:
+            # Save original tool if this is a replacement
+            original = ToolRegistry.get(tool.name)
+            if original is not None:
+                if tool.name not in self._tool_replacements:
+                    self._tool_replacements[tool.name] = []
+                self._tool_replacements[tool.name].append((plugin_name, original))
+
             ToolRegistry.register(tool)
             tool_names.append(tool.name)
 
         self._plugin_tools[plugin_name] = tool_names
 
     def _unregister_tools(self, plugin_name: str) -> None:
-        """Unregister tools from a plugin"""
+        """Unregister tools from a plugin and restore replaced tools"""
+        from ..tools.base import ToolRegistry
+
         tool_names = self._plugin_tools.pop(plugin_name, [])
+
         for name in tool_names:
-            ToolRegistry.unregister(name)
+            if name in self._tool_replacements:
+                replacements = self._tool_replacements[name]
+
+                # Find this plugin's replacement record
+                found_idx = None
+                for i, (repl_plugin, _) in enumerate(replacements):
+                    if repl_plugin == plugin_name:
+                        found_idx = i
+                        break
+
+                if found_idx is not None:
+                    # Get the tool that was saved when this plugin registered
+                    _, saved_tool = replacements.pop(found_idx)
+
+                    if not replacements:
+                        # No more replacements, restore the saved tool
+                        del self._tool_replacements[name]
+                        ToolRegistry.register(saved_tool)
+                    elif found_idx == len(replacements):
+                        # Was top of stack, restore the saved tool
+                        ToolRegistry.register(saved_tool)
+                    # else: Not top of stack, current tool unchanged
+                else:
+                    # No replacement record, just unregister
+                    ToolRegistry.unregister(name)
+            else:
+                # No replacement record, just unregister
+                ToolRegistry.unregister(name)
 
     def _register_commands(self, plugin_name: str, commands: list["Command"]) -> None:
         """Register commands from a plugin"""
