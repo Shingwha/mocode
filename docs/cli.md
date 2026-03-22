@@ -20,8 +20,7 @@ uv run mocode
 | Command | Aliases | Description |
 |---------|---------|-------------|
 | `/` | `/help`, `/h`, `/?` | Show commands or interactive menu |
-| `/model` | `/m` | Switch model |
-| `/provider` | `/p` | Switch provider |
+| `/provider` | `/p` | Switch provider and model |
 | `/session` | `/s` | Manage conversation sessions |
 | `/clear` | `/c` | Clear conversation history |
 | `/skills` | | List and activate skills |
@@ -42,21 +41,10 @@ uv run mocode
 
 Without arguments, displays an interactive menu to select and execute commands. With arguments, shows the command list.
 
-### `/model` - Switch Model
+### `/provider` - Switch Provider and Model
 
 ```bash
-/model         # Interactive selection
-/m             # Alias
-/model gpt-4o  # Direct selection by name
-/model 2       # Selection by number
-```
-
-Shows available models for the current provider and allows switching. Use the "Manage" option in the menu to add or delete models.
-
-### `/provider` - Switch Provider
-
-```bash
-/provider      # Interactive selection (then model selection)
+/provider      # Interactive selection (provider then model)
 /p             # Alias
 /provider deepseek  # Direct selection by key
 /provider 2    # Selection by number
@@ -69,7 +57,6 @@ After switching provider, automatically prompts for model selection. Use the "Ma
 ```bash
 /session          # Interactive session selection
 /s                # Alias
-/session list     # List all sessions
 /session restore <id>  # Restore specific session
 ```
 
@@ -98,24 +85,15 @@ Lists available skills from `~/.mocode/skills/` directory and allows activation.
 
 ```bash
 /plugin              # Interactive plugin selection (toggle enable/disable)
-/plugin list         # List all discovered plugins
-/plugin info <name>  # Show plugin information
 /plugin <name>       # Toggle plugin enable/disable by name
 /plugin <n>          # Toggle plugin by number
-/plugin help         # Show help message
+/plugin info <name>  # Show plugin information
+/plugin install <url>   # Install plugin from GitHub
+/plugin uninstall <name> # Uninstall a plugin
+/plugin update <name>   # Update a plugin
 ```
 
 Plugins are discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`. When selected interactively, plugins can be toggled on/off.
-
-Output example for `/plugin list`:
-```
-Discovered plugins:
---------------------------------------------------
-  rtk v1.0.0 [enabled] - Compress command output to save tokens
-  my-plugin v1.0.0 [disabled] - A sample plugin
---------------------------------------------------
-Total: 2 plugin(s)
-```
 
 ### `/rtk` - Manage RTK
 

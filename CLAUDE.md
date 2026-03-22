@@ -78,11 +78,12 @@ mocode/
     ├── commands/       # Slash commands
     │   ├── base.py     # Command, CommandRegistry
     │   ├── builtin.py  # /help, /clear, /exit
-    │   ├── model.py    # /model
-    │   ├── provider.py # /provider
+    │   ├── provider.py # /provider (includes model selection)
     │   ├── session.py  # /session
     │   ├── plugin.py   # /plugin
-    │   └── skills.py   # /skills
+    │   ├── skills.py   # /skills
+    │   ├── utils.py    # parse_selection_arg
+    │   └── executor.py # CommandExecutor
     ├── monitor/        # Input monitoring
     │   └── esc.py      # ESC key listener
     ├── events/         # Event handling
@@ -115,7 +116,7 @@ mocode/
 
 6. **Plugin System**: `PluginManager` manages plugins, hooks intercept at `HookPoint`s (`TOOL_BEFORE_RUN`, `TOOL_AFTER_RUN`, etc.). RTK is a built-in plugin providing `/rtk` command. Plugins discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`.
 
-7. **Command Pattern**: Slash commands via `@command` decorator and `CommandRegistry`. Built-in commands: `/help`, `/model`, `/provider`, `/session`, `/plugin`, `/skills`, `/clear`, `/exit`. The `/rtk` command is provided by the RTK plugin.
+7. **Command Pattern**: Slash commands via `@command` decorator and `CommandRegistry`. Built-in commands: `/help`, `/provider` (includes model selection), `/session`, `/plugin`, `/skills`, `/clear`, `/exit`. The `/rtk` command is provided by the RTK plugin.
 
 8. **Skill System**: Skills from `~/.mocode/skills/`. Each has `SKILL.md` with YAML frontmatter. Listed in system prompt; loaded on demand via `skill` tool.
 
