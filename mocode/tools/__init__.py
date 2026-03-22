@@ -5,6 +5,7 @@ from .bash import BashSession, close_session, get_session, register_bash_tools
 from .context import ToolContext, get_config, get_tool_context, set_tool_context
 from .file_tools import register_file_tools
 from .search_tools import register_search_tools
+from .utils import truncate_result
 
 __all__ = [
     "Tool",
@@ -21,6 +22,7 @@ __all__ = [
     "register_file_tools",
     "register_search_tools",
     "register_bash_tools",
+    "truncate_result",
 ]
 
 

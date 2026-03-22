@@ -259,9 +259,14 @@ class AsyncAgent:
                 return f"Hook error: {ctx._error}"
             # 如果 hook 已经提供了结果，跳过工具执行
             if ctx.result is not None:
+                result = ctx.result
+                # Apply result size limit
+                if self.config and self.config.tool_result_limit > 0:
+                    from ..tools.utils import truncate_result
+                    result = truncate_result(result, self.config.tool_result_limit)
                 self.event_bus.emit(EventType.TOOL_START, {"name": tool_name, "args": tool_args})
-                self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": ctx.result})
-                return ctx.result
+                self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": result})
+                return result
 
         # 执行工具
         self.event_bus.emit(
@@ -295,6 +300,11 @@ class AsyncAgent:
         )
         if ctx and ctx.modified and ctx.result:
             result = ctx.result
+
+        # Apply result size limit
+        if self.config and self.config.tool_result_limit > 0:
+            from ..tools.utils import truncate_result
+            result = truncate_result(result, self.config.tool_result_limit)
 
         self.event_bus.emit(
             EventType.TOOL_COMPLETE,
