@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 from .base import Plugin, PluginInfo, PluginMetadata, PluginState
+from .venv_manager import PluginVenvManager
 from ..paths import PLUGINS_DIR, PROJECT_SKILLS_DIRNAME
 
 # Built-in plugins directory
@@ -119,7 +120,19 @@ class PluginLoader:
             info.error = f"Plugin file not found: {plugin_file}"
             return None
 
+        # Set up isolated venv if plugin has dependencies
+        venv_manager: PluginVenvManager | None = None
+
         try:
+            metadata = info.metadata
+            if metadata and metadata.dependencies:
+                venv_manager = PluginVenvManager(plugin_path)
+                if venv_manager.exists:
+                    site_packages = venv_manager.get_site_packages_path()
+                    if site_packages:
+                        sys.path.insert(0, str(site_packages))
+                        sys.path.insert(0, str(plugin_path))
+
             # Load the plugin module
             plugin_name = info.name
             module_name = f"mocode_plugin_{plugin_name}"
@@ -244,5 +257,14 @@ class PluginLoader:
         module_name = f"mocode_plugin_{info.name}"
         if module_name in sys.modules:
             del sys.modules[module_name]
+
+        # Remove venv site-packages from sys.path
+        plugin_path = Path(info.path)
+        venv_path = plugin_path / PluginVenvManager.VENV_DIR
+        if venv_path.exists():
+            sys.path = [p for p in sys.path if not p.startswith(str(venv_path))]
+        # Remove plugin directory from sys.path
+        if str(plugin_path) in sys.path:
+            sys.path.remove(str(plugin_path))
 
         return True

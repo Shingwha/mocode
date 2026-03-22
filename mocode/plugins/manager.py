@@ -1,10 +1,12 @@
 """Plugin Manager - Lifecycle management"""
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .base import Hook, Plugin, PluginInfo, PluginState
 from .loader import BUILTIN_DIR, PluginLoader
 from .registry import HookRegistry, PluginRegistry
+from .venv_manager import PluginVenvManager, VenvError
 
 if TYPE_CHECKING:
     from ..tools.base import Tool
@@ -120,6 +122,20 @@ class PluginManager:
         info = self.plugin_registry.get(name)
         if info is None:
             return False
+
+        # Set up isolated venv for plugins with dependencies (skip builtin)
+        plugin_path = Path(info.path)
+        if not str(plugin_path).startswith(str(BUILTIN_DIR)):
+            if info.metadata and info.metadata.dependencies:
+                try:
+                    venv_manager = PluginVenvManager(plugin_path)
+                    if not venv_manager.exists:
+                        venv_manager.create()
+                    venv_manager.install_dependencies(info.metadata.dependencies)
+                except VenvError as e:
+                    info.state = PluginState.ERROR
+                    info.error = f"Failed to set up plugin environment: {e}"
+                    return False
 
         # Load if not already loaded
         if not info.is_loaded:

@@ -24,6 +24,7 @@ from .url_utils import (
     GitHubApiError,
     NetworkError,
 )
+from .venv_manager import PluginVenvManager, VenvError
 from ..paths import PLUGINS_DIR
 
 
@@ -481,6 +482,9 @@ class PluginInstaller:
                 error="Installation failed: plugin.py not found after extraction",
             )
 
+        # Set up isolated venv if plugin has dependencies
+        self._setup_plugin_venv(target_path)
+
         # Record installation
         self._record_installation(candidate, repo_info, method)
 
@@ -556,6 +560,34 @@ class PluginInstaller:
         """Report progress message."""
         if self.progress_callback:
             self.progress_callback(message)
+
+    def _setup_plugin_venv(self, plugin_path: Path) -> None:
+        """Set up isolated venv for a plugin after installation.
+
+        Args:
+            plugin_path: Path to the plugin directory
+        """
+        manifest_path = plugin_path / self.MANIFEST_FILE
+        if not manifest_path.exists():
+            return
+
+        try:
+            content = manifest_path.read_text(encoding="utf-8")
+            data = yaml.safe_load(content)
+            if not data or not isinstance(data, dict):
+                return
+
+            dependencies = data.get("dependencies", [])
+            if not dependencies:
+                return
+
+            self._report(f"Setting up isolated environment for {plugin_path.name}...")
+            venv_manager = PluginVenvManager(plugin_path)
+            venv_manager.create()
+            venv_manager.install_dependencies(dependencies)
+        except Exception:
+            # Venv setup is best-effort, don't fail installation
+            pass
 
     # Registry management
 
