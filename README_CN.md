@@ -10,8 +10,7 @@
 - 内置文件操作、搜索、Shell 执行工具
 - 多供应商支持（OpenAI、Claude、DeepSeek 等）
 - SDK 模式，可嵌入应用
-- Gateway 模式，多渠道机器人（Telegram）
-- 可扩展技能系统
+- 可扩展插件系统
 - 细粒度权限控制
 - Session 管理 - 保存和恢复对话历史
 - RTK 集成 - 减少 60-90% token 消耗
@@ -22,7 +21,6 @@
 
 - [供应商配置](docs/provider.md)
 - [权限系统](docs/permission.md)
-- [Gateway 模式](docs/gateway.md)
 - [CLI 命令](docs/cli.md)
 - [插件系统](docs/plugins.md)
 
@@ -57,7 +55,6 @@ uv tool install -e .
 
 ```bash
 mocode           # CLI 模式
-mocode gateway   # Gateway 模式（Telegram 机器人）
 ```
 
 ## 配置
@@ -188,7 +185,7 @@ mocode 采用分层架构，核心独立于 CLI，可作为库使用。
 ```
 mocode/
 ├── sdk.py              # MocodeClient - MocodeCore 的薄外观层
-├── main.py             # 入口（CLI 或 gateway 模式）
+├── main.py             # 入口（CLI 模式）
 ├── paths.py            # 集中式路径配置
 ├── core/               # 核心逻辑（独立于 UI）
 │   ├── orchestrator.py      # MocodeCore - 核心协调器
@@ -208,11 +205,6 @@ mocode/
 │   ├── registry.py     # HookRegistry
 │   ├── loader.py       # PluginLoader - 发现
 │   └── builtin/rtk/    # RTK 插件（token 优化器）
-├── gateway/            # 多渠道机器人支持
-│   ├── base.py         # BaseChannel 抽象类
-│   ├── config.py       # GatewayConfig
-│   ├── manager.py      # GatewayManager
-│   └── telegram.py     # TelegramChannel
 ├── providers/          # LLM 供应商
 │   └── openai.py       # AsyncOpenAIProvider
 ├── tools/              # 工具实现
@@ -248,11 +240,11 @@ mocode/
 
 2. **事件系统**: `EventBus` 解耦 `AsyncAgent` 与 UI。关键事件：`TEXT_STREAMING`、`TEXT_DELTA`、`TEXT_COMPLETE`、`TOOL_START`、`TOOL_COMPLETE`、`PERMISSION_ASK`、`INTERRUPTED`。
 
-3. **中断机制**: `InterruptToken` 提供线程安全的中断支持。CLI 使用 ESC 键，Gateway 使用 `/cancel` 命令，SDK 使用 `interrupt()` 方法。
+3. **中断机制**: `InterruptToken` 提供线程安全的中断支持。CLI 使用 ESC 键，SDK 使用 `interrupt()` 方法。
 
 4. **工具注册**: 通过 `@tool(name, description, params)` 装饰器注册工具。可选参数使用 `"type?"` 语法。
 
-5. **权限系统**: `PermissionMatcher` 检查权限（allow/ask/deny）。`PermissionHandler` 抽象用户交互 - CLI 使用 `CLIPermissionHandler`，Gateway 自动批准。
+5. **权限系统**: `PermissionMatcher` 检查权限（allow/ask/deny）。`PermissionHandler` 抽象用户交互 - CLI 使用 `CLIPermissionHandler`。
 
 6. **插件系统**: `PluginManager` 管理插件，hooks 在 `HookPoint`（`TOOL_BEFORE_RUN`、`TOOL_AFTER_RUN` 等）处拦截。RTK 是内置插件。插件从 `~/.mocode/plugins/` 和 `<project>/.mocode/plugins/` 发现。
 

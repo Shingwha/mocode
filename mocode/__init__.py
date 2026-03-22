@@ -29,12 +29,6 @@ from .plugins import (
     hook,
 )
 
-# Gateway (lazy import to avoid dependency issues)
-def get_gateway():
-    """获取 Gateway 模块（延迟导入）"""
-    from . import gateway
-    return gateway
-
 __all__ = [
     # SDK
     "MocodeClient",
@@ -73,6 +67,4 @@ __all__ = [
     "PluginState",
     "HookRegistry",
     "hook",
-    # Gateway
-    "get_gateway",
 ]

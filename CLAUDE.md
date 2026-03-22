@@ -21,9 +21,6 @@ uv tool install -e .
 # Run the CLI
 mocode
 
-# Run Gateway (multi-channel bot mode)
-mocode gateway
-
 # Install dependencies
 uv sync
 ```
@@ -35,7 +32,7 @@ mocode uses a layered architecture with event-driven communication. Core is inde
 ```
 mocode/
 ├── sdk.py              # MocodeClient - thin facade over MocodeCore
-├── main.py             # Entry point (CLI or gateway mode)
+├── main.py             # Entry point (CLI mode)
 ├── paths.py            # Centralized path configuration
 ├── core/               # Business logic (independent of UI)
 │   ├── orchestrator.py      # MocodeCore - central coordinator
@@ -55,11 +52,6 @@ mocode/
 │   ├── loader.py       # PluginLoader - discovery
 │   ├── decorators.py   # @hook, @async_hook, HookBuilder
 │   └── builtin/rtk/    # RTK plugin (token optimizer)
-├── gateway/            # Multi-channel bot support
-│   ├── base.py         # BaseChannel abstract class
-│   ├── config.py       # GatewayConfig
-│   ├── manager.py      # GatewayManager
-│   └── telegram.py     # TelegramChannel
 ├── providers/          # LLM providers
 │   └── openai.py       # AsyncOpenAIProvider
 ├── tools/              # Tool implementations
@@ -108,11 +100,11 @@ mocode/
 
 2. **Event System**: `EventBus` decouples `AsyncAgent` from UI. Key events: `TEXT_STREAMING`, `TEXT_DELTA`, `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `PERMISSION_ASK`, `INTERRUPTED`.
 
-3. **Interrupt Mechanism**: `InterruptToken` provides thread-safe cancellation. Used by CLI (ESC), Gateway (`/cancel`), SDK (`interrupt()`).
+3. **Interrupt Mechanism**: `InterruptToken` provides thread-safe cancellation. Used by CLI (ESC), SDK (`interrupt()`).
 
 4. **Tool Registry**: Tools registered via `@tool(name, description, params)` decorator. Params use `"type?"` suffix for optional. Use `truncate_result()` for large outputs.
 
-5. **Permission System**: `PermissionMatcher` checks permissions (allow/ask/deny). `PermissionHandler` abstracts interaction - CLI uses `CLIPermissionHandler`, Gateway auto-approves.
+5. **Permission System**: `PermissionMatcher` checks permissions (allow/ask/deny). `PermissionHandler` abstracts interaction - CLI uses `CLIPermissionHandler`.
 
 6. **Plugin System**: `PluginManager` manages plugins, hooks intercept at `HookPoint`s (`TOOL_BEFORE_RUN`, `TOOL_AFTER_RUN`, etc.). RTK is a built-in plugin providing `/rtk` command. Plugins discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`.
 
@@ -152,15 +144,6 @@ Config stored at `~/.mocode/config.json`, or use `Config.from_dict(data)` for in
   "max_tokens": 8192,
   "plugins": {
     "rtk": "enable"
-  },
-  "gateway": {
-    "channels": {
-      "telegram": {
-        "enabled": true,
-        "token": "bot_token",
-        "allowFrom": ["telegram_user_id"]
-      }
-    }
   }
 }
 ```

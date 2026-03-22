@@ -10,8 +10,7 @@ A CLI coding assistant powered by LLM with tool-calling capabilities.
 - Built-in tools for file operations, search, and shell execution
 - Multi-provider support (OpenAI, Claude, DeepSeek, etc.)
 - SDK mode for embedding into applications
-- Gateway mode for multi-channel bots (Telegram)
-- Extensible skill system
+- Extensible plugin system
 - Fine-grained permission control
 - Session management - save and restore conversations
 - RTK integration - reduce token usage by 60-90%
@@ -22,7 +21,6 @@ A CLI coding assistant powered by LLM with tool-calling capabilities.
 
 - [Provider Configuration](docs/provider.md)
 - [Permission System](docs/permission.md)
-- [Gateway Mode](docs/gateway.md)
 - [CLI Commands](docs/cli.md)
 - [Plugin System](docs/plugins.md)
 
@@ -57,7 +55,6 @@ For detailed installation instructions, see [Installation Guide](docs/installati
 
 ```bash
 mocode           # CLI mode
-mocode gateway   # Gateway mode (Telegram bot)
 ```
 
 ## Configuration
@@ -188,7 +185,7 @@ mocode uses a layered architecture with event-driven communication. Core is inde
 ```
 mocode/
 ├── sdk.py              # MocodeClient - thin facade over MocodeCore
-├── main.py             # Entry point (CLI or gateway mode)
+├── main.py             # Entry point (CLI mode)
 ├── paths.py            # Centralized path configuration
 ├── core/               # Business logic (independent of UI)
 │   ├── orchestrator.py      # MocodeCore - central coordinator
@@ -208,11 +205,6 @@ mocode/
 │   ├── registry.py     # HookRegistry
 │   ├── loader.py       # PluginLoader - discovery
 │   └── builtin/rtk/    # RTK plugin (token optimizer)
-├── gateway/            # Multi-channel bot support
-│   ├── base.py         # BaseChannel abstract class
-│   ├── config.py       # GatewayConfig
-│   ├── manager.py      # GatewayManager
-│   └── telegram.py     # TelegramChannel
 ├── providers/          # LLM providers
 │   └── openai.py       # AsyncOpenAIProvider
 ├── tools/              # Tool implementations
@@ -248,11 +240,11 @@ mocode/
 
 2. **Event System**: `EventBus` decouples `AsyncAgent` from UI. Key events: `TEXT_STREAMING`, `TEXT_DELTA`, `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `PERMISSION_ASK`, `INTERRUPTED`.
 
-3. **Interrupt Mechanism**: `InterruptToken` provides thread-safe cancellation. Used by CLI (ESC), Gateway (`/cancel`), SDK (`interrupt()`).
+3. **Interrupt Mechanism**: `InterruptToken` provides thread-safe cancellation. Used by CLI (ESC), SDK (`interrupt()`).
 
 4. **Tool Registry**: Tools registered via `@tool(name, description, params)` decorator. Params use `"type?"` suffix for optional.
 
-5. **Permission System**: `PermissionMatcher` checks permissions (allow/ask/deny). `PermissionHandler` abstracts interaction - CLI uses `CLIPermissionHandler`, Gateway auto-approves.
+5. **Permission System**: `PermissionMatcher` checks permissions (allow/ask/deny). `PermissionHandler` abstracts interaction - CLI uses `CLIPermissionHandler`.
 
 6. **Plugin System**: `PluginManager` manages plugins, hooks intercept at `HookPoint`s (`TOOL_BEFORE_RUN`, `TOOL_AFTER_RUN`, etc.). RTK is a built-in plugin. Plugins discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`.
 

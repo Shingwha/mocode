@@ -6,27 +6,11 @@ import sys
 
 def main():
     """主入口"""
-    # 检查是否有 gateway 子命令
-    if len(sys.argv) > 1 and sys.argv[1] == "gateway":
-        return run_gateway()
-
-    # 正常 CLI 模式
     from .cli import CLIApp
 
     app = CLIApp()
     try:
         asyncio.run(app.run())
-    except KeyboardInterrupt:
-        pass  # 静默退出
-    return 0
-
-
-def run_gateway():
-    """运行 Gateway"""
-    from .gateway import run_gateway as _run_gateway
-
-    try:
-        asyncio.run(_run_gateway())
     except KeyboardInterrupt:
         pass  # 静默退出
     return 0
