@@ -26,11 +26,32 @@ A CLI coding assistant powered by LLM with tool-calling capabilities.
 - [CLI Commands](docs/cli.md)
 - [Plugin System](docs/plugins.md)
 
+## Prerequisites
+
+- Python >= 3.10
+- [uv](https://docs.astral.sh/uv/) package manager
+
 ## Installation
 
+### Method 1: Direct Install (Recommended for Users)
+
+Install directly from Git without cloning:
+
 ```bash
+uv tool install git+https://github.com/Shingwha/mocode.git
+```
+
+### Method 2: Local Development
+
+Clone and install for development:
+
+```bash
+git clone https://github.com/Shingwha/mocode.git
+cd mocode
 uv tool install -e .
 ```
+
+For detailed installation instructions, see [Installation Guide](docs/installation.md).
 
 ## Quick Start
 

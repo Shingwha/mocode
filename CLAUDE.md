@@ -19,15 +19,9 @@ Do not use emojis in code or commit messages. Keep code clean and simple.
 uv tool install -e .
 
 # Run the CLI
-uv run mocode
-
-# or use the tool directly after installation
 mocode
 
 # Run Gateway (multi-channel bot mode)
-uv run mocode gateway
-
-# or use mocode gateway directly after installation
 mocode gateway
 
 # Install dependencies
@@ -46,7 +40,6 @@ mocode/
 ├── core/               # Business logic (independent of UI)
 │   ├── orchestrator.py      # MocodeCore - central coordinator
 │   ├── agent_facade.py      # AgentFacade - high-level agent ops
-│   ├── session_coordinator.py # SessionCoordinator
 │   ├── plugin_coordinator.py  # PluginCoordinator
 │   ├── agent.py             # AsyncAgent - LLM conversation loop
 │   ├── config.py            # Multi-provider config
@@ -60,6 +53,7 @@ mocode/
 │   ├── manager.py      # PluginManager - lifecycle
 │   ├── registry.py     # HookRegistry
 │   ├── loader.py       # PluginLoader - discovery
+│   ├── decorators.py   # @hook, @async_hook, HookBuilder
 │   └── builtin/rtk/    # RTK plugin (token optimizer)
 ├── gateway/            # Multi-channel bot support
 │   ├── base.py         # BaseChannel abstract class
@@ -70,8 +64,10 @@ mocode/
 │   └── openai.py       # AsyncOpenAIProvider
 ├── tools/              # Tool implementations
 │   ├── base.py         # Tool class and ToolRegistry
+│   ├── context.py      # ToolContext for per-request context
 │   ├── file_tools.py   # read, write, edit
 │   ├── search_tools.py # glob, grep
+│   ├── utils.py        # truncate_result
 │   └── bash.py         # BashSession, bash tool
 ├── skills/             # Skill system
 │   ├── manager.py      # SkillManager
@@ -80,19 +76,29 @@ mocode/
 └── cli/                # Terminal interface
     ├── app.py          # AsyncApp main entry
     ├── commands/       # Slash commands
-    │   ├── base.py     # Command base class
+    │   ├── base.py     # Command, CommandRegistry
     │   ├── builtin.py  # /help, /clear, /exit
     │   ├── model.py    # /model
     │   ├── provider.py # /provider
     │   ├── session.py  # /session
     │   ├── plugin.py   # /plugin
     │   └── skills.py   # /skills
+    ├── monitor/        # Input monitoring
+    │   └── esc.py      # ESC key listener
+    ├── events/         # Event handling
+    │   └── handler.py  # CLI event handler
     └── ui/             # Layout, colors, widgets
-        ├── colors.py   # ANSI color codes
-        ├── layout.py   # Terminal layout
-        ├── prompt.py   # SelectMenu, ask, Wizard
-        ├── menu.py     # MenuItem, MenuAction
-        └── permission.py # CLIPermissionHandler
+        ├── base.py           # Component base class
+        ├── coordinator.py    # ComponentCoordinator
+        ├── colors.py         # ANSI color codes
+        ├── layout.py         # Terminal layout
+        ├── prompt.py         # SelectMenu, ask, MenuItem, MenuAction
+        ├── permission.py     # CLIPermissionHandler
+        └── components/       # UI components
+            ├── input.py      # Input component
+            ├── message.py    # Message display
+            ├── select.py     # Select menu
+            └── animated.py   # Animated components
 ```
 
 ### Key Patterns
@@ -103,13 +109,13 @@ mocode/
 
 3. **Interrupt Mechanism**: `InterruptToken` provides thread-safe cancellation. Used by CLI (ESC), Gateway (`/cancel`), SDK (`interrupt()`).
 
-4. **Tool Registry**: Tools registered via `@tool(name, description, params)` decorator. Params use `"type?"` suffix for optional.
+4. **Tool Registry**: Tools registered via `@tool(name, description, params)` decorator. Params use `"type?"` suffix for optional. Use `truncate_result()` for large outputs.
 
 5. **Permission System**: `PermissionMatcher` checks permissions (allow/ask/deny). `PermissionHandler` abstracts interaction - CLI uses `CLIPermissionHandler`, Gateway auto-approves.
 
-6. **Plugin System**: `PluginManager` manages plugins, hooks intercept at `HookPoint`s (`TOOL_BEFORE_RUN`, `TOOL_AFTER_RUN`, etc.). RTK is a built-in plugin. Plugins discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`.
+6. **Plugin System**: `PluginManager` manages plugins, hooks intercept at `HookPoint`s (`TOOL_BEFORE_RUN`, `TOOL_AFTER_RUN`, etc.). RTK is a built-in plugin providing `/rtk` command. Plugins discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`.
 
-7. **Command Pattern**: Slash commands via `@command` decorator and `CommandRegistry`. Commands: `/help`, `/model`, `/provider`, `/session`, `/plugin`, `/skills`, `/rtk`, `/clear`, `/exit`.
+7. **Command Pattern**: Slash commands via `@command` decorator and `CommandRegistry`. Built-in commands: `/help`, `/model`, `/provider`, `/session`, `/plugin`, `/skills`, `/clear`, `/exit`. The `/rtk` command is provided by the RTK plugin.
 
 8. **Skill System**: Skills from `~/.mocode/skills/`. Each has `SKILL.md` with YAML frontmatter. Listed in system prompt; loaded on demand via `skill` tool.
 
@@ -163,6 +169,7 @@ Config stored at `~/.mocode/config.json`, or use `Config.from_dict(data)` for in
 1. Create `def my_tool(args: dict) -> str`
 2. Register with `@tool("name", "description", {"param": "string", "optional?": "number?"})` - use `?` suffix for optional params
 3. Tools are registered in `ToolRegistry` (class-level registry) and called in `tools/__init__.py::register_all_tools()`
+4. Use `truncate_result(result, max_size)` for potentially large outputs
 
 ## Adding New Commands
 
@@ -223,6 +230,8 @@ class MyPlugin(Plugin):
 
 plugin_class = MyPlugin
 ```
+
+Plugins can also provide commands via `get_commands()` and tools via `get_tools()`.
 
 ## SDK Usage
 

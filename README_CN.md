@@ -26,11 +26,32 @@
 - [CLI 命令](docs/cli.md)
 - [插件系统](docs/plugins.md)
 
+## 前置条件
+
+- Python >= 3.10
+- [uv](https://docs.astral.sh/uv/) 包管理器
+
 ## 安装
 
+### 方式一：直接安装（推荐普通用户）
+
+无需克隆，直接从 Git 安装：
+
 ```bash
+uv tool install git+https://github.com/Shingwha/mocode.git
+```
+
+### 方式二：本地开发
+
+克隆并安装用于开发：
+
+```bash
+git clone https://github.com/Shingwha/mocode.git
+cd mocode
 uv tool install -e .
 ```
+
+详细安装说明请参阅 [安装指南](docs/installation.md)。
 
 ## 快速开始
 
@@ -198,8 +219,7 @@ mocode/
 │   ├── base.py         # Tool 类和 ToolRegistry
 │   ├── file_tools.py   # read, write, edit
 │   ├── search_tools.py # glob, grep
-│   ├── shell_tools.py  # bash
-│   └── bash_session.py # SimpleBashSession
+│   └── bash.py         # BashSession, bash tool
 ├── skills/             # 技能系统
 │   ├── manager.py      # SkillManager
 │   ├── schema.py       # Skill 数据类
