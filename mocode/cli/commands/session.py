@@ -1,6 +1,6 @@
 """Session management command"""
 
-from ..ui import SelectMenu, MenuAction, MenuItem, is_cancelled, format_error, format_info, format_success
+from ..ui import SelectMenu, MenuItem, is_cancelled, format_error, format_info, format_success
 from .base import Command, CommandContext, command
 
 
@@ -9,9 +9,8 @@ class SessionCommand(Command):
     """Session management command
 
     Usage:
-        /session         - Show SelectMenu to select and restore session
-        /session list    - List all sessions
-        /session restore <id> - Restore specific session
+        /session              - Select and restore session interactively
+        /session restore <id> - Restore specific session by ID
     """
 
     def execute(self, ctx: CommandContext) -> bool:
@@ -20,24 +19,10 @@ class SessionCommand(Command):
         if not ctx.layout:
             return True
 
-        if arg == "list":
-            return self._list_sessions(ctx)
         if arg.startswith("restore "):
             return self._restore_session(ctx, arg[8:].strip())
 
         return self._restore_interactive(ctx)
-
-    def _list_sessions(self, ctx: CommandContext) -> bool:
-        """List all sessions."""
-        sessions = ctx.client.list_sessions()
-        if not sessions:
-            ctx.layout.add_command_output(format_info("No saved sessions"))
-            return True
-
-        ctx.layout.add_command_output(format_info("Saved sessions:"))
-        for session in sessions:
-            ctx.layout.add_command_output(f"  {session.id} - {self._format_display(session)}")
-        return True
 
     def _restore_interactive(self, ctx: CommandContext) -> bool:
         """Interactively select and restore session."""

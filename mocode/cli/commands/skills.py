@@ -1,7 +1,8 @@
 """/skills command - List and select skills"""
 
 from .base import Command, CommandContext, command
-from ..ui import SelectMenu, MenuAction, MenuItem, is_cancelled, error, format_success
+from .utils import parse_selection_arg
+from ..ui import SelectMenu, MenuItem, is_cancelled, error, format_success
 from ...skills.manager import SkillManager
 
 
@@ -27,18 +28,12 @@ class SkillsCommand(Command):
             skill_name = self._select_interactive(skills, manager)
             if not skill_name:
                 return True
-        elif arg.isdigit():
-            num = int(arg)
-            if 1 <= num <= len(skills):
-                skill_name = skills[num - 1]
-            else:
-                error(f"Invalid choice: {num}")
-                return True
         else:
-            if arg in skills:
-                skill_name = arg
-            else:
-                error(f"Skill not found: {arg}")
+            skill_name = parse_selection_arg(arg, sorted(skills), error_handler=error)
+            if skill_name is None:
+                return True
+            if skill_name not in skills:
+                error(f"Skill not found: {skill_name}")
                 return True
 
         skill = manager.get_skill(skill_name)

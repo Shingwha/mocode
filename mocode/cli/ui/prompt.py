@@ -7,7 +7,7 @@ use the new component system.
 from enum import Enum, auto
 from typing import Callable, Generic, TypeVar
 
-from .colors import BOLD, CYAN, DIM, GREEN, MAGENTA, RESET, YELLOW
+from .colors import BOLD, CYAN, DIM, GREEN, MAGENTA, RED, RESET, YELLOW
 from .components import Message, Input, Select, MessagePreset
 from .keyboard import getch, esc_paused, check_esc_key
 from .textwrap import truncate_text

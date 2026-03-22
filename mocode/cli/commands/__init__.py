@@ -3,7 +3,6 @@
 from .base import Command, CommandContext, CommandRegistry, command
 from .builtin import ClearCommand, HelpCommand, QuitCommand
 from .executor import CommandExecutor
-from .model import ModelCommand
 from .plugin import PluginCommand
 from .provider import ProviderCommand
 from .session import SessionCommand
@@ -20,7 +19,6 @@ __all__ = [
     "QuitCommand",
     "ClearCommand",
     "HelpCommand",
-    "ModelCommand",
     "ProviderCommand",
     "SkillsCommand",
     "SessionCommand",
@@ -32,7 +30,6 @@ BUILTIN_COMMANDS = [
     QuitCommand,
     ClearCommand,
     HelpCommand,
-    ModelCommand,
     ProviderCommand,
     SkillsCommand,
     SessionCommand,

@@ -13,7 +13,7 @@ from ..ui import (
     ask,
     Wizard,
 )
-from ..ui.colors import RESET, CYAN, GREEN, DIM
+from ..ui.colors import RESET, CYAN, GREEN, DIM, RED
 
 
 @command("/provider", "/p", description="Switch provider")
@@ -27,17 +27,14 @@ class ProviderCommand(Command):
                 return True
             old_provider = self._switch_provider(ctx, provider)
             # Enter model selection
-            from .model import ModelCommand
-            cmd = ModelCommand()
-            original_args = ctx.args
-            ctx.args = "--quiet"
-            result = cmd.execute(ctx)
-            ctx.args = original_args
+            model = self._select_model_interactive(ctx.client)
+            if model:
+                ctx.client.set_model(model)
             if ctx.layout:
                 ctx.layout.add_command_output(
                     f"{CYAN}{old_provider}{RESET} -> {GREEN}{provider}{RESET} | {CYAN}{ctx.client.current_model}{RESET}"
                 )
-            return result
+            return True
 
         provider = parse_selection_arg(
             arg,
@@ -241,3 +238,18 @@ class ProviderCommand(Command):
         old_provider = ctx.client.current_provider
         ctx.client.set_provider(provider_key)
         return old_provider
+
+    def _select_model_interactive(self, client) -> str | None:
+        """Interactive model selection."""
+        models = client.models
+        current = client.current_model
+        provider_key = client.current_provider
+
+        choices = [(m, m) for m in models]
+        choices.append(MenuItem.exit_())
+
+        provider_name = client.providers[provider_key].name if provider_key in client.providers else provider_key
+        menu = SelectMenu(f"Select model [{provider_name}] (current: {current})", choices, current)
+        result = menu.show()
+
+        return None if is_cancelled(result) else result
