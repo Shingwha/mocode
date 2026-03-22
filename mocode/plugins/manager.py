@@ -239,13 +239,10 @@ class PluginManager:
         self._plugin_tools[plugin_name] = tool_names
 
     def _unregister_tools(self, plugin_name: str) -> None:
-        """Unregister tools from a plugin
-
-        Note: ToolRegistry doesn't have unregister method,
-        so tools remain registered for now.
-        """
-        # Store tool names for potential future use
-        self._plugin_tools.pop(plugin_name, None)
+        """Unregister tools from a plugin"""
+        tool_names = self._plugin_tools.pop(plugin_name, [])
+        for name in tool_names:
+            ToolRegistry.unregister(name)
 
     def _register_commands(self, plugin_name: str, commands: list["Command"]) -> None:
         """Register commands from a plugin"""

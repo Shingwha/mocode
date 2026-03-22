@@ -7,6 +7,7 @@ import yaml
 
 from .schema import Skill, SkillMetadata
 from ..paths import SKILLS_DIR, PROJECT_SKILLS_DIRNAME
+from ..tools.base import Tool, ToolRegistry
 
 
 class SkillManager:
@@ -27,6 +28,7 @@ class SkillManager:
 
         self._skills: dict[str, Skill] = {}
         self._discover_skills()
+        self._register_tool()
 
     @classmethod
     def get_instance(cls) -> "SkillManager":
@@ -78,6 +80,33 @@ class SkillManager:
             return yaml.safe_load(parts[1])
         except yaml.YAMLError:
             return None
+
+    def _register_tool(self) -> None:
+        """注册 skill 工具"""
+        ToolRegistry.register(
+            Tool(
+                "skill",
+                "Load a skill by name. Use when the user's request matches a skill's description. "
+                "Returns the skill's instructions for you to follow.",
+                {"name": "string"},
+                self._use_skill,
+            )
+        )
+
+    def _use_skill(self, args: dict) -> str:
+        """加载并使用指定 skill"""
+        name = args.get("name")
+        if not name:
+            return "error: missing required parameter 'name'"
+
+        skill = self.get_skill(name)
+        if not skill:
+            available = self.list_skills()
+            if available:
+                return f"error: skill '{name}' not found. Available skills: {available}"
+            return f"error: skill '{name}' not found. No skills are currently available."
+
+        return f"Skill '{name}' loaded:\n\n{skill.load_content()}"
 
     def get_all_metadata(self) -> list[SkillMetadata]:
         """获取所有 skill 元数据 (用于系统提示)"""

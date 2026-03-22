@@ -2,11 +2,9 @@
 
 from .manager import SkillManager
 from .schema import Skill, SkillMetadata
-from .tool import register_skill_tools
 
 __all__ = [
     "SkillManager",
     "Skill",
     "SkillMetadata",
-    "register_skill_tools",
 ]

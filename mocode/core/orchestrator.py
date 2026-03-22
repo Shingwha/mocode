@@ -1,6 +1,7 @@
 """Mocode Core - Central orchestrator for business logic"""
 
 import os
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from .agent_facade import AgentFacade
@@ -9,7 +10,6 @@ from .events import EventBus
 from .interrupt import InterruptToken
 from .permission import DefaultPermissionHandler, PermissionHandler, PermissionMatcher
 from .session import Session, SessionManager
-from .session_coordinator import SessionCoordinator
 from .prompt import PromptBuilder, default_prompt
 from ..plugins import HookRegistry, PluginInfo, PluginManager
 from ..providers import AsyncOpenAIProvider
@@ -19,6 +19,14 @@ from .plugin_coordinator import PluginCoordinator
 
 if TYPE_CHECKING:
     from .prompt import PromptBuilder
+
+
+@dataclass
+class SessionState:
+    """Tracks current session state"""
+
+    current_session_id: str | None = None
+    has_unsaved_changes: bool = False
 
 
 class MocodeCore:
@@ -81,9 +89,9 @@ class MocodeCore:
         # Prompt builder
         self._prompt_builder = prompt_builder or default_prompt()
 
-        # Session management
+        # Session management (inlined from SessionCoordinator)
         self._session_manager = SessionManager(self._workdir)
-        self._session_coordinator = SessionCoordinator(self._session_manager)
+        self._session_state = SessionState()
 
         # Agent facade
         self._agent_facade = AgentFacade(
@@ -95,7 +103,8 @@ class MocodeCore:
             hook_registry=self._hook_registry,
             prompt_builder=self._prompt_builder,
             workdir=self._workdir,
-            session_coordinator=self._session_coordinator,
+            on_chat=self._mark_unsaved,
+            on_clear_history=self._clear_session_state,
         )
 
         # Plugin management
@@ -105,7 +114,6 @@ class MocodeCore:
         self._plugin_coordinator = PluginCoordinator(
             plugin_manager=self._plugin_manager,
             config=self._config,
-            on_change=self._save_config,
         )
 
         # Auto-discover plugins
@@ -116,6 +124,15 @@ class MocodeCore:
         """Save config if persistence is enabled"""
         if self._persistence:
             self._config.save()
+
+    def _mark_unsaved(self) -> None:
+        """Mark session as having unsaved changes"""
+        self._session_state.has_unsaved_changes = True
+
+    def _clear_session_state(self) -> None:
+        """Clear session state"""
+        self._session_state.current_session_id = None
+        self._session_state.has_unsaved_changes = False
 
     # Chat operations
 
@@ -138,26 +155,63 @@ class MocodeCore:
         """Clear conversation history"""
         self._agent_facade.clear_history()
 
-    # Session operations
+    # Session operations (inlined from SessionCoordinator)
+
+    @property
+    def current_session_id(self) -> str | None:
+        """Current session ID"""
+        return self._session_state.current_session_id
+
+    @property
+    def has_unsaved_changes(self) -> bool:
+        """Whether there are unsaved changes"""
+        return self._session_state.has_unsaved_changes
 
     def list_sessions(self) -> list[Session]:
         """List all sessions for current workdir"""
-        return self._session_coordinator.list_sessions()
+        return self._session_manager.list_sessions()
 
     def save_session(self) -> Session:
         """Save current conversation as a session"""
-        return self._session_coordinator.save_session(
-            messages=self._agent_facade.messages,
-            model=self.current_model,
-            provider=self.current_provider,
+        messages = self._agent_facade.messages
+        model = self.current_model
+        provider = self.current_provider
+
+        if self._session_state.current_session_id:
+            session = self._session_manager.update_session(
+                session_id=self._session_state.current_session_id,
+                messages=messages,
+                model=model,
+                provider=provider,
+            )
+            if session:
+                self._session_state.has_unsaved_changes = False
+                return session
+
+        session = self._session_manager.save_session(
+            messages=messages,
+            model=model,
+            provider=provider,
         )
+        self._session_state.current_session_id = session.id
+        self._session_state.has_unsaved_changes = False
+        return session
 
     def load_session(self, session_id: str) -> Session | None:
         """Load a session by ID"""
-        session = self._session_coordinator.load_session(session_id)
+        session = self._session_manager.load_session(session_id)
         if session:
+            self._session_state.current_session_id = session_id
+            self._session_state.has_unsaved_changes = False
             self._agent_facade.messages = session.messages.copy()
         return session
+
+    def delete_session(self, session_id: str) -> bool:
+        """Delete a session"""
+        result = self._session_manager.delete_session(session_id)
+        if result and self._session_state.current_session_id == session_id:
+            self._session_state.current_session_id = None
+        return result
 
     def save_current_session_and_clear(self) -> Session | None:
         """Save current session and clear history"""
@@ -268,11 +322,17 @@ class MocodeCore:
 
     def enable_plugin(self, name: str) -> bool:
         """Enable a plugin"""
-        return self._plugin_coordinator.enable_plugin(name)
+        success = self._plugin_coordinator.enable_plugin(name)
+        if success:
+            self._save_config()
+        return success
 
     def disable_plugin(self, name: str) -> bool:
         """Disable a plugin"""
-        return self._plugin_coordinator.disable_plugin(name)
+        success = self._plugin_coordinator.disable_plugin(name)
+        if success:
+            self._save_config()
+        return success
 
     def get_plugin_info(self, name: str) -> PluginInfo | None:
         """Get plugin info by name"""

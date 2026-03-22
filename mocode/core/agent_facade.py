@@ -1,6 +1,6 @@
 """Agent Facade - High-level agent operations"""
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from .agent import AsyncAgent
 from .events import EventBus
@@ -12,7 +12,6 @@ from ..providers import AsyncOpenAIProvider
 if TYPE_CHECKING:
     from .config import Config
     from .prompt import PromptBuilder
-    from .session_coordinator import SessionCoordinator
 
 
 class AgentFacade:
@@ -32,7 +31,8 @@ class AgentFacade:
         hook_registry: HookRegistry,
         prompt_builder: "PromptBuilder",
         workdir: str,
-        session_coordinator: "SessionCoordinator | None" = None,
+        on_chat: Callable[[], None] | None = None,
+        on_clear_history: Callable[[], None] | None = None,
     ):
         """Initialize agent facade
 
@@ -45,7 +45,8 @@ class AgentFacade:
             hook_registry: Registry for hooks
             prompt_builder: Builder for system prompts
             workdir: Working directory
-            session_coordinator: Optional session coordinator
+            on_chat: Callback after chat message
+            on_clear_history: Callback after clearing history
         """
         self._config = config
         self._event_bus = event_bus
@@ -55,7 +56,8 @@ class AgentFacade:
         self._hook_registry = hook_registry
         self._prompt_builder = prompt_builder
         self._workdir = workdir
-        self._session_coordinator = session_coordinator
+        self._on_chat = on_chat
+        self._on_clear_history = on_clear_history
 
         # Initialize provider
         self._provider = AsyncOpenAIProvider(
@@ -98,15 +100,15 @@ class AgentFacade:
         Returns:
             Assistant response
         """
-        if self._session_coordinator:
-            self._session_coordinator.mark_unsaved()
+        if self._on_chat:
+            self._on_chat()
         return await self._agent.chat(message)
 
     def clear_history(self) -> None:
         """Clear conversation history"""
         self._agent.clear()
-        if self._session_coordinator:
-            self._session_coordinator.clear_state()
+        if self._on_clear_history:
+            self._on_clear_history()
 
     def switch_provider(self, config: "Config") -> None:
         """Switch to a new provider configuration

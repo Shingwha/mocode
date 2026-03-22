@@ -40,6 +40,24 @@ class AsyncAgent:
         self.config = config
         self.hook_registry = hook_registry
 
+    async def _trigger_hook(
+        self,
+        hook_point: HookPoint,
+        data: dict,
+    ):
+        """Trigger hooks with standard pattern
+
+        Args:
+            hook_point: Hook point to trigger
+            data: Context data for hooks
+
+        Returns:
+            HookContext if hooks exist and executed, None otherwise
+        """
+        if not self.hook_registry or not self.hook_registry.has_hooks(hook_point):
+            return None
+        return await self.hook_registry.trigger(hook_point, data)
+
     async def chat(self, user_input: str) -> str:
         """运行一轮异步对话（非流式，工具顺序执行）"""
         # 重置中断状态
@@ -47,11 +65,8 @@ class AsyncAgent:
             self.interrupt_token.reset()
 
         # Trigger AGENT_CHAT_START hook
-        if self.hook_registry and self.hook_registry.has_hooks(HookPoint.AGENT_CHAT_START):
-            ctx = await self.hook_registry.trigger(
-                HookPoint.AGENT_CHAT_START,
-                {"input": user_input}
-            )
+        ctx = await self._trigger_hook(HookPoint.AGENT_CHAT_START, {"input": user_input})
+        if ctx:
             if ctx.modified and ctx.result:
                 user_input = ctx.result
             if ctx.has_error:
@@ -136,11 +151,10 @@ class AsyncAgent:
             self.messages.extend(tool_results)
 
         # Trigger AGENT_CHAT_END hook
-        if self.hook_registry and self.hook_registry.has_hooks(HookPoint.AGENT_CHAT_END):
-            await self.hook_registry.trigger(
-                HookPoint.AGENT_CHAT_END,
-                {"response": final_response, "messages": self.messages}
-            )
+        await self._trigger_hook(
+            HookPoint.AGENT_CHAT_END,
+            {"response": final_response, "messages": self.messages}
+        )
 
         return final_response
 
@@ -234,26 +248,19 @@ class AsyncAgent:
                     return user_response
 
         # Trigger TOOL_BEFORE_RUN hook
-        if self.hook_registry and self.hook_registry.has_hooks(HookPoint.TOOL_BEFORE_RUN):
-            ctx = await self.hook_registry.trigger(
-                HookPoint.TOOL_BEFORE_RUN,
-                {"name": tool_name, "args": tool_args}
-            )
+        ctx = await self._trigger_hook(
+            HookPoint.TOOL_BEFORE_RUN,
+            {"name": tool_name, "args": tool_args}
+        )
+        if ctx:
             if ctx.modified and "args" in ctx.data:
                 tool_args = ctx.data["args"]
             if ctx.has_error:
                 return f"Hook error: {ctx._error}"
             # 如果 hook 已经提供了结果，跳过工具执行
             if ctx.result is not None:
-                # 先发送 TOOL_START 事件（UI 需要显示工具调用）
-                self.event_bus.emit(
-                    EventType.TOOL_START,
-                    {"name": tool_name, "args": tool_args},
-                )
-                self.event_bus.emit(
-                    EventType.TOOL_COMPLETE,
-                    {"name": tool_name, "result": ctx.result},
-                )
+                self.event_bus.emit(EventType.TOOL_START, {"name": tool_name, "args": tool_args})
+                self.event_bus.emit(EventType.TOOL_COMPLETE, {"name": tool_name, "result": ctx.result})
                 return ctx.result
 
         # 执行工具
@@ -282,13 +289,12 @@ class AsyncAgent:
             return "[interrupted]"
 
         # Trigger TOOL_AFTER_RUN hook
-        if self.hook_registry and self.hook_registry.has_hooks(HookPoint.TOOL_AFTER_RUN):
-            ctx = await self.hook_registry.trigger(
-                HookPoint.TOOL_AFTER_RUN,
-                {"name": tool_name, "result": result, "args": tool_args}
-            )
-            if ctx.modified and ctx.result:
-                result = ctx.result
+        ctx = await self._trigger_hook(
+            HookPoint.TOOL_AFTER_RUN,
+            {"name": tool_name, "result": result, "args": tool_args}
+        )
+        if ctx and ctx.modified and ctx.result:
+            result = ctx.result
 
         self.event_bus.emit(
             EventType.TOOL_COMPLETE,

@@ -111,6 +111,26 @@ class ToolRegistry:
         cls._tools[tool.name] = tool
 
     @classmethod
+    def unregister(cls, name: str) -> bool:
+        """注销工具
+
+        Args:
+            name: 工具名称
+
+        Returns:
+            如果工具存在并被注销则返回 True
+        """
+        if name in cls._tools:
+            del cls._tools[name]
+            return True
+        return False
+
+    @classmethod
+    def unregister_all(cls) -> None:
+        """注销所有工具"""
+        cls._tools.clear()
+
+    @classmethod
     def get(cls, name: str) -> Tool | None:
         """获取工具"""
         return cls._tools.get(name)

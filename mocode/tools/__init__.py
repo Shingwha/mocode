@@ -29,8 +29,4 @@ def register_all_tools():
     register_file_tools()
     register_search_tools()
     register_bash_tools()
-
-    # 注册 skill 工具
-    from ..skills import register_skill_tools
-
-    register_skill_tools()
+    # skill 工具由 SkillManager 自动注册

@@ -167,24 +167,20 @@ class Plugin(ABC):
     state: PluginState = PluginState.DISCOVERED
     _hooks: list[Hook] = field(default_factory=list, init=False)
 
-    @abstractmethod
     def on_load(self) -> None:
-        """Called when plugin is loaded into memory"""
+        """Called when plugin is loaded into memory. Override if needed."""
         pass
 
-    @abstractmethod
     def on_enable(self) -> None:
-        """Called when plugin is enabled"""
+        """Called when plugin is enabled. Override if needed."""
         pass
 
-    @abstractmethod
     def on_disable(self) -> None:
-        """Called when plugin is disabled"""
+        """Called when plugin is disabled. Override if needed."""
         pass
 
-    @abstractmethod
     def on_unload(self) -> None:
-        """Called when plugin is unloaded from memory"""
+        """Called when plugin is unloaded from memory. Override if needed."""
         pass
 
     def get_hooks(self) -> list[Hook]:

@@ -1,6 +1,6 @@
 """Plugin Coordinator - Coordinates plugin management with config persistence"""
 
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from ..plugins import PluginInfo, PluginManager
 
@@ -12,25 +12,22 @@ class PluginCoordinator:
     """Coordinates plugin management with config persistence
 
     Ensures that plugin enable/disable operations are reflected
-    in the configuration and persisted when needed.
+    in the configuration.
     """
 
     def __init__(
         self,
         plugin_manager: PluginManager,
         config: "Config",
-        on_change: Callable[[], None] | None = None,
     ):
         """Initialize plugin coordinator
 
         Args:
             plugin_manager: Plugin manager instance
             config: Configuration to sync with
-            on_change: Optional callback when config changes (for persistence)
         """
         self._plugin_manager = plugin_manager
         self._config = config
-        self._on_change = on_change
 
     def initialize(self) -> list[PluginInfo]:
         """Initialize plugins from config
@@ -60,7 +57,7 @@ class PluginCoordinator:
         return plugins
 
     def enable_plugin(self, name: str) -> bool:
-        """Enable a plugin
+        """Enable a plugin and update config
 
         Args:
             name: Plugin name
@@ -70,17 +67,11 @@ class PluginCoordinator:
         """
         success = self._plugin_manager.enable(name)
         if success:
-            # Update config
             self._config.plugins[name] = "enable"
-
-            # Trigger persistence
-            if self._on_change:
-                self._on_change()
-
         return success
 
     def disable_plugin(self, name: str) -> bool:
-        """Disable a plugin
+        """Disable a plugin and update config
 
         Args:
             name: Plugin name
@@ -90,13 +81,7 @@ class PluginCoordinator:
         """
         success = self._plugin_manager.disable(name)
         if success:
-            # Update config
             self._config.plugins[name] = "disable"
-
-            # Trigger persistence
-            if self._on_change:
-                self._on_change()
-
         return success
 
     def list_plugins(self) -> list[PluginInfo]:
