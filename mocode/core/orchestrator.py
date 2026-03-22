@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from .agent_facade import AgentFacade
-from .config import Config
+from .config import Config, ConfigManager
 from .events import EventBus, EventType
 from .interrupt import InterruptToken
 from .permission import DefaultPermissionHandler, PermissionHandler, PermissionMatcher
@@ -77,6 +77,9 @@ class MocodeCore:
 
         # Core components
         self._config = config
+        self._config_manager = ConfigManager(
+            config, self._on_config_changed, persistence
+        )
         self._event_bus = event_bus
         self._interrupt_token = interrupt_token
         self._persistence = persistence
@@ -131,10 +134,10 @@ class MocodeCore:
         if auto_discover_plugins:
             self._plugin_coordinator.initialize()
 
-    def _save_config(self) -> None:
-        """Save config if persistence is enabled"""
-        if self._persistence:
-            self._config.save()
+    def _on_config_changed(self) -> None:
+        """Called by ConfigManager after config changes are persisted.
+        Handles additional side effects like updating agent provider."""
+        pass
 
     def _mark_unsaved(self) -> None:
         """Mark session as having unsaved changes"""
@@ -164,9 +167,7 @@ class MocodeCore:
         return self._is_processing
 
     async def inject_message(
-        self,
-        message: str,
-        conversation_id: str | None = None
+        self, message: str, conversation_id: str | None = None
     ) -> str:
         """Inject message from external source, blocks until processed
 
@@ -190,11 +191,7 @@ class MocodeCore:
                 # Process next message in queue
                 await self._process_queue()
 
-    def queue_message(
-        self,
-        message: str,
-        conversation_id: str | None = None
-    ) -> None:
+    def queue_message(self, message: str, conversation_id: str | None = None) -> None:
         """Non-blocking: add message to queue for later processing
 
         Args:
@@ -305,19 +302,14 @@ class MocodeCore:
 
     def set_model(self, model: str, provider: str | None = None) -> None:
         """Set current model"""
-        was_current = self._config.set_model(model, provider)
-
-        # Update agent if current provider changed
+        was_current = self._config_manager.set_model(model, provider)
         if provider or was_current:
             self._agent_facade.switch_provider(self._config)
 
-        self._save_config()
-
     def set_provider(self, provider_key: str, model: str | None = None) -> None:
         """Switch to a provider"""
-        self._config.set_provider(provider_key, model)
+        self._config_manager.set_provider(provider_key, model)
         self._agent_facade.switch_provider(self._config)
-        self._save_config()
 
     def add_provider(
         self,
@@ -329,12 +321,9 @@ class MocodeCore:
         set_current: bool = False,
     ) -> None:
         """Add a new provider"""
-        self._config.add_provider(key, name, base_url, api_key, models)
-
+        self._config_manager.add_provider(key, name, base_url, api_key, models)
         if set_current:
             self.set_provider(key)
-        else:
-            self._save_config()
 
     def add_model(
         self,
@@ -343,29 +332,24 @@ class MocodeCore:
         set_current: bool = False,
     ) -> None:
         """Add a model to a provider"""
-        self._config.add_model(model, provider)
-
+        self._config_manager.add_model(model, provider)
         if set_current:
             if provider:
                 self.set_provider(provider, model)
             else:
                 self.set_model(model)
-        else:
-            self._save_config()
 
     def remove_provider(self, key: str) -> None:
         """Remove a provider"""
-        new_current = self._config.remove_provider(key)
+        new_current = self._config_manager.remove_provider(key)
         if new_current:
             self._agent_facade.switch_provider(self._config)
-        self._save_config()
 
     def remove_model(self, model: str, provider: str | None = None) -> None:
         """Remove a model from a provider"""
-        new_model = self._config.remove_model(model, provider)
+        new_model = self._config_manager.remove_model(model, provider)
         if new_model:
             self._agent_facade.switch_provider(self._config)
-        self._save_config()
 
     def update_provider(
         self,
@@ -375,10 +359,9 @@ class MocodeCore:
         api_key: str | None = None,
     ) -> None:
         """Update provider configuration"""
-        was_current = self._config.update_provider(key, name, base_url, api_key)
+        was_current = self._config_manager.update_provider(key, name, base_url, api_key)
         if was_current:
             self._agent_facade.switch_provider(self._config)
-        self._save_config()
 
     # Prompt operations
 
@@ -400,18 +383,18 @@ class MocodeCore:
         """List all discovered plugins"""
         return self._plugin_coordinator.list_plugins()
 
-    def enable_plugin(self, name: str) -> bool:
+    async def enable_plugin(self, name: str) -> bool:
         """Enable a plugin"""
-        success = self._plugin_coordinator.enable_plugin(name)
+        success = await self._plugin_coordinator.enable_plugin(name)
         if success:
-            self._save_config()
+            self._config_manager.save()
         return success
 
-    def disable_plugin(self, name: str) -> bool:
+    async def disable_plugin(self, name: str) -> bool:
         """Disable a plugin"""
-        success = self._plugin_coordinator.disable_plugin(name)
+        success = await self._plugin_coordinator.disable_plugin(name)
         if success:
-            self._save_config()
+            self._config_manager.save()
         return success
 
     def get_plugin_info(self, name: str) -> PluginInfo | None:

@@ -30,21 +30,24 @@ class PluginCoordinator:
         self._config = config
 
     def initialize(self) -> list[PluginInfo]:
-        """Initialize plugins from config
+        """Initialize plugins from config (sync, for use in __init__)
 
         Discovers plugins, auto-enables builtins, and enables
         plugins marked as enabled in config.
+
+        For builtin plugins, async lifecycle methods are skipped since
+        they are trivial no-ops. Use async enable_plugin() for runtime
+        plugin operations.
 
         Returns:
             List of discovered plugins
         """
         # Get disabled list from config
         disabled_list = [
-            name for name, state in self._config.plugins.items()
-            if state == "disable"
+            name for name, state in self._config.plugins.items() if state == "disable"
         ]
 
-        # Discover and auto-enable builtins
+        # Discover and auto-enable builtins (sync, skips async lifecycle)
         plugins = self._plugin_manager.discover_and_enable_builtins(
             disabled_list=disabled_list
         )
@@ -52,11 +55,13 @@ class PluginCoordinator:
         # Enable plugins marked as enable in config
         for plugin_name, state in self._config.plugins.items():
             if state == "enable":
-                self._plugin_manager.enable(plugin_name)
+                info = self._plugin_manager.plugin_registry.get(plugin_name)
+                if info and not info.is_enabled:
+                    self._plugin_manager._enable_sync(info)
 
         return plugins
 
-    def enable_plugin(self, name: str) -> bool:
+    async def enable_plugin(self, name: str) -> bool:
         """Enable a plugin and update config
 
         Args:
@@ -65,12 +70,12 @@ class PluginCoordinator:
         Returns:
             True if successful
         """
-        success = self._plugin_manager.enable(name)
+        success = await self._plugin_manager.enable(name)
         if success:
             self._config.plugins[name] = "enable"
         return success
 
-    def disable_plugin(self, name: str) -> bool:
+    async def disable_plugin(self, name: str) -> bool:
         """Disable a plugin and update config
 
         Args:
@@ -79,7 +84,7 @@ class PluginCoordinator:
         Returns:
             True if successful
         """
-        success = self._plugin_manager.disable(name)
+        success = await self._plugin_manager.disable(name)
         if success:
             self._config.plugins[name] = "disable"
         return success

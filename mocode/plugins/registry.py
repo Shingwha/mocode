@@ -1,5 +1,6 @@
 """Hook and Plugin registries"""
 
+import inspect
 from collections import defaultdict
 from typing import Any
 
@@ -78,7 +79,11 @@ class HookRegistry:
 
             try:
                 if hook.should_execute(context):
-                    context = hook.execute(context)
+                    result = hook.execute(context)
+                    if inspect.iscoroutine(result):
+                        context = await result
+                    else:
+                        context = result
             except Exception as e:
                 context.set_error(e)
                 break
@@ -104,7 +109,15 @@ class HookRegistry:
 
             try:
                 if hook.should_execute(context):
-                    context = hook.execute(context)
+                    result = hook.execute(context)
+                    if inspect.iscoroutine(result):
+                        import logging
+
+                        logging.getLogger(__name__).warning(
+                            f"Async hook '{hook.name}' called in sync context, skipping"
+                        )
+                    else:
+                        context = result
             except Exception as e:
                 context.set_error(e)
                 break

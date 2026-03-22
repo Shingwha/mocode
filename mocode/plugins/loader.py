@@ -236,7 +236,7 @@ class PluginLoader:
         return None
 
     def unload(self, info: PluginInfo) -> bool:
-        """Unload a plugin
+        """Unload a plugin (sync version, does not await on_unload)
 
         Args:
             info: Plugin info for the plugin to unload
@@ -246,7 +246,50 @@ class PluginLoader:
         """
         if info.instance is not None:
             try:
-                info.instance.on_unload()
+                import asyncio
+                import inspect
+
+                result = info.instance.on_unload()
+                if inspect.iscoroutine(result):
+                    try:
+                        loop = asyncio.get_running_loop()
+                        loop.create_task(result)
+                    except RuntimeError:
+                        asyncio.run(result)
+            except Exception:
+                pass
+
+        info.instance = None
+        info.state = PluginState.DISCOVERED
+
+        # Remove module from sys.modules
+        module_name = f"mocode_plugin_{info.name}"
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+
+        # Remove venv site-packages from sys.path
+        plugin_path = Path(info.path)
+        venv_path = plugin_path / PluginVenvManager.VENV_DIR
+        if venv_path.exists():
+            sys.path = [p for p in sys.path if not p.startswith(str(venv_path))]
+        # Remove plugin directory from sys.path
+        if str(plugin_path) in sys.path:
+            sys.path.remove(str(plugin_path))
+
+        return True
+
+    async def unload_async(self, info: PluginInfo) -> bool:
+        """Unload a plugin (async version, awaits on_unload)
+
+        Args:
+            info: Plugin info for the plugin to unload
+
+        Returns:
+            True if successful
+        """
+        if info.instance is not None:
+            try:
+                await info.instance.on_unload()
             except Exception:
                 pass
 

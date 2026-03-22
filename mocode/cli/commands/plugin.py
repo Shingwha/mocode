@@ -1,5 +1,7 @@
 """Plugin management command"""
 
+import asyncio
+
 from .base import Command, CommandContext, command
 from .utils import parse_selection_arg
 from ..ui import (
@@ -194,7 +196,9 @@ class PluginCommand(Command):
 
         # Disable first if enabled
         if plugin_info.state == PluginState.ENABLED:
-            ctx.client.disable_plugin(name)
+            loop = getattr(ctx.client, "_loop", None)
+            if loop:
+                self._run_async(ctx.client.disable_plugin(name), loop)
 
         # Uninstall
         if installer.uninstall(name):
@@ -229,7 +233,9 @@ class PluginCommand(Command):
 
         # Disable first if enabled
         if plugin_info.state == PluginState.ENABLED:
-            ctx.client.disable_plugin(name)
+            loop = getattr(ctx.client, "_loop", None)
+            if loop:
+                self._run_async(ctx.client.disable_plugin(name), loop)
 
         # Update
         result = installer.update(name)
@@ -268,20 +274,32 @@ class PluginCommand(Command):
             error(f"Plugin '{name}' not found")
             return
 
+        loop = getattr(ctx.client, "_loop", None)
+
         if info.state == PluginState.ENABLED:
-            if ctx.client.disable_plugin(name):
+            if loop and self._run_async(ctx.client.disable_plugin(name), loop):
                 success(f"Plugin '{name}' disabled")
             else:
-                error(f"Failed to disable plugin '{name}': {info.error or 'Unknown error'}")
+                error(
+                    f"Failed to disable plugin '{name}': {info.error or 'Unknown error'}"
+                )
         else:
             if info.state == PluginState.ERROR:
                 error(f"Plugin '{name}' has errors: {info.error}")
                 return
 
-            if ctx.client.enable_plugin(name):
+            if loop and self._run_async(ctx.client.enable_plugin(name), loop):
                 success(f"Plugin '{name}' enabled")
             else:
-                error(f"Failed to enable plugin '{name}': {info.error or 'Unknown error'}")
+                error(
+                    f"Failed to enable plugin '{name}': {info.error or 'Unknown error'}"
+                )
+
+    @staticmethod
+    def _run_async(coro, loop: asyncio.AbstractEventLoop):
+        """Run an async coroutine from a sync context (possibly in another thread)."""
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result(timeout=30)
 
     def _show_info(self, ctx: CommandContext, name: str) -> bool:
         """Show plugin information."""

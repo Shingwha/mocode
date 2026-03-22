@@ -67,6 +67,9 @@ class PluginManager:
     ) -> list[PluginInfo]:
         """Discover plugins and auto-enable builtin plugins
 
+        For builtins, lifecycle methods are trivial no-ops, so we skip
+        async lifecycle handling. Use async enable() for runtime operations.
+
         Args:
             disabled_list: List of plugin names to skip auto-enabling
 
@@ -80,11 +83,53 @@ class PluginManager:
         for info in plugins:
             if str(BUILTIN_DIR) in info.path or info.path.startswith(str(BUILTIN_DIR)):
                 if info.name not in disabled_list:
-                    self.enable(info.name)
+                    self._enable_sync(info)
 
         return plugins
 
-    def load(self, name: str) -> Plugin | None:
+    def _enable_sync(self, info: PluginInfo) -> bool:
+        """Enable a plugin synchronously (for initialization only).
+
+        Skips async lifecycle methods. Use async enable() for runtime operations
+        that need proper lifecycle handling.
+        """
+        # Load if not already loaded
+        if not info.is_loaded:
+            plugin = self.loader.load(info)
+            if plugin is None:
+                return False
+
+        if info.state == PluginState.ENABLED:
+            return True
+
+        plugin = info.instance
+        if plugin is None:
+            return False
+
+        try:
+            # Inject PluginContext
+            if self._create_plugin_context:
+                context = self._create_plugin_context()
+                plugin.set_context(context)
+
+            # Register hooks
+            self._register_hooks(info.name, plugin.get_hooks())
+
+            # Register tools
+            self._register_tools(info.name, plugin.get_tools())
+
+            # Register commands
+            self._register_commands(info.name, plugin.get_commands())
+
+            info.state = PluginState.ENABLED
+            return True
+
+        except Exception as e:
+            info.state = PluginState.ERROR
+            info.error = f"enable_sync failed: {e}"
+            return False
+
+    async def load(self, name: str) -> Plugin | None:
         """Load a plugin by name
 
         Args:
@@ -106,7 +151,7 @@ class PluginManager:
 
         # Call on_load lifecycle method
         try:
-            plugin.on_load()
+            await plugin.on_load()
         except Exception as e:
             info.state = PluginState.ERROR
             info.error = f"on_load failed: {e}"
@@ -114,7 +159,7 @@ class PluginManager:
 
         return plugin
 
-    def enable(self, name: str) -> bool:
+    async def enable(self, name: str) -> bool:
         """Enable a plugin
 
         Args:
@@ -143,7 +188,7 @@ class PluginManager:
 
         # Load if not already loaded
         if not info.is_loaded:
-            if self.load(name) is None:
+            if await self.load(name) is None:
                 return False
 
         if info.state == PluginState.ENABLED:
@@ -155,7 +200,7 @@ class PluginManager:
 
         try:
             # Call on_enable lifecycle method
-            plugin.on_enable()
+            await plugin.on_enable()
 
             # Inject PluginContext after on_enable
             if self._create_plugin_context:
@@ -179,7 +224,7 @@ class PluginManager:
             info.error = f"on_enable failed: {e}"
             return False
 
-    def disable(self, name: str) -> bool:
+    async def disable(self, name: str) -> bool:
         """Disable a plugin
 
         Args:
@@ -201,7 +246,7 @@ class PluginManager:
 
         try:
             # Call on_disable lifecycle method
-            plugin.on_disable()
+            await plugin.on_disable()
 
             # Unregister hooks
             self._unregister_hooks(name)
@@ -220,7 +265,7 @@ class PluginManager:
             info.error = f"on_disable failed: {e}"
             return False
 
-    def unload(self, name: str) -> bool:
+    async def unload(self, name: str) -> bool:
         """Unload a plugin
 
         Args:
@@ -235,10 +280,10 @@ class PluginManager:
 
         # Disable first if enabled
         if info.state == PluginState.ENABLED:
-            if not self.disable(name):
+            if not await self.disable(name):
                 return False
 
-        return self.loader.unload(info)
+        return await self.loader.unload_async(info)
 
     def _register_hooks(self, plugin_name: str, hooks: list[Hook]) -> None:
         """Register hooks from a plugin"""
@@ -346,7 +391,7 @@ class PluginManager:
         """List all enabled plugins"""
         return self.plugin_registry.enabled()
 
-    def enable_all(self) -> dict[str, bool]:
+    async def enable_all(self) -> dict[str, bool]:
         """Enable all discovered plugins
 
         Returns:
@@ -356,11 +401,11 @@ class PluginManager:
 
         for info in self.plugin_registry.all():
             if info.state != PluginState.ENABLED:
-                results[info.name] = self.enable(info.name)
+                results[info.name] = await self.enable(info.name)
 
         return results
 
-    def disable_all(self) -> dict[str, bool]:
+    async def disable_all(self) -> dict[str, bool]:
         """Disable all enabled plugins
 
         Returns:
@@ -369,6 +414,6 @@ class PluginManager:
         results = {}
 
         for info in self.plugin_registry.enabled():
-            results[info.name] = self.disable(info.name)
+            results[info.name] = await self.disable(info.name)
 
         return results

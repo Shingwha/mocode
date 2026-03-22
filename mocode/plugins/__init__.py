@@ -7,10 +7,10 @@ Usage:
 
     # Create a plugin
     class MyPlugin(Plugin):
-        def on_load(self): print("Loaded")
-        def on_enable(self): print("Enabled")
-        def on_disable(self): print("Disabled")
-        def on_unload(self): print("Unloaded")
+        async def on_load(self): print("Loaded")
+        async def on_enable(self): print("Enabled")
+        async def on_disable(self): print("Disabled")
+        async def on_unload(self): print("Unloaded")
 
     # Create a hook by inheriting HookBase (recommended)
     class MyHook(HookBase):

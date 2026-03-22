@@ -4,6 +4,7 @@ This module provides a convenient entry point for using mocode as a library.
 All business logic is delegated to MocodeCore in the core layer.
 """
 
+import asyncio
 from typing import TYPE_CHECKING, Callable
 
 from .core import (
@@ -96,6 +97,12 @@ class MocodeClient:
             auto_discover_plugins=auto_discover_plugins,
         )
 
+        # Store event loop reference for cross-thread async calls
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
+
     # Chat operations
 
     async def chat(self, message: str) -> str:
@@ -173,7 +180,7 @@ class MocodeClient:
     def save_config(self) -> None:
         """Manually save config (if persistence enabled)"""
         if self._core.persistence_enabled:
-            self._core.config.save()
+            self._core._config_manager.save()
 
     def set_model(self, model: str, provider: str | None = None):
         """Switch model"""
@@ -242,13 +249,13 @@ class MocodeClient:
         """List all discovered plugins"""
         return self._core.list_plugins()
 
-    def enable_plugin(self, name: str) -> bool:
+    async def enable_plugin(self, name: str) -> bool:
         """Enable a plugin"""
-        return self._core.enable_plugin(name)
+        return await self._core.enable_plugin(name)
 
-    def disable_plugin(self, name: str) -> bool:
+    async def disable_plugin(self, name: str) -> bool:
         """Disable a plugin"""
-        return self._core.disable_plugin(name)
+        return await self._core.disable_plugin(name)
 
     def get_plugin_info(self, name: str) -> PluginInfo | None:
         """Get plugin info by name"""

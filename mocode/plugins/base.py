@@ -173,19 +173,19 @@ class Plugin(ABC):
     _hooks: list[Hook] = field(default_factory=list, init=False)
     _context: "PluginContext | None" = field(default=None, init=False, repr=False)
 
-    def on_load(self) -> None:
+    async def on_load(self) -> None:
         """Called when plugin is loaded into memory. Override if needed."""
         pass
 
-    def on_enable(self) -> None:
+    async def on_enable(self) -> None:
         """Called when plugin is enabled. Override if needed."""
         pass
 
-    def on_disable(self) -> None:
+    async def on_disable(self) -> None:
         """Called when plugin is disabled. Override if needed."""
         pass
 
-    def on_unload(self) -> None:
+    async def on_unload(self) -> None:
         """Called when plugin is unloaded from memory. Override if needed."""
         pass
 
@@ -228,7 +228,11 @@ class PluginInfo:
 
     @property
     def is_loaded(self) -> bool:
-        return self.state in (PluginState.LOADED, PluginState.ENABLED, PluginState.DISABLED)
+        return self.state in (
+            PluginState.LOADED,
+            PluginState.ENABLED,
+            PluginState.DISABLED,
+        )
 
     @property
     def is_enabled(self) -> bool:

@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional, Any
+from typing import Optional, Any, Callable
 import json
 import os
 
@@ -15,12 +15,14 @@ class PluginConfig(dict):
 
     Example: {"rtk": "enable", "test-plugin": "disable"}
     """
+
     pass
 
 
 @dataclass
 class ProviderConfig:
     """供应商配置"""
+
     name: str  # 显示名称
     base_url: str
     api_key: str
@@ -30,6 +32,7 @@ class ProviderConfig:
 @dataclass
 class CurrentConfig:
     """当前使用配置"""
+
     provider: str = "openai"  # 供应商 key
     model: str = "gpt-4o"
 
@@ -65,7 +68,11 @@ class Config:
                 name="LongCat",
                 base_url="https://api.longcat.chat/openai",
                 api_key="",
-                models=["LongCat-Flash-Chat", "LongCat-Flash-Thinking", "LongCat-Flash-Lite"],
+                models=[
+                    "LongCat-Flash-Chat",
+                    "LongCat-Flash-Thinking",
+                    "LongCat-Flash-Lite",
+                ],
             ),
         }
 
@@ -144,9 +151,7 @@ class Config:
         # 序列化
         data = {
             "current": asdict(self.current),
-            "providers": {
-                k: asdict(v) for k, v in self.providers.items()
-            },
+            "providers": {k: asdict(v) for k, v in self.providers.items()},
             "permission": self.permission.to_dict(),
             "max_tokens": self.max_tokens,
             "plugins": dict(self.plugins),
@@ -349,7 +354,9 @@ class Config:
 
         pconfig = self.providers[provider_key]
         if model not in pconfig.models:
-            raise ValueError(f"Model '{model}' does not exist in provider '{provider_key}'")
+            raise ValueError(
+                f"Model '{model}' does not exist in provider '{provider_key}'"
+            )
 
         new_model = None
         if self.current.provider == provider_key and self.current.model == model:
@@ -394,3 +401,97 @@ class Config:
             pconfig.api_key = api_key
 
         return self.current.provider == key
+
+
+class ConfigManager:
+    """Manages configuration changes with persistence callbacks.
+
+    Wraps Config to add automatic persistence and change notification.
+    Config handles data mutations; ConfigManager handles side effects.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        on_change: "Callable[[], None] | None" = None,
+        persistence: bool = True,
+    ):
+        """Initialize config manager.
+
+        Args:
+            config: Configuration instance
+            on_change: Callback invoked after config changes are persisted
+            persistence: Whether to persist config changes to disk
+        """
+        self._config = config
+        self._on_change = on_change
+        self._persistence = persistence
+
+    def _persist(self) -> None:
+        """Save config and notify listener."""
+        if self._persistence:
+            self._config.save()
+        if self._on_change:
+            self._on_change()
+
+    def set_model(self, model: str, provider: str | None = None) -> bool:
+        """Set current model, optionally switching provider. Persists."""
+        result = self._config.set_model(model, provider)
+        self._persist()
+        return result
+
+    def set_provider(self, provider_key: str, model: str | None = None) -> bool:
+        """Switch to a provider. Persists."""
+        result = self._config.set_provider(provider_key, model)
+        self._persist()
+        return result
+
+    def add_provider(
+        self,
+        key: str,
+        name: str,
+        base_url: str,
+        api_key: str = "",
+        models: list[str] | None = None,
+    ) -> None:
+        """Add a new provider. Persists."""
+        self._config.add_provider(key, name, base_url, api_key, models)
+        self._persist()
+
+    def add_model(self, model: str, provider: str | None = None) -> None:
+        """Add model to provider. Persists."""
+        self._config.add_model(model, provider)
+        self._persist()
+
+    def remove_provider(self, key: str) -> str | None:
+        """Remove a provider. Persists. Returns new current provider key."""
+        result = self._config.remove_provider(key)
+        self._persist()
+        return result
+
+    def remove_model(self, model: str, provider: str | None = None) -> str | None:
+        """Remove model from provider. Persists. Returns new model."""
+        result = self._config.remove_model(model, provider)
+        self._persist()
+        return result
+
+    def update_provider(
+        self,
+        key: str,
+        name: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> bool:
+        """Update provider config. Persists."""
+        result = self._config.update_provider(key, name, base_url, api_key)
+        self._persist()
+        return result
+
+    def save(self) -> None:
+        """Manually persist config."""
+        self._persist()
+
+    @property
+    def config(self) -> Config:
+        """Underlying Config instance."""
+        return self._config
