@@ -290,7 +290,7 @@ class MocodeClient:
     @property
     def agent(self) -> AsyncAgent:
         """Agent instance"""
-        return self._core._agent_facade.agent
+        return self._core.agent
 
 
 # Convenience exports

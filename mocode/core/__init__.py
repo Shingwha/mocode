@@ -27,7 +27,6 @@ from .permission import (
 )
 from .interrupt import InterruptToken
 from .session import Session, SessionManager
-from .agent_facade import AgentFacade
 from .plugin_coordinator import PluginCoordinator
 from .orchestrator import MocodeCore, SessionState
 from .utils import preview_result
@@ -67,8 +66,7 @@ __all__ = [
     "Session",
     "SessionManager",
     "SessionState",
-    # Facades and coordinators
-    "AgentFacade",
+    # Coordinators
     "PluginCoordinator",
     "MocodeCore",
     # Utils

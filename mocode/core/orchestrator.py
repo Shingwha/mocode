@@ -6,7 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
-from .agent_facade import AgentFacade
+from .agent import AsyncAgent
 from .config import Config, ConfigManager
 from .events import EventBus, EventType
 from .interrupt import InterruptToken
@@ -105,20 +105,13 @@ class MocodeCore:
         self._session_manager = SessionManager(self._workdir)
         self._session_state = SessionState()
 
-        # Agent facade
-        self._agent_facade = AgentFacade(
-            config=self._config,
-            event_bus=self._event_bus,
-            interrupt_token=self._interrupt_token,
-            permission_handler=self._permission_handler,
-            permission_matcher=self._permission_matcher,
-            hook_registry=self._hook_registry,
-            prompt_builder=self._prompt_builder,
-            workdir=self._workdir,
-            on_chat=self._mark_unsaved,
-            on_clear_history=self._clear_session_state,
-            get_conversation_id=lambda: self._current_conversation_id,
+        # Agent (directly, no facade layer)
+        self._provider = AsyncOpenAIProvider(
+            base_url=config.base_url or None,
+            api_key=config.api_key,
+            model=config.model,
         )
+        self._agent = self._create_agent()
 
         # Plugin management
         self._plugin_manager = plugin_manager or PluginManager(
@@ -148,6 +141,51 @@ class MocodeCore:
         self._session_state.current_session_id = None
         self._session_state.has_unsaved_changes = False
 
+    def _create_agent(self) -> AsyncAgent:
+        """Create a new agent instance"""
+        skill_manager = SkillManager.get_instance()
+        system_prompt = self._prompt_builder.context(
+            skill_manager=skill_manager,
+            cwd=self._workdir,
+        ).build()
+
+        return AsyncAgent(
+            provider=self._provider,
+            system_prompt=system_prompt,
+            max_tokens=self._config.max_tokens,
+            event_bus=self._event_bus,
+            interrupt_token=self._interrupt_token,
+            config=self._config,
+            permission_handler=self._permission_handler,
+            permission_matcher=self._permission_matcher,
+            hook_registry=self._hook_registry,
+        )
+
+    def _switch_provider(self) -> None:
+        """Switch to a new provider based on current config"""
+        self._provider = AsyncOpenAIProvider(
+            base_url=self._config.base_url or None,
+            api_key=self._config.api_key,
+            model=self._config.model,
+        )
+        self._agent.update_provider(self._provider)
+
+    def _rebuild_prompt(
+        self,
+        context: dict[str, Any] | None = None,
+        clear_history: bool = False,
+    ) -> None:
+        """Rebuild system prompt"""
+        ctx = context or {}
+        skill_manager = SkillManager.get_instance()
+        self._prompt_builder.clear_caches()
+        system_prompt = self._prompt_builder.context(
+            skill_manager=skill_manager,
+            cwd=self._workdir,
+            **ctx,
+        ).build()
+        self._agent.update_system_prompt(system_prompt, clear_history=clear_history)
+
     # Chat operations
 
     async def chat(self, message: str) -> str:
@@ -159,7 +197,9 @@ class MocodeCore:
         Returns:
             Assistant response
         """
-        return await self._agent_facade.chat(message)
+        self._mark_unsaved()
+        self._agent.conversation_id = self._current_conversation_id
+        return await self._agent.chat(message)
 
     @property
     def is_agent_busy(self) -> bool:
@@ -182,7 +222,9 @@ class MocodeCore:
             self._is_processing = True
             self._current_conversation_id = conversation_id
             try:
-                return await self._agent_facade.chat(message)
+                self._mark_unsaved()
+                self._agent.conversation_id = conversation_id
+                return await self._agent.chat(message)
             finally:
                 self._is_processing = False
                 self._current_conversation_id = None
@@ -218,7 +260,7 @@ class MocodeCore:
             on_event=self._event_bus.on,
             inject_message=self.inject_message,
             queue_message=self.queue_message,
-            get_messages=lambda: self._agent_facade.messages.copy(),
+            get_messages=lambda: self._agent.messages.copy(),
             workdir=self._workdir,
             is_agent_busy=lambda: self._is_processing,
             current_conversation_id=self._current_conversation_id,
@@ -230,7 +272,8 @@ class MocodeCore:
 
     def clear_history(self) -> None:
         """Clear conversation history"""
-        self._agent_facade.clear_history()
+        self._agent.clear()
+        self._clear_session_state()
 
     # Session operations (inlined from SessionCoordinator)
 
@@ -250,7 +293,7 @@ class MocodeCore:
 
     def save_session(self) -> Session:
         """Save current conversation as a session"""
-        messages = self._agent_facade.messages
+        messages = self._agent.messages
         model = self.current_model
         provider = self.current_provider
 
@@ -280,7 +323,7 @@ class MocodeCore:
         if session:
             self._session_state.current_session_id = session_id
             self._session_state.has_unsaved_changes = False
-            self._agent_facade.messages = session.messages.copy()
+            self._agent.messages = session.messages.copy()
         return session
 
     def delete_session(self, session_id: str) -> bool:
@@ -293,7 +336,7 @@ class MocodeCore:
     def save_current_session_and_clear(self) -> Session | None:
         """Save current session and clear history"""
         saved = None
-        if self._agent_facade.messages:
+        if self._agent.messages:
             saved = self.save_session()
         self.clear_history()
         return saved
@@ -304,12 +347,12 @@ class MocodeCore:
         """Set current model"""
         was_current = self._config_manager.set_model(model, provider)
         if provider or was_current:
-            self._agent_facade.switch_provider(self._config)
+            self._switch_provider()
 
     def set_provider(self, provider_key: str, model: str | None = None) -> None:
         """Switch to a provider"""
         self._config_manager.set_provider(provider_key, model)
-        self._agent_facade.switch_provider(self._config)
+        self._switch_provider()
 
     def add_provider(
         self,
@@ -343,13 +386,13 @@ class MocodeCore:
         """Remove a provider"""
         new_current = self._config_manager.remove_provider(key)
         if new_current:
-            self._agent_facade.switch_provider(self._config)
+            self._switch_provider()
 
     def remove_model(self, model: str, provider: str | None = None) -> None:
         """Remove a model from a provider"""
         new_model = self._config_manager.remove_model(model, provider)
         if new_model:
-            self._agent_facade.switch_provider(self._config)
+            self._switch_provider()
 
     def update_provider(
         self,
@@ -361,7 +404,7 @@ class MocodeCore:
         """Update provider configuration"""
         was_current = self._config_manager.update_provider(key, name, base_url, api_key)
         if was_current:
-            self._agent_facade.switch_provider(self._config)
+            self._switch_provider()
 
     # Prompt operations
 
@@ -371,11 +414,11 @@ class MocodeCore:
         clear_history: bool = False,
     ) -> None:
         """Rebuild system prompt"""
-        self._agent_facade.rebuild_prompt(context, clear_history)
+        self._rebuild_prompt(context, clear_history)
 
     def update_system_prompt(self, prompt: str, clear_history: bool = False) -> None:
         """Directly update system prompt"""
-        self._agent_facade.update_prompt(prompt, clear_history)
+        self._agent.update_system_prompt(prompt, clear_history=clear_history)
 
     # Plugin operations
 
@@ -430,7 +473,12 @@ class MocodeCore:
     @property
     def messages(self) -> list[dict[str, Any]]:
         """Message history"""
-        return self._agent_facade.messages
+        return self._agent.messages
+
+    @property
+    def agent(self) -> AsyncAgent:
+        """Agent instance"""
+        return self._agent
 
     @property
     def event_bus(self) -> EventBus:
