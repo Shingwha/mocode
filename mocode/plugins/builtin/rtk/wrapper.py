@@ -76,11 +76,55 @@ EXCLUDE_PREFIXES = (
     "rtk ",
 )
 
+# Shell builtins that should not be wrapped with RTK
+# These are not executables, so RTK cannot run them directly
+SHELL_BUILTINS = (
+    "cd ",
+    "cd\t",
+    "pwd",
+    "export ",
+    "source ",
+    ". ",
+    "echo ",
+    "true",
+    "false",
+    "test ",
+    "[ ",
+    "read ",
+    "alias ",
+    "unalias ",
+    "set ",
+    "unset ",
+    "shift",
+    "exit",
+    "return",
+    "break",
+    "continue",
+    "local ",
+    "declare ",
+    "typeset ",
+    "readonly ",
+    "hash ",
+    "jobs",
+    "fg",
+    "bg",
+    "wait ",
+    "disown",
+    "suspend",
+    "times",
+    "type ",
+    "ulimit ",
+    "umask ",
+)
+
 
 def should_wrap(command: str) -> bool:
     """Check if a command should be wrapped with RTK
 
-    Uses blacklist mode: wrap all commands except those in EXCLUDE_PREFIXES.
+    Uses blacklist mode: wrap all commands except:
+    - Shell builtins (cd, pwd, export, etc.)
+    - Interactive commands (vim, nano, etc.)
+    - Commands in EXCLUDE_PREFIXES
 
     Args:
         command: The command to check
@@ -92,7 +136,11 @@ def should_wrap(command: str) -> bool:
     if not stripped:
         return False
 
-    # Check against blacklist
+    # Skip shell builtins (they are not executables)
+    if any(stripped.startswith(builtin) for builtin in SHELL_BUILTINS):
+        return False
+
+    # Check against exclude prefixes
     return not any(stripped.startswith(p) for p in EXCLUDE_PREFIXES)
 
 

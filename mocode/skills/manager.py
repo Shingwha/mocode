@@ -6,6 +6,7 @@ from typing import Optional
 import yaml
 
 from .schema import Skill, SkillMetadata
+from .builtin import BUILTIN_SKILLS_DIR
 from ..paths import SKILLS_DIR, PROJECT_SKILLS_DIRNAME
 from ..tools.base import Tool, ToolRegistry
 
@@ -16,12 +17,13 @@ class SkillManager:
     _instance: Optional["SkillManager"] = None
 
     DEFAULT_SKILLS_DIRS = [
+        BUILTIN_SKILLS_DIR,  # 内置 skills（优先级最低）
         SKILLS_DIR,  # 全局 skills
     ]
 
     def __init__(self, skills_dirs: Optional[list[Path]] = None):
         self.skills_dirs = skills_dirs or self.DEFAULT_SKILLS_DIRS.copy()
-        # 添加项目级 skills 目录
+        # 添加项目级 skills 目录（优先级最高）
         project_skills = Path.cwd() / PROJECT_SKILLS_DIRNAME / "skills"
         if project_skills not in self.skills_dirs:
             self.skills_dirs.append(project_skills)
@@ -106,7 +108,7 @@ class SkillManager:
                 return f"error: skill '{name}' not found. Available skills: {available}"
             return f"error: skill '{name}' not found. No skills are currently available."
 
-        return f"Skill '{name}' loaded:\n\n{skill.load_content()}"
+        return f"Base directory for this skill: {skill.path}\n\n{skill.load_content()}"
 
     def get_all_metadata(self) -> list[SkillMetadata]:
         """获取所有 skill 元数据 (用于系统提示)"""
