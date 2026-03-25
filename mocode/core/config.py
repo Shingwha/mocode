@@ -10,6 +10,14 @@ from .permission import PermissionConfig
 from ..paths import CONFIG_PATH
 
 
+@dataclass
+class ModeConfig:
+    """模式配置（内存结构，不持久化）"""
+    name: str
+    auto_approve: bool = False
+    dangerous_patterns: list[str] = field(default_factory=list)
+
+
 class PluginConfig(dict):
     """Plugin configuration - maps plugin name to 'enable' or 'disable'
 
@@ -50,10 +58,19 @@ class Config:
 
     CONFIG_PATH: Path = CONFIG_PATH
 
+    # Mode 配置（内存字段，不持久化）
+    modes: dict[str, ModeConfig] = field(init=False)
+    current_mode: str = field(default="normal", init=False)
+
     def __post_init__(self):
         """确保默认供应商存在"""
         if not self.providers:
             self._init_default_providers()
+        # 初始化 mode 配置（如果尚未设置）
+        if not hasattr(self, 'modes'):
+            self.modes = self._default_modes()
+        if not hasattr(self, 'current_mode'):
+            self.current_mode = "normal"
 
     def _init_default_providers(self):
         """初始化默认供应商"""
@@ -75,6 +92,35 @@ class Config:
                 ],
             ),
         }
+
+    def _default_modes(self) -> dict[str, ModeConfig]:
+        """获取默认 mode 配置"""
+        return {
+            "normal": ModeConfig(name="normal", auto_approve=False),
+            "yolo": ModeConfig(
+                name="yolo",
+                auto_approve=True,
+                dangerous_patterns=[
+                    "rm ", "rm\t", "rmdir ", "rd ",
+                    "dd ", "mv ", "del ", "copy ", "xcopy ",
+                    "chmod ", "chown ", "sudo ", "format ", "mkfs ", "fdisk ",
+                ]
+            )
+        }
+
+    def set_mode(self, mode_name: str) -> bool:
+        """切换模式
+
+        Args:
+            mode_name: 模式名称
+
+        Returns:
+            是否成功切换
+        """
+        if mode_name in self.modes:
+            self.current_mode = mode_name
+            return True
+        return False
 
     @classmethod
     def load(cls, path: str | None = None, data: dict | None = None) -> "Config":

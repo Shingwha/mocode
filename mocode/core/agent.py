@@ -11,7 +11,7 @@ from .interrupt import InterruptToken
 from ..plugins import HookRegistry, HookPoint
 
 if TYPE_CHECKING:
-    from .config import Config, PermissionConfig
+    from .config import Config, PermissionConfig, ModeConfig
 
 
 class AsyncAgent:
@@ -210,8 +210,20 @@ class AsyncAgent:
 
     async def _run_tool_async(self, tool_name: str, tool_args: dict) -> str:
         """异步执行单个工具（带权限检查和中断支持）"""
-        # 权限检查
-        if self.permission_matcher:
+        # ============ Mode 权限覆盖（新增） ============
+        skip_permission_check = False
+        if self.config and hasattr(self.config, 'current_mode'):
+            mode_name = self.config.current_mode
+            if mode_name != "normal" and mode_name in self.config.modes:
+                mode = self.config.modes[mode_name]
+                if mode.auto_approve:
+                    # yolo 模式：自动允许非危险命令
+                    if not self._is_dangerous_command(tool_name, tool_args, mode):
+                        skip_permission_check = True  # 跳过权限检查
+                    # 危险命令继续走原有权限流程
+
+        # ============ 原有 permission 检查 ============
+        if not skip_permission_check and self.permission_matcher:
             action = self.permission_matcher.check(tool_name, tool_args)
 
             if action == PermissionAction.DENY:
@@ -369,6 +381,31 @@ class AsyncAgent:
         )
 
         return result
+
+    def _is_dangerous_command(self, tool_name: str, tool_args: dict, mode: "ModeConfig") -> bool:
+        """检查是否为危险命令（需要强制 ask）
+
+        Args:
+            tool_name: 工具名称
+            tool_args: 工具参数
+            mode: 当前模式配置
+
+        Returns:
+            是否为危险命令
+        """
+        if tool_name != "bash":
+            return False  # 目前只对 bash 命令进行检查
+
+        command = tool_args.get("command", "")
+        if not command:
+            return False
+
+        # 检查是否匹配任何危险模式
+        for pattern in mode.dangerous_patterns:
+            if command.startswith(pattern):
+                return True
+
+        return False
 
     def clear(self):
         """清空对话历史"""
