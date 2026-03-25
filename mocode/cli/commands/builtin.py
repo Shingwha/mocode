@@ -1,5 +1,7 @@
 """Built-in commands"""
 
+import os
+
 from ..ui import SelectMenu, MenuAction, MenuItem, is_cancelled, format_info, format_success
 from ..ui.colors import DIM, RESET
 from .base import Command, CommandContext, command
@@ -17,8 +19,15 @@ class ClearCommand(Command):
         saved = ctx.client.clear_history_with_save()
         if saved and ctx.layout:
             ctx.layout.add_command_output(format_info(f"Session saved: {saved.id}"))
+
+        # 清空终端屏幕
+        os.system("cls" if os.name == "nt" else "clear")
+
+        # 重新显示欢迎信息
         if ctx.layout:
-            ctx.layout.add_command_output(format_success("Cleared conversation"))
+            ctx.layout.show_welcome("mocode", ctx.client.config.display_name, os.getcwd())
+            ctx.layout.add_command_output(format_success("Conversation cleared"))
+
         return True
 
 
