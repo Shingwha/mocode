@@ -163,3 +163,89 @@ A secure configuration that allows read-only operations while confirming destruc
 - Use `allow` for read-only operations: `read`, `glob`, `grep`
 - Use `deny` to completely block sensitive tools
 - For `bash`, use nested format to allow safe commands while protecting dangerous ones
+
+## Mode System
+
+mocode supports operational modes that change how permissions are handled. Modes provide a quick way to switch between safety and convenience.
+
+### Available Modes
+
+**normal** (default):
+- Respects the `permission` configuration rules
+- Prompts for `ask` actions
+- Blocks `deny` actions
+
+**yolo**:
+- Auto-approves all tools except dangerous commands
+- Dangerous commands are detected by pattern matching on `bash` tool commands
+- Useful for rapid development with safety guardrails
+
+### Mode Configuration
+
+Configure modes in `~/.mocode/config.json`:
+
+```json
+{
+  "modes": {
+    "normal": {
+      "auto_approve": false
+    },
+    "yolo": {
+      "auto_approve": true,
+      "dangerous_patterns": [
+        "rm ", "rmdir ", "dd ", "mv ", "del ",
+        "chmod ", "chown ", "sudo ", "format ", "mkfs ",
+        "fdisk ", "mkfs ", "dd ", " shred "
+      ]
+    }
+  },
+  "current_mode": "normal"
+}
+```
+
+### Switching Modes
+
+#### CLI
+
+```bash
+/mode              # Show current mode
+/mode list         # List all available modes
+/mode yolo         # Switch to yolo mode
+/mode normal       # Switch back to normal mode
+```
+
+#### SDK
+
+```python
+from mocode import MocodeClient
+
+client = MocodeClient()
+
+# Check current mode
+print(client.config.current_mode)  # "normal"
+
+# Switch mode
+client.set_mode("yolo")
+```
+
+### How Yolo Mode Works
+
+When in `yolo` mode:
+
+1. **Non-dangerous tools**: Auto-approved (bypass `ask` permissions)
+2. **Dangerous bash commands**: Still denied based on `dangerous_patterns`
+3. **Deny permission rules**: Still respected (always blocked)
+4. **Ask permission rules**: Auto-approved for non-dangerous commands
+
+**Dangerous Command Detection**:
+- Only applies to `bash` tool
+- Checks if command starts with any pattern in `dangerous_patterns`
+- Uses prefix matching (with trailing space/tab)
+- Example: `"rm "` matches `"rm file.txt"` but not `"rmv file.txt"`
+
+### Recommendations
+
+- Use **normal** mode for production or sensitive environments
+- Use **yolo** mode for rapid development when you trust the AI's suggestions
+- Customize `dangerous_patterns` in `yolo` mode to match your safety requirements
+- Keep `deny` permission rules for extra-sensitive operations even in yolo mode

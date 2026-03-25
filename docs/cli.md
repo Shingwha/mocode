@@ -21,6 +21,7 @@ uv run mocode
 |---------|---------|-------------|
 | `/` | `/help`, `/h`, `/?` | Show commands or interactive menu |
 | `/provider` | `/p` | Switch provider and model |
+| `/mode` | | Manage operation modes (normal, yolo, etc.) |
 | `/session` | `/s` | Manage conversation sessions |
 | `/clear` | `/c` | Clear conversation history |
 | `/skills` | | List and activate skills |
@@ -51,6 +52,21 @@ Without arguments, displays an interactive menu to select and execute commands. 
 ```
 
 After switching provider, automatically prompts for model selection. Use the "Manage" option in the menu to add, edit, or delete providers.
+
+### `/mode` - Manage Operation Modes
+
+```bash
+/mode              # Show current mode
+/mode list         # List all available modes
+/mode yolo         # Switch to yolo mode
+/mode normal       # Switch to normal mode
+```
+
+Modes control the permission behavior of the system:
+- **normal**: Standard permission checks (ask/allow/deny based on rules)
+- **yolo**: Auto-approves all tools except dangerous commands (destructive operations)
+
+Use yolo mode for faster workflow with safety guardrails.
 
 ### `/session` - Manage Sessions
 
@@ -165,6 +181,18 @@ Configuration is stored at `~/.mocode/config.json`:
     "read": "allow"
   },
   "max_tokens": 8192,
+  "tool_result_limit": 25000,
+  "modes": {
+    "normal": { "auto_approve": false },
+    "yolo": {
+      "auto_approve": true,
+      "dangerous_patterns": [
+        "rm ", "rmdir ", "dd ", "mv ", "del ",
+        "chmod ", "chown ", "sudo ", "format ", "mkfs "
+      ]
+    }
+  },
+  "current_mode": "normal",
   "plugins": {
     "rtk": "enable"
   }

@@ -96,11 +96,32 @@ After installation, you need to configure your LLM provider. Create a configurat
     "*": "ask",
     "bash": "allow",
     "read": "allow"
-  }
+  },
+  "modes": {
+    "normal": { "auto_approve": false },
+    "yolo": {
+      "auto_approve": true,
+      "dangerous_patterns": [
+        "rm ", "rmdir ", "dd ", "mv ", "del ",
+        "chmod ", "chown ", "sudo ", "format ", "mkfs "
+      ]
+    }
+  },
+  "current_mode": "normal"
 }
 ```
 
-For more details on configuration, see the [Provider Configuration](provider.md) and [Permission System](permission.md) documentation.
+For more details on configuration, see the [Provider Configuration](provider.md), [Permission System](permission.md), and [Mode System](cli.md#mode) documentation.
+
+## Plugin Dependencies
+
+Plugins may require additional Python dependencies. mocode uses `uv` to manage plugin dependencies in isolated virtual environments. When you enable a plugin with dependencies, mocode automatically:
+
+1. Creates a virtual environment in `~/.mocode/plugins/<plugin-name>/.venv/`
+2. Installs all dependencies listed in `plugin.yaml` or `requirements.txt`
+3. Loads the plugin in the isolated environment
+
+Make sure `uv` is installed and available in your PATH. If you don't have `uv` installed, see the [Prerequisites](#prerequisites) section.
 
 ## Updating
 

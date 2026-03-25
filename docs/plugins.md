@@ -14,10 +14,12 @@ The plugin system consists of three main components:
 
 ### Key Features
 
-- **Hooks**: Intercept and modify behavior at various lifecycle points
+- **Hooks**: Intercept and modify behavior at various lifecycle points (supports both sync and async)
 - **Tools**: Provide new tools or replace existing ones
 - **Commands**: Add custom slash commands to the CLI
 - **Prompt Sections**: Extend the system prompt with custom sections
+- **Isolated Environments**: Plugins can run in isolated virtual environments with their own dependencies
+- **Install System**: Install plugins directly from GitHub URLs
 
 ## Hook Points
 
@@ -59,6 +61,37 @@ mocode provides the following hook points for interception:
 |-----------|-------------|
 | `PROMPT_BUILD_START` | Called when prompt building starts |
 | `PROMPT_BUILD_END` | Called when prompt building ends, can modify final prompt |
+
+### UI Component Lifecycle
+
+| HookPoint | Description |
+|-----------|-------------|
+| `UI_COMPONENT_CREATED` | Called when a UI component is created |
+| `UI_COMPONENT_RENDERED` | Called when a UI component is rendered |
+| `UI_COMPONENT_COMPLETED` | Called when a UI component completes |
+| `UI_COMPONENT_CLEARED` | Called when a UI component is cleared |
+
+## Async Hooks
+
+Plugins can define asynchronous hooks using the `@async_hook` decorator:
+
+```python
+from mocode.plugins import async_hook, HookContext, HookPoint
+
+@async_hook(HookPoint.TOOL_BEFORE_RUN, name="async-check", priority=10)
+async def async_tool_check(ctx: HookContext) -> HookContext:
+    """Async hook example - useful for I/O operations"""
+    await asyncio.sleep(0.1)  # Perform async operation
+    return ctx
+```
+
+Async hooks are particularly useful for:
+- Network requests (e.g., checking external APIs)
+- Database queries
+- File I/O operations
+- Any long-running operations that would block the main thread
+
+## Plugin Directory Structure
 
 ## Plugin Directory Structure
 
@@ -476,6 +509,34 @@ Description: A sample plugin
 Author: Developer
 ```
 
+### Install Plugin from GitHub
+
+```bash
+/plugin install <url>
+# Example:
+/plugin install https://github.com/username/plugin-repo.git
+```
+
+Installs a plugin from a Git repository. The plugin will be cloned to `~/.mocode/plugins/` and automatically enabled after installation.
+
+### Uninstall Plugin
+
+```bash
+/plugin uninstall my-plugin
+```
+
+Removes a plugin from the system. The plugin will be disabled first (if enabled), then removed from the plugins directory.
+
+### Update Plugin
+
+```bash
+/plugin update my-plugin
+```
+
+Updates a plugin that was installed from a Git repository by pulling the latest changes from the remote.
+
+## Plugin Installation System
+
 ## Configuration
 
 Enable plugins automatically in `~/.mocode/config.json`:
@@ -489,6 +550,49 @@ Enable plugins automatically in `~/.mocode/config.json`:
   }
 }
 ```
+
+## Virtual Environments
+
+Non-builtin plugins run in isolated virtual environments with their own dependencies. This ensures:
+
+- **Dependency isolation**: Each plugin's dependencies don't conflict with others
+- **Automatic installation**: Dependencies declared in `plugin.yaml` are installed automatically when the plugin is enabled
+- **Clean environment**: Plugins only have access to their declared dependencies
+
+### Plugin Structure with Dependencies
+
+```
+~/.mocode/plugins/my-plugin/
+├── plugin.py           # Main plugin file (required)
+├── plugin.yaml         # Metadata with dependencies (optional)
+├── requirements.txt    # Alternative dependencies file (optional)
+└── venv/              # Virtual environment (auto-created)
+```
+
+### plugin.yaml with Dependencies
+
+```yaml
+name: my-plugin
+version: 1.0.0
+description: A sample plugin
+author: Developer
+dependencies:
+  - requests>=2.28.0
+  - beautifulsoup4
+  - numpy>=1.24.0
+permissions:
+  - tools.bash
+replaces_tools:
+  - write
+  - bash
+```
+
+When the plugin is enabled, mocode automatically:
+1. Creates a virtual environment in `~/.mocode/plugins/my-plugin/venv/`
+2. Installs all dependencies using `uv`
+3. Loads the plugin in that isolated environment
+
+Builtin plugins (located in `mocode/plugins/builtin/`) share the host environment and skip venv creation.
 
 ## SDK Usage
 
