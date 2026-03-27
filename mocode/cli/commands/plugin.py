@@ -149,7 +149,7 @@ class PluginCommand(Command):
             return True
 
         if plugin_info.state == PluginState.ENABLED:
-            loop = getattr(ctx.client, "_loop", None)
+            loop = ctx.loop
             if loop:
                 self._run_async(ctx.client.disable_plugin(name), loop)
 
@@ -181,7 +181,7 @@ class PluginCommand(Command):
         self._info(ctx, f"Updating {name}...")
 
         if plugin_info.state == PluginState.ENABLED:
-            loop = getattr(ctx.client, "_loop", None)
+            loop = ctx.loop
             if loop:
                 self._run_async(ctx.client.disable_plugin(name), loop)
 
@@ -215,22 +215,28 @@ class PluginCommand(Command):
             self._error(ctx, f"Plugin '{name}' not found")
             return
 
-        loop = getattr(ctx.client, "_loop", None)
+        loop = ctx.loop
+        if not loop:
+            self._error(ctx, f"No event loop available")
+            return
 
-        if plugin_info.state == PluginState.ENABLED:
-            if loop and self._run_async(ctx.client.disable_plugin(name), loop):
-                self._success(ctx, f"Plugin '{name}' disabled")
+        try:
+            if plugin_info.state == PluginState.ENABLED:
+                if self._run_async(ctx.client.disable_plugin(name), loop):
+                    self._success(ctx, f"Plugin '{name}' disabled")
+                else:
+                    self._error(ctx, f"Failed to disable plugin '{name}': {plugin_info.error or 'Unknown error'}")
             else:
-                self._error(ctx, f"Failed to disable plugin '{name}': {plugin_info.error or 'Unknown error'}")
-        else:
-            if plugin_info.state == PluginState.ERROR:
-                self._error(ctx, f"Plugin '{name}' has errors: {plugin_info.error}")
-                return
+                if plugin_info.state == PluginState.ERROR:
+                    self._error(ctx, f"Plugin '{name}' has errors: {plugin_info.error}")
+                    return
 
-            if loop and self._run_async(ctx.client.enable_plugin(name), loop):
-                self._success(ctx, f"Plugin '{name}' enabled")
-            else:
-                self._error(ctx, f"Failed to enable plugin '{name}': {plugin_info.error or 'Unknown error'}")
+                if self._run_async(ctx.client.enable_plugin(name), loop):
+                    self._success(ctx, f"Plugin '{name}' enabled")
+                else:
+                    self._error(ctx, f"Failed to enable plugin '{name}': {plugin_info.error or 'Unknown error'}")
+        except Exception as e:
+            self._error(ctx, f"Error toggling plugin '{name}': {e}")
 
     def _show_info(self, ctx: CommandContext, name: str) -> bool:
         if not name:

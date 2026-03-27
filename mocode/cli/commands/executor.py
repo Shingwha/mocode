@@ -15,6 +15,9 @@ class CommandExecutor:
         self._display = display
 
     async def execute(self, ctx: CommandContext) -> bool:
+        # Set event loop for async operations from commands
+        ctx.loop = asyncio.get_running_loop()
+
         command_name = ctx.args.split()[0] if ctx.args else ""
         matches = self._registry.find_matches(command_name)
 

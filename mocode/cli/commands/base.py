@@ -1,7 +1,8 @@
 """Command base class"""
 
+import asyncio
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, ClassVar, TypeVar, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -19,6 +20,7 @@ class CommandContext:
     args: str  # Command arguments
     display: "Display | None" = None
     pending_message: str | None = None  # Message to send to agent after command
+    loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
 
     @property
     def config(self):
