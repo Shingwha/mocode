@@ -3,7 +3,7 @@
 import os
 
 from ..ui.prompt import select, MenuItem, is_cancelled
-from ..ui.styles import DIM, RESET, MessagePreset, format_preset
+from ..ui.styles import DIM, RESET
 from .base import Command, CommandContext, command
 
 
@@ -17,14 +17,14 @@ class QuitCommand(Command):
 class ClearCommand(Command):
     def execute(self, ctx: CommandContext) -> bool:
         saved = ctx.client.clear_history_with_save()
-        if saved and ctx.display:
-            ctx.display.info(f"Session saved: {saved.id}")
+        if saved:
+            self._info(ctx, f"Session saved: {saved.id}")
 
         os.system("cls" if os.name == "nt" else "clear")
 
         if ctx.display:
             ctx.display.welcome("mocode", ctx.client.config.display_name, os.getcwd())
-            ctx.display.success("Conversation cleared")
+        self._success(ctx, "Conversation cleared")
 
         return True
 
@@ -52,10 +52,9 @@ class HelpCommand(Command):
                 return registry.execute(ctx)
             return True
 
-        if ctx.display:
-            ctx.display.info("Commands:")
-            for cmd in registry.all():
-                aliases = f" {DIM}({', '.join(cmd.aliases)}){RESET}" if cmd.aliases else ""
-                ctx.display.command_output(f"  {DIM}{cmd.name}{RESET}{aliases:<12} {cmd.description}")
+        self._info(ctx, "Commands:")
+        for cmd in registry.all():
+            aliases = f" {DIM}({', '.join(cmd.aliases)}){RESET}" if cmd.aliases else ""
+            self._output(ctx, f"  {DIM}{cmd.name}{RESET}{aliases:<12} {cmd.description}")
 
         return True

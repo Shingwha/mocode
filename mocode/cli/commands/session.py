@@ -1,6 +1,7 @@
 """Session management command"""
 
 from ..ui.prompt import select, MenuItem, is_cancelled
+from ..ui.textwrap import truncate_text
 from .base import Command, CommandContext, command
 
 
@@ -27,7 +28,7 @@ class SessionCommand(Command):
     def _restore_interactive(self, ctx: CommandContext) -> bool:
         sessions = ctx.client.list_sessions()
         if not sessions:
-            ctx.display.info("No saved sessions")
+            self._info(ctx, "No saved sessions")
             return True
 
         choices = [(s.id, self._format_display(s)) for s in sessions]
@@ -40,7 +41,7 @@ class SessionCommand(Command):
 
     def _restore_session(self, ctx: CommandContext, session_id: str) -> bool:
         if not session_id:
-            ctx.display.error("Session ID required")
+            self._error(ctx, "Session ID required")
             return True
         self._load_and_display(ctx, session_id)
         return True
@@ -52,11 +53,12 @@ class SessionCommand(Command):
         session = ctx.client.load_session(session_id)
         if session:
             ctx.display.render_history(session.messages)
-            ctx.display.success(f"Restored session: {session_id}")
+            self._success(ctx, f"Restored session: {session_id}")
         else:
-            ctx.display.error(f"Session not found: {session_id}")
+            self._error(ctx, f"Session not found: {session_id}")
 
     def _format_display(self, session) -> str:
+        import shutil
         formatted_time = session.updated_at[5:16].replace("T", " ") if session.updated_at else "unknown"
 
         preview = ""
@@ -68,5 +70,10 @@ class SessionCommand(Command):
                 break
 
         if preview:
-            return f'{formatted_time} "{preview}"'
-        return formatted_time
+            display = f'{formatted_time} "{preview}"'
+        else:
+            display = formatted_time
+
+        # Ensure display fits in one terminal line (Select prefix takes ~4 chars)
+        max_width = shutil.get_terminal_size().columns - 6
+        return truncate_text(display, max_width)

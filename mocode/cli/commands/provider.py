@@ -1,12 +1,12 @@
 """Provider switch command"""
 
 from .base import Command, CommandContext, command
-from .utils import parse_selection_arg
+from .utils import resolve_selection
 from ..ui.prompt import (
     select, ask, Wizard,
     MenuAction, MenuItem, is_cancelled, is_action,
 )
-from ..ui.styles import error, success, info, RESET, CYAN, GREEN, DIM
+from ..ui.styles import error, success, RESET, CYAN, GREEN, DIM
 
 
 @command("/provider", "/p", description="Switch provider")
@@ -18,46 +18,49 @@ class ProviderCommand(Command):
             provider = self._select_interactive(ctx.client)
             if not provider:
                 return True
-            old_provider = self._switch_provider(ctx, provider)
+            old = self._switch_provider(ctx, provider)
             model = self._select_model_interactive(ctx.client)
             if model:
                 ctx.client.set_model(model)
-            if ctx.display:
-                ctx.display.command_output(
-                    f"{CYAN}{old_provider}{RESET} -> {GREEN}{provider}{RESET} | {CYAN}{ctx.client.current_model}{RESET}"
-                )
+            self._show_switch_result(ctx, old, provider)
             return True
 
-        provider = parse_selection_arg(
-            arg,
-            list(ctx.client.providers.keys()),
-            error_handler=error,
-        )
+        provider = resolve_selection(arg, list(ctx.client.providers.keys()), lambda: None)
         if provider is None:
             if arg.isdigit():
                 return True
-            error(f"Unknown provider: {arg}")
+            self._error(ctx, f"Unknown provider: {arg}")
             return True
 
         if provider not in ctx.client.providers:
-            error(f"Unknown provider: {provider}")
+            self._error(ctx, f"Unknown provider: {provider}")
             return True
 
-        old_provider = self._switch_provider(ctx, provider)
-        if ctx.display:
-            ctx.display.command_output(
-                f"{CYAN}{old_provider}{RESET} -> {GREEN}{provider}{RESET} | {CYAN}{ctx.client.current_model}{RESET}"
-            )
+        old = self._switch_provider(ctx, provider)
+        self._show_switch_result(ctx, old, provider)
         return True
+
+    # --- Shared helpers ---
+
+    def _build_provider_choices(self, client, extra=None):
+        choices = [(key, f"{pconfig.name} ({key})") for key, pconfig in client.providers.items()]
+        if extra:
+            choices.extend(extra)
+        return choices
+
+    def _show_switch_result(self, ctx, old_provider, new_provider):
+        self._output(ctx, f"{CYAN}{old_provider}{RESET} -> {GREEN}{new_provider}{RESET} | {CYAN}{ctx.client.current_model}{RESET}")
+
+    def _switch_provider(self, ctx: CommandContext, provider_key: str):
+        old = ctx.client.current_provider
+        ctx.client.set_provider(provider_key)
+        return old
+
+    # --- Interactive flows ---
 
     def _select_interactive(self, client) -> str | None:
         while True:
-            choices = []
-            for key, pconfig in client.providers.items():
-                display = f"{pconfig.name} ({key})"
-                choices.append((key, display))
-            choices.append(MenuItem.manage())
-            choices.append(MenuItem.exit_())
+            choices = self._build_provider_choices(client, [MenuItem.manage(), MenuItem.exit_()])
 
             result = select(
                 f"Select provider (current: {client.current_provider})",
@@ -133,12 +136,7 @@ class ProviderCommand(Command):
             error(str(e))
 
     def _edit_provider_interactive(self, client) -> None:
-        choices = []
-        for key, pconfig in client.providers.items():
-            display = f"{pconfig.name} ({key})"
-            choices.append((key, display))
-        choices.append(MenuItem.back())
-
+        choices = self._build_provider_choices(client, [MenuItem.back()])
         key = select("Select provider to edit", choices)
 
         if is_cancelled(key):
@@ -187,15 +185,12 @@ class ProviderCommand(Command):
             success(f"Updated provider '{key}'")
         except ValueError as e:
             error(str(e))
-
-    def _delete_provider_interactive(self, client) -> None:
         choices = []
         for key, pconfig in client.providers.items():
             if len(client.providers) <= 1:
                 choices.append(MenuItem.disabled(f"{pconfig.name} ({key}) - cannot delete last provider"))
             else:
-                display = f"{pconfig.name} ({key})"
-                choices.append((key, display))
+                choices.append((key, f"{pconfig.name} ({key})"))
         choices.append(MenuItem.back())
 
         key = select("Select provider to delete", choices)
@@ -211,11 +206,6 @@ class ProviderCommand(Command):
                 success(f"Deleted provider '{key}'")
             except ValueError as e:
                 error(str(e))
-
-    def _switch_provider(self, ctx: CommandContext, provider_key: str):
-        old_provider = ctx.client.current_provider
-        ctx.client.set_provider(provider_key)
-        return old_provider
 
     def _select_model_interactive(self, client) -> str | None:
         models = client.models

@@ -2,12 +2,14 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import ClassVar, TYPE_CHECKING
+from typing import Callable, ClassVar, TypeVar, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..ui.display import Display
-    from ..ui import MenuAction
+    from ..ui.prompt import MenuAction
     from ...core.orchestrator import MocodeCore
+
+T = TypeVar("T")
 
 
 @dataclass
@@ -46,6 +48,78 @@ class Command(ABC):
         from ..ui.prompt import confirm
         from ..ui.styles import YELLOW, RESET
         return confirm(f"{YELLOW}Delete '{item_name}'?{RESET}")
+
+    # --- Safe output helpers ---
+
+    def _info(self, ctx: CommandContext, msg: str) -> None:
+        if ctx.display:
+            ctx.display.info(msg)
+        else:
+            from ..ui.styles import info as _info
+            _info(msg)
+
+    def _success(self, ctx: CommandContext, msg: str) -> None:
+        if ctx.display:
+            ctx.display.success(msg)
+        else:
+            from ..ui.styles import success as _success
+            _success(msg)
+
+    def _error(self, ctx: CommandContext, msg: str) -> None:
+        if ctx.display:
+            ctx.display.error(msg)
+        else:
+            from ..ui.styles import error as _error
+            _error(msg)
+
+    def _output(self, ctx: CommandContext, msg: str) -> None:
+        if ctx.display:
+            ctx.display.command_output(msg)
+
+    # --- Menu helpers ---
+
+    def _select_from_list(
+        self,
+        title: str,
+        items: list[T],
+        formatter: Callable[[T], tuple[str, str]],
+        *,
+        extra_choices: list[tuple] | None = None,
+        current: str | None = None,
+    ) -> T | "MenuAction" | None:
+        """Build select menu from items. Returns selected item, MenuAction, or None."""
+        from ..ui.prompt import select, MenuItem, is_cancelled, MenuAction
+
+        choices = [formatter(item) for item in items]
+        if extra_choices:
+            choices.extend(extra_choices)
+        choices.append(MenuItem.exit_())
+
+        result = select(title, choices, current=current)
+        if is_cancelled(result):
+            return None
+
+        if isinstance(result, MenuAction):
+            return result
+
+        # Find original item by key
+        for item in items:
+            key, _ = formatter(item)
+            if key == result:
+                return item
+        return None
+
+    def _route_subcommand(
+        self, ctx: CommandContext, arg: str, handlers: dict[str, str]
+    ) -> bool | None:
+        """Route arg to subcommand method. Returns None if no match."""
+        parts = arg.split(maxsplit=1)
+        if not parts:
+            return None
+        subcmd, remaining = parts[0], parts[1] if len(parts) > 1 else ""
+        if subcmd in handlers:
+            return getattr(self, handlers[subcmd])(ctx, remaining)
+        return None
 
 
 class CommandRegistry:
