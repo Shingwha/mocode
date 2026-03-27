@@ -176,7 +176,7 @@ plugin_class = MyPlugin
 ## SDK Usage
 
 ```python
-from mocode import MocodeClient
+from mocode import MocodeCore
 import asyncio
 
 async def main():
@@ -193,7 +193,7 @@ async def main():
         "tool_result_limit": 25000
     }
 
-    client = MocodeClient(config=config, persistence=False)
+    client = MocodeCore(config=config, persistence=False)
 
     # Chat
     response = await client.chat("Hello!")

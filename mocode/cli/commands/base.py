@@ -7,13 +7,13 @@ from typing import ClassVar, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..ui.layout import Layout
     from ..ui import MenuAction
-    from ...sdk import MocodeClient
+    from ...core.orchestrator import MocodeCore
 
 
 @dataclass
 class CommandContext:
     """Command execution context"""
-    client: "MocodeClient"
+    client: "MocodeCore"
     args: str  # Command arguments
     layout: "Layout | None" = None
     pending_message: str | None = None  # Message to send to agent after command

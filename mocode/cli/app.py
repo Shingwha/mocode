@@ -3,7 +3,7 @@
 import asyncio
 import os
 
-from ..sdk import MocodeClient
+from ..core.orchestrator import MocodeCore
 from ..core.config import Config
 from ..core.permission import PermissionMatcher
 from ..core.interrupt import InterruptToken
@@ -23,7 +23,7 @@ class CLIApp:
     """
 
     def __init__(self):
-        self.client: MocodeClient | None = None
+        self.client: MocodeCore | None = None
         self.layout = Layout()
         self.commands = CommandRegistry()
 
@@ -64,7 +64,8 @@ class CLIApp:
         config = Config.load()
         permission_matcher = PermissionMatcher(config.permission)
 
-        self.client = MocodeClient(
+        self.client = MocodeCore(
+            config=config,
             permission_handler=permission_handler,
             permission_matcher=permission_matcher,
             interrupt_token=self._interrupt_token,

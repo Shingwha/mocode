@@ -1,4 +1,4 @@
-"""Agent 核心 - 异步版本"""
+"""Agent core - async LLM conversation loop with sequential tool execution"""
 
 import asyncio
 from typing import TYPE_CHECKING, Callable
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 
 class AsyncAgent:
-    """Agent - 异步 LLM 对话循环，顺序执行工具"""
+    """Async LLM agent with sequential tool execution"""
 
     def __init__(
         self,
@@ -41,31 +41,41 @@ class AsyncAgent:
         self.hook_registry = hook_registry
         self.conversation_id: str | None = None
 
-    async def _trigger_hook(
-        self,
-        hook_point: HookPoint,
-        data: dict,
-    ):
-        """Trigger hooks with standard pattern
-
-        Args:
-            hook_point: Hook point to trigger
-            data: Context data for hooks
-
-        Returns:
-            HookContext if hooks exist and executed, None otherwise
-        """
+    async def _trigger_hook(self, hook_point: HookPoint, data: dict):
+        """Trigger hooks, returns HookContext or None"""
         if not self.hook_registry or not self.hook_registry.has_hooks(hook_point):
             return None
         return await self.hook_registry.trigger(hook_point, data)
 
+    # ---- Event helpers ----
+
+    def _emit_tool_start(self, tool_name: str, tool_args: dict) -> None:
+        self.event_bus.emit(EventType.TOOL_START, {
+            "name": tool_name, "args": tool_args,
+            "conversation_id": self.conversation_id,
+        })
+
+    def _emit_tool_complete(self, tool_name: str, result: str) -> None:
+        self.event_bus.emit(EventType.TOOL_COMPLETE, {
+            "name": tool_name, "result": result,
+            "conversation_id": self.conversation_id,
+        })
+
+    def _emit_tool_denied(self, tool_name: str, tool_args: dict, reason: str) -> str:
+        """Emit tool denial events and return interrupt sentinel"""
+        self._emit_tool_start(tool_name, tool_args)
+        self._emit_tool_complete(tool_name, f"User {reason} this operation")
+        self.event_bus.emit(EventType.INTERRUPTED, {"reason": reason, "tool": tool_name})
+        return "[interrupted]"
+
+    # ---- Chat loop ----
+
     async def chat(self, user_input: str) -> str:
-        """运行一轮异步对话（非流式，工具顺序执行）"""
-        # 重置中断状态
+        """Run one conversation turn"""
         if self.interrupt_token:
             self.interrupt_token.reset()
 
-        # Trigger AGENT_CHAT_START hook
+        # Pre-chat hook
         ctx = await self._trigger_hook(HookPoint.AGENT_CHAT_START, {"input": user_input})
         if ctx:
             if ctx.modified and ctx.result:
@@ -75,20 +85,17 @@ class AsyncAgent:
 
         self.messages.append({"role": "user", "content": user_input})
         self.event_bus.emit(EventType.MESSAGE_ADDED, {
-            "role": "user",
-            "content": user_input,
+            "role": "user", "content": user_input,
             "conversation_id": self.conversation_id,
         })
 
         final_response = ""
 
         while True:
-            # 检查中断
             if self.interrupt_token and self.interrupt_token.is_interrupted:
                 self.event_bus.emit(EventType.INTERRUPTED, None)
                 return "[interrupted]"
 
-            # 异步调用 API（可中断）
             tools = ToolRegistry.all_schemas()
             response = await self._call_with_interrupt_check(
                 self.provider.call(
@@ -96,7 +103,6 @@ class AsyncAgent:
                 )
             )
 
-            # 如果被中断
             if response is None:
                 self.event_bus.emit(EventType.INTERRUPTED, None)
                 return "[interrupted]"
@@ -104,7 +110,6 @@ class AsyncAgent:
             message = response.choices[0].message
             tool_results = []
 
-            # 处理文本内容
             if message.content:
                 final_response = message.content
                 self.event_bus.emit(EventType.TEXT_COMPLETE, {
@@ -112,53 +117,38 @@ class AsyncAgent:
                     "conversation_id": self.conversation_id,
                 })
 
-            # 处理工具调用（顺序执行）
             if message.tool_calls:
                 for tool_call in message.tool_calls:
-                    # 工具执行前检查中断
                     if self.interrupt_token and self.interrupt_token.is_interrupted:
                         self.event_bus.emit(EventType.INTERRUPTED, None)
                         return "[interrupted]"
 
                     import json
-
                     tool_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
 
-                    # 顺序执行工具（可中断）
                     result = await self._run_tool_async(tool_name, tool_args)
-
-                    # 如果工具执行被中断（包括用户 deny），直接返回
                     if result == "[interrupted]":
                         return "[interrupted]"
 
-                    tool_results.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": result,
-                        }
-                    )
+                    tool_results.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": result,
+                    })
 
-            # 添加 assistant 消息
-            self.messages.append(
-                {
-                    "role": "assistant",
-                    "content": message.content or "",
-                    "tool_calls": [
-                        tc.model_dump() for tc in (message.tool_calls or [])
-                    ],
-                }
-            )
+            self.messages.append({
+                "role": "assistant",
+                "content": message.content or "",
+                "tool_calls": [tc.model_dump() for tc in (message.tool_calls or [])],
+            })
 
-            # 如果没有工具调用，结束循环
             if not tool_results:
                 break
 
-            # 添加工具结果
             self.messages.extend(tool_results)
 
-        # Trigger AGENT_CHAT_END hook
+        # Post-chat hook
         await self._trigger_hook(
             HookPoint.AGENT_CHAT_END,
             {"response": final_response, "messages": self.messages}
@@ -167,27 +157,14 @@ class AsyncAgent:
         return final_response
 
     async def _call_with_interrupt_check(self, coro, check_interval: float = 0.1):
-        """等待协程或 Future，同时检查中断信号
-
-        Args:
-            coro: 协程或 Future 对象
-            check_interval: 检查间隔（秒）
-
-        Returns:
-            协程返回值，如果被中断则返回 None
-        """
+        """Await coroutine while polling for interrupt signal"""
         if not self.interrupt_token:
             return await coro
 
-        # 创建任务（协程）或直接使用（Future）
-        if asyncio.isfuture(coro):
-            task = asyncio.ensure_future(coro)
-        else:
-            task = asyncio.create_task(coro)
+        task = asyncio.ensure_future(coro) if asyncio.isfuture(coro) else asyncio.create_task(coro)
 
         try:
             while not task.done():
-                # 检查中断
                 if self.interrupt_token.is_interrupted:
                     task.cancel()
                     try:
@@ -196,169 +173,113 @@ class AsyncAgent:
                         pass
                     return None
 
-                # 等待一小段时间
                 try:
                     await asyncio.wait_for(asyncio.shield(task), timeout=check_interval)
                     return task.result()
                 except asyncio.TimeoutError:
-                    # 超时继续检查
                     continue
 
             return task.result()
         except asyncio.CancelledError:
             return None
 
+    # ---- Tool execution pipeline ----
+
+    def _apply_result_limit(self, result: str) -> str:
+        """Truncate result if it exceeds configured limit"""
+        if self.config and self.config.tool_result_limit > 0:
+            from ..tools.utils import truncate_result
+            return truncate_result(result, self.config.tool_result_limit)
+        return result
+
+    def _should_skip_permission(self, tool_name: str, tool_args: dict) -> bool:
+        """Check if mode-based auto-approve allows skipping permission"""
+        if not self.config or not hasattr(self.config, 'current_mode'):
+            return False
+        mode_name = self.config.current_mode
+        if mode_name == "normal" or mode_name not in self.config.modes:
+            return False
+        mode = self.config.modes[mode_name]
+        if not mode.auto_approve:
+            return False
+        return not self._is_dangerous_command(tool_name, tool_args, mode)
+
+    async def _check_permission(self, tool_name: str, tool_args: dict) -> str | None:
+        """Check mode overrides and permission rules.
+
+        Returns None if execution should proceed,
+        or a result string if denied/skipped.
+        """
+        if self._should_skip_permission(tool_name, tool_args):
+            return None
+
+        if not self.permission_matcher:
+            return None
+
+        action = self.permission_matcher.check(tool_name, tool_args)
+
+        if action == PermissionAction.DENY:
+            return self._emit_tool_denied(tool_name, tool_args, "denied")
+
+        if action == PermissionAction.ASK:
+            if not self.permission_handler:
+                return f"Permission handler required for tool '{tool_name}'"
+
+            user_response = await self.permission_handler.ask_permission(tool_name, tool_args)
+
+            if user_response == "deny":
+                return self._emit_tool_denied(tool_name, tool_args, "denied")
+            elif user_response == "interrupt":
+                return self._emit_tool_denied(tool_name, tool_args, "interrupted")
+            elif user_response == "allow":
+                return None
+            else:
+                # Custom user input - emit as tool result
+                self._emit_tool_start(tool_name, tool_args)
+                self._emit_tool_complete(tool_name, user_response)
+                return user_response
+
+        # ALLOW
+        return None
+
     async def _run_tool_async(self, tool_name: str, tool_args: dict) -> str:
-        """异步执行单个工具（带权限检查和中断支持）"""
-        # ============ Mode 权限覆盖（新增） ============
-        skip_permission_check = False
-        if self.config and hasattr(self.config, 'current_mode'):
-            mode_name = self.config.current_mode
-            if mode_name != "normal" and mode_name in self.config.modes:
-                mode = self.config.modes[mode_name]
-                if mode.auto_approve:
-                    # yolo 模式：自动允许非危险命令
-                    if not self._is_dangerous_command(tool_name, tool_args, mode):
-                        skip_permission_check = True  # 跳过权限检查
-                    # 危险命令继续走原有权限流程
+        """Execute a single tool with permission check, hooks, and interrupt support"""
 
-        # ============ 原有 permission 检查 ============
-        if not skip_permission_check and self.permission_matcher:
-            action = self.permission_matcher.check(tool_name, tool_args)
+        # 1. Permission check
+        perm_result = await self._check_permission(tool_name, tool_args)
+        if perm_result is not None:
+            return perm_result
 
-            if action == PermissionAction.DENY:
-                # 显示工具名称和拒绝信息
-                self.event_bus.emit(EventType.TOOL_START, {
-                    "name": tool_name,
-                    "args": tool_args,
-                    "conversation_id": self.conversation_id,
-                })
-                self.event_bus.emit(EventType.TOOL_COMPLETE, {
-                    "name": tool_name,
-                    "result": "User denied this operation",
-                    "conversation_id": self.conversation_id,
-                })
-                self.event_bus.emit(EventType.INTERRUPTED, {"reason": "denied", "tool": tool_name})
-                return "[interrupted]"
-
-            if action == PermissionAction.ASK:
-                # 必须有 permission_handler
-                if not self.permission_handler:
-                    return f"Permission handler required for tool '{tool_name}'"
-
-                user_response = await self.permission_handler.ask_permission(tool_name, tool_args)
-
-                # 处理用户响应
-                if user_response == "deny":
-                    # 显示工具名称和拒绝信息
-                    self.event_bus.emit(EventType.TOOL_START, {
-                        "name": tool_name,
-                        "args": tool_args,
-                        "conversation_id": self.conversation_id,
-                    })
-                    self.event_bus.emit(EventType.TOOL_COMPLETE, {
-                        "name": tool_name,
-                        "result": "User denied this operation",
-                        "conversation_id": self.conversation_id,
-                    })
-                    self.event_bus.emit(EventType.INTERRUPTED, {"reason": "denied", "tool": tool_name})
-                    return "[interrupted]"
-                elif user_response == "interrupt":
-                    # ESC 中断
-                    self.event_bus.emit(EventType.TOOL_START, {
-                        "name": tool_name,
-                        "args": tool_args,
-                        "conversation_id": self.conversation_id,
-                    })
-                    self.event_bus.emit(EventType.TOOL_COMPLETE, {
-                        "name": tool_name,
-                        "result": "User interrupted this operation",
-                        "conversation_id": self.conversation_id,
-                    })
-                    self.event_bus.emit(EventType.INTERRUPTED, {"reason": "interrupted", "tool": tool_name})
-                    return "[interrupted]"
-                elif user_response == "allow":
-                    pass  # 继续执行
-                else:
-                    # 用户输入了自定义内容，发射事件让 UI 显示
-                    self.event_bus.emit(
-                        EventType.TOOL_START,
-                        {
-                            "name": tool_name,
-                            "args": tool_args,
-                            "conversation_id": self.conversation_id,
-                        },
-                    )
-                    self.event_bus.emit(
-                        EventType.TOOL_COMPLETE,
-                        {
-                            "name": tool_name,
-                            "result": user_response,
-                            "conversation_id": self.conversation_id,
-                        },
-                    )
-                    return user_response
-
-        # Trigger TOOL_BEFORE_RUN hook
+        # 2. Pre-run hook
         ctx = await self._trigger_hook(
-            HookPoint.TOOL_BEFORE_RUN,
-            {"name": tool_name, "args": tool_args}
+            HookPoint.TOOL_BEFORE_RUN, {"name": tool_name, "args": tool_args}
         )
         if ctx:
             if ctx.modified and "args" in ctx.data:
                 tool_args = ctx.data["args"]
             if ctx.has_error:
                 return f"Hook error: {ctx._error}"
-            # 如果 hook 已经提供了结果，跳过工具执行
             if ctx.result is not None:
-                result = ctx.result
-                # Apply result size limit
-                if self.config and self.config.tool_result_limit > 0:
-                    from ..tools.utils import truncate_result
-                    result = truncate_result(result, self.config.tool_result_limit)
-                self.event_bus.emit(EventType.TOOL_START, {
-                    "name": tool_name,
-                    "args": tool_args,
-                    "conversation_id": self.conversation_id,
-                })
-                self.event_bus.emit(EventType.TOOL_COMPLETE, {
-                    "name": tool_name,
-                    "result": result,
-                    "conversation_id": self.conversation_id,
-                })
+                result = self._apply_result_limit(ctx.result)
+                self._emit_tool_start(tool_name, tool_args)
+                self._emit_tool_complete(tool_name, result)
                 return result
 
-        # 执行工具
-        self.event_bus.emit(
-            EventType.TOOL_START,
-            {
-                "name": tool_name,
-                "args": tool_args,
-                "conversation_id": self.conversation_id,
-            },
-        )
+        # 3. Execute tool
+        self._emit_tool_start(tool_name, tool_args)
 
-        # 设置工具执行上下文（传递 config 给工具）
         if self.config:
-            from ..tools.context import set_tool_context
-            set_tool_context(self.config)
+            from ..tools.context import set_tool_context, ToolContext
+            set_tool_context(ToolContext(config=self.config))
 
-        # 在线程池中执行同步工具（可中断）
         result = await self._call_with_interrupt_check(
             asyncio.to_thread(ToolRegistry.run, tool_name, tool_args)
         )
 
         if result is None:
-            # 工具执行被中断（ESC）
-            self.event_bus.emit(EventType.TOOL_COMPLETE, {
-                "name": tool_name,
-                "result": "User interrupted this operation",
-                "conversation_id": self.conversation_id,
-            })
-            self.event_bus.emit(EventType.INTERRUPTED, {"reason": "interrupted", "tool": tool_name})
-            return "[interrupted]"
+            return self._emit_tool_denied(tool_name, tool_args, "interrupted")
 
-        # Trigger TOOL_AFTER_RUN hook
+        # 4. Post-run hook
         ctx = await self._trigger_hook(
             HookPoint.TOOL_AFTER_RUN,
             {"name": tool_name, "result": result, "args": tool_args}
@@ -366,41 +287,20 @@ class AsyncAgent:
         if ctx and ctx.modified and ctx.result:
             result = ctx.result
 
-        # Apply result size limit
-        if self.config and self.config.tool_result_limit > 0:
-            from ..tools.utils import truncate_result
-            result = truncate_result(result, self.config.tool_result_limit)
-
-        self.event_bus.emit(
-            EventType.TOOL_COMPLETE,
-            {
-                "name": tool_name,
-                "result": result,
-                "conversation_id": self.conversation_id,
-            },
-        )
-
+        # 5. Truncate and emit
+        result = self._apply_result_limit(result)
+        self._emit_tool_complete(tool_name, result)
         return result
 
     def _is_dangerous_command(self, tool_name: str, tool_args: dict, mode: "ModeConfig") -> bool:
-        """检查是否为危险命令（需要强制 ask）
-
-        Args:
-            tool_name: 工具名称
-            tool_args: 工具参数
-            mode: 当前模式配置
-
-        Returns:
-            是否为危险命令
-        """
+        """Check if a bash command matches dangerous patterns"""
         if tool_name != "bash":
-            return False  # 目前只对 bash 命令进行检查
+            return False
 
         command = tool_args.get("command", "")
         if not command:
             return False
 
-        # 检查是否匹配任何危险模式
         for pattern in mode.dangerous_patterns:
             if command.startswith(pattern):
                 return True
@@ -408,21 +308,16 @@ class AsyncAgent:
         return False
 
     def clear(self):
-        """清空对话历史"""
+        """Clear conversation history"""
         self.messages.clear()
 
     def update_provider(self, provider: AsyncOpenAIProvider):
-        """更新 provider（切换模型时）"""
+        """Update provider (e.g. when switching models)"""
         self.provider = provider
         self.messages.clear()
 
     def update_system_prompt(self, prompt: str, clear_history: bool = False) -> None:
-        """动态更新系统提示
-
-        Args:
-            prompt: 新的系统提示
-            clear_history: 是否清除历史消息 (避免 prompt 切换后上下文混乱)
-        """
+        """Update system prompt"""
         self.system_prompt = prompt
         if clear_history:
             self.messages.clear()

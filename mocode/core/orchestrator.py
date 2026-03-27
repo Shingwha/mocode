@@ -1,15 +1,14 @@
 """Mocode Core - Central orchestrator for business logic"""
 
-import asyncio
-from collections import deque
 import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from .agent import AsyncAgent
-from .config import Config, ConfigManager
+from .config import Config
 from .events import EventBus, EventType
 from .interrupt import InterruptToken
+from .message_queue import MessageQueue
 from .permission import DefaultPermissionHandler, PermissionHandler, PermissionMatcher
 from .session import Session, SessionManager
 from .prompt import PromptBuilder, default_prompt
@@ -35,16 +34,16 @@ class SessionState:
 class MocodeCore:
     """Central orchestrator for mocode business logic
 
-    Coordinates all components and provides high-level operations
-    that the SDK layer delegates to. Handles persistence callbacks
-    and maintains consistent state across components.
+    Coordinates all components and provides high-level operations.
+    Can be used directly as both CLI backend and SDK entry point.
     """
 
     def __init__(
         self,
-        config: Config,
-        event_bus: EventBus,
-        interrupt_token: InterruptToken,
+        config: Config | dict | None = None,
+        config_path: str | None = None,
+        event_bus: EventBus | None = None,
+        interrupt_token: InterruptToken | None = None,
         permission_handler: PermissionHandler | None = None,
         permission_matcher: PermissionMatcher | None = None,
         prompt_builder: "PromptBuilder | None" = None,
@@ -58,9 +57,10 @@ class MocodeCore:
         """Initialize mocode core
 
         Args:
-            config: Configuration instance
-            event_bus: Event bus for notifications
-            interrupt_token: Token for cancellation
+            config: Config instance, dict (in-memory mode), or None (load from file)
+            config_path: Config file path (used when config is None)
+            event_bus: Event bus for notifications (created if None)
+            interrupt_token: Token for cancellation (created if None)
             permission_handler: Handler for permission prompts
             permission_matcher: Matcher for permission checks
             prompt_builder: Builder for system prompts
@@ -75,21 +75,17 @@ class MocodeCore:
         if auto_register_tools:
             register_all_tools()
 
-        # Core components
-        self._config = config
-        self._config_manager = ConfigManager(
-            config, self._on_config_changed, persistence
-        )
-        self._event_bus = event_bus
-        self._interrupt_token = interrupt_token
+        # Normalize config parameter
+        if config is None or isinstance(config, dict):
+            self._config = Config.load(path=config_path, data=config)
+        else:
+            self._config = config
+
+        # Create defaults for optional components
+        self._event_bus = event_bus or EventBus()
+        self._interrupt_token = interrupt_token or InterruptToken()
         self._persistence = persistence
         self._workdir = workdir or os.getcwd()
-
-        # Message queue for external injections
-        self._current_conversation_id: str | None = None
-        self._message_queue: deque[tuple[str, str | None]] = deque()
-        self._is_processing: bool = False
-        self._queue_lock: asyncio.Lock = asyncio.Lock()
 
         # Permission handling
         self._permission_handler = permission_handler or DefaultPermissionHandler()
@@ -101,17 +97,27 @@ class MocodeCore:
         # Prompt builder
         self._prompt_builder = prompt_builder or default_prompt()
 
-        # Session management (inlined from SessionCoordinator)
+        # Session management
         self._session_manager = SessionManager(self._workdir)
         self._session_state = SessionState()
 
-        # Agent (directly, no facade layer)
+        # Agent
         self._provider = AsyncOpenAIProvider(
-            base_url=config.base_url or None,
-            api_key=config.api_key,
-            model=config.model,
+            base_url=self._config.base_url or None,
+            api_key=self._config.api_key,
+            model=self._config.model,
         )
         self._agent = self._create_agent()
+
+        # Wire config persistence after agent is created (so _on_config_changed can call _switch_provider)
+        self._config.set_persistence(persistence, self._on_config_changed)
+
+        # Message queue for external injections
+        self._message_queue = MessageQueue(
+            chat_fn=self._chat_with_agent,
+            event_bus=self._event_bus,
+            mark_unsaved_fn=self._mark_unsaved,
+        )
 
         # Plugin management
         self._plugin_manager = plugin_manager or PluginManager(
@@ -128,9 +134,9 @@ class MocodeCore:
             self._plugin_coordinator.initialize()
 
     def _on_config_changed(self) -> None:
-        """Called by ConfigManager after config changes are persisted.
-        Handles additional side effects like updating agent provider."""
-        pass
+        """Called after config changes are persisted.
+        Updates agent provider to match new config."""
+        self._switch_provider()
 
     def _mark_unsaved(self) -> None:
         """Mark session as having unsaved changes"""
@@ -188,70 +194,31 @@ class MocodeCore:
 
     # Chat operations
 
+    async def _chat_with_agent(self, message: str, conversation_id: str | None = None) -> str:
+        """Internal: run a chat on the agent with optional conversation_id"""
+        if conversation_id:
+            self._agent.conversation_id = conversation_id
+        return await self._agent.chat(message)
+
     async def chat(self, message: str) -> str:
-        """Send a message and get response
-
-        Args:
-            message: User message
-
-        Returns:
-            Assistant response
-        """
+        """Send a message and get response"""
         self._mark_unsaved()
-        self._agent.conversation_id = self._current_conversation_id
         return await self._agent.chat(message)
 
     @property
     def is_agent_busy(self) -> bool:
         """Check if agent is processing a message"""
-        return self._is_processing
+        return self._message_queue.is_processing
 
     async def inject_message(
         self, message: str, conversation_id: str | None = None
     ) -> str:
-        """Inject message from external source, blocks until processed
-
-        Args:
-            message: User message
-            conversation_id: Optional conversation ID for tracking
-
-        Returns:
-            Assistant response
-        """
-        async with self._queue_lock:
-            self._is_processing = True
-            self._current_conversation_id = conversation_id
-            try:
-                self._mark_unsaved()
-                self._agent.conversation_id = conversation_id
-                return await self._agent.chat(message)
-            finally:
-                self._is_processing = False
-                self._current_conversation_id = None
-                # Emit IDLE event for queue processing
-                self._event_bus.emit(EventType.AGENT_IDLE, None)
-                # Process next message in queue
-                await self._process_queue()
+        """Inject message from external source, blocks until processed"""
+        return await self._message_queue.inject(message, conversation_id)
 
     def queue_message(self, message: str, conversation_id: str | None = None) -> None:
-        """Non-blocking: add message to queue for later processing
-
-        Args:
-            message: User message
-            conversation_id: Optional conversation ID for tracking
-        """
-        self._message_queue.append((message, conversation_id))
-        # If agent is idle, trigger processing
-        if not self._is_processing:
-            asyncio.create_task(self._process_queue())
-
-    async def _process_queue(self) -> None:
-        """Process queued messages when agent is idle"""
-        if self._is_processing or not self._message_queue:
-            return
-
-        message, conv_id = self._message_queue.popleft()
-        await self.inject_message(message, conv_id)
+        """Non-blocking: add message to queue for later processing"""
+        self._message_queue.enqueue(message, conversation_id)
 
     def create_plugin_context(self) -> PluginContext:
         """Create context for plugins"""
@@ -262,8 +229,8 @@ class MocodeCore:
             queue_message=self.queue_message,
             get_messages=lambda: self._agent.messages.copy(),
             workdir=self._workdir,
-            is_agent_busy=lambda: self._is_processing,
-            current_conversation_id=self._current_conversation_id,
+            is_agent_busy=lambda: self._message_queue.is_processing,
+            current_conversation_id=self._agent.conversation_id,
         )
 
     def interrupt(self) -> None:
@@ -274,6 +241,26 @@ class MocodeCore:
         """Clear conversation history"""
         self._agent.clear()
         self._clear_session_state()
+
+    def clear_history_with_save(self) -> Session | None:
+        """Save current session if there are messages, then clear history"""
+        saved = None
+        if self._agent.messages:
+            saved = self.save_session()
+        self.clear_history()
+        return saved
+
+    def on_event(self, event_type: EventType, handler: Callable) -> None:
+        """Subscribe to events"""
+        self._event_bus.on(event_type, handler)
+
+    def off_event(self, event_type: EventType, handler: Callable) -> None:
+        """Unsubscribe from events"""
+        self._event_bus.off(event_type, handler)
+
+    def save_config(self) -> None:
+        """Manually save config"""
+        self._config.save()
 
     # Session operations (inlined from SessionCoordinator)
 
@@ -333,25 +320,17 @@ class MocodeCore:
             self._session_state.current_session_id = None
         return result
 
-    def save_current_session_and_clear(self) -> Session | None:
-        """Save current session and clear history"""
-        saved = None
-        if self._agent.messages:
-            saved = self.save_session()
-        self.clear_history()
-        return saved
-
     # Config operations
 
     def set_model(self, model: str, provider: str | None = None) -> None:
         """Set current model"""
-        was_current = self._config_manager.set_model(model, provider)
+        was_current = self._config.set_model(model, provider)
         if provider or was_current:
             self._switch_provider()
 
     def set_provider(self, provider_key: str, model: str | None = None) -> None:
         """Switch to a provider"""
-        self._config_manager.set_provider(provider_key, model)
+        self._config.set_provider(provider_key, model)
         self._switch_provider()
 
     def add_provider(
@@ -364,7 +343,7 @@ class MocodeCore:
         set_current: bool = False,
     ) -> None:
         """Add a new provider"""
-        self._config_manager.add_provider(key, name, base_url, api_key, models)
+        self._config.add_provider(key, name, base_url, api_key, models)
         if set_current:
             self.set_provider(key)
 
@@ -375,7 +354,7 @@ class MocodeCore:
         set_current: bool = False,
     ) -> None:
         """Add a model to a provider"""
-        self._config_manager.add_model(model, provider)
+        self._config.add_model(model, provider)
         if set_current:
             if provider:
                 self.set_provider(provider, model)
@@ -384,13 +363,13 @@ class MocodeCore:
 
     def remove_provider(self, key: str) -> None:
         """Remove a provider"""
-        new_current = self._config_manager.remove_provider(key)
+        new_current = self._config.remove_provider(key)
         if new_current:
             self._switch_provider()
 
     def remove_model(self, model: str, provider: str | None = None) -> None:
         """Remove a model from a provider"""
-        new_model = self._config_manager.remove_model(model, provider)
+        new_model = self._config.remove_model(model, provider)
         if new_model:
             self._switch_provider()
 
@@ -402,7 +381,7 @@ class MocodeCore:
         api_key: str | None = None,
     ) -> None:
         """Update provider configuration"""
-        was_current = self._config_manager.update_provider(key, name, base_url, api_key)
+        was_current = self._config.update_provider(key, name, base_url, api_key)
         if was_current:
             self._switch_provider()
 
@@ -430,14 +409,14 @@ class MocodeCore:
         """Enable a plugin"""
         success = await self._plugin_coordinator.enable_plugin(name)
         if success:
-            self._config_manager.save()
+            self._config.save()
         return success
 
     async def disable_plugin(self, name: str) -> bool:
         """Disable a plugin"""
         success = await self._plugin_coordinator.disable_plugin(name)
         if success:
-            self._config_manager.save()
+            self._config.save()
         return success
 
     def get_plugin_info(self, name: str) -> PluginInfo | None:

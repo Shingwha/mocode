@@ -47,7 +47,7 @@ class CurrentConfig:
 
 @dataclass
 class Config:
-    """应用配置 - 支持多供应商"""
+    """Application configuration with multi-provider support"""
 
     current: CurrentConfig = field(default_factory=CurrentConfig)
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
@@ -58,19 +58,35 @@ class Config:
 
     CONFIG_PATH: Path = CONFIG_PATH
 
-    # Mode 配置（内存字段，不持久化）
+    # Mode config (in-memory, not persisted)
     modes: dict[str, ModeConfig] = field(init=False)
     current_mode: str = field(default="normal", init=False)
 
+    # Persistence (internal, not serialized)
+    _persistence_enabled: bool = field(default=True, init=False, repr=False)
+    _on_change: Callable[[], None] | None = field(default=None, init=False, repr=False)
+
     def __post_init__(self):
-        """确保默认供应商存在"""
+        """Ensure default providers exist"""
         if not self.providers:
             self._init_default_providers()
-        # 初始化 mode 配置（如果尚未设置）
         if not hasattr(self, 'modes'):
             self.modes = self._default_modes()
         if not hasattr(self, 'current_mode'):
             self.current_mode = "normal"
+
+    def set_persistence(self, enabled: bool, on_change: Callable[[], None] | None = None) -> None:
+        """Configure persistence behavior"""
+        self._persistence_enabled = enabled
+        if on_change is not None:
+            self._on_change = on_change
+
+    def _persist(self) -> None:
+        """Save and notify if persistence is enabled"""
+        if self._persistence_enabled:
+            self.save()
+        if self._on_change:
+            self._on_change()
 
     def _init_default_providers(self):
         """初始化默认供应商"""
@@ -271,7 +287,9 @@ class Config:
         if pconfig and model not in pconfig.models:
             pconfig.models.append(model)
 
-        return provider is None or provider == self.current.provider
+        result = provider is None or provider == self.current.provider
+        self._persist()
+        return result
 
     def set_provider(self, provider_key: str, model: str | None = None) -> bool:
         """Switch to a provider
@@ -301,6 +319,7 @@ class Config:
             pconfig.models.append(model)
 
         self.current.model = model
+        self._persist()
         return True
 
     def add_provider(
@@ -332,6 +351,7 @@ class Config:
             api_key=api_key,
             models=models or [],
         )
+        self._persist()
 
     def add_model(self, model: str, provider: str | None = None) -> None:
         """Add model to provider's list
@@ -350,6 +370,7 @@ class Config:
         pconfig = self.providers[provider_key]
         if model not in pconfig.models:
             pconfig.models.append(model)
+        self._persist()
 
     def remove_provider(self, key: str) -> str | None:
         """Remove a provider
@@ -379,6 +400,7 @@ class Config:
             new_current = other_key
 
         del self.providers[key]
+        self._persist()
         return new_current
 
     def remove_model(self, model: str, provider: str | None = None) -> str | None:
@@ -412,6 +434,7 @@ class Config:
             self.current.model = new_model
 
         pconfig.models.remove(model)
+        self._persist()
         return new_model
 
     def update_provider(
@@ -446,98 +469,6 @@ class Config:
         if api_key is not None:
             pconfig.api_key = api_key
 
-        return self.current.provider == key
-
-
-class ConfigManager:
-    """Manages configuration changes with persistence callbacks.
-
-    Wraps Config to add automatic persistence and change notification.
-    Config handles data mutations; ConfigManager handles side effects.
-    """
-
-    def __init__(
-        self,
-        config: Config,
-        on_change: "Callable[[], None] | None" = None,
-        persistence: bool = True,
-    ):
-        """Initialize config manager.
-
-        Args:
-            config: Configuration instance
-            on_change: Callback invoked after config changes are persisted
-            persistence: Whether to persist config changes to disk
-        """
-        self._config = config
-        self._on_change = on_change
-        self._persistence = persistence
-
-    def _persist(self) -> None:
-        """Save config and notify listener."""
-        if self._persistence:
-            self._config.save()
-        if self._on_change:
-            self._on_change()
-
-    def set_model(self, model: str, provider: str | None = None) -> bool:
-        """Set current model, optionally switching provider. Persists."""
-        result = self._config.set_model(model, provider)
+        result = self.current.provider == key
         self._persist()
         return result
-
-    def set_provider(self, provider_key: str, model: str | None = None) -> bool:
-        """Switch to a provider. Persists."""
-        result = self._config.set_provider(provider_key, model)
-        self._persist()
-        return result
-
-    def add_provider(
-        self,
-        key: str,
-        name: str,
-        base_url: str,
-        api_key: str = "",
-        models: list[str] | None = None,
-    ) -> None:
-        """Add a new provider. Persists."""
-        self._config.add_provider(key, name, base_url, api_key, models)
-        self._persist()
-
-    def add_model(self, model: str, provider: str | None = None) -> None:
-        """Add model to provider. Persists."""
-        self._config.add_model(model, provider)
-        self._persist()
-
-    def remove_provider(self, key: str) -> str | None:
-        """Remove a provider. Persists. Returns new current provider key."""
-        result = self._config.remove_provider(key)
-        self._persist()
-        return result
-
-    def remove_model(self, model: str, provider: str | None = None) -> str | None:
-        """Remove model from provider. Persists. Returns new model."""
-        result = self._config.remove_model(model, provider)
-        self._persist()
-        return result
-
-    def update_provider(
-        self,
-        key: str,
-        name: str | None = None,
-        base_url: str | None = None,
-        api_key: str | None = None,
-    ) -> bool:
-        """Update provider config. Persists."""
-        result = self._config.update_provider(key, name, base_url, api_key)
-        self._persist()
-        return result
-
-    def save(self) -> None:
-        """Manually persist config."""
-        self._persist()
-
-    @property
-    def config(self) -> Config:
-        """Underlying Config instance."""
-        return self._config
