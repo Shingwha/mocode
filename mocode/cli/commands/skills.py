@@ -2,7 +2,8 @@
 
 from .base import Command, CommandContext, command
 from .utils import parse_selection_arg
-from ..ui import SelectMenu, MenuItem, is_cancelled, error, format_success
+from ..ui.prompt import select, MenuItem, is_cancelled
+from ..ui.styles import MessagePreset, format_preset
 from ...skills.manager import SkillManager
 
 
@@ -16,12 +17,12 @@ class SkillsCommand(Command):
         skills = manager.list_skills()
 
         if not skills:
-            ctx.layout.add_command_output("No skills available.")
-            ctx.layout.add_command_output("")
-            ctx.layout.add_command_output("Skills directories:")
-            for d in manager.skills_dirs:
-                status = "(exists)" if d.exists() else "(not found)"
-                ctx.layout.add_command_output(f"  {d} {status}")
+            if ctx.display:
+                ctx.display.command_output("No skills available.\n")
+                ctx.display.command_output("Skills directories:")
+                for d in manager.skills_dirs:
+                    status = "(exists)" if d.exists() else "(not found)"
+                    ctx.display.command_output(f"  {d} {status}")
             return True
 
         if not arg:
@@ -29,26 +30,28 @@ class SkillsCommand(Command):
             if not skill_name:
                 return True
         else:
-            skill_name = parse_selection_arg(arg, sorted(skills), error_handler=error)
+            skill_name = parse_selection_arg(arg, sorted(skills))
             if skill_name is None:
                 return True
             if skill_name not in skills:
-                error(f"Skill not found: {skill_name}")
+                if ctx.display:
+                    ctx.display.error(f"Skill not found: {skill_name}")
                 return True
 
         skill = manager.get_skill(skill_name)
         if not skill:
-            error(f"Skill not found: {skill_name}")
+            if ctx.display:
+                ctx.display.error(f"Skill not found: {skill_name}")
             return True
 
         content = skill.load_content()
-        ctx.layout.add_command_output(format_success(f"Activated skill: {skill_name}"))
+        if ctx.display:
+            ctx.display.success(f"Activated skill: {skill_name}")
         ctx.pending_message = f"/{skill_name}\n\n{content}"
 
         return True
 
     def _select_interactive(self, skills: list[str], manager: SkillManager) -> str | None:
-        """Interactively select a skill."""
         choices = []
         for name in sorted(skills):
             skill = manager.get_skill(name)
@@ -60,5 +63,5 @@ class SkillsCommand(Command):
                 choices.append((name, display))
         choices.append(MenuItem.exit_())
 
-        selected = SelectMenu("Select a skill to activate", choices).show()
+        selected = select("Select a skill to activate", choices)
         return None if is_cancelled(selected) else selected

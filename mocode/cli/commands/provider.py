@@ -2,18 +2,11 @@
 
 from .base import Command, CommandContext, command
 from .utils import parse_selection_arg
-from ..ui import (
-    SelectMenu,
-    MenuAction,
-    MenuItem,
-    is_cancelled,
-    is_action,
-    error,
-    success,
-    ask,
-    Wizard,
+from ..ui.prompt import (
+    select, ask, Wizard,
+    MenuAction, MenuItem, is_cancelled, is_action,
 )
-from ..ui.colors import RESET, CYAN, GREEN, DIM, RED
+from ..ui.styles import error, success, info, RESET, CYAN, GREEN, DIM
 
 
 @command("/provider", "/p", description="Switch provider")
@@ -26,12 +19,11 @@ class ProviderCommand(Command):
             if not provider:
                 return True
             old_provider = self._switch_provider(ctx, provider)
-            # Enter model selection
             model = self._select_model_interactive(ctx.client)
             if model:
                 ctx.client.set_model(model)
-            if ctx.layout:
-                ctx.layout.add_command_output(
+            if ctx.display:
+                ctx.display.command_output(
                     f"{CYAN}{old_provider}{RESET} -> {GREEN}{provider}{RESET} | {CYAN}{ctx.client.current_model}{RESET}"
                 )
             return True
@@ -52,14 +44,13 @@ class ProviderCommand(Command):
             return True
 
         old_provider = self._switch_provider(ctx, provider)
-        if ctx.layout:
-            ctx.layout.add_command_output(
+        if ctx.display:
+            ctx.display.command_output(
                 f"{CYAN}{old_provider}{RESET} -> {GREEN}{provider}{RESET} | {CYAN}{ctx.client.current_model}{RESET}"
             )
         return True
 
     def _select_interactive(self, client) -> str | None:
-        """Interactive provider selection."""
         while True:
             choices = []
             for key, pconfig in client.providers.items():
@@ -68,12 +59,11 @@ class ProviderCommand(Command):
             choices.append(MenuItem.manage())
             choices.append(MenuItem.exit_())
 
-            menu = SelectMenu(
+            result = select(
                 f"Select provider (current: {client.current_provider})",
                 choices,
-                client.current_provider,
+                current=client.current_provider,
             )
-            result = menu.show()
 
             if is_cancelled(result):
                 return None
@@ -83,18 +73,13 @@ class ProviderCommand(Command):
             return result
 
     def _manage_providers(self, client) -> None:
-        """Provider management menu."""
         while True:
-            menu = SelectMenu(
-                "Manage providers",
-                [
-                    MenuItem.add("Add new provider"),
-                    MenuItem.edit(),
-                    MenuItem.delete(),
-                    MenuItem.back(),
-                ],
-            )
-            result = menu.show()
+            result = select("Manage providers", [
+                MenuItem.add("Add new provider"),
+                MenuItem.edit(),
+                MenuItem.delete(),
+                MenuItem.back(),
+            ])
 
             if is_cancelled(result):
                 return
@@ -106,7 +91,6 @@ class ProviderCommand(Command):
                 self._delete_provider_interactive(client)
 
     def _add_provider_interactive(self, client) -> None:
-        """Interactively add a new provider."""
         wizard = Wizard(title="Add new provider")
 
         key = wizard.step(
@@ -149,15 +133,13 @@ class ProviderCommand(Command):
             error(str(e))
 
     def _edit_provider_interactive(self, client) -> None:
-        """Interactively edit a provider."""
         choices = []
         for key, pconfig in client.providers.items():
             display = f"{pconfig.name} ({key})"
             choices.append((key, display))
         choices.append(MenuItem.back())
 
-        menu = SelectMenu("Select provider to edit", choices)
-        key = menu.show()
+        key = select("Select provider to edit", choices)
 
         if is_cancelled(key):
             return
@@ -172,7 +154,7 @@ class ProviderCommand(Command):
             base_url_display = f"{base_url} {DIM}(current){RESET}"
             api_key_display = f"{'*' * min(len(api_key), 8) if api_key else '(not set)'} {DIM}(current){RESET}"
 
-            menu = SelectMenu(
+            field = select(
                 f"Edit provider '{key}' - Select field",
                 [
                     ("name", f"Display name: {name_display}"),
@@ -182,7 +164,6 @@ class ProviderCommand(Command):
                     MenuItem.back(),
                 ],
             )
-            field = menu.show()
 
             if is_cancelled(field):
                 return
@@ -208,7 +189,6 @@ class ProviderCommand(Command):
             error(str(e))
 
     def _delete_provider_interactive(self, client) -> None:
-        """Interactively delete a provider."""
         choices = []
         for key, pconfig in client.providers.items():
             if len(client.providers) <= 1:
@@ -218,8 +198,7 @@ class ProviderCommand(Command):
                 choices.append((key, display))
         choices.append(MenuItem.back())
 
-        menu = SelectMenu("Select provider to delete", choices)
-        key = menu.show()
+        key = select("Select provider to delete", choices)
 
         if is_cancelled(key) or is_action(key, MenuAction.DISABLED):
             return
@@ -234,13 +213,11 @@ class ProviderCommand(Command):
                 error(str(e))
 
     def _switch_provider(self, ctx: CommandContext, provider_key: str):
-        """Switch provider."""
         old_provider = ctx.client.current_provider
         ctx.client.set_provider(provider_key)
         return old_provider
 
     def _select_model_interactive(self, client) -> str | None:
-        """Interactive model selection."""
         models = client.models
         current = client.current_model
         provider_key = client.current_provider
@@ -249,7 +226,6 @@ class ProviderCommand(Command):
         choices.append(MenuItem.exit_())
 
         provider_name = client.providers[provider_key].name if provider_key in client.providers else provider_key
-        menu = SelectMenu(f"Select model [{provider_name}] (current: {current})", choices, current)
-        result = menu.show()
+        result = select(f"Select model [{provider_name}] (current: {current})", choices, current=current)
 
         return None if is_cancelled(result) else result

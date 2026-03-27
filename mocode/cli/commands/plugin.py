@@ -4,17 +4,12 @@ import asyncio
 
 from .base import Command, CommandContext, command
 from .utils import parse_selection_arg
-from ..ui import (
-    SelectMenu,
-    MenuItem,
-    is_cancelled,
-    error,
-    success,
-    info,
-    MultiSelect,
-    confirm_dialog,
+from ..ui.prompt import (
+    select, ask, confirm, Wizard,
+    MenuAction, MenuItem, is_cancelled, is_action,
 )
-from ..ui.colors import RESET, GREEN, YELLOW, RED, DIM, CYAN
+from ..ui.components import MultiSelect
+from ..ui.styles import error, success, info, RESET, GREEN, YELLOW, RED, DIM, CYAN
 from ...plugins import PluginInfo, PluginState
 from ...plugins.installer import PluginInstaller, PluginSourceType
 from ...paths import PLUGINS_DIR
@@ -28,7 +23,6 @@ class PluginCommand(Command):
         self._installer = None
 
     def _get_installer(self) -> PluginInstaller:
-        """Get or create plugin installer."""
         if self._installer is None:
             self._installer = PluginInstaller(plugins_dir=PLUGINS_DIR)
         return self._installer
@@ -36,40 +30,32 @@ class PluginCommand(Command):
     def execute(self, ctx: CommandContext) -> bool:
         arg = ctx.args.strip()
 
-        # Install command
         if arg.startswith("install "):
-            url = arg[8:].strip()
-            return self._install_plugin(ctx, url)
+            return self._install_plugin(ctx, arg[8:].strip())
         elif arg == "install":
             error("Usage: /plugin install <github-url>")
             return True
 
-        # Uninstall command
         if arg.startswith("uninstall "):
-            name = arg[10:].strip()
-            return self._uninstall_plugin(ctx, name)
+            return self._uninstall_plugin(ctx, arg[10:].strip())
         elif arg == "uninstall":
             error("Usage: /plugin uninstall <name>")
             return True
 
-        # Update command
         if arg.startswith("update "):
-            name = arg[7:].strip()
-            return self._update_plugin(ctx, name)
+            return self._update_plugin(ctx, arg[7:].strip())
         elif arg == "update":
             error("Usage: /plugin update <name>")
             return True
 
-        # Info command
         if arg.startswith("info "):
-            name = arg[5:].strip()
-            return self._show_info(ctx, name)
+            return self._show_info(ctx, arg[5:].strip())
 
         plugins = ctx.client.list_plugins()
 
         if not plugins:
-            if ctx.layout:
-                ctx.layout.add_command_output(f"{DIM}No plugins discovered.{RESET}")
+            if ctx.display:
+                ctx.display.command_output(f"{DIM}No plugins discovered.{RESET}")
             return True
 
         plugin_names = [p.name for p in plugins]
@@ -80,7 +66,7 @@ class PluginCommand(Command):
                 return True
             self._toggle_plugin(ctx, plugin_name)
         else:
-            plugin_name = parse_selection_arg(arg, plugin_names, error_handler=error)
+            plugin_name = parse_selection_arg(arg, plugin_names)
             if plugin_name is None:
                 return True
             self._toggle_plugin(ctx, plugin_name)
@@ -88,7 +74,6 @@ class PluginCommand(Command):
         return True
 
     def _install_plugin(self, ctx: CommandContext, url: str) -> bool:
-        """Install plugin from GitHub URL."""
         if not url:
             error("Usage: /plugin install <github-url>")
             return True
@@ -96,18 +81,15 @@ class PluginCommand(Command):
         installer = self._get_installer()
 
         try:
-            # Discover plugins in repository
             source_type, candidates = installer.discover_from_repo(url)
 
             if not candidates:
                 error("No valid plugin found in repository")
                 return True
 
-            # Single plugin: install directly
             if source_type == PluginSourceType.SINGLE:
                 candidate = candidates[0]
                 info(f"Installing {candidate.name}...")
-
                 result = installer.install(url, candidate=candidate)
 
                 if result.success:
@@ -115,39 +97,27 @@ class PluginCommand(Command):
                         info(f"Plugin '{result.plugin_name}' is already installed")
                     else:
                         success(f"Plugin '{result.plugin_name}' installed successfully")
-                        # Refresh plugin list
                         ctx.client.discover_plugins()
                 else:
                     error(result.error)
-
                 return True
 
-            # Multi-plugin: show selection
             info(f"Found {len(candidates)} plugins in repository")
-
             choices = [
                 (c.name, f"{c.name} - {c.description}" if c.description else c.name)
                 for c in candidates
             ]
 
-            multi_select = MultiSelect(
-                "Select plugins to install",
-                choices,
-                min_selections=1,
-            )
-
-            selected = multi_select.show()
+            multi = MultiSelect("Select plugins to install", choices, min_selections=1)
+            selected = multi.show()
 
             if not selected:
                 info("Installation cancelled")
                 return True
 
-            # Install selected plugins
             selected_candidates = [c for c in candidates if c.name in selected]
-
             results = installer.install_multiple(url, selected_candidates)
 
-            # Show results
             success_count = sum(1 for r in results if r.success)
             for r in results:
                 if r.success:
@@ -169,38 +139,32 @@ class PluginCommand(Command):
             return True
 
     def _uninstall_plugin(self, ctx: CommandContext, name: str) -> bool:
-        """Uninstall a plugin."""
         if not name:
             error("Usage: /plugin uninstall <name>")
             return True
 
         installer = self._get_installer()
 
-        # Check if plugin exists
         plugin_info = ctx.client.get_plugin_info(name)
         if not plugin_info:
             error(f"Plugin '{name}' not found")
             return True
 
-        # Check if it was installed via /plugin install
         installed_info = installer.get_installed_info(name)
         if not installed_info:
             error(f"Plugin '{name}' was not installed via /plugin install")
             info("You can manually remove it from ~/.mocode/plugins/")
             return True
 
-        # Confirm uninstall
-        if not confirm_dialog(f"Uninstall plugin '{name}'?"):
+        if not confirm(f"Uninstall plugin '{name}'?"):
             info("Cancelled")
             return True
 
-        # Disable first if enabled
         if plugin_info.state == PluginState.ENABLED:
             loop = getattr(ctx.client, "_loop", None)
             if loop:
                 self._run_async(ctx.client.disable_plugin(name), loop)
 
-        # Uninstall
         if installer.uninstall(name):
             success(f"Plugin '{name}' uninstalled")
             ctx.client.discover_plugins()
@@ -210,20 +174,17 @@ class PluginCommand(Command):
         return True
 
     def _update_plugin(self, ctx: CommandContext, name: str) -> bool:
-        """Update a plugin to latest version."""
         if not name:
             error("Usage: /plugin update <name>")
             return True
 
         installer = self._get_installer()
 
-        # Check if plugin exists
         plugin_info = ctx.client.get_plugin_info(name)
         if not plugin_info:
             error(f"Plugin '{name}' not found")
             return True
 
-        # Check if it was installed via /plugin install
         installed_info = installer.get_installed_info(name)
         if not installed_info:
             error(f"Plugin '{name}' was not installed via /plugin install")
@@ -231,13 +192,11 @@ class PluginCommand(Command):
 
         info(f"Updating {name}...")
 
-        # Disable first if enabled
         if plugin_info.state == PluginState.ENABLED:
             loop = getattr(ctx.client, "_loop", None)
             if loop:
                 self._run_async(ctx.client.disable_plugin(name), loop)
 
-        # Update
         result = installer.update(name)
 
         if result.success:
@@ -249,7 +208,6 @@ class PluginCommand(Command):
         return True
 
     def _select_interactive(self, client, plugins: list[PluginInfo]) -> str | None:
-        """Interactive plugin selection."""
         choices = []
         for info in plugins:
             status = self._format_status(info.state)
@@ -261,13 +219,10 @@ class PluginCommand(Command):
 
         choices.append(MenuItem.exit_())
 
-        menu = SelectMenu("Select plugin", choices)
-        result = menu.show()
-
+        result = select("Select plugin", choices)
         return None if is_cancelled(result) else result
 
     def _toggle_plugin(self, ctx: CommandContext, name: str) -> None:
-        """Toggle plugin enabled/disabled state."""
         info = ctx.client.get_plugin_info(name)
 
         if info is None:
@@ -280,9 +235,7 @@ class PluginCommand(Command):
             if loop and self._run_async(ctx.client.disable_plugin(name), loop):
                 success(f"Plugin '{name}' disabled")
             else:
-                error(
-                    f"Failed to disable plugin '{name}': {info.error or 'Unknown error'}"
-                )
+                error(f"Failed to disable plugin '{name}': {info.error or 'Unknown error'}")
         else:
             if info.state == PluginState.ERROR:
                 error(f"Plugin '{name}' has errors: {info.error}")
@@ -291,18 +244,14 @@ class PluginCommand(Command):
             if loop and self._run_async(ctx.client.enable_plugin(name), loop):
                 success(f"Plugin '{name}' enabled")
             else:
-                error(
-                    f"Failed to enable plugin '{name}': {info.error or 'Unknown error'}"
-                )
+                error(f"Failed to enable plugin '{name}': {info.error or 'Unknown error'}")
 
     @staticmethod
     def _run_async(coro, loop: asyncio.AbstractEventLoop):
-        """Run an async coroutine from a sync context (possibly in another thread)."""
         future = asyncio.run_coroutine_threadsafe(coro, loop)
         return future.result(timeout=30)
 
     def _show_info(self, ctx: CommandContext, name: str) -> bool:
-        """Show plugin information."""
         if not name:
             error("Usage: /plugin info <name>")
             return True
@@ -315,12 +264,11 @@ class PluginCommand(Command):
 
         lines = self._format_plugin_info(info)
 
-        if ctx.layout:
-            ctx.layout.add_command_output("\n".join(lines))
+        if ctx.display:
+            ctx.display.command_output("\n".join(lines))
         return True
 
     def _format_plugin_info(self, info: PluginInfo) -> list[str]:
-        """Format plugin info for display."""
         lines = [
             f"{CYAN}Plugin: {info.name}{RESET}",
             f"Status: {self._format_status(info.state)}",
@@ -344,7 +292,6 @@ class PluginCommand(Command):
         return lines
 
     def _format_status(self, state: PluginState) -> str:
-        """Format plugin status for display with colors."""
         status_map = {
             PluginState.DISCOVERED: f"{DIM}discovered{RESET}",
             PluginState.LOADED: f"{YELLOW}loaded{RESET}",

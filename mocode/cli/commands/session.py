@@ -1,6 +1,6 @@
 """Session management command"""
 
-from ..ui import SelectMenu, MenuItem, is_cancelled, format_error, format_info, format_success
+from ..ui.prompt import select, MenuItem, is_cancelled
 from .base import Command, CommandContext, command
 
 
@@ -16,7 +16,7 @@ class SessionCommand(Command):
     def execute(self, ctx: CommandContext) -> bool:
         arg = ctx.args.strip()
 
-        if not ctx.layout:
+        if not ctx.display:
             return True
 
         if arg.startswith("restore "):
@@ -25,46 +25,38 @@ class SessionCommand(Command):
         return self._restore_interactive(ctx)
 
     def _restore_interactive(self, ctx: CommandContext) -> bool:
-        """Interactively select and restore session."""
         sessions = ctx.client.list_sessions()
         if not sessions:
-            ctx.layout.add_command_output(format_info("No saved sessions"))
+            ctx.display.info("No saved sessions")
             return True
 
         choices = [(s.id, self._format_display(s)) for s in sessions]
         choices.append(MenuItem.exit_())
 
-        selected = SelectMenu("Select session to restore", choices).show()
+        selected = select("Select session to restore", choices)
         if selected and not is_cancelled(selected):
             self._load_and_display(ctx, selected)
         return True
 
     def _restore_session(self, ctx: CommandContext, session_id: str) -> bool:
-        """Restore specific session."""
         if not session_id:
-            ctx.layout.add_command_output(format_error("Session ID required"))
+            ctx.display.error("Session ID required")
             return True
         self._load_and_display(ctx, session_id)
         return True
 
     def _load_and_display(self, ctx: CommandContext, session_id: str) -> None:
-        """Load session and display result."""
-        # Save current session if there are messages
         if ctx.client.agent.messages:
             ctx.client.save_session()
 
         session = ctx.client.load_session(session_id)
         if session:
-            ctx.layout.render_session_history(session.messages)
-            ctx.layout.add_command_output(format_success(f"Restored session: {session_id}"))
+            ctx.display.render_history(session.messages)
+            ctx.display.success(f"Restored session: {session_id}")
         else:
-            ctx.layout.add_command_output(format_error(f"Session not found: {session_id}"))
+            ctx.display.error(f"Session not found: {session_id}")
 
     def _format_display(self, session) -> str:
-        """Format session display text.
-
-        Format: 03-18 14:30 "First user message preview..."
-        """
         formatted_time = session.updated_at[5:16].replace("T", " ") if session.updated_at else "unknown"
 
         preview = ""

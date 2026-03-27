@@ -11,7 +11,7 @@ from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, CommandExecutor, register_builtin_commands
 from .events import CLIEventHandler
 from .monitor import ESCMonitor
-from .ui.layout import Layout
+from .ui.display import Display
 from .ui.permission import CLIPermissionHandler
 
 
@@ -24,7 +24,7 @@ class CLIApp:
 
     def __init__(self):
         self.client: MocodeCore | None = None
-        self.layout = Layout()
+        self.display = Display()
         self.commands = CommandRegistry()
 
         self._interrupt_token = InterruptToken()
@@ -43,24 +43,24 @@ class CLIApp:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            self.layout.add_error_message(str(e))
+            self.display.error(str(e))
         finally:
             self._shutdown()
 
     def _initialize(self) -> None:
         """Initialize all components."""
-        # UI
-        self.layout.initialize()
+        # Display
+        self.display.initialize()
 
         # Tools
         register_all_tools()
 
         # Commands
         register_builtin_commands(self.commands)
-        self._command_executor = CommandExecutor(self.commands, self.layout)
+        self._command_executor = CommandExecutor(self.commands, self.display)
 
         # Client
-        permission_handler = CLIPermissionHandler(layout=self.layout)
+        permission_handler = CLIPermissionHandler(display=self.display)
         config = Config.load()
         permission_matcher = PermissionMatcher(config.permission)
 
@@ -72,7 +72,7 @@ class CLIApp:
         )
 
         # Events
-        self._event_handler = CLIEventHandler(self.layout)
+        self._event_handler = CLIEventHandler(self.display)
         self._event_handler.setup(self.client.event_bus)
 
         # ESC Monitor
@@ -80,7 +80,7 @@ class CLIApp:
         self._esc_monitor.start()
 
         # Welcome
-        self.layout.show_welcome("mocode", self.client.config.display_name, os.getcwd())
+        self.display.welcome("mocode", self.client.config.display_name, os.getcwd())
         self._is_running = True
 
     def _shutdown(self) -> None:
@@ -94,14 +94,14 @@ class CLIApp:
         if self._event_handler and self.client:
             self._event_handler.teardown(self.client.event_bus)
 
-        self.layout.cleanup()
+        self.display.cleanup()
         self._is_running = False
 
     async def _main_loop(self) -> None:
         """Main input/output loop."""
         while self._is_running:
             try:
-                user_input = await self.layout.get_input()
+                user_input = await self.display.get_input()
                 user_input = user_input.strip()
 
                 if not user_input:
@@ -112,7 +112,7 @@ class CLIApp:
                     ctx = CommandContext(
                         client=self.client,
                         args=user_input,
-                        layout=self.layout,
+                        display=self.display,
                     )
                     if not await self._command_executor.execute(ctx):
                         break
@@ -126,5 +126,5 @@ class CLIApp:
             except (KeyboardInterrupt, EOFError, asyncio.CancelledError):
                 break
             except Exception as e:
-                self.layout.set_thinking(False)
-                self.layout.add_error_message(str(e))
+                self.display.set_thinking(False)
+                self.display.error(str(e))

@@ -37,14 +37,13 @@ class RtkPlugin(Plugin):
             name="rtk",
             version="1.0.0",
             description="Compress command output to save tokens",
-            author="MoCode",
         )
 
     def get_hooks(self) -> list:
         return [wrap_bash_with_rtk]
 
     def get_commands(self) -> list:
-        return [_rtk_command]
+        return [_create_rtk_command()]
 
 
 # Command definition at module level
@@ -52,11 +51,10 @@ _rtk_command = None
 
 
 def _create_rtk_command():
-    """Create RTK command class"""
+    """Create RTK command class lazily."""
     from mocode.cli.commands.base import Command, CommandContext, command
-    from mocode.cli.ui import SelectMenu, MenuItem, is_cancelled
-    from mocode.cli.ui.colors import BOLD, RESET
-    from mocode.cli.ui import format_error, format_info, format_success
+    from mocode.cli.ui.prompt import select, MenuItem, is_cancelled
+    from mocode.cli.ui.styles import BOLD, RESET
 
     @command("/rtk", description="Manage RTK - compress command output")
     class RtkCommand(Command):
@@ -79,7 +77,8 @@ def _create_rtk_command():
             elif subcommand == "help":
                 self._show_help(ctx)
             else:
-                ctx.layout.add_command_output(format_error(f"Unknown subcommand: {subcommand}"))
+                if ctx.display:
+                    ctx.display.error(f"Unknown subcommand: {subcommand}")
                 self._show_help(ctx)
 
             return True
@@ -92,8 +91,7 @@ def _create_rtk_command():
             ]
             choices.append(MenuItem.exit_())
 
-            menu = SelectMenu("RTK (Rust Token Killer)", choices)
-            selected = menu.show()
+            selected = select("RTK (Rust Token Killer)", choices)
 
             if not is_cancelled(selected):
                 if selected == "status":
@@ -112,44 +110,46 @@ def _create_rtk_command():
             info = ctx.client.get_plugin_info("rtk")
             is_enabled = info and info.state == PluginState.ENABLED
 
+            if not ctx.display:
+                return
+
             if is_installed and is_enabled:
-                ctx.layout.add_command_output(format_success("RTK: Installed, Plugin Enabled"))
+                ctx.display.success("RTK: Installed, Plugin Enabled")
             elif is_installed and not is_enabled:
-                ctx.layout.add_command_output(format_info("RTK: Installed, Plugin Disabled"))
+                ctx.display.info("RTK: Installed, Plugin Disabled")
             else:
-                ctx.layout.add_command_output(format_error("RTK: Not installed"))
+                ctx.display.error("RTK: Not installed")
 
             if not is_installed:
-                ctx.layout.add_command_output(f"  {message}")
+                ctx.display.command_output(f"  {message}")
 
         def _install(self, ctx: CommandContext):
             import platform
-
             from .wrapper import MOCODE_BIN_DIR, get_install_command
 
-            ctx.layout.add_command_output(format_info("Installing RTK..."))
+            if ctx.display:
+                ctx.display.info("Installing RTK...")
 
             if install_rtk():
-                ctx.layout.add_command_output(format_success("RTK installed successfully!"))
-                if platform.system() == "Windows":
-                    ctx.layout.add_command_output(
-                        f'Add to PATH: setx PATH "%PATH%;{MOCODE_BIN_DIR}"'
-                    )
+                if ctx.display:
+                    ctx.display.success("RTK installed successfully!")
+                    if platform.system() == "Windows":
+                        ctx.display.command_output(
+                            f'Add to PATH: setx PATH "%PATH%;{MOCODE_BIN_DIR}"'
+                        )
             else:
                 cmd = get_install_command()
-                ctx.layout.add_command_output(
-                    format_error("Auto-install only supported on Windows.")
-                )
-                ctx.layout.add_command_output(f"Install manually with: {cmd}")
+                if ctx.display:
+                    ctx.display.error("Auto-install only supported on Windows.")
+                    ctx.display.command_output(f"Install manually with: {cmd}")
 
         def _show_gain(self, ctx: CommandContext):
             gain = get_gain()
-            if gain:
-                ctx.layout.add_command_output(format_info(gain))
-            else:
-                ctx.layout.add_command_output(
-                    format_error("RTK not installed or no statistics available.")
-                )
+            if ctx.display:
+                if gain:
+                    ctx.display.info(gain)
+                else:
+                    ctx.display.error("RTK not installed or no statistics available.")
 
         def _show_help(self, ctx: CommandContext):
             help_text = f"""{BOLD}RTK (Rust Token Killer){RESET} - Compress command output to save tokens
@@ -169,10 +169,13 @@ def _create_rtk_command():
 
 {BOLD}GitHub:{RESET} https://github.com/rtk-ai/rtk
 """
-            ctx.layout.add_command_output(help_text)
+            if ctx.display:
+                ctx.display.command_output(help_text)
 
     return RtkCommand()
 
 
 # Initialize command lazily
 _rtk_command = _create_rtk_command()
+
+plugin_class = RtkPlugin

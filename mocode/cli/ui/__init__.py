@@ -1,119 +1,86 @@
-"""CLI UI components"""
+"""CLI UI components - clean public API."""
 
-# Core base classes
-from .base import Component, ComponentState, ComponentStyle
-from .coordinator import ComponentCoordinator, SpacingRule
+# Display manager
+from .display import Display, SpacingManager
 
-# Colors
-from .colors import RESET, BOLD, DIM, BLUE, CYAN, GREEN, YELLOW, RED, WHITE, MAGENTA
-from .colors import BG_BLUE, BG_GREEN, BG_RED, BG_CYAN, BG_MAGENTA, BG_YELLOW
+# Interactive components
+from .components import Input, Select, MultiSelect, Spinner
 
-# Components (from components package)
-from .components import (
-    MessageType,
-    Message,
-    MessagePreset,
-    MESSAGE_STYLES,
-    Input,
-    Select,
-    MultiSelect,
-    Animated,
-    error,
-    info,
-    success,
-    warn,
-    format_error,
-    format_success,
-    format_info,
-    format_warn,
-    format_message,
-    print_message,
-)
-
-# Layout
-from .layout import Layout
-
-# Interactive prompts (backward compatible)
+# High-level prompt API
 from .prompt import (
-    SelectMenu,
+    select,
     ask,
+    confirm,
     Wizard,
-    clear_screen,
-    esc_paused,
-    check_esc_key,
     MenuAction,
     MenuItem,
     is_action,
     is_cancelled,
-    confirm_dialog,
+    clear_screen,
 )
 
 # Permission handler
 from .permission import CLIPermissionHandler
 
+# Colors and styles
+from .styles import (
+    RESET, BOLD, DIM,
+    RED, GREEN, YELLOW, BLUE, MAGENTA, CYAN, WHITE,
+    BG_RED, BG_GREEN, BG_YELLOW, BG_BLUE, BG_MAGENTA, BG_CYAN,
+    MessagePreset,
+    format_preset,
+)
+
+# Utilities
+from .keyboard import esc_paused, check_esc_key
+from .textwrap import display_width, wrap_text, truncate_text
+
 __all__ = [
-    # Base classes
-    "Component",
-    "ComponentState",
-    "ComponentStyle",
-    "ComponentCoordinator",
-    "SpacingRule",
-    # Colors
-    "RESET",
-    "BOLD",
-    "DIM",
-    "BLUE",
-    "CYAN",
-    "GREEN",
-    "YELLOW",
-    "RED",
-    "WHITE",
-    "MAGENTA",
-    "BG_BLUE",
-    "BG_GREEN",
-    "BG_RED",
-    "BG_CYAN",
-    "BG_MAGENTA",
-    "BG_YELLOW",
+    # Display
+    "Display",
+    "SpacingManager",
     # Components
-    "MessageType",
-    "Message",
-    "MessagePreset",
-    "MESSAGE_STYLES",
     "Input",
     "Select",
     "MultiSelect",
-    "Animated",
-    # Message functions
-    "error",
-    "success",
-    "info",
-    "warn",
-    # Format functions
-    "format_error",
-    "format_success",
-    "format_info",
-    "format_warn",
-    "format_message",
-    "print_message",
-    # Layout
-    "Layout",
-    # Interactive prompts
-    "SelectMenu",
+    "Spinner",
+    # Prompt API
+    "select",
     "ask",
+    "confirm",
     "Wizard",
-    "clear_screen",
-    "esc_paused",
-    "check_esc_key",
-    # Menu system
     "MenuAction",
     "MenuItem",
     "is_action",
     "is_cancelled",
-    "confirm_dialog",
-    # Permission handler
+    "clear_screen",
+    # Permission
     "CLIPermissionHandler",
+    # Colors
+    "RESET",
+    "BOLD",
+    "DIM",
+    "RED",
+    "GREEN",
+    "YELLOW",
+    "BLUE",
+    "MAGENTA",
+    "CYAN",
+    "WHITE",
+    "BG_RED",
+    "BG_GREEN",
+    "BG_YELLOW",
+    "BG_BLUE",
+    "BG_MAGENTA",
+    "BG_CYAN",
+    # Styles
+    "MessagePreset",
+    "format_preset",
+    # Keyboard
+    "esc_paused",
+    "check_esc_key",
+    # Text
+    "display_width",
+    "wrap_text",
+    "truncate_text",
 ]
-
-# Backward compatibility alias
-SimpleLayout = Layout

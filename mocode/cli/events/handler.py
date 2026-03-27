@@ -1,17 +1,17 @@
 """CLI event handler - centralizes CLI event processing"""
 
 from ...core import EventBus, EventType, preview_result
-from ..ui.layout import Layout
+from ..ui.display import Display
 
 
 class CLIEventHandler:
     """CLI event processor.
 
-    Subscribes to all relevant events and updates the Layout accordingly.
+    Subscribes to all relevant events and updates the Display accordingly.
     """
 
-    def __init__(self, layout: Layout):
-        self._layout = layout
+    def __init__(self, display: Display):
+        self._display = display
 
     def setup(self, event_bus: EventBus) -> None:
         """Subscribe to all events."""
@@ -32,42 +32,33 @@ class CLIEventHandler:
         event_bus.off(EventType.INTERRUPTED, self._on_interrupted)
 
     def _on_message_added(self, event) -> None:
-        """User message added - start thinking animation."""
-        self._layout.set_thinking(True, "Thinking")
+        self._display.set_thinking(True, "Thinking")
 
     def _on_text_complete(self, event) -> None:
-        """Text complete - stop thinking and show response."""
-        self._layout.set_thinking(False)
-        # Handle both dict format (with conversation_id) and string format
+        self._display.set_thinking(False)
         if isinstance(event.data, dict):
             content = event.data.get("content", "")
         else:
             content = event.data
-        self._layout.add_assistant_message(content)
+        self._display.assistant_message(content)
 
     def _on_tool_start(self, event) -> None:
-        """Tool started - stop thinking and show tool call."""
-        self._layout.set_thinking(False)
-
+        self._display.set_thinking(False)
         name = event.data["name"]
         args = event.data["args"]
         preview = str(list(args.values())[0])[:50] if args else ""
-        self._layout.add_tool_call(name, preview)
+        self._display.tool_call(name, preview)
 
     def _on_tool_complete(self, event) -> None:
-        """Tool complete - show result preview."""
         result = preview_result(event.data["result"])
-        self._layout.add_tool_result(result)
+        self._display.tool_result(result)
 
     def _on_error(self, event) -> None:
-        """Error occurred - stop thinking and show error."""
-        self._layout.set_thinking(False)
-        self._layout.add_error_message(str(event.data))
+        self._display.set_thinking(False)
+        self._display.error(str(event.data))
 
     def _on_interrupted(self, event) -> None:
-        """Interrupted - stop thinking and show message."""
-        self._layout.set_thinking(False)
-        # If tool was denied or interrupted, message already shown
+        self._display.set_thinking(False)
         if event.data and event.data.get("reason") in ("denied", "interrupted"):
             return
-        self._layout.add_assistant_message("[interrupted]")
+        self._display.assistant_message("[interrupted]")
