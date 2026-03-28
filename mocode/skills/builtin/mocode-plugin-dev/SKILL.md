@@ -19,8 +19,9 @@ description: mocode 插件开发指南 - 如何创建 hooks、tools、commands
 
 ```
 my-plugin/
-├── plugin.py      # 必需：插件主文件
-└── SKILL.md       # 可选：插件说明文档
+├── plugin.py          # 必需：插件主文件
+├── plugin.yaml        # 可选：元数据（名称、版本、依赖等）
+└── requirements.txt   # 可选：依赖包
 ```
 
 ## 最小示例
@@ -163,14 +164,21 @@ class MyPlugin(Plugin):
 插件可以向系统 prompt 添加内容：
 
 ```python
-from mocode.core.prompt import StaticSection
+from mocode.core.prompt.builder import PromptContributions, StaticSection
 
 class MyPlugin(Plugin):
-    def get_prompt_sections(self) -> list:
-        return [
-            StaticSection("my-section", 100, "Custom instructions...")
-        ]
+    def get_prompt_sections(self) -> PromptContributions:
+        return PromptContributions(
+            add=[StaticSection("my-section", 100, "Custom instructions...")],
+            disable=[],  # 要禁用的 section ID 列表
+            replace={}   # {section_id: StaticSection} 替换指定 section
+        )
 ```
+
+**PromptContributions** 字段：
+- `add`: 添加新的 prompt section 列表
+- `disable`: 要禁用的 section ID 列表
+- `replace`: 替换指定 section 的字典 `{section_id: PromptSection}`
 
 ## 插件元数据
 
@@ -193,10 +201,23 @@ class PluginMetadata:
 ```python
 class MyPlugin(Plugin):
     async def on_enable(self) -> None:
-        # 访问配置
-        config = self.context.config
         # 访问事件总线
         event_bus = self.context.event_bus
+        # 订阅事件
+        self.context.on_event(EventType.TEXT_COMPLETE, my_handler)
+        # 注入消息到对话
+        await self.context.inject_message("user", "context info")
+        # 排队消息（等待 agent 空闲后发送）
+        self.context.queue_message("user", "deferred message")
+        # 获取当前消息列表
+        messages = self.context.get_messages()
+        # 当前工作目录
+        workdir = self.context.workdir
+        # 检查 agent 是否忙碌
+        if self.context.is_agent_busy():
+            pass
+        # 当前会话 ID
+        conv_id = self.context.current_conversation_id
 ```
 
 ## 生命周期

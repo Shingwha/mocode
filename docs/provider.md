@@ -103,23 +103,11 @@ export OPENAI_API_KEY=sk-...
 
 ## Multi-Model Support
 
-Each provider can list multiple models. Use the `/model` command to switch:
+Each provider can list multiple models. Use the `/provider` command to switch provider and model together, or use the SDK to switch programmatically:
 
-```bash
-# Interactive selection
-/model
-
-# Use alias
-/m
-
-# Direct selection
-/model gpt-4o-mini
-```
-
-In Gateway mode, the `/model` command can search across all providers:
-
-```
-/model deepseek-coder    # Automatically finds and switches to the provider
+```python
+client.set_model("gpt-4o-mini")  # Switch model within current provider
+client.set_provider("deepseek", "deepseek-coder")  # Switch provider and model
 ```
 
 ## SDK Configuration
@@ -150,7 +138,6 @@ client = MocodeClient(config={
 
 ```json
 {
-  "$schema": "https://mocode.ai/config.json",
   "current": {
     "provider": "openai",
     "model": "gpt-4o"

@@ -142,6 +142,23 @@ description: mocode 配置指南 - 如何修改 provider、permission、plugins 
 
 工具返回结果的最大字符数，0 表示无限制。
 
+### modes（运行时，不持久化）
+
+模式配置为运行时状态，**不会保存到配置文件**。通过 `/mode` 命令或 `config.set_mode()` 方法切换。
+
+- `normal`（默认）：标准权限检查
+- `yolo`：自动批准非危险操作
+
+```python
+# SDK 中切换模式
+client.config.set_mode("yolo")
+```
+
+```bash
+# CLI 中切换模式
+/mode yolo
+```
+
 ## 常用操作
 
 ### 添加新的 Provider

@@ -71,19 +71,19 @@ mocode           # 启动 CLI
 
 | 命令 | 别名 | 说明 |
 |------|------|------|
-| `/help` | `/h`, `/?` | 显示帮助 |
+| `/help` | `/`, `/h`, `/?` | 显示帮助 |
 | `/provider` | `/p` | 切换供应商 |
-| `/mode` | `/m` | 切换模式 |
+| `/mode` | | 切换模式 |
 | `/session` | `/s` | 管理会话 |
 | `/clear` | `/c` | 清空历史 |
+| `/skills` | | 管理技能 |
 | `/plugin` | | 管理插件 |
 | `/rtk` | | Token 优化 |
-| `/exit` | `/q` | 退出 |
+| `/exit` | `/q`, `/quit` | 退出 |
 
 ### Session 管理
 
 - `/session` - 交互式选择会话
-- `/session list` - 列出所有会话
 - `/session restore <id>` - 恢复指定会话
 
 ## RTK (Token 优化)
@@ -138,8 +138,7 @@ mocode/
 ├── providers/     # LLM 供应商
 ├── tools/         # 内置工具
 ├── skills/        # 技能系统
-├── cli/           # 终端界面
-└── sdk.py         # SDK 入口
+└── cli/           # 终端界面
 ```
 
 ## 系统要求

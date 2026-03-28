@@ -414,7 +414,9 @@ def block_dangerous_commands(ctx: HookContext) -> HookContext:
 ### Conditional Execution
 
 ```python
-class ConditionalHook(Hook):
+from mocode.plugins import HookBase
+
+class ConditionalHook(HookBase):
     @property
     def name(self) -> str:
         return "conditional-hook"
@@ -611,13 +613,8 @@ client.enable_plugin("my-plugin")
 # Disable plugin
 client.disable_plugin("my-plugin")
 
-# Access hook registry directly
-@hook(HookPoint.AGENT_CHAT_START, priority=10)
-def my_hook(ctx: HookContext) -> HookContext:
-    print(f"Input: {ctx.data.get('input', '')}")
-    return ctx
-
-client.hook_registry.register(my_hook)
+# Access hook registry via Plugin.get_hooks()
+# Hooks are registered automatically when a plugin is enabled
 ```
 
 ## Best Practices
@@ -666,7 +663,9 @@ def robust_hook(ctx: HookContext) -> HookContext:
 ### 4. Use Conditional Hooks for Performance
 
 ```python
-class SelectiveHook(Hook):
+from mocode.plugins import HookBase
+
+class SelectiveHook(HookBase):
     def should_execute(self, context: HookContext) -> bool:
         # Skip expensive operations when not needed
         return context.data.get("name") == "bash"
@@ -677,9 +676,9 @@ class SelectiveHook(Hook):
 A plugin that blocks dangerous commands and logs all tool usage:
 
 ```python
-from mocode.plugins import Plugin, PluginMetadata, Hook, HookContext, HookPoint
+from mocode.plugins import Plugin, PluginMetadata, HookBase, HookContext, HookPoint
 
-class SecurityHook(Hook):
+class SecurityHook(HookBase):
     DANGEROUS_PATTERNS = ["rm -rf", "sudo rm", "mkfs", "dd if="]
 
     @property
@@ -710,7 +709,7 @@ class SecurityHook(Hook):
 
         return context
 
-class LoggingHook(Hook):
+class LoggingHook(HookBase):
     @property
     def name(self) -> str:
         return "tool-logger"
@@ -755,3 +754,31 @@ class SecurityPlugin(Plugin):
 
 plugin_class = SecurityPlugin
 ```
+
+## Prompt Contributions
+
+Plugins can extend the system prompt by implementing `get_prompt_sections()`. This method returns a `PromptContributions` object that can add new sections, disable existing ones, or replace sections entirely.
+
+```python
+from mocode.core.prompt.builder import PromptContributions, StaticSection
+
+class MyPlugin(Plugin):
+    def get_prompt_sections(self) -> PromptContributions:
+        return PromptContributions(
+            add=[
+                StaticSection("my-section", 100, "Custom instructions here...")
+            ],
+            disable=["default-section-id"],  # Disable specific sections
+            replace={  # Replace specific sections
+                "existing-section": StaticSection("existing-section", 50, "Replacement content")
+            }
+        )
+```
+
+### PromptContributions Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `add` | `list[PromptSection]` | New sections to add to the prompt |
+| `disable` | `list[str]` | Section IDs to disable (won't appear in prompt) |
+| `replace` | `dict[str, PromptSection]` | Section ID → replacement section mapping |

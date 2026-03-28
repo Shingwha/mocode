@@ -82,7 +82,7 @@ Sessions are stored per working directory in `~/.mocode/sessions/`. When you cle
 
 ```bash
 /clear         # Clear conversation history (auto-saves session first)
-c              # Alias
+/c             # Alias
 ```
 
 Automatically saves the current conversation as a session before clearing.
@@ -145,8 +145,8 @@ RTK compresses output from:
 
 ```bash
 /exit          # Exit mocode
-q              # Alias
-quit           # Alias
+/q             # Alias
+/quit          # Alias
 ```
 
 ## Keyboard Shortcuts
@@ -182,17 +182,6 @@ Configuration is stored at `~/.mocode/config.json`:
   },
   "max_tokens": 8192,
   "tool_result_limit": 25000,
-  "modes": {
-    "normal": { "auto_approve": false },
-    "yolo": {
-      "auto_approve": true,
-      "dangerous_patterns": [
-        "rm ", "rmdir ", "dd ", "mv ", "del ",
-        "chmod ", "chown ", "sudo ", "format ", "mkfs "
-      ]
-    }
-  },
-  "current_mode": "normal",
   "plugins": {
     "rtk": "enable"
   }
@@ -224,7 +213,7 @@ Most commands support interactive selection when called without arguments:
 2. Enter to select
 3. ESC to cancel
 
-For example, `/model` shows a list of available models with the current one highlighted.
+For example, `/provider` shows a list of available providers with the current one highlighted.
 
 ## Permission System
 

@@ -182,7 +182,7 @@ mocode supports operational modes that change how permissions are handled. Modes
 
 ### Mode Configuration
 
-Configure modes in `~/.mocode/config.json`:
+Modes are configured at runtime and are **not persisted** to the config file. Default modes are initialized automatically.
 
 ```json
 {
@@ -202,6 +202,8 @@ Configure modes in `~/.mocode/config.json`:
   "current_mode": "normal"
 }
 ```
+
+Note: The `modes` and `current_mode` fields shown above are for reference only. They are in-memory runtime values and are NOT persisted to `config.json` when saving.
 
 ### Switching Modes
 
@@ -225,7 +227,7 @@ client = MocodeClient()
 print(client.config.current_mode)  # "normal"
 
 # Switch mode
-client.set_mode("yolo")
+client.config.set_mode("yolo")
 ```
 
 ### How Yolo Mode Works

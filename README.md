@@ -68,19 +68,19 @@ Config: `~/.mocode/config.json`
 
 | Command | Aliases | Description |
 |---------|---------|-------------|
-| `/help` | `/h`, `/?` | Show help |
+| `/help` | `/`, `/h`, `/?` | Show help |
 | `/provider` | `/p` | Switch provider |
-| `/mode` | `/m` | Switch mode |
+| `/mode` | | Switch mode |
 | `/session` | `/s` | Manage sessions |
 | `/clear` | `/c` | Clear history |
+| `/skills` | | List skills |
 | `/plugin` | | Manage plugins |
 | `/rtk` | | Token optimizer |
-| `/exit` | `/q` | Exit |
+| `/exit` | `/q`, `/quit` | Exit |
 
 ### Session Commands
 
 - `/session` - Interactive session selection
-- `/session list` - List all sessions
 - `/session restore <id>` - Restore session
 
 ## RTK (Token Optimization)
@@ -135,8 +135,7 @@ mocode/
 ├── providers/     # LLM providers
 ├── tools/         # Built-in tools
 ├── skills/        # Skill system
-├── cli/           # Terminal interface
-└── sdk.py         # SDK entry
+└── cli/           # Terminal interface
 ```
 
 ## Requirements

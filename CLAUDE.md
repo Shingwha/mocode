@@ -21,7 +21,7 @@ uv sync
 
 ## Architecture
 
-**Layered**: `MocodeClient` (SDK) → `MocodeCore` (orchestrator) → `AsyncAgent` (LLM loop). Core is UI-independent.
+**Layered**: `MocodeCore` (orchestrator/SDK) → `AsyncAgent` (LLM loop). `MocodeClient` is a backward-compatibility alias for `MocodeCore`. Core is UI-independent.
 
 **Key Components**:
 - `core/` - Business logic, event bus, config, permissions, sessions, prompts
@@ -32,7 +32,7 @@ uv sync
 
 **Event-Driven**: `EventBus` decouples agent from UI. Key events: `TEXT_STREAMING`, `TOOL_START/COMPLETE`, `MESSAGE_ADDED`, `ERROR`, `AGENT_IDLE`.
 
-**Data Flow**: User → `MocodeClient.chat()` → `MocodeCore.chat()` → `AsyncAgent.chat()` → LLM API → tool execution loop (permission check → hooks → run → truncate) → response.
+**Data Flow**: User → `MocodeCore.chat()` → `AsyncAgent.chat()` → LLM API → tool execution loop (permission check → hooks → run → truncate) → response.
 
 ## Configuration
 
@@ -43,8 +43,8 @@ Config: `~/.mocode/config.json`
 - `providers` - Provider configurations (base_url, api_key, models)
 - `permission` - Tool permissions (`allow`, `ask`, `deny`)
 - `tool_result_limit` - Max output size (0 = unlimited, default: 25000)
-- `modes` - Mode configurations
-- `current_mode` - Active mode (`normal` or `yolo`)
+
+**Note**: `modes` and `current_mode` are in-memory only and NOT persisted to config file. They are initialized at runtime with defaults.
 
 **Example**:
 ```json
@@ -58,19 +58,11 @@ Config: `~/.mocode/config.json`
     }
   },
   "permission": {"*": "ask", "bash": "allow"},
-  "tool_result_limit": 25000,
-  "modes": {
-    "normal": {"auto_approve": false},
-    "yolo": {
-      "auto_approve": true,
-      "dangerous_patterns": ["rm ", "rmdir ", "dd ", "mv ", "del ", "chmod ", "sudo ", "format ", "mkfs "]
-    }
-  },
-  "current_mode": "normal"
+  "tool_result_limit": 25000
 }
 ```
 
-**Modes**:
+**Modes** (in-memory only):
 - `normal` - Standard permission checks
 - `yolo` - Auto-approves non-dangerous tools (except bash commands with dangerous patterns)
 
@@ -88,7 +80,7 @@ def my_tool(args: dict) -> str:
     return f"Result: {args['arg']}"
 ```
 
-Params: `"type"` (string, number, boolean, array, object), add `?` for optional.
+Params: `"type"` (string, number, boolean, array, object), add `?` for optional. Full format: `{"arg": {"type": "string", "default": "..."}}`.
 
 ### Commands
 
@@ -167,7 +159,7 @@ class MyPlugin(Plugin):
 plugin_class = MyPlugin
 ```
 
-**Hook points**: `PLUGIN_LOAD/ENABLE/DISABLE/UNLOAD`, `AGENT_CHAT_START/END`, `TOOL_BEFORE_RUN/AFTER_RUN`, `MESSAGE_BEFORE_SEND/AFTER_RECEIVE`, `PROMPT_BUILD_START/END`, `UI_COMPONENT_*`.
+**Hook points**: `PLUGIN_LOAD/ENABLE/DISABLE/UNLOAD`, `AGENT_CHAT_START/END`, `TOOL_BEFORE_RUN/AFTER_RUN`, `MESSAGE_BEFORE_SEND/AFTER_RECEIVE`, `PROMPT_BUILD_START/END`, `UI_COMPONENT_CREATED/RENDERED/COMPLETED/CLEARED`.
 
 **Lifecycle**: discover → load → enable (install deps) → disable → unload.
 
@@ -205,7 +197,7 @@ async def main():
     client.on_event(EventType.TEXT_COMPLETE, on_text)
 
     # Mode switching
-    client.set_mode("yolo")
+    client.config.set_mode("yolo")
 
     # Sessions
     client.save_session()
@@ -236,8 +228,10 @@ asyncio.run(main())
 - `save_session()`, `load_session(id)`, `list_sessions()`
 - `set_model(model)`, `set_provider(key, model)`
 - `enable_plugin(name)`, `disable_plugin(name)`, `list_plugins()`, `discover_plugins()`
-- `set_mode(name)`
+- `config.set_mode(name)`
 - `on_event(type, handler)`, `off_event(type, handler)`
+- `inject_message(role, content)`, `queue_message(role, content)`
+- `add_provider(key, config)`, `add_model(provider, model)`, `remove_provider(key)`, `remove_model(provider, model)`, `update_provider(key, updates)`
 - `rebuild_system_prompt(context)` / `update_system_prompt(prompt)`
 
 ## Core Systems
@@ -255,7 +249,7 @@ def handler(event):
 client.on_event(EventType.TEXT_COMPLETE, handler)
 ```
 
-**Common Events**: `TEXT_STREAMING`, `TEXT_DELTA`, `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `MESSAGE_ADDED`, `MODEL_CHANGED`, `ERROR`, `STATUS_UPDATE`, `INTERRUPTED`, `AGENT_IDLE`.
+**Common Events**: `TEXT_STREAMING`, `TEXT_DELTA`, `TEXT_COMPLETE`, `TOOL_START`, `TOOL_COMPLETE`, `TOOL_PROGRESS`, `MESSAGE_ADDED`, `MODEL_CHANGED`, `ERROR`, `STATUS_UPDATE`, `PERMISSION_ASK`, `INTERRUPTED`, `AGENT_IDLE`, `COMPONENT_STATE_CHANGE`, `COMPONENT_COMPLETE`.
 
 ### Permissions
 
@@ -283,9 +277,7 @@ Matching: exact tool name → wildcard `*` → nested glob patterns.
 - `normal` (default) - Respects permission rules, prompts for `ask`
 - `yolo` - Auto-approves safe tools, only blocks dangerous bash commands
 
-Switch: `client.set_mode("yolo")` or CLI `/mode yolo`.
-
-## Important Paths
+Switch: `client.config.set_mode("yolo")` or CLI `/mode yolo`.
 
 From `mocode/paths.py`:
 
@@ -405,7 +397,7 @@ Enable yolo mode for faster workflow with safety guardrails:
 }
 ```
 
-Switch: `client.set_mode("yolo")` or CLI `/mode yolo`.
+Switch: `client.config.set_mode("yolo")` or CLI `/mode yolo`.
 
 All tools auto-approved EXCEPT:
 - Bash commands starting with dangerous patterns
