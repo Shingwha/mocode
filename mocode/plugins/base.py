@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from .context import PluginContext
+    from ..core.prompt.builder import PromptContributions
 
 
 class HookPoint(Enum):
@@ -210,9 +211,11 @@ class Plugin(ABC):
         """Return list of commands provided by this plugin"""
         return []
 
-    def get_prompt_sections(self) -> list:
-        """Return list of prompt sections provided by this plugin"""
-        return []
+    def get_prompt_sections(self) -> "PromptContributions":
+        """Return prompt contributions: sections to add, disable, or replace"""
+        from ..core.prompt.builder import PromptContributions
+
+        return PromptContributions()
 
 
 @dataclass

@@ -123,6 +123,7 @@ class MocodeCore:
         self._plugin_manager = plugin_manager or PluginManager(
             hook_registry=self._hook_registry,
             create_plugin_context=self.create_plugin_context,
+            prompt_builder=self._prompt_builder,
         )
         self._plugin_coordinator = PluginCoordinator(
             plugin_manager=self._plugin_manager,
@@ -132,6 +133,8 @@ class MocodeCore:
         # Auto-discover plugins
         if auto_discover_plugins:
             self._plugin_coordinator.initialize()
+            # Rebuild prompt to include plugin sections
+            self._rebuild_prompt()
 
     def _on_config_changed(self) -> None:
         """Called after config changes are persisted.
@@ -410,6 +413,7 @@ class MocodeCore:
         success = await self._plugin_coordinator.enable_plugin(name)
         if success:
             self._config.save()
+            self._rebuild_prompt()
         return success
 
     async def disable_plugin(self, name: str) -> bool:
@@ -417,6 +421,7 @@ class MocodeCore:
         success = await self._plugin_coordinator.disable_plugin(name)
         if success:
             self._config.save()
+            self._rebuild_prompt()
         return success
 
     def get_plugin_info(self, name: str) -> PluginInfo | None:

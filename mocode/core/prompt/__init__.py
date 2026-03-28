@@ -3,6 +3,7 @@
 from .builder import (
     DynamicSection,
     PromptBuilder,
+    PromptContributions,
     PromptSection,
     StaticSection,
 )
@@ -24,6 +25,7 @@ from .templates import custom_prompt, default_prompt, minimal_prompt
 __all__ = [
     # Builder
     "PromptBuilder",
+    "PromptContributions",
     "StaticSection",
     "DynamicSection",
     "PromptSection",

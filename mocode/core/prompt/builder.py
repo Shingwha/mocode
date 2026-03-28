@@ -79,6 +79,20 @@ class DynamicSection:
         self._cache_key = None
 
 
+@dataclass
+class PromptContributions:
+    """Plugin contributions to the prompt system
+
+    Plugins return this from get_prompt_sections() to declare how they
+    want to modify the prompt: add new sections, disable built-in ones,
+    or replace existing sections entirely.
+    """
+
+    add: list[PromptSection] = field(default_factory=list)
+    disable: list[str] = field(default_factory=list)
+    replace: dict[str, PromptSection] = field(default_factory=dict)
+
+
 class PromptBuilder:
     """Prompt 构建器"""
 

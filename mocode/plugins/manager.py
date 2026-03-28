@@ -12,7 +12,7 @@ from .venv_manager import PluginVenvManager, VenvError
 if TYPE_CHECKING:
     from ..tools.base import Tool
     from ..cli.commands.base import Command
-    from ..core.prompt import PromptSection
+    from ..core.prompt.builder import PromptBuilder, PromptSection
 
 # Type alias for tool replacement tracking: (plugin_name, original_tool)
 ToolReplacement = tuple[str, "Tool"]
@@ -27,6 +27,7 @@ class PluginManager:
         plugin_registry: PluginRegistry | None = None,
         loader: PluginLoader | None = None,
         create_plugin_context: Callable[[], PluginContext] | None = None,
+        prompt_builder: "PromptBuilder | None" = None,
     ):
         """Initialize plugin manager
 
@@ -35,16 +36,19 @@ class PluginManager:
             plugin_registry: Plugin registry instance (creates new if None)
             loader: Plugin loader instance (creates new if None)
             create_plugin_context: Callback to create PluginContext for plugins
+            prompt_builder: PromptBuilder for registering plugin prompt sections
         """
         self.hook_registry = hook_registry or HookRegistry()
         self.plugin_registry = plugin_registry or PluginRegistry()
         self.loader = loader or PluginLoader()
         self._create_plugin_context = create_plugin_context
+        self._prompt_builder = prompt_builder
 
-        # Track registered hooks/tools/commands by plugin
+        # Track registered hooks/tools/commands/sections by plugin
         self._plugin_hooks: dict[str, list[str]] = {}
         self._plugin_tools: dict[str, list[str]] = {}
         self._plugin_commands: dict[str, list[str]] = {}
+        self._plugin_sections: dict[str, list[str]] = {}
 
         # Track tool replacements: {tool_name: [(plugin_name, original_tool), ...]}
         self._tool_replacements: dict[str, list[ToolReplacement]] = {}
@@ -120,6 +124,9 @@ class PluginManager:
 
             # Register commands
             self._register_commands(info.name, plugin.get_commands())
+
+            # Register prompt sections
+            self._register_prompt_sections(info.name, plugin.get_prompt_sections())
 
             info.state = PluginState.ENABLED
             return True
@@ -216,6 +223,9 @@ class PluginManager:
             # Register commands
             self._register_commands(name, plugin.get_commands())
 
+            # Register prompt sections
+            self._register_prompt_sections(name, plugin.get_prompt_sections())
+
             info.state = PluginState.ENABLED
             return True
 
@@ -256,6 +266,9 @@ class PluginManager:
 
             # Unregister commands
             self._unregister_commands(name)
+
+            # Unregister prompt sections
+            self._unregister_prompt_sections(name)
 
             info.state = PluginState.DISABLED
             return True
@@ -378,6 +391,61 @@ class PluginManager:
         registry = CommandRegistry()
         for name in command_names:
             registry.unregister(name)
+
+    def _register_prompt_sections(self, plugin_name: str, contributions: "PromptContributions") -> None:
+        """Register prompt contributions from a plugin (add/disable/replace)"""
+        if not self._prompt_builder:
+            return
+
+        from ..core.prompt.builder import PromptContributions
+
+        if not contributions:
+            return
+
+        added_names: list[str] = []
+        replaced: dict[str, tuple] = {}  # orig_name -> (original_section, replacement_section)
+
+        # Add new sections
+        for section in contributions.add:
+            self._prompt_builder.add(section)
+            added_names.append(section.name)
+
+        # Disable existing sections
+        for name in contributions.disable:
+            self._prompt_builder.disable(name)
+
+        # Replace existing sections (save originals for restoration)
+        for name, replacement in contributions.replace.items():
+            original = self._prompt_builder.get_section(name)
+            if original is not None:
+                replaced[name] = (original, replacement)
+                self._prompt_builder.remove(name)
+            self._prompt_builder.add(replacement)
+
+        self._plugin_sections[plugin_name] = {
+            "added": added_names,
+            "disabled": list(contributions.disable),
+            "replaced": replaced,
+        }
+
+    def _unregister_prompt_sections(self, plugin_name: str) -> None:
+        """Unregister prompt contributions from a plugin (restore original state)"""
+        state = self._plugin_sections.pop(plugin_name, None)
+        if not state or not self._prompt_builder:
+            return
+
+        # Remove added sections
+        for name in state["added"]:
+            self._prompt_builder.remove(name)
+
+        # Re-enable disabled sections
+        for name in state["disabled"]:
+            self._prompt_builder.enable(name)
+
+        # Restore replaced sections
+        for _orig_name, (original, replacement) in state["replaced"].items():
+            self._prompt_builder.remove(replacement.name)
+            self._prompt_builder.add(original)
 
     def get_plugin_info(self, name: str) -> PluginInfo | None:
         """Get plugin info by name"""
