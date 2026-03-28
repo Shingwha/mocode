@@ -121,3 +121,8 @@ class SkillManager:
     def list_skills(self) -> list[str]:
         """列出所有可用 skill 名称"""
         return list(self._skills.keys())
+
+    def refresh(self) -> None:
+        """Re-discover skills without creating a new instance."""
+        self._skills.clear()
+        self._discover_skills()
