@@ -55,6 +55,7 @@ class Config:
     max_tokens: int = 8192
     plugins: PluginConfig = field(default_factory=PluginConfig)
     tool_result_limit: int = 25000  # Max characters for tool results (0 = no limit)
+    gateway: dict = field(default_factory=dict)  # Gateway configuration
 
     CONFIG_PATH: Path = CONFIG_PATH
 
@@ -206,6 +207,10 @@ class Config:
         if "tool_result_limit" in data:
             self.tool_result_limit = data["tool_result_limit"]
 
+        # 加载 Gateway 配置
+        if "gateway" in data:
+            self.gateway = data["gateway"]
+
     def save(self):
         """保存配置"""
         self.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -218,6 +223,7 @@ class Config:
             "max_tokens": self.max_tokens,
             "plugins": dict(self.plugins),
             "tool_result_limit": self.tool_result_limit,
+            "gateway": self.gateway,
         }
 
         self.CONFIG_PATH.write_text(

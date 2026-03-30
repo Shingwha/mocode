@@ -2,7 +2,7 @@
 
 mocode is a CLI coding assistant powered by LLM with interactive terminal interface, tool-calling capabilities, and SDK for embedding.
 
-**Requirements**: Python >= 3.10
+**Requirements**: Python >= 3.12
 
 ## Quick Start
 
@@ -29,6 +29,7 @@ uv sync
 - `plugins/` - Hook system, plugin lifecycle, isolated environments
 - `skills/` - Modular instructions loaded on demand
 - `cli/` - Terminal interface, slash commands, UI components
+- `gateway/` - Third-party platform integration (WeChat, etc.)
 
 **Event-Driven**: `EventBus` decouples agent from UI. Key events: `TEXT_STREAMING`, `TOOL_START/COMPLETE`, `MESSAGE_ADDED`, `ERROR`, `AGENT_IDLE`.
 
@@ -43,6 +44,7 @@ Config: `~/.mocode/config.json`
 - `providers` - Provider configurations (base_url, api_key, models)
 - `permission` - Tool permissions (`allow`, `ask`, `deny`)
 - `tool_result_limit` - Max output size (0 = unlimited, default: 25000)
+- `gateway` - Gateway configuration (max_users, idle_timeout, etc.)
 
 **Note**: `modes` and `current_mode` are in-memory only and NOT persisted to config file. They are initialized at runtime with defaults.
 
@@ -233,6 +235,37 @@ asyncio.run(main())
 - `inject_message(role, content)`, `queue_message(role, content)`
 - `add_provider(key, config)`, `add_model(provider, model)`, `remove_provider(key)`, `remove_model(provider, model)`, `update_provider(key, updates)`
 - `rebuild_system_prompt(context)` / `update_system_prompt(prompt)`
+
+## Gateway
+
+Third-party platform integration layer. Each platform user gets an isolated `MocodeCore` instance.
+
+**Start**: `mocode gateway --type weixin`
+
+**Architecture**:
+- `BaseGateway` - Abstract base with lifecycle (`_setup`/`_run`/`_teardown`) and shared `handle_message()`
+- `UserRouter` - Per-user session management with LRU eviction, `asyncio.Lock` for concurrency
+- `WeixinGateway` - WeChat implementation via `weixin-bot-sdk` (delayed import, long-polling with reconnect)
+- `GatewayApp` - Entry point with registry for gateway types
+
+**Key behaviors**:
+- Forced yolo mode (auto-approve safe tools)
+- Per-user serialization (same user messages queued, different users parallel)
+- Long messages auto-split at 3500 chars by newline boundaries
+- LRU eviction when exceeding `max_users` (default 100)
+- Sessions saved on eviction/shutdown
+
+**Config** (in `~/.mocode/config.json`):
+```json
+{
+  "gateway": {
+    "max_users": 100,
+    "idle_timeout": 3600
+  }
+}
+```
+
+**Adding new platforms**: Subclass `BaseGateway`, implement `_setup()`, `_run()`, `_teardown()`, `_send_typing()`, and register in `gateway/app.py::GATEWAY_REGISTRY`.
 
 ## Core Systems
 
