@@ -9,7 +9,7 @@ from .config import Config
 from .events import EventBus, EventType
 from .interrupt import InterruptToken
 from .message_queue import MessageQueue
-from .permission import DefaultPermissionHandler, PermissionHandler, PermissionMatcher
+from .permission import DefaultPermissionHandler, PermissionHandler, PermissionChecker
 from .session import Session, SessionManager
 from .prompt import PromptBuilder, default_prompt
 from ..plugins import HookRegistry, PluginInfo, PluginManager
@@ -45,7 +45,7 @@ class MocodeCore:
         event_bus: EventBus | None = None,
         interrupt_token: InterruptToken | None = None,
         permission_handler: PermissionHandler | None = None,
-        permission_matcher: PermissionMatcher | None = None,
+        permission_checker: PermissionChecker | None = None,
         prompt_builder: "PromptBuilder | None" = None,
         hook_registry: HookRegistry | None = None,
         plugin_manager: PluginManager | None = None,
@@ -61,8 +61,8 @@ class MocodeCore:
             config_path: Config file path (used when config is None)
             event_bus: Event bus for notifications (created if None)
             interrupt_token: Token for cancellation (created if None)
-            permission_handler: Handler for permission prompts
-            permission_matcher: Matcher for permission checks
+            permission_handler: Handler for permission prompts (used to build PermissionChecker if not provided)
+            permission_checker: Checker for permission decisions (built from handler if not provided)
             prompt_builder: Builder for system prompts
             hook_registry: Registry for hooks
             plugin_manager: Plugin manager instance
@@ -88,8 +88,15 @@ class MocodeCore:
         self._workdir = workdir or os.getcwd()
 
         # Permission handling
-        self._permission_handler = permission_handler or DefaultPermissionHandler()
-        self._permission_matcher = permission_matcher
+        handler = permission_handler or DefaultPermissionHandler()
+        if permission_checker:
+            self._permission_checker = permission_checker
+        else:
+            self._permission_checker = PermissionChecker(
+                permission_config=self._config.permission,
+                handler=handler,
+                config=self._config,
+            )
 
         # Hook registry
         self._hook_registry = hook_registry or HookRegistry()
@@ -165,8 +172,7 @@ class MocodeCore:
             event_bus=self._event_bus,
             interrupt_token=self._interrupt_token,
             config=self._config,
-            permission_handler=self._permission_handler,
-            permission_matcher=self._permission_matcher,
+            permission_checker=self._permission_checker,
             hook_registry=self._hook_registry,
         )
 

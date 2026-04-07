@@ -5,6 +5,10 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .config import Config
 
 
 class PermissionAction(Enum):
@@ -13,6 +17,23 @@ class PermissionAction(Enum):
     ALLOW = "allow"
     ASK = "ask"
     DENY = "deny"
+
+
+class CheckOutcome(Enum):
+    """权限检查结果"""
+
+    ALLOW = "allow"
+    DENY = "deny"
+    USER_INPUT = "user_input"
+
+
+@dataclass
+class CheckResult:
+    """权限检查结果"""
+
+    outcome: CheckOutcome
+    reason: str = ""
+    user_input: str | None = None
 
 
 @dataclass
@@ -200,7 +221,7 @@ class DefaultPermissionHandler(PermissionHandler):
 
     async def ask_permission(self, tool_name: str, tool_args: dict) -> str:
         """默认允许所有工具执行"""
-        return "ask"
+        return "allow"
 
 
 class DenyAllPermissionHandler(PermissionHandler):
@@ -211,21 +232,89 @@ class DenyAllPermissionHandler(PermissionHandler):
         return "deny"
 
 
-class PermissionMatcher:
-    """权限匹配器（保持兼容，直接使用 PermissionConfig）"""
+class PermissionChecker:
+    """权限检查器 - 合并规则匹配、模式覆盖和用户交互"""
 
-    def __init__(self, config: PermissionConfig):
-        self.config = config
+    def __init__(
+        self,
+        permission_config: PermissionConfig | dict | None = None,
+        handler: PermissionHandler | None = None,
+        config: "Config | None" = None,
+    ):
+        if permission_config is not None:
+            if isinstance(permission_config, dict):
+                self._perm_config = PermissionConfig.from_dict(permission_config)
+            else:
+                self._perm_config = permission_config
+        elif config and hasattr(config, 'permission'):
+            self._perm_config = config.permission
+        else:
+            self._perm_config = PermissionConfig()
+        self._handler = handler
+        self._config = config
 
-    def check(self, tool_name: str, args: dict | None = None) -> PermissionAction:
-        """
-        检查工具调用的权限
+    @property
+    def _current_mode(self) -> str:
+        return self._config.current_mode if self._config else "normal"
 
-        Args:
-            tool_name: 工具名称
-            args: 工具参数
+    @property
+    def _modes(self) -> dict:
+        return self._config.modes if self._config else {}
+
+    def _is_dangerous_command(self, tool_name: str, tool_args: dict, mode_config) -> bool:
+        """检查 bash 命令是否匹配危险模式"""
+        if tool_name != "bash":
+            return False
+        command = tool_args.get("command", "")
+        if not command:
+            return False
+        for pattern in mode_config.dangerous_patterns:
+            if command.startswith(pattern):
+                return True
+        return False
+
+    def _should_auto_approve(self, tool_name: str, tool_args: dict) -> bool:
+        """检查当前模式是否允许自动批准"""
+        if self._current_mode == "normal":
+            return False
+        mode_config = self._modes.get(self._current_mode)
+        if not mode_config or not mode_config.auto_approve:
+            return False
+        return not self._is_dangerous_command(tool_name, tool_args, mode_config)
+
+    async def check(self, tool_name: str, tool_args: dict) -> CheckResult:
+        """检查工具调用的权限
+
+        合并模式覆盖、规则匹配和用户交互。
 
         Returns:
-            权限动作
+            CheckResult with outcome, reason, and optional user_input
         """
-        return self.config.get_action(tool_name, args)
+        # 1. 模式覆盖：自动批准
+        if self._should_auto_approve(tool_name, tool_args):
+            return CheckResult(outcome=CheckOutcome.ALLOW)
+
+        # 2. 规则匹配
+        action = self._perm_config.get_action(tool_name, tool_args)
+
+        if action == PermissionAction.DENY:
+            return CheckResult(outcome=CheckOutcome.DENY, reason="denied")
+
+        if action == PermissionAction.ASK:
+            if not self._handler:
+                return CheckResult(outcome=CheckOutcome.DENY, reason=f"No permission handler for tool '{tool_name}'")
+
+            user_response = await self._handler.ask_permission(tool_name, tool_args)
+
+            if user_response == "deny":
+                return CheckResult(outcome=CheckOutcome.DENY, reason="denied")
+            elif user_response == "interrupt":
+                return CheckResult(outcome=CheckOutcome.DENY, reason="interrupted")
+            elif user_response == "allow":
+                return CheckResult(outcome=CheckOutcome.ALLOW)
+            else:
+                # 自定义用户输入 - 作为工具结果
+                return CheckResult(outcome=CheckOutcome.USER_INPUT, user_input=user_response)
+
+        # ALLOW
+        return CheckResult(outcome=CheckOutcome.ALLOW)

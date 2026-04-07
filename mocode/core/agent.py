@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING, Callable
 from ..providers.openai import AsyncOpenAIProvider
 from ..tools.base import ToolRegistry
 from .events import EventType, EventBus
-from .permission import PermissionAction, PermissionMatcher, PermissionHandler
+from .permission import CheckOutcome, PermissionChecker
 from .interrupt import InterruptToken
 from ..plugins import HookRegistry, HookPoint
 
 if TYPE_CHECKING:
-    from .config import Config, PermissionConfig, ModeConfig
+    from .config import Config
 
 
 class AsyncAgent:
@@ -22,8 +22,7 @@ class AsyncAgent:
         provider: AsyncOpenAIProvider,
         system_prompt: str,
         max_tokens: int = 8192,
-        permission_matcher: PermissionMatcher | None = None,
-        permission_handler: PermissionHandler | None = None,
+        permission_checker: PermissionChecker | None = None,
         event_bus: EventBus | None = None,
         interrupt_token: InterruptToken | None = None,
         config: "Config | None" = None,
@@ -33,8 +32,7 @@ class AsyncAgent:
         self.system_prompt = system_prompt
         self.max_tokens = max_tokens
         self.messages: list = []
-        self.permission_matcher = permission_matcher
-        self.permission_handler = permission_handler
+        self.permission_checker = permission_checker
         self.event_bus = event_bus or EventBus()
         self.interrupt_token = interrupt_token
         self.config = config
@@ -192,63 +190,18 @@ class AsyncAgent:
             return truncate_result(result, self.config.tool_result_limit)
         return result
 
-    def _should_skip_permission(self, tool_name: str, tool_args: dict) -> bool:
-        """Check if mode-based auto-approve allows skipping permission"""
-        if not self.config or not hasattr(self.config, 'current_mode'):
-            return False
-        mode_name = self.config.current_mode
-        if mode_name == "normal" or mode_name not in self.config.modes:
-            return False
-        mode = self.config.modes[mode_name]
-        if not mode.auto_approve:
-            return False
-        return not self._is_dangerous_command(tool_name, tool_args, mode)
-
-    async def _check_permission(self, tool_name: str, tool_args: dict) -> str | None:
-        """Check mode overrides and permission rules.
-
-        Returns None if execution should proceed,
-        or a result string if denied/skipped.
-        """
-        if self._should_skip_permission(tool_name, tool_args):
-            return None
-
-        if not self.permission_matcher:
-            return None
-
-        action = self.permission_matcher.check(tool_name, tool_args)
-
-        if action == PermissionAction.DENY:
-            return self._emit_tool_denied(tool_name, tool_args, "denied")
-
-        if action == PermissionAction.ASK:
-            if not self.permission_handler:
-                return f"Permission handler required for tool '{tool_name}'"
-
-            user_response = await self.permission_handler.ask_permission(tool_name, tool_args)
-
-            if user_response == "deny":
-                return self._emit_tool_denied(tool_name, tool_args, "denied")
-            elif user_response == "interrupt":
-                return self._emit_tool_denied(tool_name, tool_args, "interrupted")
-            elif user_response == "allow":
-                return None
-            else:
-                # Custom user input - emit as tool result
-                self._emit_tool_start(tool_name, tool_args)
-                self._emit_tool_complete(tool_name, user_response)
-                return user_response
-
-        # ALLOW
-        return None
-
     async def _run_tool_async(self, tool_name: str, tool_args: dict) -> str:
         """Execute a single tool with permission check, hooks, and interrupt support"""
 
         # 1. Permission check
-        perm_result = await self._check_permission(tool_name, tool_args)
-        if perm_result is not None:
-            return perm_result
+        if self.permission_checker:
+            result = await self.permission_checker.check(tool_name, tool_args)
+            if result.outcome == CheckOutcome.DENY:
+                return self._emit_tool_denied(tool_name, tool_args, result.reason)
+            elif result.outcome == CheckOutcome.USER_INPUT:
+                self._emit_tool_start(tool_name, tool_args)
+                self._emit_tool_complete(tool_name, result.user_input)
+                return result.user_input
 
         # 2. Pre-run hook
         ctx = await self._trigger_hook(
@@ -291,21 +244,6 @@ class AsyncAgent:
         result = self._apply_result_limit(result)
         self._emit_tool_complete(tool_name, result)
         return result
-
-    def _is_dangerous_command(self, tool_name: str, tool_args: dict, mode: "ModeConfig") -> bool:
-        """Check if a bash command matches dangerous patterns"""
-        if tool_name != "bash":
-            return False
-
-        command = tool_args.get("command", "")
-        if not command:
-            return False
-
-        for pattern in mode.dangerous_patterns:
-            if command.startswith(pattern):
-                return True
-
-        return False
 
     def clear(self):
         """Clear conversation history"""

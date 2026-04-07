@@ -5,7 +5,6 @@ import os
 
 from ..core.orchestrator import MocodeCore
 from ..core.config import Config
-from ..core.permission import PermissionMatcher
 from ..core.interrupt import InterruptToken
 from ..tools import register_all_tools
 from .commands import CommandContext, CommandRegistry, CommandExecutor, register_builtin_commands
@@ -62,12 +61,10 @@ class CLIApp:
         # Client
         permission_handler = CLIPermissionHandler(display=self.display)
         config = Config.load()
-        permission_matcher = PermissionMatcher(config.permission)
 
         self.client = MocodeCore(
             config=config,
             permission_handler=permission_handler,
-            permission_matcher=permission_matcher,
             interrupt_token=self._interrupt_token,
         )
 

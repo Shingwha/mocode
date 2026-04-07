@@ -5,7 +5,7 @@ __version__ = "0.2.0"
 from .core.orchestrator import MocodeCore
 from .core import EventBus, EventType, Event
 from .core import Config, AsyncAgent
-from .core import PermissionMatcher, PermissionHandler, DefaultPermissionHandler, DenyAllPermissionHandler, PermissionConfig
+from .core import PermissionChecker, CheckOutcome, CheckResult, PermissionHandler, DefaultPermissionHandler, DenyAllPermissionHandler, PermissionConfig
 from .core import InterruptToken
 from .core.session import Session, SessionManager
 from .core.prompt import (
@@ -43,7 +43,9 @@ __all__ = [
     "Config",
     "AsyncAgent",
     # Permission
-    "PermissionMatcher",
+    "PermissionChecker",
+    "CheckOutcome",
+    "CheckResult",
     "PermissionHandler",
     "DefaultPermissionHandler",
     "DenyAllPermissionHandler",

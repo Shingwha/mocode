@@ -20,7 +20,9 @@ from .prompt import (
 from .permission import (
     PermissionAction,
     PermissionConfig,
-    PermissionMatcher,
+    PermissionChecker,
+    CheckOutcome,
+    CheckResult,
     PermissionHandler,
     DefaultPermissionHandler,
     DenyAllPermissionHandler,
@@ -63,7 +65,9 @@ __all__ = [
     "BEHAVIOR_SECTION",
     # Permission
     "PermissionAction",
-    "PermissionMatcher",
+    "PermissionChecker",
+    "CheckOutcome",
+    "CheckResult",
     "PermissionConfig",
     "PermissionHandler",
     "DefaultPermissionHandler",
