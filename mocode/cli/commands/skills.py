@@ -6,7 +6,8 @@ from ..ui.components import MultiSelect
 from ..ui.prompt import confirm
 from ..ui.styles import DIM, RESET
 from ...skills.manager import SkillManager
-from ...skills.installer import SkillInstaller, SkillSourceType
+from ...skills.installer import SkillInstaller
+from ...core.installer import SourceType as SkillSourceType
 
 
 @command("/skills", description="List and select skills")
@@ -87,9 +88,9 @@ class SkillsCommand(Command):
 
                 if result.success:
                     if result.already_installed:
-                        self._info(ctx, f"Skill '{result.skill_name}' is already installed")
+                        self._info(ctx, f"Skill '{result.item_name}' is already installed")
                     else:
-                        self._success(ctx, f"Skill '{result.skill_name}' installed successfully")
+                        self._success(ctx, f"Skill '{result.item_name}' installed successfully")
                         self._refresh_skills()
                 else:
                     self._error(ctx, result.error)
@@ -115,9 +116,9 @@ class SkillsCommand(Command):
             success_count = sum(1 for r in results if r.success)
             for r in results:
                 if r.success:
-                    self._success(ctx, f"  + {r.skill_name}")
+                    self._success(ctx, f"  + {r.item_name}")
                 else:
-                    self._error(ctx, f"  - {r.skill_name}: {r.error}")
+                    self._error(ctx, f"  - {r.item_name}: {r.error}")
 
             if success_count > 0:
                 self._refresh_skills()

@@ -11,7 +11,8 @@ from ..ui.prompt import (
 from ..ui.components import MultiSelect
 from ..ui.styles import error, success, info, RESET, GREEN, YELLOW, RED, DIM, CYAN
 from ...plugins import PluginInfo, PluginState
-from ...plugins.installer import PluginInstaller, PluginSourceType
+from ...plugins.installer import PluginInstaller
+from ...core.installer import SourceType as PluginSourceType
 from ...paths import PLUGINS_DIR
 
 
@@ -82,9 +83,9 @@ class PluginCommand(Command):
 
                 if result.success:
                     if result.already_installed:
-                        self._info(ctx, f"Plugin '{result.plugin_name}' is already installed")
+                        self._info(ctx, f"Plugin '{result.item_name}' is already installed")
                     else:
-                        self._success(ctx, f"Plugin '{result.plugin_name}' installed successfully")
+                        self._success(ctx, f"Plugin '{result.item_name}' installed successfully")
                         ctx.client.discover_plugins()
                 else:
                     self._error(ctx, result.error)
@@ -109,9 +110,9 @@ class PluginCommand(Command):
             success_count = sum(1 for r in results if r.success)
             for r in results:
                 if r.success:
-                    self._success(ctx, f"  + {r.plugin_name}")
+                    self._success(ctx, f"  + {r.item_name}")
                 else:
-                    self._error(ctx, f"  - {r.plugin_name}: {r.error}")
+                    self._error(ctx, f"  - {r.item_name}: {r.error}")
 
             if success_count > 0:
                 ctx.client.discover_plugins()

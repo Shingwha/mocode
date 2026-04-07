@@ -30,6 +30,14 @@ from .session import Session, SessionManager
 from .plugin_coordinator import PluginCoordinator
 from .orchestrator import MocodeCore, SessionState
 from .utils import preview_result
+from .installer import (
+    GitHubInstaller,
+    InstallMethod,
+    SourceType,
+    InstallCandidate,
+    InstallResult,
+    InstalledItemInfo,
+)
 
 __all__ = [
     "Config",
@@ -68,6 +76,13 @@ __all__ = [
     # Coordinators
     "PluginCoordinator",
     "MocodeCore",
+    # Installer base
+    "GitHubInstaller",
+    "InstallMethod",
+    "SourceType",
+    "InstallCandidate",
+    "InstallResult",
+    "InstalledItemInfo",
     # Utils
     "preview_result",
 ]

@@ -46,11 +46,12 @@ from .manager import PluginManager
 from .registry import HookRegistry, PluginRegistry
 from .installer import (
     PluginInstaller,
-    PluginCandidate,
-    InstallResult,
-    InstallMethod,
-    PluginSourceType,
+    InstalledPluginInfo,
 )
+from ..core.installer import InstallCandidate as PluginCandidate
+from ..core.installer import InstallResult
+from ..core.installer import InstallMethod
+from ..core.installer import SourceType as PluginSourceType
 
 __all__ = [
     # Base classes
