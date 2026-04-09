@@ -243,10 +243,11 @@ Third-party platform integration layer. Each platform user gets an isolated `Moc
 **Start**: `mocode gateway --type weixin`
 
 **Architecture**:
-- `BaseGateway` - Abstract base with lifecycle (`_setup`/`_run`/`_teardown`) and shared `handle_message()`
-- `UserRouter` - Per-user session management with LRU eviction, `asyncio.Lock` for concurrency
-- `WeixinGateway` - WeChat implementation via `weixin-bot-sdk` (delayed import, long-polling with reconnect)
-- `GatewayApp` - Entry point with registry for gateway types
+- `BaseChannel` — Abstract base with lifecycle (`start()`/`stop()`/`send()`)
+- `ChannelManager` — Dispatches messages with retry logic
+- `UserRouter` — Per-user session management with LRU eviction and `asyncio.Lock`
+- `WeixinChannel` — WeChat implementation via direct HTTP long-poll API
+- `GatewayApp` — Entry point with gateway registry
 
 **Key behaviors**:
 - Forced yolo mode (auto-approve safe tools)
@@ -265,7 +266,7 @@ Third-party platform integration layer. Each platform user gets an isolated `Moc
 }
 ```
 
-**Adding new platforms**: Subclass `BaseGateway`, implement `_setup()`, `_run()`, `_teardown()`, `_send_typing()`, and register in `gateway/app.py::GATEWAY_REGISTRY`.
+**Adding new channels**: Subclass `BaseChannel`, implement `start()`, `stop()`, `send()`, and register in `gateway/registry.py`.
 
 ## Core Systems
 

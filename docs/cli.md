@@ -1,19 +1,6 @@
 # CLI Commands Reference
 
-This document describes all built-in commands available in mocode CLI.
-
-## Installation
-
-```bash
-# Install as a tool
-uv tool install -e .
-
-# Run the CLI
-mocode
-
-# Or use uv run
-uv run mocode
-```
+This document describes all built-in commands available in the mocode CLI.
 
 ## Built-in Commands
 
@@ -21,7 +8,7 @@ uv run mocode
 |---------|---------|-------------|
 | `/` | `/help`, `/h`, `/?` | Show commands or interactive menu |
 | `/provider` | `/p` | Switch provider and model |
-| `/mode` | | Manage operation modes (normal, yolo, etc.) |
+| `/mode` | | Manage operation modes (normal, yolo) |
 | `/session` | `/s` | Manage conversation sessions |
 | `/clear` | `/c` | Clear conversation history |
 | `/skills` | | List and activate skills |
@@ -31,122 +18,102 @@ uv run mocode
 
 ## Command Details
 
-### `/` - Show Commands
+### `/` — Show Commands
 
 ```bash
-/              # Show interactive menu to select command
+/              # Interactive menu
 /help          # Show command list
 /h             # Alias
 /?             # Alias
 ```
 
-Without arguments, displays an interactive menu to select and execute commands. With arguments, shows the command list.
+Without arguments, displays an interactive menu to select and execute commands.
 
-### `/provider` - Switch Provider and Model
+### `/provider` — Switch Provider and Model
 
 ```bash
-/provider      # Interactive selection (provider then model)
-/p             # Alias
-/provider deepseek  # Direct selection by key
-/provider 2    # Selection by number
+/provider          # Interactive selection
+/p                 # Alias
+/provider deepseek # Direct selection by key
+/provider 2        # Selection by number
 ```
 
-After switching provider, automatically prompts for model selection. Use the "Manage" option in the menu to add, edit, or delete providers.
+After switching provider, you will be prompted for model selection. Use the "Manage" option in the menu to add, edit, or delete providers.
 
-### `/mode` - Manage Operation Modes
+### `/mode` — Manage Operation Modes
 
 ```bash
-/mode              # Show current mode
-/mode list         # List all available modes
-/mode yolo         # Switch to yolo mode
-/mode normal       # Switch to normal mode
+/mode          # Show current mode
+/mode list     # List all available modes
+/mode yolo     # Switch to yolo mode
+/mode normal   # Switch back to normal mode
 ```
 
-Modes control the permission behavior of the system:
-- **normal**: Standard permission checks (ask/allow/deny based on rules)
-- **yolo**: Auto-approves all tools except dangerous commands (destructive operations)
+Modes control permission behavior:
+- **normal**: Standard permission checks (ask/allow/deny based on config)
+- **yolo**: Auto-approves all tools except dangerous commands
 
-Use yolo mode for faster workflow with safety guardrails.
-
-### `/session` - Manage Sessions
+### `/session` — Manage Sessions
 
 ```bash
-/session          # Interactive session selection
-/s                # Alias
-/session restore <id>  # Restore specific session
+/session            # Interactive session selection
+/s                  # Alias
+/session restore N  # Restore session by number
 ```
 
 Sessions are stored per working directory in `~/.mocode/sessions/`. When you clear history with `/clear`, the conversation is automatically saved as a session.
 
-### `/clear` - Clear History
+### `/clear` — Clear History
 
 ```bash
-/clear         # Clear conversation history (auto-saves session first)
-/c             # Alias
+/clear   # Clear history (auto-saves session)
+/c       # Alias
 ```
 
-Automatically saves the current conversation as a session before clearing.
+Automatically saves the current conversation before clearing.
 
-### `/skills` - List Skills
+### `/skills` — List Skills
 
 ```bash
 /skills        # Interactive selection
-/skills 2      # Selection by number
-/skills my-skill  # Direct activation
+/skills 2      # Select by number
+/skills name   # Direct activation
 ```
 
-Lists available skills from `~/.mocode/skills/` directory and allows activation.
+Lists available skills from `~/.mocode/skills/` and allows activation.
 
-### `/plugin` - Manage Plugins
+### `/plugin` — Manage Plugins
 
 ```bash
-/plugin              # Interactive plugin selection (toggle enable/disable)
-/plugin <name>       # Toggle plugin enable/disable by name
-/plugin <n>          # Toggle plugin by number
-/plugin info <name>  # Show plugin information
-/plugin install <url>   # Install plugin from GitHub
-/plugin uninstall <name> # Uninstall a plugin
-/plugin update <name>   # Update a plugin
+/plugin                    # Toggle plugins interactively
+/plugin <name>             # Toggle plugin by name
+/plugin info <name>        # Show plugin information
+/plugin install <url>      # Install from GitHub
+/plugin uninstall <name>   # Uninstall a plugin
+/plugin update <name>      # Update a plugin
 ```
 
-Plugins are discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`. When selected interactively, plugins can be toggled on/off.
+Plugins are discovered from `~/.mocode/plugins/` and `<project>/.mocode/plugins/`.
 
-### `/rtk` - Manage RTK
+### `/rtk` — Manage RTK
 
-RTK (Rust Token Killer) compresses command output to save tokens. RTK is a built-in plugin.
+RTK (Rust Token Killer) compresses command output to save tokens.
 
 ```bash
-/rtk           # Interactive menu
-/rtk status    # Show installation and plugin status
-/rtk install   # Install RTK (auto on Windows)
-/rtk gain      # Show token savings statistics
+/rtk         # Interactive menu
+/rtk status  # Show installation and status
+/rtk install # Install RTK
+/rtk gain    # Show token savings statistics
 ```
 
 Use `/plugin` to enable or disable the RTK plugin.
 
-#### RTK Subcommands
-
-| Subcommand | Description |
-|------------|-------------|
-| `status` | Show RTK installation and plugin status |
-| `install` | Install RTK (auto-install on Windows) |
-| `gain` | Show token savings statistics |
-
-#### Supported Commands
-
-RTK compresses output from:
-- File listing: `ls`, `tree`, `find`
-- File content: `cat`, `head`, `tail`
-- Search: `grep`, `rg`
-- Git: `git status`, `git log`, `git diff`, `git show`
-- Build/test: `cargo test`, `cargo build`, `npm test`, `pytest`
-
-### `/exit` - Exit Application
+### `/exit` — Exit Application
 
 ```bash
-/exit          # Exit mocode
-/q             # Alias
-/quit          # Alias
+/exit   # Exit mocode
+/q      # Alias
+/quit   # Alias
 ```
 
 ## Keyboard Shortcuts
@@ -155,7 +122,7 @@ RTK compresses output from:
 |-----|--------|
 | ESC | Interrupt current operation |
 
-Press ESC during AI response or tool execution to cancel the operation.
+Press ESC during AI response or tool execution to cancel.
 
 ## Configuration
 
@@ -169,59 +136,36 @@ Configuration is stored at `~/.mocode/config.json`:
   },
   "providers": {
     "openai": {
-      "name": "OpenAI",
       "base_url": "https://api.openai.com/v1",
-      "api_key": "sk-...",
-      "models": ["gpt-4o", "gpt-4o-mini"]
+      "api_key": "sk-..."
     }
   },
   "permission": {
     "*": "ask",
     "bash": "allow",
     "read": "allow"
-  },
-  "max_tokens": 8192,
-  "tool_result_limit": 25000,
-  "plugins": {
-    "rtk": "enable"
   }
 }
 ```
 
-### Plugin Configuration
-
-The `plugins` section controls plugin behavior:
-
-```json
-{
-  "plugins": {
-    "rtk": "enable",
-    "my-plugin": "disable"
-  }
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `plugin_name` | Set to `"enable"` or `"disable"` |
+For advanced configuration, see [Provider Configuration](provider.md), [Permission System](permission.md), and [Plugin System](plugins.md).
 
 ## Interactive Menus
 
 Most commands support interactive selection when called without arguments:
 
-1. Arrow keys to navigate
-2. Enter to select
-3. ESC to cancel
+1. Use arrow keys to navigate
+2. Press Enter to select
+3. Press ESC to cancel
 
 For example, `/provider` shows a list of available providers with the current one highlighted.
 
-## Permission System
+## Permission Prompts
 
-When tools require permission, an interactive menu appears:
+When a tool requires permission, an interactive menu appears:
 
 ```
-? Permission required for bash
-  ls -la
+? Permission required for bash: rm -rf /temp
 
   > Allow (execute the tool)
     Deny (cancel the operation)
@@ -229,8 +173,8 @@ When tools require permission, an interactive menu appears:
 ```
 
 Options:
-- **Allow** - Execute the tool
-- **Deny** - Cancel the operation
-- **Type something** - Provide custom input as tool result
+- **Allow** — Execute the tool
+- **Deny** — Cancel and return denial message
+- **Type something** — Provide custom input as tool result
 
 See [Permission System](permission.md) for configuration details.
