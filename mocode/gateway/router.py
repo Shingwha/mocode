@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass
 
 from ..core.config import Config
 from ..core.orchestrator import MocodeCore
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class UserSession:
     """Per-user session state."""
 
-    user_id: str
+    session_key: str
     core: MocodeCore
     lock: asyncio.Lock
     last_active: float = 0.0
@@ -34,22 +34,20 @@ class UserRouter:
         self._max_users = max_users
         self._sessions: dict[str, UserSession] = {}
 
-    def get_or_create(self, user_id: str) -> UserSession:
+    def get_or_create(self, session_key: str) -> UserSession:
         """Get or create a user session."""
-        session = self._sessions.get(user_id)
+        session = self._sessions.get(session_key)
         if session is None:
             self._evict_if_needed()
-            session = self._create_session(user_id)
-            self._sessions[user_id] = session
+            session = self._create_session(session_key)
+            self._sessions[session_key] = session
         session.last_active = time.time()
         return session
 
-    def _create_session(self, user_id: str) -> UserSession:
+    def _create_session(self, session_key: str) -> UserSession:
         """Create a new user session with isolated MocodeCore."""
-        logger.info("Creating session for user: %s", user_id)
+        logger.info("Creating session: %s", session_key)
 
-        # Build config dict from base config (shared API keys etc)
-        from dataclasses import asdict
         config_data = {
             "current": asdict(self._base_config.current),
             "providers": {k: asdict(v) for k, v in self._base_config.providers.items()},
@@ -65,7 +63,7 @@ class UserRouter:
         core.config.set_mode("yolo")
 
         return UserSession(
-            user_id=user_id,
+            session_key=session_key,
             core=core,
             lock=asyncio.Lock(),
             last_active=time.time(),
@@ -76,23 +74,22 @@ class UserRouter:
         if len(self._sessions) < self._max_users:
             return
 
-        # Find LRU user
-        lru_user = min(self._sessions, key=lambda uid: self._sessions[uid].last_active)
-        logger.info("Evicting LRU user: %s", lru_user)
-        self._remove_session(lru_user)
+        lru_key = min(self._sessions, key=lambda k: self._sessions[k].last_active)
+        logger.info("Evicting LRU session: %s", lru_key)
+        self._remove_session(lru_key)
 
-    def _remove_session(self, user_id: str) -> None:
+    def _remove_session(self, session_key: str) -> None:
         """Remove a user session, saving state first."""
-        session = self._sessions.pop(user_id, None)
+        session = self._sessions.pop(session_key, None)
         if session and session.core.has_unsaved_changes:
             try:
                 session.core.save_session()
             except Exception as e:
-                logger.warning("Failed to save session for %s: %s", user_id, e)
+                logger.warning("Failed to save session %s: %s", session_key, e)
 
     async def shutdown_all(self) -> None:
         """Save all sessions and cleanup."""
-        for user_id in list(self._sessions.keys()):
-            self._remove_session(user_id)
+        for key in list(self._sessions.keys()):
+            self._remove_session(key)
         self._sessions.clear()
         logger.info("All user sessions shut down")

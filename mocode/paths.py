@@ -25,3 +25,6 @@ PROJECT_SKILLS_DIRNAME: str = ".mocode"
 
 # Plugins 目录
 PLUGINS_DIR: Path = MOCODE_HOME / "plugins"
+
+# Gateway 目录
+GATEWAY_DIR: Path = MOCODE_HOME / "gateway"

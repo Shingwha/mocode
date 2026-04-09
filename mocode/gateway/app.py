@@ -5,13 +5,12 @@ import logging
 import sys
 
 from ..core.config import Config
-from .weixin import WeixinGateway
+from .bus import MessageBus
+from .manager import ChannelManager
+from .registry import discover_all
+from .router import UserRouter
 
 logger = logging.getLogger(__name__)
-
-GATEWAY_REGISTRY: dict[str, type] = {
-    "weixin": WeixinGateway,
-}
 
 
 class GatewayApp:
@@ -23,28 +22,41 @@ class GatewayApp:
     """
 
     def __init__(self, gateway_type: str):
-        if gateway_type not in GATEWAY_REGISTRY:
-            available = ", ".join(GATEWAY_REGISTRY.keys())
+        available = discover_all()
+        if gateway_type not in available:
+            names = ", ".join(available.keys()) or "(none)"
             raise ValueError(
-                f"Unknown gateway type: {gateway_type}. Available: {available}"
+                f"Unknown gateway type: {gateway_type}. Available: {names}"
             )
         self._type = gateway_type
+        self._channel_cls = available[gateway_type]
 
     async def run(self) -> None:
-        """Load config, create gateway, and run until interrupted."""
+        """Load config, create channel, and run until interrupted."""
         config = Config.load()
         gateway_config = config.gateway
 
-        cls = GATEWAY_REGISTRY[self._type]
-        gateway = cls(config=config, gateway_config=gateway_config)
+        bus = MessageBus()
+        router = UserRouter(config, gateway_config)
+        manager = ChannelManager(bus, router)
+
+        channel = self._channel_cls(
+            name=self._type,
+            config=config,
+            gateway_config=gateway_config,
+            bus=bus,
+        )
+        manager.register(channel)
 
         logger.info("Starting gateway: %s", self._type)
         try:
-            await gateway.start()
+            await manager.start_all()
+            # Block forever (channels run as tasks)
+            await asyncio.Event().wait()
         except KeyboardInterrupt:
             pass
         except Exception as e:
             logger.error("Gateway error: %s", e)
             sys.exit(1)
         finally:
-            await gateway.stop()
+            await manager.stop_all()
