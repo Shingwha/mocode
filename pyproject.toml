@@ -7,10 +7,8 @@ dependencies = [
     "httpx>=0.25.0",
     "openai>=1.0.0",
     "pyyaml>=6.0",
+    "pycryptodome>=3.19",
 ]
-
-[project.optional-dependencies]
-gateway = []
 
 [project.scripts]
 mocode = "mocode.main:main"

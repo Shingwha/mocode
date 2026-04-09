@@ -12,7 +12,7 @@ class InboundMessage:
     sender_id: str
     chat_id: str
     content: str
-    media: dict = field(default_factory=dict)
+    media: list[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
 
     @property
@@ -27,6 +27,7 @@ class OutboundMessage:
     channel: str
     chat_id: str
     content: str
+    media: list[str] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
 
 

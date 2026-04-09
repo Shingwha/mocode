@@ -6,6 +6,7 @@ import logging
 from .bus import MessageBus, OutboundMessage
 from .base import BaseChannel
 from .router import UserRouter
+from .tools import _current_core
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,20 @@ class ChannelManager:
 
                 async with session.lock:
                     try:
-                        response = await session.core.chat(msg.content)
+                        # Set context for gateway tools (send_file)
+                        token = _current_core.set(session.core)
+                        try:
+                            response = await session.core.chat(
+                                msg.content, media=msg.media or None
+                            )
+                        finally:
+                            _current_core.reset(token)
+
+                        # Collect pending media from tools
+                        pending = getattr(session.core, "_pending_media", [])
+                        media_to_send = list(pending)
+                        pending.clear()
+
                         if response:
                             logger.info(
                                 "[outbound] %s: %s",
@@ -80,6 +94,16 @@ class ChannelManager:
                                     chat_id=msg.chat_id,
                                     content=response,
                                     metadata=msg.metadata,
+                                )
+                            )
+                        # Send any media queued by send_file tool
+                        for media_path in media_to_send:
+                            await self._bus.publish_outbound(
+                                OutboundMessage(
+                                    channel=msg.channel,
+                                    chat_id=msg.chat_id,
+                                    content="",
+                                    media=[media_path],
                                 )
                             )
                     except Exception as e:

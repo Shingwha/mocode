@@ -68,7 +68,7 @@ class AsyncAgent:
 
     # ---- Chat loop ----
 
-    async def chat(self, user_input: str) -> str:
+    async def chat(self, user_input: str, media: list[str] | None = None) -> str:
         """Run one conversation turn"""
         if self.interrupt_token:
             self.interrupt_token.reset()
@@ -81,7 +81,12 @@ class AsyncAgent:
             if ctx.has_error:
                 return f"Hook error: {ctx._error}"
 
-        self.messages.append({"role": "user", "content": user_input})
+        if media:
+            content = self._build_user_content(user_input, media)
+        else:
+            content = user_input
+
+        self.messages.append({"role": "user", "content": content})
         self.event_bus.emit(EventType.MESSAGE_ADDED, {
             "role": "user", "content": user_input,
             "conversation_id": self.conversation_id,
@@ -153,6 +158,47 @@ class AsyncAgent:
         )
 
         return final_response
+
+    @staticmethod
+    def _build_user_content(text: str, media: list[str]) -> list[dict] | str:
+        """Build multimodal user content with images and file markers."""
+        from ..gateway.media import IMAGE_EXTS, detect_image_mime
+        from pathlib import Path
+        import base64
+
+        parts: list[dict] = []
+        has_images = False
+
+        for path_str in media:
+            p = Path(path_str)
+            if not p.exists():
+                continue
+            ext = p.suffix.lower()
+            if ext in IMAGE_EXTS:
+                try:
+                    data = p.read_bytes()
+                    mime = detect_image_mime(data)
+                    if mime:
+                        b64 = base64.b64encode(data).decode()
+                        parts.append({
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{b64}"},
+                        })
+                        has_images = True
+                        continue
+                except Exception:
+                    pass
+            # Non-image or undetectable: add text marker
+            parts.append({"type": "text", "text": f"[file: {p.name}]"})
+
+        if not has_images and not parts:
+            return text
+
+        # Add user text as last block
+        if text:
+            parts.append({"type": "text", "text": text})
+
+        return parts
 
     async def _call_with_interrupt_check(self, coro, check_interval: float = 0.1):
         """Await coroutine while polling for interrupt signal"""

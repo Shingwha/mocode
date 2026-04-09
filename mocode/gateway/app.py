@@ -8,6 +8,7 @@ from ..core.config import Config
 from .bus import MessageBus
 from .logging import setup_gateway_logging
 from .manager import ChannelManager
+from .tools import register_gateway_tools
 from .registry import discover_all
 from .router import UserRouter
 
@@ -51,6 +52,7 @@ class GatewayApp:
         manager.register(channel)
 
         logger.info("Starting gateway: %s", self._type)
+        register_gateway_tools()
         try:
             await manager.start_all()
             # Block forever (channels run as tasks)

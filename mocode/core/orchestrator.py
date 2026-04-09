@@ -209,10 +209,10 @@ class MocodeCore:
             self._agent.conversation_id = conversation_id
         return await self._agent.chat(message)
 
-    async def chat(self, message: str) -> str:
+    async def chat(self, message: str, media: list[str] | None = None) -> str:
         """Send a message and get response"""
         self._mark_unsaved()
-        return await self._agent.chat(message)
+        return await self._agent.chat(message, media)
 
     @property
     def is_agent_busy(self) -> bool:

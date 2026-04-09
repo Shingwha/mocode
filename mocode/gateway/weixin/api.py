@@ -35,6 +35,14 @@ ITEM_VOICE = 3
 ITEM_FILE = 4
 ITEM_VIDEO = 5
 
+# Upload media type constants
+UPLOAD_MEDIA_IMAGE = 1
+UPLOAD_MEDIA_VIDEO = 2
+UPLOAD_MEDIA_FILE = 3
+UPLOAD_MEDIA_VOICE = 4
+
+CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
+
 # Message types
 MESSAGE_TYPE_USER = 1
 MESSAGE_TYPE_BOT = 2
@@ -174,6 +182,8 @@ class WeixinApi:
         context_token: str,
         text: str,
         client_id: str = "",
+        *,
+        item_list: list[dict] | None = None,
     ) -> None:
         """Send a text message to a user."""
         import uuid
@@ -181,7 +191,8 @@ class WeixinApi:
         if not client_id:
             client_id = f"mocode-{uuid.uuid4().hex[:12]}"
 
-        item_list = [{"type": ITEM_TEXT, "text_item": {"text": text}}]
+        if item_list is None:
+            item_list = [{"type": ITEM_TEXT, "text_item": {"text": text}}]
         weixin_msg: dict[str, Any] = {
             "from_user_id": "",
             "to_user_id": to_user_id,
@@ -241,3 +252,41 @@ class WeixinApi:
         )
         resp.raise_for_status()
         return resp.json()
+
+    # -- CDN Upload --
+
+    async def get_upload_url(
+        self,
+        token: str,
+        filekey: str,
+        to_user_id: str,
+        raw_size: int,
+        raw_md5: str,
+        padded_size: int,
+        media_type: int,
+        aes_key_hex: str,
+    ) -> dict[str, Any]:
+        """Get CDN upload URL for sending media files."""
+        body: dict[str, Any] = {
+            "filekey": filekey,
+            "media_type": media_type,
+            "to_user_id": to_user_id,
+            "rawsize": raw_size,
+            "rawfilemd5": raw_md5,
+            "filesize": padded_size,
+            "no_need_thumb": True,
+            "aeskey": aes_key_hex,
+        }
+        url = f"{self._base_url}/ilink/bot/getuploadurl"
+        resp = await self._client.post(
+            url, json=body, headers=self._make_headers(token)
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        ret = data.get("ret", 0)
+        errcode = data.get("errcode", 0)
+        if (ret is not None and ret != 0) or (errcode is not None and errcode != 0):
+            raise WeixinApiError(
+                errcode or ret, data.get("errmsg", "getuploadurl failed")
+            )
+        return data

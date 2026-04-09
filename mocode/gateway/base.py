@@ -39,7 +39,7 @@ class BaseChannel(ABC):
         sender_id: str,
         chat_id: str,
         content: str,
-        media: dict | None = None,
+        media: list[str] | None = None,
         metadata: dict | None = None,
     ) -> None:
         """Check permission and publish inbound message to bus."""
@@ -52,7 +52,7 @@ class BaseChannel(ABC):
             sender_id=sender_id,
             chat_id=chat_id,
             content=content,
-            media=media or {},
+            media=media or [],
             metadata=metadata or {},
         )
         await self._bus.publish_inbound(msg)
