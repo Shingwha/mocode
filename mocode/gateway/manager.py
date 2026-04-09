@@ -60,12 +60,20 @@ class ChannelManager:
         while True:
             try:
                 msg = await self._bus.consume_inbound()
+                logger.info(
+                    "[inbound] %s: %s", msg.session_key, msg.content[:100]
+                )
                 session = self._router.get_or_create(msg.session_key)
 
                 async with session.lock:
                     try:
                         response = await session.core.chat(msg.content)
                         if response:
+                            logger.info(
+                                "[outbound] %s: %s",
+                                msg.session_key,
+                                response[:200],
+                            )
                             await self._bus.publish_outbound(
                                 OutboundMessage(
                                     channel=msg.channel,
@@ -75,7 +83,9 @@ class ChannelManager:
                                 )
                             )
                     except Exception as e:
-                        logger.error("Core chat error for %s: %s", msg.session_key, e)
+                        logger.error(
+                            "[error] %s: %s", msg.session_key, e
+                        )
                         await self._bus.publish_outbound(
                             OutboundMessage(
                                 channel=msg.channel,

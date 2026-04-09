@@ -212,6 +212,9 @@ class WeixinChannel(BaseChannel):
                     if not token:
                         logger.error("Login confirmed but no token in response")
                         return False
+                    user_name = status_data.get("user_name", "")
+                    if user_name:
+                        logger.info("QR confirmed by user: %s", user_name)
                     self._state.token = token
                     if base_url:
                         self._state.base_url = base_url

@@ -6,6 +6,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from ..core.config import Config
+from ..core.events import Event, EventType
 from ..core.orchestrator import MocodeCore
 
 logger = logging.getLogger(__name__)
@@ -62,12 +63,54 @@ class UserRouter:
         )
         core.config.set_mode("yolo")
 
+        # Subscribe to per-session events for logging
+        self._subscribe_session_events(session_key, core)
+
         return UserSession(
             session_key=session_key,
             core=core,
             lock=asyncio.Lock(),
             last_active=time.time(),
         )
+
+    def _subscribe_session_events(
+        self, session_key: str, core: MocodeCore
+    ) -> dict:
+        """Subscribe to EventBus events for a session. Returns handler refs."""
+        handlers = {}
+
+        def on_tool_start(event: Event) -> None:
+            data = event.data or {}
+            name = data.get("name", "?")
+            args = data.get("args", {})
+            args_str = str(args)[:100]
+            logger.info("[tool] %s -> %s(%s)", session_key, name, args_str)
+
+        def on_tool_complete(event: Event) -> None:
+            data = event.data or {}
+            name = data.get("name", "?")
+            result = str(data.get("result", ""))[:200]
+            logger.info("[tool-done] %s <- %s: %s", session_key, name, result)
+
+        def on_text_complete(event: Event) -> None:
+            data = event.data or {}
+            content = str(data.get("content", ""))[:200]
+            logger.info("[reply] %s: %s", session_key, content)
+
+        def on_error(event: Event) -> None:
+            data = event.data or {}
+            error = str(data.get("error", data))[:200]
+            logger.error("[agent-error] %s: %s", session_key, error)
+
+        handlers[EventType.TOOL_START] = on_tool_start
+        handlers[EventType.TOOL_COMPLETE] = on_tool_complete
+        handlers[EventType.TEXT_COMPLETE] = on_text_complete
+        handlers[EventType.ERROR] = on_error
+
+        for et, handler in handlers.items():
+            core.event_bus.on(et, handler)
+
+        return handlers
 
     def _evict_if_needed(self) -> None:
         """Evict least-recently-active sessions if at capacity."""
@@ -81,7 +124,11 @@ class UserRouter:
     def _remove_session(self, session_key: str) -> None:
         """Remove a user session, saving state first."""
         session = self._sessions.pop(session_key, None)
-        if session and session.core.has_unsaved_changes:
+        if session is None:
+            return
+        # Clear event subscriptions
+        session.core.event_bus.clear()
+        if session.core.has_unsaved_changes:
             try:
                 session.core.save_session()
             except Exception as e:

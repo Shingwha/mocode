@@ -6,6 +6,7 @@ import sys
 
 from ..core.config import Config
 from .bus import MessageBus
+from .logging import setup_gateway_logging
 from .manager import ChannelManager
 from .registry import discover_all
 from .router import UserRouter
@@ -33,6 +34,7 @@ class GatewayApp:
 
     async def run(self) -> None:
         """Load config, create channel, and run until interrupted."""
+        setup_gateway_logging()
         config = Config.load()
         gateway_config = config.gateway
 
