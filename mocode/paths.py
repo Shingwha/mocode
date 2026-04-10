@@ -31,3 +31,6 @@ GATEWAY_DIR: Path = MOCODE_HOME / "gateway"
 
 # Media 目录 (gateway 收发的图片/文件/语音/视频)
 MEDIA_DIR: Path = MOCODE_HOME / "media"
+
+# Memory 目录 (SOUL.md / USER.md / MEMORY.md)
+MEMORY_DIR: Path = MOCODE_HOME / "memory"

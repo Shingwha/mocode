@@ -8,17 +8,19 @@ from .builder import (
     StaticSection,
 )
 from .sections import (
-    BEHAVIOR_SECTION,
     ENVIRONMENT_SECTION,
-    IDENTITY_SECTION,
-    PRIORITY_BEHAVIOR,
+    MEMORY_SECTION,
     PRIORITY_CUSTOM,
     PRIORITY_ENVIRONMENT,
-    PRIORITY_IDENTITY,
+    PRIORITY_MEMORY,
     PRIORITY_SKILLS,
+    PRIORITY_SOUL,
     PRIORITY_TOOLS,
+    PRIORITY_USER,
     SKILLS_SECTION,
+    SOUL_SECTION,
     TOOLS_SECTION,
+    USER_SECTION,
 )
 from .templates import custom_prompt, default_prompt, minimal_prompt
 
@@ -30,17 +32,19 @@ __all__ = [
     "DynamicSection",
     "PromptSection",
     # Sections
-    "IDENTITY_SECTION",
+    "SOUL_SECTION",
+    "USER_SECTION",
+    "MEMORY_SECTION",
     "ENVIRONMENT_SECTION",
     "TOOLS_SECTION",
     "SKILLS_SECTION",
-    "BEHAVIOR_SECTION",
     # Priority constants
-    "PRIORITY_IDENTITY",
+    "PRIORITY_SOUL",
+    "PRIORITY_USER",
+    "PRIORITY_MEMORY",
     "PRIORITY_ENVIRONMENT",
     "PRIORITY_TOOLS",
     "PRIORITY_SKILLS",
-    "PRIORITY_BEHAVIOR",
     "PRIORITY_CUSTOM",
     # Templates
     "default_prompt",

@@ -11,20 +11,13 @@ if TYPE_CHECKING:
     from ...skills.manager import SkillManager
 
 # === 优先级常量 ===
-PRIORITY_IDENTITY = 10  # 身份定义 (最前)
+PRIORITY_SOUL = 10  # SOUL.md 人格文件 (最前)
+PRIORITY_USER = 11  # USER.md 用户画像
+PRIORITY_MEMORY = 12  # MEMORY.md 长期记忆
 PRIORITY_ENVIRONMENT = 20  # 环境信息
 PRIORITY_TOOLS = 30  # 工具列表
 PRIORITY_SKILLS = 40  # Skills 列表
-PRIORITY_BEHAVIOR = 50  # 行为准则
 PRIORITY_CUSTOM = 100  # 自定义内容 (最后)
-
-# === 内置片段 ===
-
-IDENTITY_SECTION = StaticSection(
-    name="identity",
-    priority=PRIORITY_IDENTITY,
-    content="You are MoCode, a concise coding assistant.",
-)
 
 
 def _render_environment(ctx: dict[str, Any]) -> str:
@@ -89,14 +82,89 @@ SKILLS_SECTION = DynamicSection(
     name="skills", priority=PRIORITY_SKILLS, renderer=_render_skills
 )
 
+# === Memory 文件 (SOUL / USER / MEMORY) ===
 
-BEHAVIOR_SECTION = StaticSection(
-    name="behavior",
-    priority=PRIORITY_BEHAVIOR,
-    content="""Guidelines:
-- Be concise and direct
-- Prefer `edit` over `write` for existing files
-- Verify changes before claiming success
-- Handle errors gracefully
-- Respond in the same language the user uses""",
+_DEFAULT_FILES: dict[str, str] = {
+    "SOUL.md": (
+        "# Identity\n"
+        "You are MoCode, a concise coding assistant.\n"
+        "\n"
+        "# Guidelines\n"
+        "- Be concise and direct\n"
+        "- Prefer `edit` over `write` for existing files\n"
+        "- Verify changes before claiming success\n"
+        "- Handle errors gracefully\n"
+        "- Respond in the same language the user uses\n"
+    ),
+    "USER.md": "# User Profile\n(Information about the user will be stored here. Edit this file to customize.)\n",
+    "MEMORY.md": "# Long-term Memory\n(Important facts, decisions, and context will be stored here. Edit this file to add persistent knowledge.)\n",
+}
+
+_ensured = False
+
+
+def _ensure_memory_dir() -> None:
+    """确保 memory 目录和默认文件存在"""
+    global _ensured
+    if _ensured:
+        return
+    from ...paths import MEMORY_DIR
+
+    _ensured = True
+    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+    for filename, content in _DEFAULT_FILES.items():
+        path = MEMORY_DIR / filename
+        if not path.exists():
+            path.write_text(content, encoding="utf-8")
+
+
+def _read_memory_file(filename: str) -> str | None:
+    """读取 memory 目录下的单个文件，不存在或为空返回 None"""
+    from ...paths import MEMORY_DIR
+
+    _ensure_memory_dir()
+    path = MEMORY_DIR / filename
+    if not path.exists():
+        return None
+    content = path.read_text(encoding="utf-8").strip()
+    return content if content else None
+
+
+def _render_soul(ctx: dict[str, Any]) -> str:
+    content = _read_memory_file("SOUL.md")
+    if not content:
+        return ""
+    from ...paths import MEMORY_DIR
+
+    return f"## SOUL\n(Edit: {MEMORY_DIR / 'SOUL.md'})\n\n{content}"
+
+
+def _render_user(ctx: dict[str, Any]) -> str:
+    content = _read_memory_file("USER.md")
+    if not content:
+        return ""
+    from ...paths import MEMORY_DIR
+
+    return f"## USER\n(Edit: {MEMORY_DIR / 'USER.md'})\n\n{content}"
+
+
+def _render_memory(ctx: dict[str, Any]) -> str:
+    content = _read_memory_file("MEMORY.md")
+    if not content:
+        return ""
+    from ...paths import MEMORY_DIR
+
+    return f"## MEMORY\n(Edit: {MEMORY_DIR / 'MEMORY.md'})\n\n{content}"
+
+
+SOUL_SECTION = DynamicSection(
+    name="soul", priority=PRIORITY_SOUL, renderer=_render_soul
+)
+
+USER_SECTION = DynamicSection(
+    name="user", priority=PRIORITY_USER, renderer=_render_user
+)
+
+MEMORY_SECTION = DynamicSection(
+    name="memory", priority=PRIORITY_MEMORY, renderer=_render_memory
 )
