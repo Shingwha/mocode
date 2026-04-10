@@ -92,11 +92,6 @@ class UserRouter:
             result = str(data.get("result", ""))[:200]
             logger.info("[tool-done] %s <- %s: %s", session_key, name, result)
 
-        def on_text_complete(event: Event) -> None:
-            data = event.data or {}
-            content = str(data.get("content", ""))[:200]
-            logger.info("[reply] %s: %s", session_key, content)
-
         def on_error(event: Event) -> None:
             data = event.data or {}
             error = str(data.get("error", data))[:200]
@@ -104,7 +99,6 @@ class UserRouter:
 
         handlers[EventType.TOOL_START] = on_tool_start
         handlers[EventType.TOOL_COMPLETE] = on_tool_complete
-        handlers[EventType.TEXT_COMPLETE] = on_text_complete
         handlers[EventType.ERROR] = on_error
 
         for et, handler in handlers.items():
