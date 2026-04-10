@@ -8,17 +8,15 @@ from .base import BaseChannel
 
 logger = logging.getLogger(__name__)
 
-_INTERNAL = frozenset({"base", "manager", "registry", "router", "bus", "app"})
-
 
 def discover_channel_names() -> list[str]:
-    """Scan mocode.gateway package for channel modules."""
+    """Scan mocode.gateway package for channel sub-packages."""
     import mocode.gateway as pkg
 
     return [
         name
-        for _, name, _ in pkgutil.iter_modules(pkg.__path__)
-        if name not in _INTERNAL
+        for _, name, is_pkg in pkgutil.iter_modules(pkg.__path__)
+        if is_pkg
     ]
 
 

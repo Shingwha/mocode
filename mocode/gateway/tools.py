@@ -3,11 +3,19 @@
 from contextvars import ContextVar
 
 from ..tools.base import Tool, ToolRegistry
-from ..core.orchestrator import MocodeCore
 
-# Context variable set by manager before each core.chat() call
-_current_core: ContextVar[MocodeCore | None] = ContextVar(
-    "_current_core", default=None
+
+class PendingMedia:
+    """Collects media file paths queued by send_file during a chat call."""
+
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+
+
+# Context variables set by manager before each core.chat() call
+_current_core = ContextVar("_current_core", default=None)
+_current_media: ContextVar[PendingMedia | None] = ContextVar(
+    "_current_media", default=None
 )
 
 
@@ -18,12 +26,10 @@ def register_gateway_tools() -> None:
         path = args.get("path", "")
         if not path:
             return "Error: path is required"
-        core = _current_core.get()
-        if core is None:
+        media = _current_media.get()
+        if media is None:
             return "Error: send_file only works in gateway mode"
-        if not hasattr(core, "_pending_media"):
-            core._pending_media = []
-        core._pending_media.append(path)
+        media.paths.append(path)
         return f"File queued for sending: {path}"
 
     ToolRegistry.register(Tool(

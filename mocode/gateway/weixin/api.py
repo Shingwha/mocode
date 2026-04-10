@@ -35,12 +35,6 @@ ITEM_VOICE = 3
 ITEM_FILE = 4
 ITEM_VIDEO = 5
 
-# Upload media type constants
-UPLOAD_MEDIA_IMAGE = 1
-UPLOAD_MEDIA_VIDEO = 2
-UPLOAD_MEDIA_FILE = 3
-UPLOAD_MEDIA_VOICE = 4
-
 CDN_BASE_URL = "https://novac2c.cdn.weixin.qq.com/c2c"
 
 # Message types

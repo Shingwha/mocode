@@ -6,7 +6,7 @@ import logging
 from .bus import MessageBus, OutboundMessage
 from .base import BaseChannel
 from .router import UserRouter
-from .tools import _current_core
+from .tools import PendingMedia, _current_core, _current_media
 
 logger = logging.getLogger(__name__)
 
@@ -69,18 +69,18 @@ class ChannelManager:
                 async with session.lock:
                     try:
                         # Set context for gateway tools (send_file)
-                        token = _current_core.set(session.core)
+                        pending = PendingMedia()
+                        core_token = _current_core.set(session.core)
+                        media_token = _current_media.set(pending)
                         try:
                             response = await session.core.chat(
                                 msg.content, media=msg.media or None
                             )
                         finally:
-                            _current_core.reset(token)
+                            _current_core.reset(core_token)
+                            _current_media.reset(media_token)
 
-                        # Collect pending media from tools
-                        pending = getattr(session.core, "_pending_media", [])
-                        media_to_send = list(pending)
-                        pending.clear()
+                        media_to_send = pending.paths
 
                         if response:
                             logger.info(

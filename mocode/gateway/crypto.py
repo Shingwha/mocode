@@ -21,8 +21,22 @@ def pkcs7_unpad(data: bytes) -> bytes:
     return data[:-pad_len]
 
 
+def _do_encrypt(cipher, data: bytes) -> bytes:
+    """Encrypt using a pycryptodome or cryptography cipher object."""
+    if hasattr(cipher, "update"):  # cryptography
+        return cipher.update(data) + cipher.finalize()
+    return cipher.encrypt(data)  # pycryptodome
+
+
+def _do_decrypt(cipher, data: bytes) -> bytes:
+    """Decrypt using a pycryptodome or cryptography cipher object."""
+    if hasattr(cipher, "update"):
+        return cipher.update(data) + cipher.finalize()
+    return cipher.decrypt(data)
+
+
 def _get_cipher(key: bytes):
-    """Get AES cipher, trying pycryptodome then cryptography library."""
+    """Get AES ECB encryptor, trying pycryptodome then cryptography."""
     try:
         from Crypto.Cipher import AES
         return AES.new(key, AES.MODE_ECB)
@@ -33,7 +47,7 @@ def _get_cipher(key: bytes):
 
 
 def _get_decipher(key: bytes):
-    """Get AES decipher, trying pycryptodome then cryptography library."""
+    """Get AES ECB decryptor, trying pycryptodome then cryptography."""
     try:
         from Crypto.Cipher import AES
         return AES.new(key, AES.MODE_ECB)
@@ -47,15 +61,7 @@ def aes_ecb_encrypt(data: bytes, key: bytes) -> bytes:
     """AES-128-ECB encrypt with PKCS7 padding."""
     if len(key) != 16:
         raise ValueError(f"Key must be 16 bytes, got {len(key)}")
-    padded = pkcs7_pad(data)
-    try:
-        from Crypto.Cipher import AES
-        cipher = AES.new(key, AES.MODE_ECB)
-        return cipher.encrypt(padded)
-    except ImportError:
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        encryptor = Cipher(algorithms.AES(key), modes.ECB()).encryptor()
-        return encryptor.update(padded) + encryptor.finalize()
+    return _do_encrypt(_get_cipher(key), pkcs7_pad(data))
 
 
 def aes_ecb_decrypt(data: bytes, key: bytes) -> bytes:
@@ -64,14 +70,7 @@ def aes_ecb_decrypt(data: bytes, key: bytes) -> bytes:
         raise ValueError(f"Key must be 16 bytes, got {len(key)}")
     if len(data) % 16 != 0:
         raise ValueError(f"Ciphertext must be multiple of 16 bytes, got {len(data)}")
-    try:
-        from Crypto.Cipher import AES
-        cipher = AES.new(key, AES.MODE_ECB)
-        return pkcs7_unpad(cipher.decrypt(data))
-    except ImportError:
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        decryptor = Cipher(algorithms.AES(key), modes.ECB()).decryptor()
-        return pkcs7_unpad(decryptor.update(data) + decryptor.finalize())
+    return pkcs7_unpad(_do_decrypt(_get_decipher(key), data))
 
 
 def parse_aes_key(b64_key: str) -> bytes:
@@ -85,6 +84,5 @@ def parse_aes_key(b64_key: str) -> bytes:
     if len(raw) == 16:
         return raw
     if len(raw) == 32:
-        # It's a hex string
         return bytes.fromhex(raw.decode("ascii"))
     raise ValueError(f"Cannot parse AES key: decoded length {len(raw)}, expected 16 or 32")
