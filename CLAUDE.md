@@ -345,16 +345,50 @@ Use ESC to interrupt.
 
 ## Testing
 
+226 tests across 14 files. Dependencies: `pytest>=8.0`, `pytest-asyncio>=0.23`, `pytest-cov`.
+
+**IMPORTANT**: 必须使用 `uv run pytest` 来运行测试。不要使用 `python -c`、`python -m pytest` 或裸 `pytest` 命令，因为项目依赖 uv 管理虚拟环境，直接运行可能找不到正确的 Python 或依赖。
+
 ```bash
-# Unit tests
-pytest tests/
+# Install test dependencies
+uv sync --extra test
+
+# Run all tests
+uv run pytest tests/ -v
+
+# Single module
+uv run pytest tests/test_events.py -v
 
 # With coverage
-pytest --cov=mocode tests/
+uv run pytest tests/ --cov=mocode --cov-report=term-missing
 
 # Run CLI manually
 mocode
 ```
+
+**Test structure**:
+```
+tests/
+├── conftest.py                    # Shared fixtures (config, event_bus, interrupt_token)
+├── test_events.py                 # EventBus (9 tests)
+├── test_interrupt.py              # InterruptToken (4 tests)
+├── test_utils.py                  # truncate_result, preview_result (10 tests)
+├── test_config.py                 # Config CRUD, modes, properties (27 tests)
+├── test_permission.py             # PermissionConfig, PermissionChecker (18 tests)
+├── test_tools.py                  # ToolRegistry, file/search tools (24 tests)
+├── test_session.py                # SessionManager CRUD, isolation (14 tests)
+├── test_agent.py                  # AsyncAgent with mock provider (17 tests)
+├── test_message_queue.py          # MessageQueue async (7 tests)
+├── test_prompt_builder.py         # PromptBuilder, Section (12 tests)
+├── test_plugins.py                # HookRegistry, decorators, PluginRegistry (30 tests)
+├── test_orchestrator.py           # MocodeCore integration (23 tests)
+└── test_gateway/
+    ├── test_crypto.py             # AES encrypt/decrypt, key parsing (11 tests)
+    ├── test_bus.py                # MessageBus pub/sub (6 tests)
+    └── test_router.py             # UserRouter LRU, isolation (8 tests)
+```
+
+**Coverage**: Core modules 80%+. Key coverage: `interrupt.py` 100%, `message_queue.py` 100%, `tools/base.py` 100%, `events.py` 95%, `config.py` 93%, `session.py` 93%.
 
 ## Configuration Tips
 
@@ -479,7 +513,7 @@ Check:
 
 Code style: clean, simple, no emojis.
 
-Run tests: `pytest tests/` then `uv sync`.
+Run tests: `uv sync --extra test && uv run pytest tests/ -v`.
 
 Update docs when adding features.
 
