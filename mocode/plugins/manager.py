@@ -12,7 +12,7 @@ from .venv_manager import PluginVenvManager, VenvError
 if TYPE_CHECKING:
     from ..tools.base import Tool
     from ..cli.commands.base import Command
-    from ..core.prompt.builder import PromptBuilder, PromptSection
+    from ..core.prompt.builder import PromptBuilder, Section
 
 # Type alias for tool replacement tracking: (plugin_name, original_tool)
 ToolReplacement = tuple[str, "Tool"]

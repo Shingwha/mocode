@@ -3,21 +3,7 @@
 from .config import Config, PluginConfig, ProviderConfig, CurrentConfig
 from .events import EventBus, EventType, Event
 from .agent import AsyncAgent
-from .prompt import (
-    PromptBuilder,
-    StaticSection,
-    DynamicSection,
-    PromptSection,
-    default_prompt,
-    minimal_prompt,
-    custom_prompt,
-    SOUL_SECTION,
-    USER_SECTION,
-    MEMORY_SECTION,
-    ENVIRONMENT_SECTION,
-    TOOLS_SECTION,
-    SKILLS_SECTION,
-)
+from .prompt import PromptBuilder, Section, default_prompt, minimal_prompt
 from .permission import (
     PermissionAction,
     PermissionConfig,
@@ -53,18 +39,9 @@ __all__ = [
     "AsyncAgent",
     # Prompt system
     "PromptBuilder",
-    "StaticSection",
-    "DynamicSection",
-    "PromptSection",
+    "Section",
     "default_prompt",
     "minimal_prompt",
-    "custom_prompt",
-    "SOUL_SECTION",
-    "USER_SECTION",
-    "MEMORY_SECTION",
-    "ENVIRONMENT_SECTION",
-    "TOOLS_SECTION",
-    "SKILLS_SECTION",
     # Permission
     "PermissionAction",
     "PermissionChecker",

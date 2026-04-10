@@ -8,14 +8,7 @@ from .core import Config, AsyncAgent
 from .core import PermissionChecker, CheckOutcome, CheckResult, PermissionHandler, DefaultPermissionHandler, DenyAllPermissionHandler, PermissionConfig
 from .core import InterruptToken
 from .core.session import Session, SessionManager
-from .core.prompt import (
-    PromptBuilder,
-    StaticSection,
-    DynamicSection,
-    default_prompt,
-    minimal_prompt,
-    custom_prompt,
-)
+from .core.prompt import PromptBuilder, Section, default_prompt, minimal_prompt
 from .plugins import (
     Hook,
     HookContext,
@@ -57,11 +50,9 @@ __all__ = [
     "SessionManager",
     # Prompt system
     "PromptBuilder",
-    "StaticSection",
-    "DynamicSection",
+    "Section",
     "default_prompt",
     "minimal_prompt",
-    "custom_prompt",
     # Plugin system
     "Hook",
     "HookContext",

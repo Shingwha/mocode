@@ -193,7 +193,6 @@ class MocodeCore:
         """Rebuild system prompt"""
         ctx = context or {}
         skill_manager = SkillManager.get_instance()
-        self._prompt_builder.clear_caches()
         system_prompt = self._prompt_builder.context(
             skill_manager=skill_manager,
             cwd=self._workdir,
