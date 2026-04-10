@@ -171,5 +171,6 @@ class TestConfigProperties:
 
     def test_current_provider_missing(self):
         config = Config()
+        config._persistence_enabled = False
         config.current.provider = "nonexistent"
         assert config.current_provider is None

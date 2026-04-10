@@ -11,7 +11,7 @@ from mocode.tools.base import ToolRegistry
 @pytest.fixture
 def config():
     """In-memory Config, no file I/O"""
-    return Config.load(data={
+    cfg = Config.load(data={
         "current": {"provider": "test", "model": "test-model"},
         "providers": {
             "test": {
@@ -22,6 +22,8 @@ def config():
             }
         },
     })
+    cfg._persistence_enabled = False
+    return cfg
 
 
 @pytest.fixture

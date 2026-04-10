@@ -34,3 +34,9 @@ MEDIA_DIR: Path = MOCODE_HOME / "media"
 
 # Memory 目录 (SOUL.md / USER.md / MEMORY.md)
 MEMORY_DIR: Path = MOCODE_HOME / "memory"
+
+# Heartbeat 文件 (定期任务定义)
+HEARTBEAT_FILE: Path = MOCODE_HOME / "HEARTBEAT.md"
+
+# Cron 任务存储目录
+CRON_DIR: Path = MOCODE_HOME / "cron"

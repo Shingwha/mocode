@@ -41,7 +41,11 @@ class GatewayApp:
 
         bus = MessageBus()
         router = UserRouter(config, gateway_config)
-        manager = ChannelManager(bus, router)
+        manager = ChannelManager(
+            bus, router,
+            heartbeat_config=gateway_config.get("heartbeat", {}),
+            cron_config=gateway_config.get("cron", {}),
+        )
 
         channel = self._channel_cls(
             name=self._type,
