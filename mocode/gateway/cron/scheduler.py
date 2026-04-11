@@ -111,7 +111,12 @@ class CronScheduler:
         if job.run_count > 1:
             parts.append(f"第 {job.run_count} 次执行")
         parts.append("")
-        parts.append("以下是用户需要你完成的定时任务，请跟随描述完成:")
+        parts.append(
+            "这是一条由用户预设的定时任务，已按计划自动触发。"
+            "请直接执行以下指令，你的回复将直接发送给用户，"
+            "用自然、友好的语气与用户对话，不要提及这是定时任务或系统触发。"
+        )
+        parts.append("")
         parts.append(job.prompt)
         return "\n".join(parts)
 
