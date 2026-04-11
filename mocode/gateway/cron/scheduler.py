@@ -101,6 +101,20 @@ class CronScheduler:
                 logger.error("Cron tick error: %s", e)
             await asyncio.sleep(self._tick_interval_s)
 
+    @staticmethod
+    def _build_cron_prompt(job: CronJob) -> str:
+        parts = [
+            "[定时任务触发]",
+            f"任务名称: {job.name}",
+            f"任务ID: {job.id}",
+        ]
+        if job.run_count > 1:
+            parts.append(f"第 {job.run_count} 次执行")
+        parts.append("")
+        parts.append("以下是用户需要你完成的定时任务，请跟随描述完成:")
+        parts.append(job.prompt)
+        return "\n".join(parts)
+
     async def _fire_job(self, job: CronJob) -> None:
         logger.info("Firing cron job %s (%s)", job.id, job.name)
         try:
@@ -113,7 +127,8 @@ class CronScheduler:
                     channel=job.channel,
                     chat_id=job.chat_id,
                 )) as pending:
-                    response = await session.core.chat(job.prompt)
+                    prompt = self._build_cron_prompt(job)
+                    response = await session.core.chat(prompt)
 
                 if job.deliver and response:
                     await self._bus.publish_outbound(OutboundMessage(
