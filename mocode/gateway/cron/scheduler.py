@@ -104,20 +104,16 @@ class CronScheduler:
     @staticmethod
     def _build_cron_prompt(job: CronJob) -> str:
         parts = [
-            "[定时任务触发]",
-            f"任务名称: {job.name}",
-            f"任务ID: {job.id}",
+            "一个定时任务被触发了，请合理完成这个任务。",
+            "",
+            f"标题：{job.name}",
+            f"任务内容：{job.prompt}",
+            "",
+            "你的最终回复将发给用户，请合理调用工具完成这个任务，最后进行回复。",
+            "",
+            "示例：如果任务内容是\"提醒用户去睡觉\"，你应该直接回复：",
+            "\"🌙 夜深了，该休息了。晚安~\"",
         ]
-        if job.run_count > 1:
-            parts.append(f"第 {job.run_count} 次执行")
-        parts.append("")
-        parts.append(
-            "这是一条由用户预设的定时任务，已按计划自动触发。"
-            "请直接执行以下指令，你的回复将直接发送给用户，"
-            "用自然、友好的语气与用户对话，不要提及这是定时任务或系统触发。"
-        )
-        parts.append("")
-        parts.append(job.prompt)
         return "\n".join(parts)
 
     async def _fire_job(self, job: CronJob) -> None:
