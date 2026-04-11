@@ -15,7 +15,6 @@ from .cron.tools import (
     _current_session_key,
     register_cron_tools,
 )
-from .heartbeat.service import HeartbeatService
 from .router import UserRouter
 from .tools import PendingMedia, _current_core, _current_media
 
@@ -33,15 +32,12 @@ class ChannelManager:
         self,
         bus: MessageBus,
         router: UserRouter,
-        heartbeat_config: dict | None = None,
         cron_config: dict | None = None,
     ):
         self._bus = bus
         self._router = router
         self._channels: dict[str, BaseChannel] = {}
         self._tasks: list[asyncio.Task] = []
-        # Heartbeat service
-        self._heartbeat = HeartbeatService(router, bus, heartbeat_config or {})
         # Cron service
         self._cron_store = CronJobStore(CRON_DIR)
         self._cron = CronScheduler(
@@ -57,21 +53,19 @@ class ChannelManager:
         logger.info("Registered channel: %s", channel.name)
 
     async def start_all(self) -> None:
-        """Start inbound/outbound dispatchers, channels, heartbeat and cron."""
+        """Start inbound/outbound dispatchers, channels and cron."""
         self._tasks.append(asyncio.create_task(self._dispatch_inbound()))
         self._tasks.append(asyncio.create_task(self._dispatch_outbound()))
         for channel in self._channels.values():
             self._tasks.append(asyncio.create_task(channel.start()))
             logger.info("Started channel: %s", channel.name)
-        # Start heartbeat and cron
+        # Start cron
         register_cron_tools(self._cron)
-        self._tasks.append(asyncio.create_task(self._heartbeat.start()))
         self._tasks.append(asyncio.create_task(self._cron.start()))
 
     async def stop_all(self) -> None:
-        """Stop all channels, heartbeat, cron and cancel dispatch tasks."""
+        """Stop all channels, cron and cancel dispatch tasks."""
         # Stop scheduling services first
-        await self._heartbeat.stop()
         await self._cron.stop()
         # Cancel all tasks
         for task in self._tasks:
@@ -98,10 +92,6 @@ class ChannelManager:
                 msg = await self._bus.consume_inbound()
                 logger.info(
                     "[inbound] %s: %s", msg.session_key, msg.content[:100]
-                )
-                # Track last active channel for heartbeat
-                self._heartbeat.update_last_active(
-                    msg.channel, msg.chat_id, msg.session_key
                 )
                 session = self._router.get_or_create(msg.session_key)
 
