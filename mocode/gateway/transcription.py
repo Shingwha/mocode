@@ -43,9 +43,10 @@ async def transcribe_audio(audio_path: str, api_key: str, base_url: str = "") ->
     try:
         from openai import AsyncOpenAI
 
-        client = AsyncOpenAI(api_key=api_key)
+        kwargs = {"api_key": api_key}
         if base_url:
-            client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+            kwargs["base_url"] = base_url
+        client = AsyncOpenAI(**kwargs)
 
         with open(path, "rb") as f:
             response = await client.audio.transcriptions.create(

@@ -210,8 +210,8 @@ class WeixinChannel(BaseChannel):
                 for msg in msgs:
                     try:
                         await self._process_message(msg)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Error processing message: %s", e)
 
                 self._consecutive_failures = 0
 
@@ -268,9 +268,7 @@ class WeixinChannel(BaseChannel):
             return
 
         # Deduplication
-        msg_id = str(msg.get("message_id", "") or msg.get("seq", ""))
-        if not msg_id:
-            msg_id = f"{msg.get('from_user_id', '')}_{msg.get('create_time_ms', '')}"
+        msg_id = self._dedup_id(msg)
         if msg_id in self._seen:
             return
         self._seen[msg_id] = None
@@ -282,10 +280,7 @@ class WeixinChannel(BaseChannel):
             return
 
         # Cache context_token
-        ctx_token = msg.get("context_token", "")
-        if ctx_token:
-            self._state.context_tokens[from_user_id] = ctx_token
-            self._state.save()
+        self._cache_context_token(from_user_id, msg)
 
         # Extract content from all item types
         item_list: list[dict] = msg.get("item_list") or []
@@ -293,75 +288,15 @@ class WeixinChannel(BaseChannel):
         media_paths: list[str] = []
 
         for item in item_list:
-            item_type = item.get("type", 0)
-
-            if item_type == ITEM_TEXT:
-                text = (item.get("text_item") or {}).get("text", "")
-                if text:
-                    # Handle quoted messages
-                    ref = item.get("ref_msg")
-                    if ref:
-                        ref_item = ref.get("message_item")
-                        if ref_item and ref_item.get("type", 0) in (
-                            2, 3, 4, 5  # non-text types
-                        ):
-                            content_parts.append(text)
-                        else:
-                            parts: list[str] = []
-                            if ref.get("title"):
-                                parts.append(ref["title"])
-                            if ref_item:
-                                ref_text = (
-                                    ref_item.get("text_item") or {}
-                                ).get("text", "")
-                                if ref_text:
-                                    parts.append(ref_text)
-                            if parts:
-                                content_parts.append(
-                                    f"[Quote: {' | '.join(parts)}]\n{text}"
-                                )
-                            else:
-                                content_parts.append(text)
-                    else:
-                        content_parts.append(text)
-
-            elif item_type == ITEM_IMAGE:
-                local = await self._download_media(item, from_user_id)
-                if local:
-                    media_paths.append(local)
-                    content_parts.append("[image]")
-                else:
-                    content_parts.append("[image: download failed]")
-
-            elif item_type == ITEM_VOICE:
-                local = await self._download_media(item, from_user_id)
-                if local:
-                    media_paths.append(local)
-                    # Try transcription
-                    transcription = await self._transcribe(local)
-                    if transcription:
-                        content_parts.append(f"[voice] {transcription}")
-                    else:
-                        content_parts.append("[voice]")
-                else:
-                    content_parts.append("[voice: download failed]")
-
-            elif item_type == ITEM_FILE:
-                local = await self._download_media(item, from_user_id)
-                if local:
-                    media_paths.append(local)
-                    fname = local.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-                    content_parts.append(f"[file: {fname}]")
-                else:
-                    content_parts.append("[file: download failed]")
-
-            elif item_type == ITEM_VIDEO:
-                local = await self._download_media(item, from_user_id)
-                if local:
-                    media_paths.append(local)
-                    content_parts.append("[video]")
-                else:
-                    content_parts.append("[video: download failed]")
+            handler = {
+                ITEM_TEXT: self._handle_text_item,
+                ITEM_IMAGE: self._handle_media_item,
+                ITEM_VOICE: self._handle_voice_item,
+                ITEM_FILE: self._handle_media_item,
+                ITEM_VIDEO: self._handle_media_item,
+            }.get(item.get("type", 0))
+            if handler:
+                await handler(item, from_user_id, content_parts, media_paths)
 
         content = "\n".join(content_parts)
         if not content and not media_paths:
@@ -377,6 +312,7 @@ class WeixinChannel(BaseChannel):
 
         # Start typing indicator
         assert self._typing is not None
+        ctx_token = self._state.context_tokens.get(from_user_id, "")
         await self._typing.start(from_user_id, ctx_token)
 
         await self._handle_message(
@@ -386,6 +322,93 @@ class WeixinChannel(BaseChannel):
             media=media_paths or None,
             metadata={"message_id": msg_id},
         )
+
+    @staticmethod
+    def _dedup_id(msg: dict) -> str:
+        """Generate a deduplication ID for a message."""
+        msg_id = str(msg.get("message_id", "") or msg.get("seq", ""))
+        if not msg_id:
+            msg_id = f"{msg.get('from_user_id', '')}_{msg.get('create_time_ms', '')}"
+        return msg_id
+
+    def _cache_context_token(self, user_id: str, msg: dict) -> None:
+        """Cache context_token from message if present."""
+        ctx_token = msg.get("context_token", "")
+        if ctx_token:
+            self._state.context_tokens[user_id] = ctx_token
+            self._state.save()
+
+    async def _handle_text_item(
+        self, item: dict, uid: str, parts: list[str], media: list[str]
+    ) -> None:
+        """Handle text items, including quoted messages."""
+        text = (item.get("text_item") or {}).get("text", "")
+        if not text:
+            return
+        ref = item.get("ref_msg")
+        if not ref:
+            parts.append(text)
+            return
+        ref_item = ref.get("message_item")
+        if ref_item and ref_item.get("type", 0) in (2, 3, 4, 5):
+            parts.append(text)
+        else:
+            quote = self._format_quote(ref)
+            if quote:
+                parts.append(f"[Quote: {quote}]\n{text}")
+            else:
+                parts.append(text)
+
+    @staticmethod
+    def _format_quote(ref: dict) -> str | None:
+        """Format a quoted message reference."""
+        ref_item = ref.get("message_item")
+        segments: list[str] = []
+        if ref.get("title"):
+            segments.append(ref["title"])
+        if ref_item:
+            ref_text = (ref_item.get("text_item") or {}).get("text", "")
+            if ref_text:
+                segments.append(ref_text)
+        return " | ".join(segments) if segments else None
+
+    async def _handle_media_item(
+        self, item: dict, uid: str, parts: list[str], media: list[str]
+    ) -> None:
+        """Handle image, file, and video items."""
+        item_type = item.get("type", 0)
+        labels = {
+            ITEM_IMAGE: "image",
+            ITEM_FILE: "file",
+            ITEM_VIDEO: "video",
+        }
+        label = labels.get(item_type, "media")
+
+        local = await self._download_media(item, uid)
+        if local:
+            media.append(local)
+            if item_type == ITEM_FILE:
+                fname = local.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+                parts.append(f"[file: {fname}]")
+            else:
+                parts.append(f"[{label}]")
+        else:
+            parts.append(f"[{label}: download failed]")
+
+    async def _handle_voice_item(
+        self, item: dict, uid: str, parts: list[str], media: list[str]
+    ) -> None:
+        """Handle voice items with transcription."""
+        local = await self._download_media(item, uid)
+        if local:
+            media.append(local)
+            transcription = await self._transcribe(local)
+            if transcription:
+                parts.append(f"[voice] {transcription}")
+            else:
+                parts.append("[voice]")
+        else:
+            parts.append("[voice: download failed]")
 
     async def _download_media(self, item: dict, user_id: str) -> str | None:
         """Download media via MediaHandler."""

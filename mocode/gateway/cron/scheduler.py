@@ -10,7 +10,7 @@ from croniter import croniter
 
 from ..bus import MessageBus, OutboundMessage
 from ..router import UserRouter
-from ..tools import PendingMedia, _current_core, _current_media
+from ..tools import ChatContext, chat_session
 from .store import CronJobStore
 from .types import CronJob, ScheduleMode
 
@@ -64,6 +64,22 @@ class CronScheduler:
             return now
         return now
 
+    def create_job(self, job: CronJob) -> None:
+        """Save a new job (next_run_at should already be set)."""
+        self._store.save(job)
+
+    def list_jobs(self, session_key: str) -> list[CronJob]:
+        """List all jobs belonging to a user session."""
+        return self._store.list_by_user(session_key)
+
+    def delete_job(self, job_id: str) -> bool:
+        """Delete a job by ID. Returns True if deleted."""
+        return self._store.delete(job_id)
+
+    def get_job(self, job_id: str) -> CronJob | None:
+        """Load a single job by ID."""
+        return self._store.load(job_id)
+
     async def _run_loop(self) -> None:
         while True:
             try:
@@ -90,14 +106,14 @@ class CronScheduler:
         try:
             session = self._router.get_or_create(job.user_session_key)
             async with session.lock:
-                pending = PendingMedia()
-                core_token = _current_core.set(session.core)
-                media_token = _current_media.set(pending)
-                try:
+                async with chat_session(ChatContext(
+                    core=session.core,
+                    scheduler=self,
+                    session_key=job.user_session_key,
+                    channel=job.channel,
+                    chat_id=job.chat_id,
+                )) as pending:
                     response = await session.core.chat(job.prompt)
-                finally:
-                    _current_core.reset(core_token)
-                    _current_media.reset(media_token)
 
                 if job.deliver and response:
                     await self._bus.publish_outbound(OutboundMessage(

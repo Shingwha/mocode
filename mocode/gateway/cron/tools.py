@@ -1,26 +1,14 @@
 """Cron tool - agent-facing scheduled task management"""
 
-import time
-from contextvars import ContextVar
-
 from ...tools.base import Tool, ToolRegistry
+from ..tools import (
+    _current_scheduler,
+    _current_session_key,
+    _current_channel,
+    _current_chat_id,
+)
 from .scheduler import CronScheduler
-from .store import CronJobStore
 from .types import CronJob, ScheduleMode
-
-# ContextVars set by ChannelManager during inbound dispatch
-_current_scheduler: ContextVar[CronScheduler | None] = ContextVar(
-    "_current_scheduler", default=None
-)
-_current_session_key: ContextVar[str] = ContextVar(
-    "_current_session_key", default=""
-)
-_current_channel: ContextVar[str] = ContextVar(
-    "_current_channel", default=""
-)
-_current_chat_id: ContextVar[str] = ContextVar(
-    "_current_chat_id", default=""
-)
 
 
 def register_cron_tools(scheduler: CronScheduler) -> None:
@@ -128,7 +116,7 @@ def _action_create(scheduler: CronScheduler, args: dict) -> str:
         deliver=bool(deliver),
     )
     job.next_run_at = scheduler.compute_next_run(job)
-    scheduler._store.save(job)
+    scheduler.create_job(job)
 
     mode_label = schedule_mode.value
     return f"Created cron job '{name}' (id={job.id}, mode={mode_label}, next_run={job.next_run_at})"
@@ -136,7 +124,7 @@ def _action_create(scheduler: CronScheduler, args: dict) -> str:
 
 def _action_list(scheduler: CronScheduler) -> str:
     session_key = _current_session_key.get()
-    jobs = scheduler._store.list_by_user(session_key)
+    jobs = scheduler.list_jobs(session_key)
     if not jobs:
         return "No scheduled tasks found."
 
@@ -156,13 +144,13 @@ def _action_delete(scheduler: CronScheduler, args: dict) -> str:
         return "Error: job_id is required for delete"
 
     session_key = _current_session_key.get()
-    job = scheduler._store.load(job_id)
+    job = scheduler.get_job(job_id)
     if job is None:
         return f"Error: job '{job_id}' not found"
     if job.user_session_key != session_key:
         return "Error: job does not belong to current user"
 
-    scheduler._store.delete(job_id)
+    scheduler.delete_job(job_id)
     return f"Deleted cron job '{job.name}' (id={job_id})"
 
 
@@ -171,7 +159,7 @@ def _action_info(scheduler: CronScheduler, args: dict) -> str:
     if not job_id:
         return "Error: job_id is required for info"
 
-    job = scheduler._store.load(job_id)
+    job = scheduler.get_job(job_id)
     if job is None:
         return f"Error: job '{job_id}' not found"
 

@@ -8,15 +8,9 @@ from .base import BaseChannel
 from .bus import MessageBus, OutboundMessage
 from .cron.scheduler import CronScheduler
 from .cron.store import CronJobStore
-from .cron.tools import (
-    _current_chat_id,
-    _current_channel,
-    _current_scheduler,
-    _current_session_key,
-    register_cron_tools,
-)
+from .cron.tools import register_cron_tools
 from .router import UserRouter
-from .tools import PendingMedia, _current_core, _current_media
+from .tools import ChatContext, chat_session
 
 logger = logging.getLogger(__name__)
 
@@ -97,26 +91,16 @@ class ChannelManager:
 
                 async with session.lock:
                     try:
-                        # Set context for gateway tools
-                        pending = PendingMedia()
-                        core_token = _current_core.set(session.core)
-                        media_token = _current_media.set(pending)
-                        # Set context for cron tools
-                        sched_token = _current_scheduler.set(self._cron)
-                        skey_token = _current_session_key.set(msg.session_key)
-                        ch_token = _current_channel.set(msg.channel)
-                        cid_token = _current_chat_id.set(msg.chat_id)
-                        try:
+                        async with chat_session(ChatContext(
+                            core=session.core,
+                            scheduler=self._cron,
+                            session_key=msg.session_key,
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                        )) as pending:
                             response = await session.core.chat(
                                 msg.content, media=msg.media or None
                             )
-                        finally:
-                            _current_core.reset(core_token)
-                            _current_media.reset(media_token)
-                            _current_scheduler.reset(sched_token)
-                            _current_session_key.reset(skey_token)
-                            _current_channel.reset(ch_token)
-                            _current_chat_id.reset(cid_token)
 
                         media_to_send = pending.paths
 
