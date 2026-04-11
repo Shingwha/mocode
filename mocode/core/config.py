@@ -41,8 +41,8 @@ class ProviderConfig:
 class CurrentConfig:
     """当前使用配置"""
 
-    provider: str = "openai"  # 供应商 key
-    model: str = "gpt-4o"
+    provider: str = "zhipu"  # 供应商 key
+    model: str = "glm-5"
 
 
 @dataclass
@@ -92,21 +92,17 @@ class Config:
     def _init_default_providers(self):
         """初始化默认供应商"""
         self.providers = {
-            "openai": ProviderConfig(
-                name="OpenAI",
-                base_url="https://api.openai.com/v1",
-                api_key=os.environ.get("OPENAI_API_KEY", ""),
-                models=["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o1", "o1-mini"],
-            ),
-            "longcat": ProviderConfig(
-                name="LongCat",
-                base_url="https://api.longcat.chat/openai",
+            "zhipu": ProviderConfig(
+                name="智谱",
+                base_url="https://open.bigmodel.cn/api/coding/paas/v4/",
                 api_key="",
-                models=[
-                    "LongCat-Flash-Chat",
-                    "LongCat-Flash-Thinking",
-                    "LongCat-Flash-Lite",
-                ],
+                models=["glm-5.1", "glm-5"],
+            ),
+            "step": ProviderConfig(
+                name="阶跃星辰",
+                base_url="https://api.stepfun.com/step_plan/v1",
+                api_key="",
+                models=["step-3.5-flash", "step-3.5-flash-2603"],
             ),
         }
 
@@ -166,10 +162,6 @@ class Config:
                 pass
 
         # 环境变量覆盖 OpenAI key
-        env_key = os.environ.get("OPENAI_API_KEY")
-        if env_key and "openai" in config.providers:
-            config.providers["openai"].api_key = env_key
-
         return config
 
     @classmethod
