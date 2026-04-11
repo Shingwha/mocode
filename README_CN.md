@@ -15,6 +15,21 @@
 uv tool install git+https://github.com/Shingwha/mocode.git
 ```
 
+### 开发者安装
+
+```bash
+git clone https://github.com/Shingwha/mocode.git
+cd mocode
+uv tool install -e .
+```
+
+更新：
+
+```bash
+git pull
+uv tool install -e .
+```
+
 ## 快速开始
 
 ```bash
@@ -100,15 +115,14 @@ mocode
 mocode gateway
 ```
 
+首次运行时，使用浏览器打开终端中提示的链接并扫码，即可连接到微信。
+
 详见 [Gateway 文档](docs/gateway.md)。
 
 ## 文档
 
 - [CLI 命令](docs/cli.md)
-- [供应商配置](docs/provider.md)
-- [权限系统](docs/permission.md)
 - [插件系统](docs/plugins.md)
-- [技能系统](docs/skills.md)
 - [Gateway](docs/gateway.md)
 
 ## 许可证

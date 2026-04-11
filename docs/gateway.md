@@ -1,211 +1,139 @@
 # Gateway
 
-Gateway allows running mocode as a bot on messaging platforms. Each user gets an isolated conversation session.
+Gateway 将 mocode 作为聊天机器人运行在即时通讯平台上。每个用户拥有独立的会话。
 
-## Quick Start
+## 启动
 
 ```bash
-# Start WeChat gateway
-mocode gateway --type weixin
+mocode gateway --type weixin    # 微信（默认）
+mocode gateway --type <name>    # 其他平台
 ```
 
-## Architecture
+首次运行时，使用浏览器打开终端中提示的链接并扫码，即可连接到微信。
+
+## 架构
 
 ```
-┌─────────────┐
-│   Channel   │ (WeChat, etc.)
-│   (weixin)   │
-└──────┬──────┘
-       │ receives messages
-       ▼
-┌────────────────┐
-│  ChannelMgr    │ ← Dispatches inbound/outbound
-│  + Router      │    with retry logic
-└──────┬─────────┘
-       │ routes per user
-       ▼
-┌────────────────┐
-│  UserRouter    │ ← LRU session management
-│  (per-user)    │    with asyncio.Lock
-└──────┬─────────┘
-       │ creates
-       ▼
-┌────────────────┐
-│ MocodeCore     │ ← One per user, yolo mode
-│ (isolated)     │    auto-approves safe tools
-└────────────────┘
+Channel (平台适配) → MessageBus → ChannelManager → UserRouter → MocodeCore (每用户独立)
+                                                        ↑
+                                                  LRU 淘汰 (max_users)
 ```
 
-**Components**:
-- **Channel**: Platform-specific adapter (WeChat, etc.)
-- **ChannelManager**: Lifecycle management + message dispatch with retry
-- **UserRouter**: Per-user session management with LRU eviction
-- **MocodeCore**: One isolated instance per user (forced yolo mode)
+- **Channel** — 平台适配器，接收/发送消息
+- **ChannelManager** — 消息调度，含重试（指数退避，最多 3 次）
+- **UserRouter** — 每用户会话池，LRU 淘汰，`asyncio.Lock` 串行化
+- **MocodeCore** — 每用户独立实例，强制 yolo 模式（自动审批工具调用）
 
-## Configuration
+## 配置
 
-Add gateway settings to `~/.mocode/config.json`:
+在 `~/.mocode/config.json` 中添加：
 
 ```json
 {
   "gateway": {
     "max_users": 100,
-    "idle_timeout": 3600,
-    "allow_from": ["*"]
+    "allow_from": ["*"],
+    "cron": {
+      "tick_interval_s": 1.0
+    }
   }
 }
 ```
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `max_users` | 100 | Maximum concurrent user sessions (LRU eviction) |
-| `idle_timeout` | 3600 | Seconds of inactivity before session eviction |
-| `allow_from` | `["*"]` | List of allowed sender IDs (empty = all allowed) |
+| 字段 | 默认值 | 说明 |
+|------|--------|------|
+| `max_users` | 100 | 最大并发用户数，超出按 LRU 淘汰 |
+| `allow_from` | `["*"]` | 允许的用户 ID 列表，`["*"]` 表示全部允许 |
+| `cron.tick_interval_s` | 1.0 | 定时任务调度器轮询间隔（秒） |
 
-## WeChat Gateway
+## 微信 Gateway
 
-### Start
+### 功能
 
-```bash
-mocode gateway --type weixin
+- 扫码登录（终端显示 QR 码）
+- 长轮询消息接收，自动重连
+- 收发图片/语音/视频/文件（CDN + AES 加解密）
+- 语音转文字（需配置 Whisper 兼容 API）
+- 输入状态指示（"正在输入..."）
+- 长消息自动按 3500 字符拆分
+
+### 媒体处理
+
+- **接收**：自动下载到 `~/.mocode/media/weixin/<user_id>/`，消息内容替换为 `[image]`、`[voice]` 等占位符
+- **发送**：AI 调用 `send_file` 工具排队文件，回复后自动通过 CDN 上传发送
+
+### 状态持久化
+
+`~/.mocode/weixin/state.json` 保存 token、轮询游标、上下文 token 等。
+
+会话过期（`errcode == -14`）时自动暂停 60 分钟后重新登录。
+
+## 定时任务（Cron）
+
+Gateway 内置定时任务系统，AI 可通过 `cron` 工具管理。
+
+### 调度模式
+
+| 模式 | 说明 |
+|------|------|
+| `interval` | 固定间隔（秒） |
+| `cron` | Cron 表达式（需 `croniter` 库） |
+| `one_shot` | 一次性，执行后自动删除 |
+
+### 使用
+
+对话中直接让 AI 创建定时任务：
+
+```
+每天早上 9 点提醒我检查服务器状态
+每 30 分钟检查一次构建状态
 ```
 
-### Features
+AI 会调用 `cron` 工具，支持 `create`、`list`、`delete`、`info` 操作。
 
-- QR code login (no password required)
-- Long-poll message fetching with auto-reconnect
-- Media download (images, voice, video, files) with CDN + AES decryption
-- Media upload via 3-phase CDN upload
-- Voice message transcription (uses configured LLM)
-- Typing indicator ("正在输入..." status)
-- Auto message splitting at 3500 chars
+任务数据存储在 `~/.mocode/cron/` 目录，每个任务一个 JSON 文件。
 
-### How It Works
+## 添加新平台
 
-1. **Login**: QR code displayed in terminal → scan with WeChat → bot token obtained
-2. **Polling**: Long-poll `getUpdates` API (60s timeout) with exponential backoff on errors
-3. **Session expired**: Automatically pauses for 10 minutes, then re-login
-4. **Media**: Downloaded from CDN with decryption → saved to `~/.mocode/media/weixin/<user_id>/`
-5. **Send**: Text sent via `sendMessage`; files queued via `send_file` tool → 3-phase CDN upload
+### 1. 创建通道包
 
-### Media Handling
-
-**Inbound** (user → bot):
-- Images/voice/video/files automatically downloaded
-- Stored: `~/.mocode/media/weixin/<user_id>/<hash><ext>`
-- Content replaced with `[image]`, `[voice]`, `[video]`, `[file: name]` placeholders
-- Voice messages transcribed to text using Whisper (if configured)
-
-**Outbound** (bot → user):
-- Use `send_file` tool to queue files for sending
-- Files uploaded via CDN with AES encryption
-- Automatically sent after text response
-
-Example:
-```python
-# In your conversation, tell the AI:
-# "Save this chart to /tmp/chart.png and send it to the user"
-# The AI will use write + send_file tools
+```
+mocode/gateway/<channel_name>/
+├── __init__.py      # 导出 Channel 类
+└── channel.py       # 实现 BaseChannel
 ```
 
-### Session Management
-
-- Each WeChat user ID gets independent `MocodeCore` instance
-- Sessions auto-saved on eviction/shutdown
-- Per-user `asyncio.Lock` ensures serialized message processing
-- LRU eviction when `max_users` exceeded
-
-### State Persistence
-
-WeChat state saved to `~/.mocode/gateway/weixin_state.json`:
-- Bot token and base URL
-- Poll cursor
-- Context tokens per user
-- Typing ticket cache
-
-## Gateway Tools
-
-### `send_file`
-
-Send a file to the current user. Only works in gateway mode.
-
-```python
-# Used internally by AI when asked to send files
-core._pending_media.append("/path/to/file.png")
-```
-
-Files are automatically uploaded to WeChat CDN and sent to the user.
-
-## CLI Commands
-
-```bash
-mocode gateway --type weixin    # Start WeChat gateway
-mocode gateway --type <name>    # Start other gateway (if available)
-```
-
-## Adding New Gateways
-
-Subclass `BaseChannel` in `mocode/gateway/`:
+### 2. 实现 BaseChannel
 
 ```python
 from mocode.gateway.base import BaseChannel
+from mocode.gateway.bus import OutboundMessage
 
 class MyChannel(BaseChannel):
     async def start(self):
-        # Connect to platform, start polling
-        pass
+        # 连接平台，开始轮询
+        ...
 
     async def stop(self):
-        # Cleanup
-        pass
+        # 清理
+        ...
 
     async def send(self, msg: OutboundMessage):
-        # Send message to user
-        pass
+        # 发送 msg.content 和 msg.media 给 msg.chat_id
+        ...
 ```
 
-Register in `mocode/gateway/registry.py`. See `WeixinChannel` for a complete reference implementation.
+收到消息时调用继承的 `_handle_message()`：
 
-## Event Flow
-
-1. Platform → Channel receives message
-2. Channel → MessageBus.publish_inbound(InboundMessage)
-3. ChannelManager._dispatch_inbound() consumes inbound
-4. UserRouter.get_or_create(session_key) gets/creates user session
-5. Session.core.chat(media=...) processes with LLM
-6. Tools can queue files via `send_file`
-7. Response text → MessageBus.publish_outbound(OutboundMessage)
-8. Queued files → separate OutboundMessage with media paths
-9. ChannelManager._dispatch_outbound() sends via Channel.send()
-
-## Logging
-
-Gateway logs to `~/.mocode/gateway/gateway.log`:
-
-```
-[info] Starting gateway: weixin
-[tool] user123 → bash(ls -la)
-[tool-done] user123 ← bash: file1.py file2.py
-[reply] user123: Here are the files...
+```python
+await self._handle_message(
+    sender_id="<用户ID>",
+    chat_id="<会话ID>",
+    content="用户消息",
+    media=["/path/to/file"],
+)
 ```
 
-## Troubleshooting
+### 3. 自动发现
 
-### Login QR not showing
-
-Install `qrcode` library:
-```bash
-uv pip install qrcode
-```
-
-### Session expires frequently
-
-WeChat server may throttle. The gateway auto-pauses for 10 minutes on session expiry, then re-logins.
-
-### Media download fails
-
-Check CDN connectivity. Media uses encrypted query parameters and AES decryption.
-
-### High memory usage
-
-Adjust `max_users` in config. Default 100 users × ~10MB each = ~1GB.
+`mocode gateway --type <channel_name>` 即可启动。系统通过包扫描自动发现 `BaseChannel` 子类，无需手动注册。

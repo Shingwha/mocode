@@ -15,6 +15,21 @@ A CLI coding assistant powered by LLM with tool-calling capabilities.
 uv tool install git+https://github.com/Shingwha/mocode.git
 ```
 
+### Developer Install
+
+```bash
+git clone https://github.com/Shingwha/mocode.git
+cd mocode
+uv tool install -e .
+```
+
+Update:
+
+```bash
+git pull
+uv tool install -e .
+```
+
 ## Quick Start
 
 ```bash
@@ -100,15 +115,14 @@ Connect to WeChat via ClawBot:
 mocode gateway
 ```
 
+On first run, open the URL shown in the terminal in a browser and scan the QR code to connect to WeChat.
+
 See [Gateway Documentation](docs/gateway.md) for details.
 
 ## Documentation
 
 - [CLI Commands](docs/cli.md)
-- [Provider Configuration](docs/provider.md)
-- [Permission System](docs/permission.md)
 - [Plugin System](docs/plugins.md)
-- [Skills](docs/skills.md)
 - [Gateway](docs/gateway.md)
 
 ## License
