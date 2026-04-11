@@ -30,7 +30,7 @@ def register_cron_tools(scheduler: CronScheduler) -> None:
         action = args.get("action", "")
         scheduler = _current_scheduler.get()
         if scheduler is None:
-            return "Error: cron tool only works in gateway mode"
+            return "Error: cron tool is not available in the current context"
 
         if action == "create":
             return _action_create(scheduler, args)
