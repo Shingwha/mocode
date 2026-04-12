@@ -89,3 +89,46 @@ class TestUserRouter:
         time.sleep(0.01)
         router.get_or_create("user:1")
         assert s1.last_active >= first_active
+
+    def test_dream_scheduler_started_on_create(self, router):
+        """Dream scheduler should be started when a session is created."""
+        session = router.get_or_create("user:dream")
+        assert session.core._dream_scheduler is not None
+
+    def test_dream_scheduler_stopped_on_remove(self, router):
+        """Dream scheduler should be stopped when a session is removed."""
+        session = router.get_or_create("user:dream-rm")
+        assert session.core._dream_scheduler is not None
+        router._remove_session("user:dream-rm")
+        assert session.core._dream_scheduler is None
+
+    def test_dream_scheduler_stopped_on_evict(self, router):
+        """Dream scheduler should be stopped when a session is evicted."""
+        s1 = router.get_or_create("user:evict-me")
+        assert s1.core._dream_scheduler is not None
+
+        # Fill up to max and trigger eviction
+        for i in range(1, 3):
+            router.get_or_create(f"user:fill-{i}")
+        router.get_or_create("user:new")
+
+        # Evicted session's scheduler should be stopped
+        assert s1.core._dream_scheduler is None
+
+    def test_dream_scheduler_disabled_when_config_disabled(self):
+        """Dream scheduler should not start when dream is disabled."""
+        config = Config.load(data={
+            "current": {"provider": "test", "model": "test-model"},
+            "providers": {
+                "test": {
+                    "name": "Test",
+                    "base_url": "https://api.test.com/v1",
+                    "api_key": "test-key",
+                    "models": ["test-model"],
+                }
+            },
+            "dream": {"enabled": False},
+        })
+        r = UserRouter(config=config, gateway_config={}, max_users=3)
+        session = r.get_or_create("user:no-dream")
+        assert session.core._dream_scheduler is None

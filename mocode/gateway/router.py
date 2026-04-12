@@ -54,6 +54,7 @@ class UserRouter:
             "providers": {k: asdict(v) for k, v in self._base_config.providers.items()},
             "permission": {"*": "allow"},  # yolo-style for gateway
             "tool_result_limit": self._base_config.tool_result_limit,
+            "dream": asdict(self._base_config.dream),
         }
 
         core = MocodeCore(
@@ -62,6 +63,9 @@ class UserRouter:
             auto_discover_plugins=False,
         )
         core.config.set_mode("yolo")
+
+        # Start dream scheduler if enabled
+        core.start_dream_scheduler()
 
         # Subscribe to per-session events for logging
         self._subscribe_session_events(session_key, core)
@@ -120,6 +124,8 @@ class UserRouter:
         session = self._sessions.pop(session_key, None)
         if session is None:
             return
+        # Stop dream scheduler
+        session.core.stop_dream_scheduler()
         # Clear event subscriptions
         session.core.event_bus.clear()
         if session.core.has_unsaved_changes:
