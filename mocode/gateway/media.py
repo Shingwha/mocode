@@ -20,9 +20,26 @@ def detect_image_mime(data: bytes) -> str | None:
     return None
 
 
-def ensure_media_dir(channel: str, user_id: str) -> Path:
-    """Create and return ~/.mocode/media/<channel>/<user_id>/ directory."""
+def _ext_category(ext: str) -> str:
+    """Map file extension to a category subdirectory name."""
+    ext = ext.lower()
+    if ext in IMAGE_EXTS:
+        return "image"
+    if ext in VIDEO_EXTS:
+        return "video"
+    if ext in VOICE_EXTS:
+        return "audio"
+    return "file"
+
+
+def ensure_media_dir(channel: str, user_id: str, ext: str = "") -> Path:
+    """Create and return ~/.mocode/media/<channel>/<user_id>/<category>/ directory.
+
+    Files are sorted into subdirectories by category (image, video, audio, file).
+    """
     from ..paths import MEDIA_DIR
     d = MEDIA_DIR / channel / user_id
+    if ext:
+        d = d / _ext_category(ext)
     d.mkdir(parents=True, exist_ok=True)
     return d

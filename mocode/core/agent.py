@@ -210,8 +210,8 @@ class AsyncAgent:
                         continue
                 except Exception:
                     pass
-            # Non-image or undetectable: add text marker
-            parts.append({"type": "text", "text": f"[file: {p.name}]"})
+            # Non-image or undetectable: add text marker with full path
+            parts.append({"type": "text", "text": f"User sent you a file: {p.name} (path: {path_str}). If user did not include any message with this file, ask the user what they would like to do with it."})
 
         if not has_images and not parts:
             return text

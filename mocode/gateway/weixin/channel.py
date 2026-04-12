@@ -389,7 +389,7 @@ class WeixinChannel(BaseChannel):
             media.append(local)
             if item_type == ITEM_FILE:
                 fname = local.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-                parts.append(f"[file: {fname}]")
+                parts.append(f"[file: {fname}] (path: {local})")
             else:
                 parts.append(f"[{label}]")
         else:

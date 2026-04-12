@@ -56,34 +56,31 @@ class MediaHandler:
             return None
 
         typed_item = item.get(typed_key) or {}
-        media_info = item.get("media") or {}
+        media = typed_item.get("media") or {}
 
-        # Get CDN download URL
-        cdn_url = typed_item.get("full_url") or ""
+        # Get CDN download URL — fields are inside nested media dict
+        cdn_url = str(media.get("full_url") or "").strip()
         if not cdn_url:
-            eqp = (
-                typed_item.get("encrypted_query_param")
-                or media_info.get("encrypted_query_param")
-                or ""
-            )
+            eqp = str(media.get("encrypt_query_param") or "").strip()
             if eqp:
                 cdn_url = f"{CDN_BASE_URL}/download?encrypted_query_param={eqp}"
         if not cdn_url:
+            logger.warning("No CDN URL found for item type=%d", item_type)
             return None
 
         # Get AES key for decryption
         aes_key = None
         aeskey_hex = typed_item.get("aeskey") or ""
-        aeskey_b64 = media_info.get("aes_key") or ""
+        media_aes_key_b64 = media.get("aes_key") or ""
         if aeskey_hex:
             try:
-                b64_from_hex = base64.b64encode(aeskey_hex.encode()).decode()
+                b64_from_hex = base64.b64encode(bytes.fromhex(aeskey_hex)).decode()
                 aes_key = parse_aes_key(b64_from_hex)
             except Exception:
                 pass
-        elif aeskey_b64:
+        elif media_aes_key_b64:
             try:
-                aes_key = parse_aes_key(aeskey_b64)
+                aes_key = parse_aes_key(media_aes_key_b64)
             except Exception:
                 pass
 
@@ -105,10 +102,8 @@ class MediaHandler:
                 return None
 
         # Determine filename and save
-        media_dir = ensure_media_dir("weixin", user_id)
-
         ext = ""
-        filename = typed_item.get("file_name") or media_info.get("file_name") or ""
+        filename = typed_item.get("file_name") or media.get("file_name") or ""
         if filename:
             ext = "".join(Path(filename).suffixes)
         if not ext:
@@ -120,9 +115,21 @@ class MediaHandler:
             }
             ext = ext_map.get(item_type, ".bin")
 
-        h = hashlib.md5(data).hexdigest()[:12]
-        suffix = f"{h}{ext}"
-        local_path = media_dir / suffix
+        media_dir = ensure_media_dir("weixin", user_id, ext)
+
+        # Use original filename when available, fall back to MD5 hash
+        if filename:
+            stem = "".join(Path(filename).suffixes[:-1]) if Path(filename).suffixes else Path(filename).stem
+            if not stem:
+                stem = hashlib.md5(data).hexdigest()[:12]
+            local_path = media_dir / filename
+            # Avoid overwrite: append short hash if file exists with different content
+            if local_path.exists() and local_path.read_bytes() != data:
+                h = hashlib.md5(data).hexdigest()[:8]
+                local_path = media_dir / f"{stem}_{h}{ext}"
+        else:
+            h = hashlib.md5(data).hexdigest()[:12]
+            local_path = media_dir / f"{h}{ext}"
 
         try:
             local_path.write_bytes(data)
