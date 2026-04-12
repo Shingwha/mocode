@@ -230,10 +230,11 @@ class CompactManager:
 
     # ---- Main operation ----
 
-    def _persist_summary_for_dream(self, summary: str, old_messages: list[dict]) -> None:
-        """Persist summary for Dream system consumption."""
+    def _persist_summary_for_dream(self, summary: str, old_messages: list[dict]) -> str:
+        """Persist summary for Dream system consumption. Returns summary_id."""
         try:
             from ..paths import DREAM_DIR
+            from .events import EventType
 
             summaries_dir = DREAM_DIR / "summaries"
             summaries_dir.mkdir(parents=True, exist_ok=True)
@@ -252,8 +253,18 @@ class CompactManager:
                 json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
             )
             logger.debug(f"Persisted dream summary: {summary_id}")
+
+            # Notify Dream system and gateway listeners
+            if self._event_bus:
+                self._event_bus.emit(
+                    EventType.DREAM_SUMMARY_AVAILABLE,
+                    {"summary_id": summary_id, "message_count": len(old_messages)},
+                )
+
+            return summary_id
         except Exception as e:
             logger.warning(f"Failed to persist dream summary: {e}")
+            return ""
 
     async def compact(self, messages: list[dict], model: str) -> list[dict]:
         """压缩消息列表
@@ -284,7 +295,7 @@ class CompactManager:
         if not summary:
             summary = self._build_fallback_summary(old_messages)
 
-        # 持久化摘要供 Dream 系统使用
+        # 持久化摘要供 Dream 系统使用（会发射 DREAM_SUMMARY_AVAILABLE 事件）
         self._persist_summary_for_dream(summary, old_messages)
 
         # 发送事件

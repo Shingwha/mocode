@@ -81,6 +81,12 @@ class DreamManager:
             logger.debug("Dream: no new summaries to process")
             return DreamResult(skipped=True)
 
+        # Emit start event
+        if self._event_bus:
+            self._event_bus.emit(EventType.DREAM_START, {
+                "pending_summaries": len(new_files),
+            })
+
         # Read summary texts
         summaries = []
         summary_ids = []
@@ -94,6 +100,13 @@ class DreamManager:
 
         if not summaries:
             return DreamResult(skipped=True)
+
+        # Emit summary available event
+        if self._event_bus:
+            self._event_bus.emit(EventType.DREAM_SUMMARY_AVAILABLE, {
+                "summary_count": len(summaries),
+                "summary_ids": summary_ids,
+            })
 
         # 2. Read current memory files
         soul = self._read_memory("SOUL.md")

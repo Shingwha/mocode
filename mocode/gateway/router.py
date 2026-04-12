@@ -101,9 +101,43 @@ class UserRouter:
             error = str(data.get("error", data))[:200]
             logger.error("[agent-error] %s: %s", session_key, error)
 
+        def on_dream_start(event: Event) -> None:
+            data = event.data or {}
+            pending = data.get("pending_summaries", 0)
+            logger.info("[dream-start] %s (pending: %d)", session_key, pending)
+
+        def on_dream_summary_available(event: Event) -> None:
+            data = event.data or {}
+            count = data.get("summary_count", 0)
+            ids = data.get("summary_ids", [])
+            logger.info(
+                "[dream-summary] %s: %d summaries ready -> %s",
+                session_key,
+                count,
+                ids[-1] if ids else "?",
+            )
+
+        def on_dream_complete(event: Event) -> None:
+            data = event.data or {}
+            processed = data.get("summaries_processed", 0)
+            directives = data.get("directives_count", 0)
+            tools = data.get("tool_calls_made", 0)
+            snapshot = data.get("snapshot_id", "")
+            logger.info(
+                "[dream-complete] %s: %d summaries, %d directives, %d tool calls, snapshot=%s",
+                session_key,
+                processed,
+                directives,
+                tools,
+                snapshot[:8] if snapshot else "none",
+            )
+
         handlers[EventType.TOOL_START] = on_tool_start
         handlers[EventType.TOOL_COMPLETE] = on_tool_complete
         handlers[EventType.ERROR] = on_error
+        handlers[EventType.DREAM_START] = on_dream_start
+        handlers[EventType.DREAM_SUMMARY_AVAILABLE] = on_dream_summary_available
+        handlers[EventType.DREAM_COMPLETE] = on_dream_complete
 
         for et, handler in handlers.items():
             core.event_bus.on(et, handler)
