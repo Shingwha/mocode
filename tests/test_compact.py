@@ -36,7 +36,9 @@ def event_bus():
 
 @pytest.fixture
 def manager(compact_config, mock_provider, event_bus):
-    return CompactManager(compact_config, mock_provider, event_bus)
+    mgr = CompactManager(compact_config, mock_provider, event_bus)
+    mgr._persist_summary_for_dream = MagicMock(return_value="")
+    return mgr
 
 
 # ---- Helpers ----
@@ -452,6 +454,7 @@ class TestCompact:
         """split_point always lands on a user message"""
         compact_config.keep_recent_turns = 2
         manager = CompactManager(compact_config, mock_provider, event_bus)
+        manager._persist_summary_for_dream = MagicMock(return_value="")
         mock_provider.call.return_value = _make_summary_response("summary")
 
         msgs = _make_messages(5)  # 5 turns, keep 2
@@ -466,6 +469,7 @@ class TestCompact:
         """keep_recent_turns=0 时压缩全部消息，不保留任何原始消息"""
         compact_config.keep_recent_turns = 0
         manager = CompactManager(compact_config, mock_provider, event_bus)
+        manager._persist_summary_for_dream = MagicMock(return_value="")
         mock_provider.call.return_value = _make_summary_response("full summary")
 
         msgs = _make_messages(3)  # 3 turns
