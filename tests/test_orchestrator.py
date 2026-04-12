@@ -165,3 +165,78 @@ class TestMocodeCoreInject:
         core.agent.chat = AsyncMock(return_value="injected response")
         result = await core.inject_message("Hello", "conv-1")
         assert result == "injected response"
+
+
+class TestMocodeCoreCompactSession:
+    """Compact 后创建新 session，保留旧 session 不被覆盖"""
+
+    def _mock_compact(self, core, result):
+        """Mock compact that also emits CONTEXT_COMPACT event like the real one."""
+        async def _compact(messages, model):
+            core.event_bus.emit(EventType.CONTEXT_COMPACT, {
+                "old_count": len(messages),
+                "new_count": len(result),
+            })
+            return result
+        core._compact_manager.compact = _compact
+
+    @pytest.mark.asyncio
+    async def test_compact_clears_session_id(self, core):
+        """compact 后 current_session_id 应被清空"""
+        core.agent.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        core.save_session()
+        assert core.current_session_id is not None
+
+        self._mock_compact(core, [{"role": "user", "content": "[summary]"}])
+        await core.compact()
+        assert core.current_session_id is None
+
+    @pytest.mark.asyncio
+    async def test_compact_creates_new_session(self, core):
+        """compact 后 save_session 应创建新 session 而非更新旧 session"""
+        core.agent.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        old_session = core.save_session()
+        old_id = old_session.id
+        assert old_id is not None
+
+        self._mock_compact(core, [{"role": "user", "content": "[summary]"}])
+
+        # Ensure new session gets a different ID (same-second collision)
+        ids = iter(["session_new_001"])
+        core._session_manager._generate_session_id = lambda: next(ids)
+
+        await core.compact()
+        assert core.current_session_id is None
+
+        # Save again — should create a new session with different ID
+        new_session = core.save_session()
+        assert new_session.id != old_id
+
+    @pytest.mark.asyncio
+    async def test_compact_preserves_old_session(self, core):
+        """compact 后旧 session 文件内容未被修改"""
+        original_messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "world"},
+            {"role": "assistant", "content": "there"},
+        ]
+        core.agent.messages = original_messages.copy()
+        old_session = core.save_session()
+        old_id = old_session.id
+
+        compacted = [{"role": "user", "content": "[summary of conversation]"}]
+        self._mock_compact(core, compacted)
+        await core.compact()
+
+        # Old session should still have original messages
+        loaded = core._session_manager.load_session(old_id)
+        assert loaded is not None
+        assert loaded.messages == original_messages
+        assert len(loaded.messages) == 4

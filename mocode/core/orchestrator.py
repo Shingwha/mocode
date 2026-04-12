@@ -124,6 +124,9 @@ class MocodeCore:
         )
         self._agent._compact_manager = self._compact_manager
 
+        # Compact 后创建新 session，保留旧 session 不被覆盖
+        self._event_bus.on(EventType.CONTEXT_COMPACT, self._on_context_compact)
+
         # Dream system
         self._dream_manager = DreamManager(
             config=self._config.dream,
@@ -237,12 +240,22 @@ class MocodeCore:
         self._mark_unsaved()
         return await self._agent.chat(message, media)
 
+    def _on_context_compact(self, event) -> None:
+        """Compact 完成后，清空 session ID 使下次保存创建新 session"""
+        self._session_state.current_session_id = None
+        self._session_state.has_unsaved_changes = True
+
     async def compact(self) -> dict:
         """Manually trigger context compression. Returns stats dict."""
+        # 先保存当前 session，确保原始对话被持久化
+        if self._session_state.current_session_id:
+            self.save_session()
+
         old_count = len(self._agent.messages)
         self._agent.messages = await self._compact_manager.compact(
             self._agent.messages, self._config.model,
         )
+        # _on_context_compact 已清空 current_session_id
         return {
             "action": "compact_complete",
             "old_count": old_count,
