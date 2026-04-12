@@ -89,7 +89,8 @@ class CLIApp:
             self.client.stop_dream_scheduler()
 
         if self.client and self.client.agent.messages:
-            self.client.save_session()
+            session = self.client.save_session()
+            self.display.session_saved(session.id, session.message_count)
 
         if self._esc_monitor:
             self._esc_monitor.stop()

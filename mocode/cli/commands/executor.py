@@ -28,7 +28,6 @@ class CommandExecutor:
         if len(matches) == 1:
             cmd = matches[0]
             if cmd.name == "/exit":
-                self._display.exit_message("Goodbye!")
                 return False
             parts = ctx.args.split(maxsplit=1)
             ctx.args = parts[1] if len(parts) > 1 else ""

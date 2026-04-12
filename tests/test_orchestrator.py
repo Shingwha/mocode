@@ -23,12 +23,18 @@ def core(tmp_path):
         },
         "permission": {"*": "allow"},
     }
-    return MocodeCore(
-        config=config_data,
-        persistence=False,
-        auto_discover_plugins=False,
-        workdir=str(tmp_path),
-    )
+    session_dir = tmp_path / "sessions"
+    with patch("mocode.core.session.SESSIONS_DIR", session_dir):
+        instance = MocodeCore(
+            config=config_data,
+            persistence=False,
+            auto_discover_plugins=False,
+            workdir=str(tmp_path),
+        )
+        instance._session_manager._sessions_dir = (
+            session_dir / instance._session_manager._workdir_hash
+        )
+        yield instance
 
 
 class TestMocodeCoreInit:

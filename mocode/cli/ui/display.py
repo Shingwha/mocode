@@ -128,6 +128,11 @@ class Display:
         self._spacing.before("exit")
         print(f"{DIM}{text}{RESET}")
 
+    def session_saved(self, session_id: str, message_count: int) -> None:
+        """Display session save confirmation on exit."""
+        self._spacing.before("exit")
+        print(f"{DIM}Session saved: {session_id} ({message_count} messages){RESET}")
+
     # --- Thinking spinner ---
 
     def set_thinking(self, thinking: bool, text: str = "Thinking") -> None:
