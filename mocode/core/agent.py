@@ -130,7 +130,7 @@ class AsyncAgent:
                 }
                 if self._compact_manager:
                     self._compact_manager.update_usage(
-                        response.usage.prompt_tokens or 0, self.provider.model,
+                        response.usage.prompt_tokens or 0,
                     )
 
             tool_results = []

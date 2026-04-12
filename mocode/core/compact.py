@@ -55,13 +55,9 @@ class CompactManager:
 
     # ---- Token tracking ----
 
-    def update_usage(self, prompt_tokens: int, model: str) -> None:
+    def update_usage(self, prompt_tokens: int) -> None:
         """更新 token 使用量"""
         self._last_prompt_tokens = prompt_tokens
-
-    def reset_usage(self) -> None:
-        """重置 token 追踪（压缩后调用）"""
-        self._last_prompt_tokens = 0
 
     def should_compact(self, model: str) -> bool:
         """判断是否需要压缩"""
@@ -81,54 +77,38 @@ class CompactManager:
     def last_prompt_tokens(self) -> int:
         return self._last_prompt_tokens
 
-    # ---- Turn splitting ----
-
-    @staticmethod
-    def _find_turn_boundaries(messages: list[dict]) -> list[int]:
-        """找到对话轮次的起始索引
-
-        每当遇到一个 user 消息，就认为是一个新轮次的开始。
-        """
-        boundaries = []
-        for i, msg in enumerate(messages):
-            if msg.get("role") == "user":
-                boundaries.append(i)
-        return boundaries
-
     @staticmethod
     def _ensure_no_partial_tool_sequence(
         messages: list[dict], split_point: int
     ) -> int:
         """确保不在 tool 序列中间切割
 
-        向前查找，确保 assistant + tool 消息组保持完整。
-        如果 split_point 落在 tool 消息序列中间，向前推到该序列之前的 user 消息。
+        三种情况：
+        - Case A：split_point 前一条是带 tool_calls 的 assistant，但 split_point 之后
+          还有属于该 assistant 的 tool 结果消息。此时将 split_point 后移，包含完整的
+          assistant + tool 序列。
+        - Case B：split_point 本身落在 tool 消息中间（即前面的 assistant 已被划入
+          old 区间，但部分 tool 结果落在了 recent 区间）。此时向前回退到该 tool 序列
+          对应的 assistant 之前的 user 消息，确保 assistant + tool 不被拆散。
+        - 默认：split_point 不在 tool 序列附近，无需调整。
         """
-        # 向后查找：如果 split_point 前面是 assistant 且后面紧跟着 tool，
-        # 需要把整个 tool 序列包含进来
         if split_point <= 0:
             return split_point
 
-        # 检查 split_point 前一条是否为带 tool_calls 的 assistant 消息
+        # Case A: prev 是 assistant+tool_calls，split_point 之后还有孤立的 tool 结果
         prev_msg = messages[split_point - 1]
         if prev_msg.get("role") == "assistant" and prev_msg.get("tool_calls"):
-            # split_point 已经在 tool 序列的末尾或之后，检查是否有后续 tool 消息
-            # 从 split_point 开始查找后续的 tool 消息
             j = split_point
             while j < len(messages) and messages[j].get("role") == "tool":
                 j += 1
-            # 如果有后续 tool 消息，split_point 应该移到它们之后
             if j > split_point:
                 return j
 
-        # 检查 split_point 是否落在 tool 消息中间（需保证不越界）
+        # Case B: split_point 落在 tool 消息中间，回退到对应 user 消息
         if split_point < len(messages) and messages[split_point].get("role") == "tool":
-            # 向前找到这个 tool 序列开头的 assistant 消息
             j = split_point
             while j > 0 and messages[j].get("role") == "tool":
                 j -= 1
-            # j 现在指向 assistant 消息，需要包含它
-            # 找到这个 assistant 消息之前的 user 消息
             while j > 0 and messages[j].get("role") != "user":
                 j -= 1
             return j
@@ -326,7 +306,7 @@ class CompactManager:
                 },
             )
 
-        self.reset_usage()
+        self._last_prompt_tokens = 0
         logger.info(
             f"Compacted: {len(messages)} -> {len(new_messages)} messages "
             f"(compressed {len(messages) - len(new_messages)} messages)"

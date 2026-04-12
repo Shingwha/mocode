@@ -90,25 +90,20 @@ def _make_summary_response(text: str) -> MagicMock:
 
 class TestTokenTracking:
     def test_update_usage(self, manager):
-        manager.update_usage(5000, "glm-5")
+        manager.update_usage(5000)
         assert manager.last_prompt_tokens == 5000
 
-    def test_reset_usage(self, manager):
-        manager.update_usage(5000, "glm-5")
-        manager.reset_usage()
-        assert manager.last_prompt_tokens == 0
-
     def test_should_compact_below_threshold(self, manager):
-        manager.update_usage(50000, "glm-5")  # 50000 / 128000 = 39%
+        manager.update_usage(50000)  # 50000 / 128000 = 39%
         assert not manager.should_compact("glm-5")
 
     def test_should_compact_above_threshold(self, manager):
-        manager.update_usage(110000, "glm-5")  # 110000 / 128000 = 86%
+        manager.update_usage(110000)  # 110000 / 128000 = 86%
         assert manager.should_compact("glm-5")
 
     def test_should_not_compact_when_disabled(self, manager):
         manager._config.enabled = False
-        manager.update_usage(200000, "glm-5")
+        manager.update_usage(200000)
         assert not manager.should_compact("glm-5")
 
     def test_should_not_compact_when_zero_tokens(self, manager):
@@ -126,28 +121,6 @@ class TestContextWindow:
         compact_config.context_windows = {"my-model": 64000}
         manager = CompactManager(compact_config, mock_provider, event_bus)
         assert manager.get_context_window("my-model") == 64000
-
-
-# ---- Turn boundaries ----
-
-
-class TestTurnBoundaries:
-    def test_simple_messages(self):
-        msgs = _make_messages(3)
-        boundaries = CompactManager._find_turn_boundaries(msgs)
-        assert boundaries == [0, 2, 4]
-
-    def test_no_messages(self):
-        assert CompactManager._find_turn_boundaries([]) == []
-
-    def test_only_assistant_messages(self):
-        msgs = [{"role": "assistant", "content": "hi"}]
-        assert CompactManager._find_turn_boundaries(msgs) == []
-
-    def test_with_tool_messages(self):
-        msgs = _make_messages_with_tools()
-        boundaries = CompactManager._find_turn_boundaries(msgs)
-        assert boundaries == [0, 3, 5]
 
 
 class TestToolSequenceIntegrity:
@@ -311,7 +284,7 @@ class TestCompact:
     @pytest.mark.asyncio
     async def test_compact_resets_usage(self, manager, mock_provider):
         mock_provider.call.return_value = _make_summary_response("summary")
-        manager.update_usage(100000, "glm-5")
+        manager.update_usage(100000)
 
         msgs = _make_messages(6)
         await manager.compact(msgs, "glm-5")

@@ -527,6 +527,11 @@ class MocodeCore:
         """Dream manager instance"""
         return self._dream_manager
 
+    @property
+    def compact_manager(self) -> CompactManager:
+        """Compact manager instance"""
+        return self._compact_manager
+
     # Properties
 
     @property

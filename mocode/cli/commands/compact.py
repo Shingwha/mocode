@@ -31,8 +31,7 @@ class CompactCommand(Command):
             completion_tokens = usage.get("completion_tokens", 0)
 
             # Estimate context window
-            from ...core.compact import DEFAULT_CONTEXT_WINDOW
-            window = compact_config.context_windows.get(model, DEFAULT_CONTEXT_WINDOW)
+            window = client.compact_manager.get_context_window(model)
 
             pct = (prompt_tokens / window * 100) if window > 0 else 0
             threshold_pct = compact_config.threshold * 100
