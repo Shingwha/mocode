@@ -18,7 +18,7 @@ def compact_config():
     return CompactConfig(
         enabled=True,
         threshold=0.80,
-        keep_recent_turns=2,
+        keep_recent_turns=4,  # 现在表示保留最近 4 条消息（绝对数量）
     )
 
 
@@ -279,18 +279,21 @@ class TestCompact:
             "[完成的决策]\n- Read CSV file\n- Use stdlib"
         )
 
-        msgs = _make_messages(6)  # 6 turns = 12 messages
+        msgs = _make_messages(6)  # 12 messages total
         result = await manager.compact(msgs, "glm-5")
 
-        # Should have: summary user + summary assistant + 2 recent turns (4 msgs)
-        assert len(result) == 6
+        # Should have: summary user + summary assistant + keep_recent_turns (4) recent messages
+        # keep_recent_turns=4 → 保留最后4条消息
+        assert len(result) == 6  # 2 + 4
         assert result[0]["role"] == "user"
         assert "[Context Summary]" in result[0]["content"]
         assert result[1]["role"] == "assistant"
         assert result[1]["content"] == "Understood, I will continue based on the summary."
-        # Recent messages preserved intact
+        # Recent messages preserved intact (last 4 of original 12: indices 8,9,10,11)
         assert result[2]["content"] == "User message 4"
         assert result[3]["content"] == "Assistant response 4"
+        assert result[4]["content"] == "User message 5"
+        assert result[5]["content"] == "Assistant response 5"
 
     @pytest.mark.asyncio
     async def test_compact_few_messages(self, manager, mock_provider):
@@ -301,9 +304,9 @@ class TestCompact:
 
     @pytest.mark.asyncio
     async def test_compact_few_turns(self, manager, mock_provider):
-        msgs = _make_messages(2)  # 2 turns = 4 messages, keep_recent_turns=2
+        msgs = _make_messages(2)  # 4 messages, keep_recent_turns=4
         result = await manager.compact(msgs, "glm-5")
-        assert result is msgs  # Returns same list (not enough turns to compress)
+        assert result is msgs  # Returns same list (not enough messages to compress)
 
     @pytest.mark.asyncio
     async def test_compact_resets_usage(self, manager, mock_provider):
@@ -321,13 +324,13 @@ class TestCompact:
         events = []
         event_bus.on(EventType.CONTEXT_COMPACT, lambda e: events.append(e.data))
 
-        msgs = _make_messages(6)
+        msgs = _make_messages(6)  # 12 messages
         await manager.compact(msgs, "glm-5")
 
         assert len(events) == 1
         assert events[0]["old_count"] == 12
-        assert events[0]["new_count"] == 6
-        assert events[0]["compressed_turns"] == 4
+        assert events[0]["new_count"] == 6  # 2 summary + 4 recent messages
+        assert events[0]["compressed_count"] == 6  # 12 - 6
 
     @pytest.mark.asyncio
     async def test_compact_uses_fallback_on_failure(self, manager, mock_provider):
@@ -366,6 +369,25 @@ class TestCompact:
         assert recent[1] == {"role": "assistant", "content": "Assistant response 3"}
         assert recent[2] == {"role": "user", "content": "User message 4"}
         assert recent[3] == {"role": "assistant", "content": "Assistant response 4"}
+
+    @pytest.mark.asyncio
+    async def test_compact_all_when_keep_zero(self, compact_config, mock_provider, event_bus):
+        """keep_recent_turns=0 时压缩全部消息，不保留任何原始消息"""
+        compact_config.keep_recent_turns = 0
+        manager = CompactManager(compact_config, mock_provider, event_bus)
+        mock_provider.call.return_value = _make_summary_response("full summary")
+
+        msgs = _make_messages(3)  # 6 messages total
+        result = await manager.compact(msgs, "glm-5")
+
+        # 应该只有 2 条消息：摘要 + 确认，没有任何原始消息
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert "[Context Summary]" in result[0]["content"]
+        assert "full summary" in result[0]["content"]
+        assert result[1]["role"] == "assistant"
+        assert result[1]["content"] == "Understood, I will continue based on the summary."
+        # 检查最近是否有 COMPACT 事件发射（通过 handler 调用记录）
 
 
 # ---- CompactConfig integration ----

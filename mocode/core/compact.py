@@ -121,8 +121,8 @@ class CompactManager:
             if j > split_point:
                 return j
 
-        # 检查 split_point 是否落在 tool 消息中间
-        if messages[split_point].get("role") == "tool":
+        # 检查 split_point 是否落在 tool 消息中间（需保证不越界）
+        if split_point < len(messages) and messages[split_point].get("role") == "tool":
             # 向前找到这个 tool 序列开头的 assistant 消息
             j = split_point
             while j > 0 and messages[j].get("role") == "tool":
@@ -269,18 +269,20 @@ class CompactManager:
     async def compact(self, messages: list[dict], model: str) -> list[dict]:
         """压缩消息列表
 
-        将旧消息压缩为摘要，保留最近几轮对话。
+        将旧消息压缩为摘要，保留最近 N 条消息（绝对数量，包括所有角色）。
         """
         if len(messages) < 4:
             return messages
 
-        turn_starts = self._find_turn_boundaries(messages)
-        keep = self._config.keep_recent_turns
+        keep = self._config.keep_recent_turns  # 改为按绝对消息数保留
 
-        if len(turn_starts) <= keep:
+        if len(messages) <= keep:
             return messages
 
-        split_point = turn_starts[-keep]
+        # 初始分割点：保留最后 keep 条，压缩前面的
+        split_point = len(messages) - keep
+
+        # 保护：确保不在 tool 序列中间切割
         split_point = self._ensure_no_partial_tool_sequence(messages, split_point)
 
         old_messages = messages[:split_point]
@@ -298,19 +300,7 @@ class CompactManager:
         # 持久化摘要供 Dream 系统使用（会发射 DREAM_SUMMARY_AVAILABLE 事件）
         self._persist_summary_for_dream(summary, old_messages)
 
-        # 发送事件
-        if self._event_bus:
-            from .events import EventType
-
-            self._event_bus.emit(
-                EventType.CONTEXT_COMPACT,
-                {
-                    "old_count": len(messages),
-                    "new_count": 2 + len(recent_messages),
-                    "compressed_turns": len(turn_starts) - keep,
-                },
-            )
-
+        # 构建新消息列表
         new_messages = [
             {
                 "role": "user",
@@ -323,9 +313,22 @@ class CompactManager:
             *recent_messages,
         ]
 
+        # 发送事件
+        if self._event_bus:
+            from .events import EventType
+
+            self._event_bus.emit(
+                EventType.CONTEXT_COMPACT,
+                {
+                    "old_count": len(messages),
+                    "new_count": len(new_messages),
+                    "compressed_count": len(messages) - len(new_messages),
+                },
+            )
+
         self.reset_usage()
         logger.info(
             f"Compacted: {len(messages)} -> {len(new_messages)} messages "
-            f"(compressed {len(turn_starts) - keep} turns)"
+            f"(compressed {len(messages) - len(new_messages)} messages)"
         )
         return new_messages
