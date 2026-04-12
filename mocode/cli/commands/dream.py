@@ -58,8 +58,8 @@ class DreamCommand(Command):
             else:
                 self._success(ctx,
                     f"Dream complete: {result['summaries_processed']} summaries, "
-                    f"{result['directives_count']} directives, "
-                    f"{result['tool_calls_made']} edits"
+                    f"{result['edits_made']} edits, "
+                    f"{result['tool_calls_made']} tool calls"
                 )
                 if result.get("snapshot_id"):
                     self._output(ctx, f"  Snapshot: {result['snapshot_id']}")
@@ -79,7 +79,7 @@ class DreamCommand(Command):
         selected = self._select_from_list(
             "Select a snapshot to view",
             items,
-            lambda s: (s["id"], f"{s['created_at']}  ({s['directive_count']} directives)"),
+            lambda s: (s["id"], f"{s['created_at']}"),
         )
 
         if not selected or isinstance(selected, MenuAction):
@@ -92,7 +92,6 @@ class DreamCommand(Command):
 
         self._info(ctx, f"Snapshot: {snap['id']} ({snap['created_at']})")
         self._output(ctx, f"Trigger: {snap['trigger']}")
-        self._output(ctx, f"Directives: {snap['directive_count']}")
         self._output(ctx, "")
 
         for name, content in snap.get("files", {}).items():
@@ -117,7 +116,7 @@ class DreamCommand(Command):
         selected = self._select_from_list(
             "Select snapshot to restore",
             snapshots,
-            lambda s: (s["id"], f"{s['created_at']}  ({s['directive_count']} directives)"),
+            lambda s: (s["id"], f"{s['created_at']}"),
         )
 
         if not selected or isinstance(selected, MenuAction):

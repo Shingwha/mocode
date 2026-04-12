@@ -18,8 +18,8 @@ def mock_manager():
     }
     manager.dream = AsyncMock(return_value=DreamResult(
         summaries_processed=5,
-        directives_count=3,
-        tool_calls_made=2,
+        edits_made=3,
+        tool_calls_made=5,
         snapshot_id="snap_001",
         skipped=False,
     ))

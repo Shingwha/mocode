@@ -120,14 +120,14 @@ class UserRouter:
         def on_dream_complete(event: Event) -> None:
             data = event.data or {}
             processed = data.get("summaries_processed", 0)
-            directives = data.get("directives_count", 0)
+            edits = data.get("edits_made", 0)
             tools = data.get("tool_calls_made", 0)
             snapshot = data.get("snapshot_id", "")
             logger.info(
-                "[dream-complete] %s: %d summaries, %d directives, %d tool calls, snapshot=%s",
+                "[dream-complete] %s: %d summaries, %d edits, %d tool calls, snapshot=%s",
                 session_key,
                 processed,
-                directives,
+                edits,
                 tools,
                 snapshot[:8] if snapshot else "none",
             )

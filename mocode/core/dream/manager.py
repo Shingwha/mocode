@@ -11,9 +11,8 @@ from ..config import DreamConfig
 from ..events import EventBus, EventType
 from ...paths import DREAM_DIR, MEMORY_DIR
 from ...providers.openai import AsyncOpenAIProvider
-from .analyzer import DreamAnalyzer
+from .agent import DreamAgent
 from .cursor import DreamCursor
-from .editor import DreamEditor
 from .snapshot import SnapshotStore
 
 if TYPE_CHECKING:
@@ -27,14 +26,14 @@ class DreamResult:
     """Result of a dream cycle."""
 
     summaries_processed: int = 0
-    directives_count: int = 0
+    edits_made: int = 0
     tool_calls_made: int = 0
     snapshot_id: str | None = None
     skipped: bool = False  # True if no new summaries
 
 
 class DreamManager:
-    """Orchestrates the full dream cycle: analyze summaries → edit memory files."""
+    """Orchestrates the full dream cycle: analyze summaries -> edit memory files."""
 
     def __init__(
         self,
@@ -57,14 +56,12 @@ class DreamManager:
             memory_dir=self._memory_dir,
             max_snapshots=config.max_snapshots,
         )
-        self._analyzer = DreamAnalyzer(provider)
-        self._editor = DreamEditor(provider, max_tool_calls=config.max_tool_calls)
+        self._agent = DreamAgent(provider, max_tool_calls=config.max_tool_calls)
 
     def update_provider(self, provider: AsyncOpenAIProvider) -> None:
         """Update provider (called when config changes)."""
         self._provider = provider
-        self._analyzer = DreamAnalyzer(provider)
-        self._editor = DreamEditor(provider, max_tool_calls=self._config.max_tool_calls)
+        self._agent = DreamAgent(provider, max_tool_calls=self._config.max_tool_calls)
 
     async def dream(self) -> DreamResult:
         """Execute a full dream cycle. Thread-safe via lock."""
@@ -113,48 +110,34 @@ class DreamManager:
         user = self._read_memory("USER.md")
         memory = self._read_memory("MEMORY.md")
 
-        # 3. Phase 1: Analyze
-        directives = await self._analyzer.analyze(summaries, soul, user, memory)
+        # 3. Snapshot before editing
+        snap_id = self._snapshot.snapshot(trigger="dream")
 
-        if not directives:
-            # No changes needed, still advance cursor
-            self._advance_cursor(summary_ids)
-            return DreamResult(
-                summaries_processed=len(summaries),
-                skipped=False,
-            )
+        # 4. Run unified agent (analyze + edit)
+        agent_result = await self._agent.run(summaries, soul, user, memory)
 
-        # 4. Snapshot before editing
-        snap_id = self._snapshot.snapshot(
-            trigger="dream",
-            directive_count=len(directives),
-        )
-
-        # 5. Phase 2: Edit
-        tool_calls = await self._editor.edit(directives)
-
-        # 6. Advance cursor
+        # 5. Advance cursor
         self._advance_cursor(summary_ids)
 
         result = DreamResult(
             summaries_processed=len(summaries),
-            directives_count=len(directives),
-            tool_calls_made=tool_calls,
+            edits_made=agent_result.edits_made,
+            tool_calls_made=agent_result.tool_calls_made,
             snapshot_id=snap_id,
         )
 
-        # 7. Emit event
+        # 6. Emit event
         if self._event_bus:
             self._event_bus.emit(EventType.DREAM_COMPLETE, {
                 "summaries_processed": result.summaries_processed,
-                "directives_count": result.directives_count,
+                "edits_made": result.edits_made,
                 "tool_calls_made": result.tool_calls_made,
                 "snapshot_id": result.snapshot_id,
             })
 
         logger.info(
             f"Dream cycle complete: {result.summaries_processed} summaries, "
-            f"{result.directives_count} directives, {result.tool_calls_made} tool calls"
+            f"{result.edits_made} edits, {result.tool_calls_made} tool calls"
         )
         return result
 

@@ -31,7 +31,7 @@ class SnapshotStore:
         ts = datetime.now().strftime('%Y%m%d_%H%M%S')
         return f"snapshot_{ts}_{SnapshotStore._counter:04d}"
 
-    def snapshot(self, trigger: str = "dream", directive_count: int = 0) -> str | None:
+    def snapshot(self, trigger: str = "dream") -> str | None:
         """Save current memory files as a snapshot. Returns snapshot ID or None."""
         try:
             self._memory_dir.mkdir(parents=True, exist_ok=True)
@@ -48,7 +48,6 @@ class SnapshotStore:
                 "created_at": datetime.now().isoformat(),
                 "trigger": trigger,
                 "files": files,
-                "directive_count": directive_count,
             }
 
             path = self._dir / f"{snap_id}.json"
@@ -100,7 +99,6 @@ class SnapshotStore:
                         "id": data.get("id", p.stem),
                         "created_at": data.get("created_at", ""),
                         "trigger": data.get("trigger", ""),
-                        "directive_count": data.get("directive_count", 0),
                     })
                 except (json.JSONDecodeError, IOError):
                     pass

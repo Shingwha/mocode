@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mocode.core.config import DreamConfig
+from mocode.core.dream.agent import DreamAgentResult
 from mocode.core.dream.manager import DreamManager, DreamResult
-from mocode.core.dream.analyzer import EditDirective
 
 
 @pytest.fixture
@@ -68,7 +68,7 @@ class TestDreamManager:
         assert result.summaries_processed == 0
 
     @pytest.mark.asyncio
-    async def test_dream_with_summaries_no_directives(self, dream_setup, mock_provider):
+    async def test_dream_with_summaries_no_edits(self, dream_setup, mock_provider):
         memory_dir, dream_dir, summaries_dir = dream_setup
         config = DreamConfig()
 
@@ -82,13 +82,14 @@ class TestDreamManager:
             memory_dir=memory_dir,
         )
 
-        # Mock analyzer to return no directives
-        with patch.object(manager._analyzer, "analyze", return_value=[]):
+        # Mock agent to return no edits
+        no_edit_result = DreamAgentResult(tool_calls_made=0, edits_made=0)
+        with patch.object(manager._agent, "run", return_value=no_edit_result):
             result = await manager.dream()
 
         assert result.skipped is False
         assert result.summaries_processed == 2
-        assert result.directives_count == 0
+        assert result.edits_made == 0
 
         # Cursor should have advanced
         cursor = manager._cursor.load()
@@ -96,7 +97,7 @@ class TestDreamManager:
         assert cursor["total_processed"] == 1
 
     @pytest.mark.asyncio
-    async def test_dream_full_cycle(self, dream_setup, mock_provider):
+    async def test_dream_full_cycle_with_edits(self, dream_setup, mock_provider):
         memory_dir, dream_dir, summaries_dir = dream_setup
         config = DreamConfig()
 
@@ -109,28 +110,16 @@ class TestDreamManager:
             memory_dir=memory_dir,
         )
 
-        directives = [
-            EditDirective(
-                target="USER.md",
-                action="add",
-                content="- Prefers dark mode",
-                reasoning="Mentioned in conversation",
-            )
-        ]
+        agent_result = DreamAgentResult(tool_calls_made=2, edits_made=1)
 
-        with patch.object(manager._analyzer, "analyze", return_value=directives), \
-             patch.object(manager._editor, "edit", return_value=1) as mock_edit:
-
+        with patch.object(manager._agent, "run", return_value=agent_result):
             result = await manager.dream()
 
             assert result.skipped is False
             assert result.summaries_processed == 1
-            assert result.directives_count == 1
-            assert result.tool_calls_made == 1
+            assert result.edits_made == 1
+            assert result.tool_calls_made == 2
             assert result.snapshot_id is not None
-
-            # Editor should have been called
-            mock_edit.assert_called_once_with(directives)
 
     @pytest.mark.asyncio
     async def test_dream_lock_prevents_concurrent(self, dream_setup, mock_provider):
@@ -149,14 +138,14 @@ class TestDreamManager:
 
         call_count = 0
 
-        async def slow_analyze(*args, **kwargs):
+        async def slow_run(*args, **kwargs):
             nonlocal call_count
             call_count += 1
             import asyncio
             await asyncio.sleep(0.1)
-            return []
+            return DreamAgentResult(tool_calls_made=0, edits_made=0)
 
-        with patch.object(manager._analyzer, "analyze", side_effect=slow_analyze):
+        with patch.object(manager._agent, "run", side_effect=slow_run):
             # Run two concurrent dreams - second will be serialized
             import asyncio
             results = await asyncio.gather(
@@ -164,10 +153,8 @@ class TestDreamManager:
                 manager.dream(),
             )
 
-        # First dream processes summaries, second finds none left (skipped)
         # Both should complete without error (lock serialization works)
         assert len(results) == 2
-        # At least one should have processed
         processed = sum(1 for r in results if not r.skipped)
         assert processed >= 1
 
@@ -215,7 +202,7 @@ class TestDreamManager:
         )
 
         # Create a snapshot
-        snap_id = manager._snapshot.snapshot(trigger="test", directive_count=0)
+        snap_id = manager._snapshot.snapshot(trigger="test")
         assert snap_id is not None
 
         # Modify memory
@@ -238,5 +225,4 @@ class TestDreamManager:
 
         new_provider = AsyncMock()
         manager.update_provider(new_provider)
-        assert manager._analyzer._provider is new_provider
-        assert manager._editor._provider is new_provider
+        assert manager._agent._provider is new_provider

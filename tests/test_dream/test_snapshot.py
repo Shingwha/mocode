@@ -26,7 +26,7 @@ class TestSnapshotStore:
         self._setup_memory(memory_dir)
 
         store = SnapshotStore(snap_dir, memory_dir, max_snapshots=10)
-        snap_id = store.snapshot(trigger="test", directive_count=3)
+        snap_id = store.snapshot(trigger="test")
 
         assert snap_id is not None
         assert (snap_dir / f"{snap_id}.json").exists()
@@ -42,7 +42,6 @@ class TestSnapshotStore:
         data = json.loads((snap_dir / f"{snap_id}.json").read_text(encoding="utf-8"))
         assert "SOUL.md" in data["files"]
         assert "Test soul content" in data["files"]["SOUL.md"]
-        assert data["directive_count"] == 0
 
     def test_restore_overwrites_files(self, tmp_path: Path):
         memory_dir = tmp_path / "memory"
@@ -114,12 +113,11 @@ class TestSnapshotStore:
         self._setup_memory(memory_dir)
 
         store = SnapshotStore(snap_dir, memory_dir, max_snapshots=10)
-        snap_id = store.snapshot(trigger="test", directive_count=5)
+        snap_id = store.snapshot(trigger="test")
 
         data = store.get(snap_id)
         assert data is not None
         assert data["trigger"] == "test"
-        assert data["directive_count"] == 5
         assert "SOUL.md" in data["files"]
 
     def test_get_nonexistent(self, tmp_path: Path):

@@ -54,7 +54,7 @@ class DreamScheduler:
                         if not result.skipped:
                             logger.info(
                                 f"Dream scheduler: cycle complete "
-                                f"({result.directives_count} directives)"
+                                f"({result.edits_made} edits)"
                             )
                 except Exception as e:
                     logger.error(f"Dream scheduler cycle error: {e}")

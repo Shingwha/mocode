@@ -1,11 +1,11 @@
-"""Dream Editor - Phase 2: execute edit directives via LLM tool calls"""
+"""Dream Agent - unified analysis+editing in a single tool-call loop"""
 
 import json
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .analyzer import EditDirective
-from .prompts import PHASE2_SYSTEM_PROMPT
+from .prompts import DREAM_SYSTEM_PROMPT, build_dream_prompt
 from ...paths import MEMORY_DIR
 from ...tools.base import ToolRegistry
 
@@ -14,12 +14,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Tool schemas exposed to the editor LLM
 _DREAM_TOOLS = ["read", "edit"]
 
 
-class DreamEditor:
-    """Phase 2: Execute edit directives using LLM with read/edit tool calls."""
+@dataclass
+class DreamAgentResult:
+    """Result of a unified dream agent run."""
+
+    tool_calls_made: int = 0
+    edits_made: int = 0
+    had_error: bool = False
+
+
+class DreamAgent:
+    """Unified dream agent: single tool-call loop for analysis and editing."""
 
     def __init__(self, provider: "AsyncOpenAIProvider", max_tool_calls: int = 10):
         self._provider = provider
@@ -36,48 +44,41 @@ class DreamEditor:
 
     def _run_tool(self, name: str, args: dict) -> str:
         """Run a tool directly, bypassing permission system."""
-        # Resolve relative paths to memory directory for read/edit
         if "path" in args and not _is_absolute(args["path"]):
             args = dict(args)
             filename = args["path"]
-            # Normalize: strip leading ./ or just use the filename
             filename = filename.removeprefix("./")
             args["path"] = str(MEMORY_DIR / filename)
 
         return ToolRegistry.run(name, args)
 
-    async def edit(self, directives: list[EditDirective]) -> int:
-        """Execute edit directives. Returns number of tool calls made."""
-        if not directives:
-            return 0
-
-        # Build instruction message
-        instructions = []
-        for i, d in enumerate(directives, 1):
-            instructions.append(
-                f"{i}. [{d.action}] {d.target}: {d.reasoning}\n"
-                f"   Content: {d.content}"
-            )
-
-        user_msg = (
-            f"请执行以下 {len(directives)} 条编辑指令：\n\n"
-            + "\n\n".join(instructions)
-        )
-
-        messages = [{"role": "user", "content": user_msg}]
+    async def run(
+        self,
+        summaries: list[str],
+        soul: str,
+        user: str,
+        memory: str,
+    ) -> DreamAgentResult:
+        """Run unified analysis+edit cycle. Returns DreamAgentResult."""
+        user_prompt = build_dream_prompt(summaries, soul, user, memory)
+        messages = [{"role": "user", "content": user_prompt}]
         tool_schemas = self._get_tool_schemas()
+
         tool_calls_made = 0
+        edits_made = 0
+        had_error = False
 
         for _ in range(self._max_tool_calls):
             try:
                 response = await self._provider.call(
                     messages=messages,
-                    system=PHASE2_SYSTEM_PROMPT,
+                    system=DREAM_SYSTEM_PROMPT,
                     tools=tool_schemas,
                     max_tokens=2000,
                 )
             except Exception as e:
-                logger.error(f"Dream Phase 2 LLM call failed: {e}")
+                logger.error(f"Dream agent LLM call failed: {e}")
+                had_error = True
                 break
 
             choice = response.choices[0]
@@ -107,18 +108,27 @@ class DreamEditor:
                 result = self._run_tool(tool_name, tool_args)
                 tool_calls_made += 1
 
+                # Track edits
+                if tool_name == "edit":
+                    edits_made += 1
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
-                    "content": result[:2000],  # Truncate large results
+                    "content": result[:2000],
                 })
 
-            # Stop condition check (finish_reason)
             if hasattr(choice, "finish_reason") and choice.finish_reason == "stop":
                 break
 
-        logger.info(f"Dream Phase 2 completed: {tool_calls_made} tool calls")
-        return tool_calls_made
+        logger.info(
+            f"Dream agent completed: {tool_calls_made} tool calls, {edits_made} edits"
+        )
+        return DreamAgentResult(
+            tool_calls_made=tool_calls_made,
+            edits_made=edits_made,
+            had_error=had_error,
+        )
 
 
 def _tc_to_dict(tc) -> dict:

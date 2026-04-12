@@ -487,7 +487,7 @@ class MocodeCore:
             self._rebuild_prompt()
         return {
             "summaries_processed": result.summaries_processed,
-            "directives_count": result.directives_count,
+            "edits_made": result.edits_made,
             "tool_calls_made": result.tool_calls_made,
             "snapshot_id": result.snapshot_id,
             "skipped": result.skipped,
