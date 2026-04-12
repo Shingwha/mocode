@@ -13,10 +13,13 @@ def discover_channel_names() -> list[str]:
     """Scan mocode.gateway package for channel sub-packages."""
     import mocode.gateway as pkg
 
+    # Exclude internal utility packages that are not channel implementations
+    EXCLUDED = {"cron"}
+
     return [
         name
         for _, name, is_pkg in pkgutil.iter_modules(pkg.__path__)
-        if is_pkg
+        if is_pkg and name not in EXCLUDED
     ]
 
 
