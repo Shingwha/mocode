@@ -16,7 +16,7 @@ class CompactConfig:
 
     enabled: bool = True
     threshold: float = 0.80
-    keep_recent_turns: int = 4
+    keep_recent_turns: int = 1
     context_windows: dict[str, int] = field(default_factory=dict)
 
 

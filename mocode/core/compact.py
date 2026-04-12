@@ -78,42 +78,18 @@ class CompactManager:
         return self._last_prompt_tokens
 
     @staticmethod
-    def _ensure_no_partial_tool_sequence(
-        messages: list[dict], split_point: int
-    ) -> int:
-        """确保不在 tool 序列中间切割
+    def _find_turn_starts(messages: list[dict]) -> list[int]:
+        """找到每个 turn 的起始索引（user 消息的位置）"""
+        return [i for i, msg in enumerate(messages) if msg.get("role") == "user"]
 
-        三种情况：
-        - Case A：split_point 前一条是带 tool_calls 的 assistant，但 split_point 之后
-          还有属于该 assistant 的 tool 结果消息。此时将 split_point 后移，包含完整的
-          assistant + tool 序列。
-        - Case B：split_point 本身落在 tool 消息中间（即前面的 assistant 已被划入
-          old 区间，但部分 tool 结果落在了 recent 区间）。此时向前回退到该 tool 序列
-          对应的 assistant 之前的 user 消息，确保 assistant + tool 不被拆散。
-        - 默认：split_point 不在 tool 序列附近，无需调整。
-        """
-        if split_point <= 0:
-            return split_point
-
-        # Case A: prev 是 assistant+tool_calls，split_point 之后还有孤立的 tool 结果
-        prev_msg = messages[split_point - 1]
-        if prev_msg.get("role") == "assistant" and prev_msg.get("tool_calls"):
-            j = split_point
-            while j < len(messages) and messages[j].get("role") == "tool":
-                j += 1
-            if j > split_point:
-                return j
-
-        # Case B: split_point 落在 tool 消息中间，回退到对应 user 消息
-        if split_point < len(messages) and messages[split_point].get("role") == "tool":
-            j = split_point
-            while j > 0 and messages[j].get("role") == "tool":
-                j -= 1
-            while j > 0 and messages[j].get("role") != "user":
-                j -= 1
-            return j
-
-        return split_point
+    @staticmethod
+    def _strip_tool_messages(messages: list[dict]) -> list[dict]:
+        """去除 tool 消息和带 tool_calls 的 assistant 消息"""
+        return [
+            msg for msg in messages
+            if msg.get("role") != "tool"
+            and not (msg.get("role") == "assistant" and msg.get("tool_calls"))
+        ]
 
     # ---- Formatting ----
 
@@ -249,38 +225,39 @@ class CompactManager:
     async def compact(self, messages: list[dict], model: str) -> list[dict]:
         """压缩消息列表
 
-        将旧消息压缩为摘要，保留最近 N 条消息（绝对数量，包括所有角色）。
+        按轮次（turn）分割：保留最近 N 个 user 开头的轮次，
+        将旧消息压缩为摘要。保留轮次中的 tool 调用链会被清除（语义已在摘要中）。
         """
-        if len(messages) < 4:
+        # 1. 找到轮次边界
+        turn_starts = self._find_turn_starts(messages)
+        keep = self._config.keep_recent_turns
+
+        # turn 不够保留，不压缩
+        if len(turn_starts) <= keep:
             return messages
 
-        keep = self._config.keep_recent_turns  # 改为按绝对消息数保留
+        # 2. 按轮次分割
+        if keep == 0:
+            old_messages = messages
+            recent_messages = []
+        else:
+            split_point = turn_starts[-keep]
+            old_messages = messages[:split_point]
+            recent_messages = messages[split_point:]
 
-        if len(messages) <= keep:
-            return messages
-
-        # 初始分割点：保留最后 keep 条，压缩前面的
-        split_point = len(messages) - keep
-
-        # 保护：确保不在 tool 序列中间切割
-        split_point = self._ensure_no_partial_tool_sequence(messages, split_point)
-
-        old_messages = messages[:split_point]
-        recent_messages = messages[split_point:]
-
-        if not old_messages:
-            return messages
-
-        # 生成摘要
-        formatted = self._format_messages_for_summary(old_messages)
+        # 3. 摘要从完整消息列表生成（包含 recent 中的 tool 调用信息）
+        formatted = self._format_messages_for_summary(messages)
         summary = await self._generate_summary(formatted)
         if not summary:
-            summary = self._build_fallback_summary(old_messages)
+            summary = self._build_fallback_summary(messages)
 
-        # 持久化摘要供 Dream 系统使用（会发射 DREAM_SUMMARY_AVAILABLE 事件）
+        # 4. 持久化摘要供 Dream 系统使用（会发射 DREAM_SUMMARY_AVAILABLE 事件）
         self._persist_summary_for_dream(summary, old_messages)
 
-        # 构建新消息列表
+        # 5. 清理保留轮次中的 tool 调用链（摘要已包含这些信息）
+        recent_cleaned = self._strip_tool_messages(recent_messages)
+
+        # 6. 构建新消息列表
         new_messages = [
             {
                 "role": "user",
@@ -290,7 +267,7 @@ class CompactManager:
                 "role": "assistant",
                 "content": "Understood, I will continue based on the summary.",
             },
-            *recent_messages,
+            *recent_cleaned,
         ]
 
         # 发送事件
