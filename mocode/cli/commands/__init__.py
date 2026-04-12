@@ -3,6 +3,7 @@
 from .base import Command, CommandContext, CommandRegistry, command
 from .builtin import ClearCommand, HelpCommand, QuitCommand
 from .compact import CompactCommand
+from .dream import DreamCommand
 from .executor import CommandExecutor
 from .mode import ModeCommand
 from .plugin import PluginCommand
@@ -27,6 +28,7 @@ __all__ = [
     "SkillsCommand",
     "SessionCommand",
     "PluginCommand",
+    "DreamCommand",
 ]
 
 # 自动注册的内置命令
@@ -40,6 +42,7 @@ BUILTIN_COMMANDS = [
     SkillsCommand,
     SessionCommand,
     PluginCommand,
+    DreamCommand,
 ]
 
 

@@ -19,6 +19,7 @@ from ..tools import register_all_tools
 from ..skills import SkillManager
 from .plugin_coordinator import PluginCoordinator
 from .compact import CompactManager
+from .dream import DreamManager, DreamScheduler
 
 if TYPE_CHECKING:
     from .prompt import PromptBuilder
@@ -123,6 +124,14 @@ class MocodeCore:
         )
         self._agent._compact_manager = self._compact_manager
 
+        # Dream system
+        self._dream_manager = DreamManager(
+            config=self._config.dream,
+            provider=self._provider,
+            event_bus=self._event_bus,
+        )
+        self._dream_scheduler: DreamScheduler | None = None
+
         # Wire config persistence after agent is created (so _on_config_changed can call _switch_provider)
         self._config.set_persistence(persistence, self._on_config_changed)
 
@@ -196,6 +205,9 @@ class MocodeCore:
             self._config.compact, self._provider, self._event_bus,
         )
         self._agent.update_compact_manager(self._compact_manager)
+
+        # Update dream manager with new provider
+        self._dream_manager.update_provider(self._provider)
 
     def _rebuild_prompt(
         self,
@@ -465,6 +477,55 @@ class MocodeCore:
     def discover_plugins(self) -> list[PluginInfo]:
         """Re-discover plugins after installation"""
         return self._plugin_coordinator.discover_plugins()
+
+    # Dream operations
+
+    async def dream(self) -> dict:
+        """Manually trigger a dream cycle. Returns result dict."""
+        result = await self._dream_manager.dream()
+        if not result.skipped:
+            self._rebuild_prompt()
+        return {
+            "summaries_processed": result.summaries_processed,
+            "directives_count": result.directives_count,
+            "tool_calls_made": result.tool_calls_made,
+            "snapshot_id": result.snapshot_id,
+            "skipped": result.skipped,
+        }
+
+    def start_dream_scheduler(self) -> None:
+        """Start the automatic dream scheduler."""
+        if not self._config.dream.enabled:
+            return
+        if self._dream_scheduler is not None:
+            return
+        self._dream_scheduler = DreamScheduler(
+            dream_manager=self._dream_manager,
+            interval_seconds=self._config.dream.interval_seconds,
+        )
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._dream_scheduler.start())
+        except RuntimeError:
+            pass
+
+    def stop_dream_scheduler(self) -> None:
+        """Stop the automatic dream scheduler."""
+        if self._dream_scheduler is None:
+            return
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._dream_scheduler.stop())
+        except RuntimeError:
+            pass
+        self._dream_scheduler = None
+
+    @property
+    def dream_manager(self) -> DreamManager:
+        """Dream manager instance"""
+        return self._dream_manager
 
     # Properties
 

@@ -37,3 +37,6 @@ MEMORY_DIR: Path = MOCODE_HOME / "memory"
 
 # Cron 任务存储目录
 CRON_DIR: Path = MOCODE_HOME / "cron"
+
+# Dream 目录 (offline memory consolidation)
+DREAM_DIR: Path = MOCODE_HOME / "dream"

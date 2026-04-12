@@ -1,7 +1,10 @@
 """上下文压缩 - 自动压缩旧对话以节省 token"""
 
+import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -227,6 +230,31 @@ class CompactManager:
 
     # ---- Main operation ----
 
+    def _persist_summary_for_dream(self, summary: str, old_messages: list[dict]) -> None:
+        """Persist summary for Dream system consumption."""
+        try:
+            from ..paths import DREAM_DIR
+
+            summaries_dir = DREAM_DIR / "summaries"
+            summaries_dir.mkdir(parents=True, exist_ok=True)
+
+            summary_id = f"summary_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+            data = {
+                "id": summary_id,
+                "created_at": datetime.now().isoformat(),
+                "workdir": str(Path.cwd()),
+                "summary": summary,
+                "message_count": len(old_messages),
+            }
+
+            path = summaries_dir / f"{summary_id}.json"
+            path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+            logger.debug(f"Persisted dream summary: {summary_id}")
+        except Exception as e:
+            logger.warning(f"Failed to persist dream summary: {e}")
+
     async def compact(self, messages: list[dict], model: str) -> list[dict]:
         """压缩消息列表
 
@@ -255,6 +283,9 @@ class CompactManager:
         summary = await self._generate_summary(formatted)
         if not summary:
             summary = self._build_fallback_summary(old_messages)
+
+        # 持久化摘要供 Dream 系统使用
+        self._persist_summary_for_dream(summary, old_messages)
 
         # 发送事件
         if self._event_bus:

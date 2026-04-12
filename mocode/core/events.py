@@ -29,6 +29,8 @@ class EventType(Enum):
     INTERRUPTED = auto()  # 中断完成
     CONTEXT_COMPACT = auto()  # 上下文压缩
     AGENT_IDLE = auto()  # Agent 空闲（可用于处理队列消息）
+    DREAM_SUMMARY_AVAILABLE = auto()  # Dream 摘要已持久化
+    DREAM_COMPLETE = auto()  # Dream cycle 完成
     # Component events
     COMPONENT_STATE_CHANGE = auto()  # 组件状态变化
     COMPONENT_COMPLETE = auto()  # 组件完成

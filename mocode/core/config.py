@@ -21,6 +21,16 @@ class CompactConfig:
 
 
 @dataclass
+class DreamConfig:
+    """Dream 系统配置（离线记忆整理）"""
+
+    enabled: bool = True
+    interval_seconds: int = 7200  # 2 小时
+    max_tool_calls: int = 10  # Phase 2 工具调用上限
+    max_snapshots: int = 50  # 最大快照保留数
+
+
+@dataclass
 class ModeConfig:
     """模式配置（内存结构，不持久化）"""
     name: str
@@ -67,6 +77,7 @@ class Config:
     tool_result_limit: int = 25000  # Max characters for tool results (0 = no limit)
     gateway: dict = field(default_factory=dict)  # Gateway configuration
     compact: CompactConfig = field(default_factory=CompactConfig)
+    dream: DreamConfig = field(default_factory=DreamConfig)
 
     CONFIG_PATH: Path = CONFIG_PATH
 
@@ -218,6 +229,10 @@ class Config:
         if "compact" in data:
             self.compact = CompactConfig(**data["compact"])
 
+        # 加载 Dream 配置
+        if "dream" in data:
+            self.dream = DreamConfig(**data["dream"])
+
     def save(self):
         """保存配置"""
         self.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -232,6 +247,7 @@ class Config:
             "tool_result_limit": self.tool_result_limit,
             "gateway": self.gateway,
             "compact": asdict(self.compact),
+            "dream": asdict(self.dream),
         }
 
         self.CONFIG_PATH.write_text(
