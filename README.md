@@ -107,6 +107,39 @@ Create `~/.mocode/config.json`:
 | `/rtk` | | Token optimizer |
 | `/exit` | `/q`, `/quit` | Exit |
 
+### Context Compaction
+
+Long conversations are automatically compressed when token usage exceeds a threshold (default 80% of context window). Old turns are summarized into a compact summary, keeping recent turns intact.
+
+**Config** (in `~/.mocode/config.json`):
+
+```json
+{
+  "compact": {
+    "enabled": true,
+    "threshold": 0.80,
+    "keep_recent_turns": 4,
+    "context_windows": {}
+  }
+}
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `enabled` | `true` | Enable/disable auto-compact |
+| `threshold` | `0.80` | Trigger ratio (prompt_tokens / context_window) |
+| `keep_recent_turns` | `4` | Number of recent turns to preserve |
+| `context_windows` | `{}` | Per-model context window size override (default: 128k) |
+
+**Commands**:
+
+| Command | Description |
+|---------|-------------|
+| `/compact` | Manually trigger compaction |
+| `/compact status` | Show token usage and compact config |
+
+**How it works**: When `prompt_tokens > threshold × context_window`, old messages are summarized via LLM into a structured summary (decisions, code state, pending tasks), then replaced with `[Context Summary]` + recent turns. Compaction only runs between conversation turns, never during tool execution.
+
 ## Gateway
 
 Connect to WeChat via ClawBot:

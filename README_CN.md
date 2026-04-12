@@ -107,6 +107,32 @@ mocode
 | `/rtk` | | Token 优化 |
 | `/exit` | `/q`, `/quit` | 退出 |
 
+### 上下文压缩
+
+长对话在 token 使用量超过阈值（默认为上下文窗口的 80%）时自动压缩。旧轮次会被摘要为结构化总结，保留最近的对话轮次。
+
+在 `~/.mocode/config.json` 中配置：
+
+```json
+{
+  "compact": {
+    "enabled": true,
+    "threshold": 0.80,
+    "keep_recent_turns": 4,
+    "context_windows": {}
+  }
+}
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `enabled` | `true` | 是否启用自动压缩 |
+| `threshold` | `0.80` | 触发压缩的比例（prompt_tokens / context_window） |
+| `keep_recent_turns` | `4` | 保留最近几轮对话 |
+| `context_windows` | `{}` | 按模型指定上下文窗口大小（默认 128k） |
+
+**工作原理**：当 `prompt_tokens > threshold × context_window` 时，旧消息通过 LLM 生成结构化摘要（已完成的决策、代码状态、待办事项），替换为 `[Context Summary]` + 最近轮次。压缩仅在对话轮次之间执行，不会在工具调用过程中触发。
+
 ## Gateway
 
 连接到微信 ClawBot：
