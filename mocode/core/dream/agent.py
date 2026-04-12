@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_DREAM_TOOLS = ["read", "edit"]
+_DREAM_TOOLS = ["read", "edit", "append"]
 
 
 @dataclass
@@ -109,7 +109,7 @@ class DreamAgent:
                 tool_calls_made += 1
 
                 # Track edits
-                if tool_name == "edit":
+                if tool_name in ("edit", "append") and result == "ok":
                     edits_made += 1
 
                 messages.append({

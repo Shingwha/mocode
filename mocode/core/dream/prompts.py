@@ -14,13 +14,12 @@ DREAM_SYSTEM_PROMPT = """\
 3. 不需要更新时：直接回复文本说明无需更新，不调用任何工具
 
 ## 工具使用
-- read(path) - 读取记忆文件（path 为 "SOUL.md"、"USER.md" 或 "MEMORY.md"）
-- edit(path, old_string, new_string) - 编辑文件，old_string 必须精确匹配文件中的文本
+你可以使用 read、edit、append 三个工具操作记忆文件。文件名为 "SOUL.md"、"USER.md" 或 "MEMORY.md"。
 
 ## 规则
 1. 只做真正有价值的更新，不要为更新而更新
-2. edit 时 old_string 必须是文件中存在的精确文本
-3. 添加新内容应简洁、结构化，追加到文件末尾
+2. 修改现有内容用 edit，添加新内容用 append
+3. 添加新内容应简洁、结构化
 4. 不要重复文件中已有的内容
 5. 每次修改前先 read 确认当前内容"""
 
