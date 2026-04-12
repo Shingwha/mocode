@@ -1,9 +1,10 @@
 """Core layer - business logic, independent of UI"""
 
-from .config import Config, PluginConfig, ProviderConfig, CurrentConfig
+from .config import Config, PluginConfig, ProviderConfig, CurrentConfig, CompactConfig
 from .events import EventBus, EventType, Event
 from .agent import AsyncAgent
 from .prompt import PromptBuilder, Section, default_prompt, minimal_prompt
+from .compact import CompactManager
 from .permission import (
     PermissionAction,
     PermissionConfig,
@@ -33,10 +34,12 @@ __all__ = [
     "PluginConfig",
     "ProviderConfig",
     "CurrentConfig",
+    "CompactConfig",
     "EventBus",
     "EventType",
     "Event",
     "AsyncAgent",
+    "CompactManager",
     # Prompt system
     "PromptBuilder",
     "Section",

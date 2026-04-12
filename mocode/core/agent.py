@@ -12,6 +12,7 @@ from ..plugins import HookRegistry, HookPoint
 
 if TYPE_CHECKING:
     from .config import Config
+    from .compact import CompactManager
 
 
 class AsyncAgent:
@@ -38,6 +39,8 @@ class AsyncAgent:
         self.config = config
         self.hook_registry = hook_registry
         self.conversation_id: str | None = None
+        self._compact_manager: CompactManager | None = None
+        self._last_usage: dict | None = None
 
     async def _trigger_hook(self, hook_point: HookPoint, data: dict):
         """Trigger hooks, returns HookContext or None"""
@@ -72,6 +75,13 @@ class AsyncAgent:
         """Run one conversation turn"""
         if self.interrupt_token:
             self.interrupt_token.reset()
+
+        # Auto-compact if approaching context window limit
+        # Only runs between turns, never during tool execution
+        if self._compact_manager and self._compact_manager.should_compact(self.provider.model):
+            self.messages = await self._compact_manager.compact(
+                self.messages, self.provider.model
+            )
 
         # Pre-chat hook
         ctx = await self._trigger_hook(HookPoint.AGENT_CHAT_START, {"input": user_input})
@@ -111,6 +121,18 @@ class AsyncAgent:
                 return "[interrupted]"
 
             message = response.choices[0].message
+
+            # Track token usage
+            if hasattr(response, 'usage') and response.usage:
+                self._last_usage = {
+                    "prompt_tokens": response.usage.prompt_tokens or 0,
+                    "completion_tokens": response.usage.completion_tokens or 0,
+                }
+                if self._compact_manager:
+                    self._compact_manager.update_usage(
+                        response.usage.prompt_tokens or 0, self.provider.model,
+                    )
+
             tool_results = []
 
             if message.content:
@@ -305,3 +327,12 @@ class AsyncAgent:
         self.system_prompt = prompt
         if clear_history:
             self.messages.clear()
+
+    @property
+    def last_usage(self) -> dict | None:
+        """Last API response token usage"""
+        return self._last_usage
+
+    def update_compact_manager(self, manager: "CompactManager | None") -> None:
+        """Update compact manager reference"""
+        self._compact_manager = manager

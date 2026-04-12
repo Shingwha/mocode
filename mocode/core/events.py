@@ -27,6 +27,7 @@ class EventType(Enum):
     STATUS_UPDATE = auto()  # 状态栏更新
     PERMISSION_ASK = auto()  # 权限询问
     INTERRUPTED = auto()  # 中断完成
+    CONTEXT_COMPACT = auto()  # 上下文压缩
     AGENT_IDLE = auto()  # Agent 空闲（可用于处理队列消息）
     # Component events
     COMPONENT_STATE_CHANGE = auto()  # 组件状态变化

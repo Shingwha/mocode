@@ -2,6 +2,7 @@
 
 from .base import Command, CommandContext, CommandRegistry, command
 from .builtin import ClearCommand, HelpCommand, QuitCommand
+from .compact import CompactCommand
 from .executor import CommandExecutor
 from .mode import ModeCommand
 from .plugin import PluginCommand
@@ -19,6 +20,7 @@ __all__ = [
     # 内置命令
     "QuitCommand",
     "ClearCommand",
+    "CompactCommand",
     "HelpCommand",
     "ModeCommand",
     "ProviderCommand",
@@ -31,6 +33,7 @@ __all__ = [
 BUILTIN_COMMANDS = [
     QuitCommand,
     ClearCommand,
+    CompactCommand,
     HelpCommand,
     ModeCommand,  # 新添加
     ProviderCommand,

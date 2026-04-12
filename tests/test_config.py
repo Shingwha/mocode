@@ -10,8 +10,8 @@ from mocode.core.config import Config, CurrentConfig, ModeConfig, ProviderConfig
 class TestConfigLoad:
     def test_default_config(self):
         config = Config()
-        assert config.current.provider == "openai"
-        assert config.current.model == "gpt-4o"
+        assert config.current.provider == "zhipu"
+        assert config.current.model == "glm-5"
         assert config.max_tokens == 8192
         assert config.tool_result_limit == 25000
         assert config.current_mode == "normal"

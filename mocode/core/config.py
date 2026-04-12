@@ -11,6 +11,16 @@ from ..paths import CONFIG_PATH
 
 
 @dataclass
+class CompactConfig:
+    """上下文压缩配置"""
+
+    enabled: bool = True
+    threshold: float = 0.80
+    keep_recent_turns: int = 4
+    context_windows: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
 class ModeConfig:
     """模式配置（内存结构，不持久化）"""
     name: str
@@ -56,6 +66,7 @@ class Config:
     plugins: PluginConfig = field(default_factory=PluginConfig)
     tool_result_limit: int = 25000  # Max characters for tool results (0 = no limit)
     gateway: dict = field(default_factory=dict)  # Gateway configuration
+    compact: CompactConfig = field(default_factory=CompactConfig)
 
     CONFIG_PATH: Path = CONFIG_PATH
 
@@ -203,6 +214,10 @@ class Config:
         if "gateway" in data:
             self.gateway = data["gateway"]
 
+        # 加载 Compact 配置
+        if "compact" in data:
+            self.compact = CompactConfig(**data["compact"])
+
     def save(self):
         """保存配置"""
         self.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -216,6 +231,7 @@ class Config:
             "plugins": dict(self.plugins),
             "tool_result_limit": self.tool_result_limit,
             "gateway": self.gateway,
+            "compact": asdict(self.compact),
         }
 
         self.CONFIG_PATH.write_text(

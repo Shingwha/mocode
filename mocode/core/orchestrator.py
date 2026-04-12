@@ -18,6 +18,7 @@ from ..providers import AsyncOpenAIProvider
 from ..tools import register_all_tools
 from ..skills import SkillManager
 from .plugin_coordinator import PluginCoordinator
+from .compact import CompactManager
 
 if TYPE_CHECKING:
     from .prompt import PromptBuilder
@@ -116,6 +117,12 @@ class MocodeCore:
         )
         self._agent = self._create_agent()
 
+        # Compact manager
+        self._compact_manager = CompactManager(
+            self._config.compact, self._provider, self._event_bus,
+        )
+        self._agent._compact_manager = self._compact_manager
+
         # Wire config persistence after agent is created (so _on_config_changed can call _switch_provider)
         self._config.set_persistence(persistence, self._on_config_changed)
 
@@ -184,6 +191,11 @@ class MocodeCore:
             model=self._config.model,
         )
         self._agent.update_provider(self._provider)
+        # Rebuild compact manager with new provider
+        self._compact_manager = CompactManager(
+            self._config.compact, self._provider, self._event_bus,
+        )
+        self._agent.update_compact_manager(self._compact_manager)
 
     def _rebuild_prompt(
         self,
@@ -212,6 +224,23 @@ class MocodeCore:
         """Send a message and get response"""
         self._mark_unsaved()
         return await self._agent.chat(message, media)
+
+    async def compact(self) -> dict:
+        """Manually trigger context compression. Returns stats dict."""
+        old_count = len(self._agent.messages)
+        self._agent.messages = await self._compact_manager.compact(
+            self._agent.messages, self._config.model,
+        )
+        return {
+            "action": "compact_complete",
+            "old_count": old_count,
+            "new_count": len(self._agent.messages),
+        }
+
+    @property
+    def token_usage(self) -> dict | None:
+        """Last API response token usage"""
+        return self._agent.last_usage
 
     @property
     def is_agent_busy(self) -> bool:
