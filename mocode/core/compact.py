@@ -20,23 +20,28 @@ DEFAULT_CONTEXT_WINDOW = 128_000
 SUMMARY_SYSTEM_PROMPT = """\
 你是一个对话压缩助手。将以下编码助手对话历史压缩为结构化摘要。
 
-必须保留：
-1. **文件路径** — 助手读取、写入或讨论的每个文件
-2. **关键决策** — 为什么选择某些方案而非其他方案
-3. **遇到的错误** — 错误信息和解决方法
-4. **当前工作状态** — 最后在做什么
-5. **用户偏好** — 对话中表达的技术偏好
-6. **重要代码上下文** — 函数签名、变量名、架构选择
+## 压缩原则
+- 保留所有事实性信息，丢弃寒暄和重复
+- 具体优于笼统：保留文件路径、函数名、变量名、错误信息，而非模糊描述
+- 每个条目用一句话说清"做了什么"和"为什么"
 
-输出格式：
-[完成的决策]
-- ...
+## 输出格式（严格按此结构）
 
-[当前代码状态]
-- ...
+[用户需求]
+用户要求做什么，原始需求的简要描述。
+
+[已完成的工作]
+逐条列出对话中已经完成的事项：
+- 具体做了什么（涉及哪些文件、函数、模块）+ 关键决策理由
+- 遇到的错误及解决方案
+- 用户明确表达的技术偏好
+
+[当前状态]
+- 最后在做什么，进行到哪一步
+- 当前代码/项目的关键状态（修改了哪些文件、架构变化、未提交的改动等）
 
 [待办事项]
-- ..."""
+- 尚未开始或未完成的工作"""
 
 
 class CompactManager:
@@ -127,15 +132,10 @@ class CompactManager:
                             fn = tc.get("function", {})
                             name = fn.get("name", "unknown")
                             args = fn.get("arguments", "")
-                            if len(args) > 200:
-                                args = args[:200] + "..."
                             text += f"\n[Tool Call: {name}({args})]"
                 parts.append(f"[Assistant] {text}")
 
             elif role == "tool":
-                if isinstance(content, str):
-                    if len(content) > 2000:
-                        content = content[:1500] + "...[truncated]"
                 parts.append(f"[Tool] {content}")
 
         return "\n\n".join(parts)
@@ -149,12 +149,17 @@ class CompactManager:
                 messages=[
                     {
                         "role": "user",
-                        "content": f"请压缩以下对话：\n\n{messages_text}",
+                        "content": (
+                            "请将以下编码助手对话历史压缩为结构化摘要。\n"
+                            "重点：保留具体事实（文件路径、函数名、错误信息、决策理由），"
+                            "丢弃寒暄和重复内容。不要遗漏用户需求中提到的任何功能点。\n\n"
+                            f"{messages_text}"
+                        ),
                     }
                 ],
                 system=SUMMARY_SYSTEM_PROMPT,
                 tools=[],
-                max_tokens=2000,
+                max_tokens=4000,
             )
             return response.choices[0].message.content or ""
         except Exception as e:

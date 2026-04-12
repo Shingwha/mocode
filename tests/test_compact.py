@@ -235,12 +235,12 @@ class TestFormatting:
         assert "[Assistant]" in text
         assert "[Tool Call: read" in text
 
-    def test_tool_message_truncation(self):
+    def test_tool_message_not_truncated(self):
         long_content = "x" * 3000
         msgs = [{"role": "tool", "content": long_content}]
         text = CompactManager._format_messages_for_summary(msgs)
-        assert "[truncated]" in text
-        assert len(text) < 2500  # Well under original 3000
+        assert "[truncated]" not in text
+        assert "x" * 3000 in text  # Full content preserved
 
     def test_multimodal_content(self):
         msgs = [
@@ -256,7 +256,7 @@ class TestFormatting:
         assert "[image attached]" in text
         assert "Describe this image" in text
 
-    def test_tool_args_truncation(self):
+    def test_tool_args_not_truncated(self):
         long_args = '{"path": "' + "x" * 300 + '"}'
         msgs = [
             {
@@ -268,7 +268,8 @@ class TestFormatting:
             }
         ]
         text = CompactManager._format_messages_for_summary(msgs)
-        assert "..." in text
+        assert "..." not in text
+        assert "x" * 300 in text  # Full args preserved
 
 
 # ---- Summary generation ----
