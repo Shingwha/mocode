@@ -1,6 +1,7 @@
 """Gateway UserRouter tests"""
 
 import pytest
+from unittest.mock import patch
 
 from mocode.core.config import Config
 from mocode.gateway.router import UserRouter
@@ -22,12 +23,15 @@ def base_config():
 
 
 @pytest.fixture
-def router(base_config):
-    return UserRouter(
-        config=base_config,
-        gateway_config={},
-        max_users=3,
-    )
+def router(base_config, tmp_path):
+    session_dir = tmp_path / "sessions"
+    with patch("mocode.core.session.SESSIONS_DIR", session_dir):
+        r = UserRouter(
+            config=base_config,
+            gateway_config={},
+            max_users=3,
+        )
+        yield r
 
 
 class TestUserRouter:
