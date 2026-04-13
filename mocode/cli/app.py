@@ -87,14 +87,8 @@ class CLIApp:
         self.display.welcome("mocode", self.client.config.display_name, os.getcwd())
         self._is_running = True
 
-        # Dream scheduler
-        self.client.start_dream_scheduler()
-
     def _shutdown(self) -> None:
         """Clean up all resources."""
-        if self.client:
-            self.client.stop_dream_scheduler()
-
         if self.client and self.client.agent.messages:
             session = self.client.save_session()
             self.display.session_saved(session.id, session.message_count)
