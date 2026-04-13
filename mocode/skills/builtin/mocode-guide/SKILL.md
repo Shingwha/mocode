@@ -246,12 +246,13 @@ class MyPlugin(Plugin):
 ### 提供命令
 
 ```python
-from mocode.cli.commands.base import Command, CommandContext, command
+from mocode.core.commands.base import Command, CommandContext, command
+from mocode.core.commands.result import CommandResult
 
 @command("/mycmd", description="命令说明")
 class MyCommand(Command):
-    def execute(self, ctx: CommandContext) -> bool:
-        ctx.layout.add_message("执行完成")
+    def execute(self, ctx: CommandContext) -> CommandResult:
+        return CommandResult(success=True, message="执行完成")
         return True
 
 class MyPlugin(Plugin):

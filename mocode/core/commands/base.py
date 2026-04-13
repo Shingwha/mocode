@@ -1,25 +1,29 @@
-"""Command base class"""
+"""Command base classes - no UI dependencies"""
 
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Callable, ClassVar, TypeVar, TYPE_CHECKING
 
+from .result import CommandResult
+
 if TYPE_CHECKING:
-    from ..ui.display import Display
-    from ..ui.prompt import MenuAction
-    from ...core.orchestrator import MocodeCore
+    from ..orchestrator import MocodeCore
 
 T = TypeVar("T")
 
 
 @dataclass
 class CommandContext:
-    """Command execution context"""
+    """Command execution context - no UI dependency.
+
+    The ``extra`` dict lets callers pass platform-specific context
+    (e.g. a Display instance for CLI) without core depending on it.
+    """
+
     client: "MocodeCore"
-    args: str  # Command arguments
-    display: "Display | None" = None
-    pending_message: str | None = None  # Message to send to agent after command
+    args: str
+    extra: dict = field(default_factory=dict)
     loop: asyncio.AbstractEventLoop | None = field(default=None, init=False, repr=False)
 
     @property
@@ -32,88 +36,23 @@ class CommandContext:
 
 
 class Command(ABC):
-    """Command base class"""
+    """Command base class - returns CommandResult, no UI calls."""
 
     name: ClassVar[str] = ""
     aliases: ClassVar[list[str]] = []
     description: ClassVar[str] = ""
 
     @abstractmethod
-    def execute(self, ctx: CommandContext) -> bool:
-        """Execute command. Returns True to continue, False to exit."""
+    def execute(self, ctx: CommandContext) -> CommandResult:
+        """Execute command. Returns CommandResult."""
         pass
 
     def match(self, cmd: str) -> bool:
         return cmd == self.name or cmd in self.aliases
 
-    def confirm_delete(self, item_name: str) -> bool:
-        from ..ui.prompt import confirm
-        from ..ui.styles import YELLOW, RESET
-        return confirm(f"{YELLOW}Delete '{item_name}'?{RESET}")
-
-    # --- Safe output helpers ---
-
-    def _info(self, ctx: CommandContext, msg: str) -> None:
-        if ctx.display:
-            ctx.display.info(msg)
-        else:
-            from ..ui.styles import info as _info
-            _info(msg)
-
-    def _success(self, ctx: CommandContext, msg: str) -> None:
-        if ctx.display:
-            ctx.display.success(msg)
-        else:
-            from ..ui.styles import success as _success
-            _success(msg)
-
-    def _error(self, ctx: CommandContext, msg: str) -> None:
-        if ctx.display:
-            ctx.display.error(msg)
-        else:
-            from ..ui.styles import error as _error
-            _error(msg)
-
-    def _output(self, ctx: CommandContext, msg: str) -> None:
-        if ctx.display:
-            ctx.display.command_output(msg)
-
-    # --- Menu helpers ---
-
-    def _select_from_list(
-        self,
-        title: str,
-        items: list[T],
-        formatter: Callable[[T], tuple[str, str]],
-        *,
-        extra_choices: list[tuple] | None = None,
-        current: str | None = None,
-    ) -> T | "MenuAction" | None:
-        """Build select menu from items. Returns selected item, MenuAction, or None."""
-        from ..ui.prompt import select, MenuItem, is_cancelled, MenuAction
-
-        choices = [formatter(item) for item in items]
-        if extra_choices:
-            choices.extend(extra_choices)
-        choices.append(MenuItem.exit_())
-
-        result = select(title, choices, current=current)
-        if is_cancelled(result):
-            return None
-
-        if isinstance(result, MenuAction):
-            return result
-
-        # Find original item by key
-        for item in items:
-            key, _ = formatter(item)
-            if key == result:
-                return item
-        return None
-
     def _route_subcommand(
         self, ctx: CommandContext, arg: str, handlers: dict[str, str]
-    ) -> bool | None:
+    ) -> CommandResult | None:
         """Route arg to subcommand method. Returns None if no match."""
         parts = arg.split(maxsplit=1)
         if not parts:
@@ -170,14 +109,6 @@ class CommandRegistry:
                 seen.add(cmd.name)
                 result.append(cmd)
         return sorted(result, key=lambda c: c.name)
-
-    def execute(self, ctx: CommandContext) -> bool:
-        cmd = self.get(ctx.args.split()[0] if ctx.args else "")
-        if cmd:
-            parts = ctx.args.split(maxsplit=1)
-            ctx.args = parts[1] if len(parts) > 1 else ""
-            return cmd.execute(ctx)
-        return True
 
 
 def command(name: str, *aliases, description: str = ""):

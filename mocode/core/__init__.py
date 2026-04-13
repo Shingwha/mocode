@@ -28,6 +28,15 @@ from .installer import (
     InstallResult,
     InstalledItemInfo,
 )
+from .commands import (
+    Command,
+    CommandContext,
+    CommandResult,
+    CommandRegistry,
+    CommandExecutor,
+    command,
+    register_builtin_commands,
+)
 
 __all__ = [
     "Config",
@@ -71,4 +80,12 @@ __all__ = [
     "InstalledItemInfo",
     # Utils
     "preview_result",
+    # Commands
+    "Command",
+    "CommandContext",
+    "CommandResult",
+    "CommandRegistry",
+    "CommandExecutor",
+    "command",
+    "register_builtin_commands",
 ]

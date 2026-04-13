@@ -7,7 +7,13 @@ from ..core.orchestrator import MocodeCore
 from ..core.config import Config
 from ..core.interrupt import InterruptToken
 from ..tools import register_all_tools
-from .commands import CommandContext, CommandRegistry, CommandExecutor, register_builtin_commands
+from .commands import (
+    CommandContext,
+    CommandResult,
+    CommandRegistry,
+    CommandExecutor,
+    BUILTIN_COMMANDS,
+)
 from .events import CLIEventHandler
 from .monitor import ESCMonitor
 from .ui.display import Display
@@ -55,8 +61,9 @@ class CLIApp:
         register_all_tools()
 
         # Commands
-        register_builtin_commands(self.commands)
-        self._command_executor = CommandExecutor(self.commands, self.display)
+        for cmd_class in BUILTIN_COMMANDS:
+            self.commands.register(cmd_class())
+        self._command_executor = CommandExecutor(self.commands)
 
         # Client
         permission_handler = CLIPermissionHandler(display=self.display)
@@ -116,12 +123,16 @@ class CLIApp:
                     ctx = CommandContext(
                         client=self.client,
                         args=user_input,
-                        display=self.display,
+                        extra={"display": self.display},
                     )
-                    if not await self._command_executor.execute(ctx):
-                        break
-                    if ctx.pending_message:
-                        await self.client.chat(ctx.pending_message)
+                    result = await self._command_executor.execute(ctx)
+                    if isinstance(result, CommandResult):
+                        if result.should_exit:
+                            break
+                        if result.data and result.data.get("type") == "skill_activated":
+                            await self.client.chat(
+                                f"/{result.data['skill_name']}\n\n{result.data['content']}"
+                            )
                     continue
 
                 # Chat

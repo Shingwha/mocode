@@ -1,6 +1,6 @@
-"""Command utility functions"""
+"""Command utility functions - pure logic, no UI"""
 
-from typing import Callable, TypeVar
+from typing import TypeVar
 
 T = TypeVar("T")
 
@@ -8,11 +8,10 @@ T = TypeVar("T")
 def resolve_selection(
     arg: str,
     items: list[str],
-    interactive_func: Callable[[], str | None],
 ) -> str | None:
-    """Resolve selection: interactive when no arg, index/name when arg provided."""
+    """Resolve selection: return None when no arg, index/name when arg provided."""
     if not arg:
-        return interactive_func()
+        return None
 
     if arg.isdigit():
         num = int(arg)
@@ -27,13 +26,10 @@ def parse_selection_arg(
     arg: str,
     items: list[T],
     *,
-    interactive_func: Callable[[], T | None] | None = None,
-    error_handler: Callable[[str], None] | None = None,
+    error_handler=None,
 ) -> T | None:
     """Parse command argument for selection (supports index, direct value)."""
     if not arg:
-        if interactive_func:
-            return interactive_func()
         return None
 
     if arg.isdigit():

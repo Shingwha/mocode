@@ -1,52 +1,38 @@
-"""命令系统"""
+"""CLI commands - re-exports core infrastructure and registers CLI wrappers."""
 
-from .base import Command, CommandContext, CommandRegistry, command
-from .builtin import ClearCommand, HelpCommand, QuitCommand
-from .compact import CompactCommand
-from .dream import DreamCommand
-from .executor import CommandExecutor
-from .mode import ModeCommand
-from .plugin import PluginCommand
-from .provider import ProviderCommand
-from .session import SessionCommand
-from .skills import SkillsCommand
+from ...core.commands import (
+    Command,
+    CommandContext,
+    CommandRegistry,
+    CommandResult,
+    CommandExecutor,
+    command,
+    resolve_selection,
+    parse_selection_arg,
+)
+from .wrappers import (
+    CLIQuitCommand as QuitCommand,
+    CLIClearCommand as ClearCommand,
+    CLIHelpCommand as HelpCommand,
+    CLIModeCommand as ModeCommand,
+    CLIProviderCommand as ProviderCommand,
+    CLISessionCommand as SessionCommand,
+    CLIDreamCommand as DreamCommand,
+    CLIPluginCommand as PluginCommand,
+    CLISkillsCommand as SkillsCommand,
+    CLICompactCommand as CompactCommand,
+)
 
 __all__ = [
-    "Command",
-    "CommandContext",
-    "CommandRegistry",
-    "CommandExecutor",
-    "command",
-    "register_builtin_commands",
-    # 内置命令
-    "QuitCommand",
-    "ClearCommand",
-    "CompactCommand",
-    "HelpCommand",
-    "ModeCommand",
-    "ProviderCommand",
-    "SkillsCommand",
-    "SessionCommand",
-    "PluginCommand",
-    "DreamCommand",
+    "Command", "CommandContext", "CommandRegistry", "CommandResult",
+    "CommandExecutor", "command",
+    "QuitCommand", "ClearCommand", "HelpCommand", "CompactCommand",
+    "ModeCommand", "ProviderCommand", "SkillsCommand",
+    "SessionCommand", "PluginCommand", "DreamCommand",
 ]
 
-# 自动注册的内置命令
 BUILTIN_COMMANDS = [
-    QuitCommand,
-    ClearCommand,
-    CompactCommand,
-    HelpCommand,
-    ModeCommand,  # 新添加
-    ProviderCommand,
-    SkillsCommand,
-    SessionCommand,
-    PluginCommand,
-    DreamCommand,
+    QuitCommand, ClearCommand, CompactCommand, HelpCommand,
+    ModeCommand, ProviderCommand, SkillsCommand,
+    SessionCommand, PluginCommand, DreamCommand,
 ]
-
-
-def register_builtin_commands(registry):
-    """注册所有内置命令"""
-    for cmd_class in BUILTIN_COMMANDS:
-        registry.register(cmd_class())

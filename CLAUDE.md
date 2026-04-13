@@ -24,11 +24,12 @@ uv sync
 **Layered**: `MocodeCore` (orchestrator/SDK) → `AsyncAgent` (LLM loop). `MocodeClient` is a backward-compatibility alias for `MocodeCore`. Core is UI-independent.
 
 **Key Components**:
-- `core/` - Business logic, event bus, config, permissions, sessions, prompts
+- `core/` - Business logic, event bus, config, permissions, sessions, prompts, commands
+- `core/commands/` - Command infrastructure (CommandContext, CommandResult, CommandRegistry)
 - `tools/` - Tool registry with `@tool` decorator
 - `plugins/` - Hook system, plugin lifecycle, isolated environments
 - `skills/` - Modular instructions loaded on demand
-- `cli/` - Terminal interface, slash commands, UI components
+- `cli/` - Terminal interface, CLI command wrappers, UI components
 - `gateway/` - Third-party platform integration (WeChat, etc.)
 
 **Event-Driven**: `EventBus` decouples agent from UI. Key events: `TEXT_STREAMING`, `TOOL_START/COMPLETE`, `MESSAGE_ADDED`, `ERROR`, `AGENT_IDLE`.
@@ -89,14 +90,16 @@ Params: `"type"` (string, number, boolean, array, object), add `?` for optional.
 Subclass `Command` and use `@command`:
 
 ```python
+from mocode.core.commands.base import Command, CommandContext, command
+from mocode.core.commands.result import CommandResult
+
 @command("/mycmd", description="Description")
 class MyCommand(Command):
-    def execute(self, ctx: CommandContext) -> bool:
-        ctx.layout.add_message("Done")
-        return True
+    def execute(self, ctx: CommandContext) -> CommandResult:
+        return CommandResult(success=True, message="Done")
 ```
 
-Add to `cli/commands/__init__.py::BUILTIN_COMMANDS`.
+Register in `core/commands/__init__.py::BUILTIN_COMMANDS` or in `cli/commands/__init__.py::BUILTIN_COMMANDS` for CLI-wrapped versions.
 
 ### Skills
 

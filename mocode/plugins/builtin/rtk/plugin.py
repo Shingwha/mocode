@@ -52,7 +52,8 @@ _rtk_command = None
 
 def _create_rtk_command():
     """Create RTK command class lazily."""
-    from mocode.cli.commands.base import Command, CommandContext, command
+    from mocode.core.commands.base import Command, CommandContext, command
+    from mocode.core.commands.result import CommandResult
     from mocode.cli.ui.prompt import select, MenuItem, is_cancelled
     from mocode.cli.ui.styles import BOLD, RESET
 
@@ -60,7 +61,7 @@ def _create_rtk_command():
     class RtkCommand(Command):
         """RTK management command"""
 
-        def execute(self, ctx: CommandContext) -> bool:
+        def execute(self, ctx: CommandContext) -> CommandResult:
             args = ctx.args.split() if ctx.args else []
 
             if not args:
@@ -69,21 +70,18 @@ def _create_rtk_command():
             subcommand = args[0]
 
             if subcommand == "status":
-                self._show_status(ctx)
+                return self._show_status(ctx)
             elif subcommand == "install":
-                self._install(ctx)
+                return self._install(ctx)
             elif subcommand == "gain":
-                self._show_gain(ctx)
+                return self._show_gain(ctx)
             elif subcommand == "help":
-                self._show_help(ctx)
+                return self._show_help(ctx)
             else:
-                if ctx.display:
-                    ctx.display.error(f"Unknown subcommand: {subcommand}")
                 self._show_help(ctx)
+                return CommandResult(success=False, message=f"Unknown subcommand: {subcommand}")
 
-            return True
-
-        def _show_menu(self, ctx: CommandContext) -> bool:
+        def _show_menu(self, ctx: CommandContext) -> CommandResult:
             choices = [
                 ("status", "Status - Show RTK installation and plugin status"),
                 ("gain", "Gain - Show token savings statistics"),
@@ -95,63 +93,55 @@ def _create_rtk_command():
 
             if not is_cancelled(selected):
                 if selected == "status":
-                    self._show_status(ctx)
+                    return self._show_status(ctx)
                 elif selected == "gain":
-                    self._show_gain(ctx)
+                    return self._show_gain(ctx)
                 elif selected == "install":
-                    self._install(ctx)
+                    return self._install(ctx)
 
-            return True
+            return CommandResult()
 
-        def _show_status(self, ctx: CommandContext):
+        def _show_status(self, ctx: CommandContext) -> CommandResult:
             from mocode.plugins import PluginState
 
             is_installed, message = check_installation()
             info = ctx.client.get_plugin_info("rtk")
             is_enabled = info and info.state == PluginState.ENABLED
 
-            if not ctx.display:
-                return
-
             if is_installed and is_enabled:
-                ctx.display.success("RTK: Installed, Plugin Enabled")
+                return CommandResult(success=True, message="RTK: Installed, Plugin Enabled")
             elif is_installed and not is_enabled:
-                ctx.display.info("RTK: Installed, Plugin Disabled")
+                return CommandResult(message="RTK: Installed, Plugin Disabled")
             else:
-                ctx.display.error("RTK: Not installed")
+                result = CommandResult(success=False, message="RTK: Not installed")
+                if not is_installed:
+                    result.data = {"detail": message}
+                return result
 
-            if not is_installed:
-                ctx.display.command_output(f"  {message}")
-
-        def _install(self, ctx: CommandContext):
+        def _install(self, ctx: CommandContext) -> CommandResult:
             import platform
             from .wrapper import MOCODE_BIN_DIR, get_install_command
 
-            if ctx.display:
-                ctx.display.info("Installing RTK...")
-
             if install_rtk():
-                if ctx.display:
-                    ctx.display.success("RTK installed successfully!")
-                    if platform.system() == "Windows":
-                        ctx.display.command_output(
-                            f'Add to PATH: setx PATH "%PATH%;{MOCODE_BIN_DIR}"'
-                        )
+                msg = "RTK installed successfully!"
+                if platform.system() == "Windows":
+                    msg += f'\nAdd to PATH: setx PATH "%PATH%;{MOCODE_BIN_DIR}"'
+                return CommandResult(success=True, message=msg)
             else:
                 cmd = get_install_command()
-                if ctx.display:
-                    ctx.display.error("Auto-install only supported on Windows.")
-                    ctx.display.command_output(f"Install manually with: {cmd}")
+                return CommandResult(
+                    success=False,
+                    message="Auto-install only supported on Windows.",
+                    data={"manual_command": f"Install manually with: {cmd}"},
+                )
 
-        def _show_gain(self, ctx: CommandContext):
+        def _show_gain(self, ctx: CommandContext) -> CommandResult:
             gain = get_gain()
-            if ctx.display:
-                if gain:
-                    ctx.display.info(gain)
-                else:
-                    ctx.display.error("RTK not installed or no statistics available.")
+            if gain:
+                return CommandResult(message=gain)
+            return CommandResult(success=False, message="RTK not installed or no statistics available.")
 
-        def _show_help(self, ctx: CommandContext):
+        def _show_help(self, ctx: CommandContext) -> CommandResult:
             help_text = f"""{BOLD}RTK (Rust Token Killer){RESET} - Compress command output to save tokens
 
 {BOLD}Usage:{RESET} /rtk <command>
@@ -169,8 +159,7 @@ def _create_rtk_command():
 
 {BOLD}GitHub:{RESET} https://github.com/rtk-ai/rtk
 """
-            if ctx.display:
-                ctx.display.command_output(help_text)
+            return CommandResult(data={"help": help_text})
 
     return RtkCommand()
 

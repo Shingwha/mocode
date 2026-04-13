@@ -11,7 +11,7 @@ from .venv_manager import PluginVenvManager, VenvError
 
 if TYPE_CHECKING:
     from ..tools.base import Tool
-    from ..cli.commands.base import Command
+    from ..core.commands.base import Command
     from ..core.prompt.builder import PromptBuilder, Section
 
 # Type alias for tool replacement tracking: (plugin_name, original_tool)
@@ -372,7 +372,7 @@ class PluginManager:
 
     def _register_commands(self, plugin_name: str, commands: list["Command"]) -> None:
         """Register commands from a plugin"""
-        from ..cli.commands.base import CommandRegistry
+        from ..core.commands.base import CommandRegistry
 
         command_names = []
 
@@ -384,7 +384,7 @@ class PluginManager:
 
     def _unregister_commands(self, plugin_name: str) -> None:
         """Unregister commands from a plugin"""
-        from ..cli.commands.base import CommandRegistry
+        from ..core.commands.base import CommandRegistry
 
         command_names = self._plugin_commands.pop(plugin_name, [])
 
