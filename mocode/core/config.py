@@ -65,6 +65,7 @@ class Config:
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     max_tokens: int = 8192
     tool_result_limit: int = 25000  # Max characters for tool results (0 = no limit)
+    tool_timeout: int = 120  # Max seconds for a single tool execution
     gateway: dict = field(default_factory=dict)  # Gateway configuration
     compact: CompactConfig = field(default_factory=CompactConfig)
     dream: DreamConfig = field(default_factory=DreamConfig)
@@ -207,6 +208,10 @@ class Config:
         if "tool_result_limit" in data:
             self.tool_result_limit = data["tool_result_limit"]
 
+        # 加载工具超时
+        if "tool_timeout" in data:
+            self.tool_timeout = data["tool_timeout"]
+
         # 加载 Gateway 配置
         if "gateway" in data:
             self.gateway = data["gateway"]
@@ -230,6 +235,7 @@ class Config:
             "permission": self.permission.to_dict(),
             "max_tokens": self.max_tokens,
             "tool_result_limit": self.tool_result_limit,
+            "tool_timeout": self.tool_timeout,
             "gateway": self.gateway,
             "compact": asdict(self.compact),
             "dream": asdict(self.dream),

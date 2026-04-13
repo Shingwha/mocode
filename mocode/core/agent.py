@@ -255,9 +255,17 @@ class AsyncAgent:
             from ..tools.context import set_tool_context, ToolContext
             set_tool_context(ToolContext(config=self.config))
 
-        result = await self._call_with_interrupt_check(
-            asyncio.to_thread(ToolRegistry.run, tool_name, tool_args)
-        )
+        timeout = self.config.tool_timeout if self.config else 120
+        try:
+            result = await asyncio.wait_for(
+                self._call_with_interrupt_check(
+                    asyncio.to_thread(ToolRegistry.run, tool_name, tool_args)
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            self._emit_tool_complete(tool_name, f"Tool timed out after {timeout}s")
+            return f"error: tool '{tool_name}' timed out after {timeout}s"
 
         if result is None:
             return self._emit_tool_denied(tool_name, tool_args, "interrupted")
