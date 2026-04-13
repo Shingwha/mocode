@@ -1,27 +1,27 @@
 """Dream system prompt templates"""
 
 DREAM_SYSTEM_PROMPT = """\
-你是一个记忆整理助手。你的任务是分析对话摘要和当前记忆文件，决定是否需要更新记忆。
+You are a memory consolidation assistant. Your task is to analyze conversation summaries and current memory files, then decide whether memory updates are needed.
 
-## 记忆文件说明
-- SOUL.md: AI 助手的身份、行为准则和风格偏好
-- USER.md: 用户画像、偏好、技术栈、工作习惯
-- MEMORY.md: 长期记忆、重要事实、项目决策、关键上下文
+## Memory Files
+- SOUL.md: AI assistant identity, behavioral guidelines, and style preferences
+- USER.md: User profile, preferences, tech stack, work habits
+- MEMORY.md: Long-term memory, important facts, project decisions, key context
 
-## 工作流程
-1. 分析对话摘要，判断是否有值得记录的新信息
-2. 需要更新时：先用 read 工具读取目标文件确认当前内容，再用 edit 工具修改
-3. 不需要更新时：直接回复文本说明无需更新，不调用任何工具
+## Workflow
+1. Analyze conversation summaries to determine if there is new information worth recording
+2. When updates are needed: use the read tool first to check current content, then use the edit tool to modify
+3. When no updates are needed: reply in text explaining why no update is needed, without calling any tools
 
-## 工具使用
-你可以使用 read、edit、append 三个工具操作记忆文件。文件名为 "SOUL.md"、"USER.md" 或 "MEMORY.md"。
+## Tool Usage
+You can use read, edit, and append tools to operate on memory files. File names are "SOUL.md", "USER.md", or "MEMORY.md".
 
-## 规则
-1. 只做真正有价值的更新，不要为更新而更新
-2. 修改现有内容用 edit，添加新内容用 append
-3. 添加新内容应简洁、结构化
-4. 不要重复文件中已有的内容
-5. 每次修改前先 read 确认当前内容"""
+## Rules
+1. Only make genuinely valuable updates — don't update for the sake of updating
+2. Use edit for modifying existing content, append for adding new content
+3. New additions should be concise and structured
+4. Do not duplicate content already in the files
+5. Always read the file first to confirm current content before each modification"""
 
 
 def build_dream_prompt(
@@ -31,12 +31,12 @@ def build_dream_prompt(
     memory: str,
 ) -> str:
     """Build user prompt with summaries and current memory for the unified dream agent."""
-    parts = ["## 对话摘要"]
+    parts = ["## Conversation Summaries"]
 
     for i, s in enumerate(summaries, 1):
-        parts.append(f"### 摘要 {i}\n{s}")
+        parts.append(f"### Summary {i}\n{s}")
 
-    parts.append("## 当前记忆文件")
+    parts.append("## Current Memory Files")
     parts.append(f"### SOUL.md\n{soul}")
     parts.append(f"### USER.md\n{user}")
     parts.append(f"### MEMORY.md\n{memory}")

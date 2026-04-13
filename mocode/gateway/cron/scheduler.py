@@ -104,15 +104,15 @@ class CronScheduler:
     @staticmethod
     def _build_cron_prompt(job: CronJob) -> str:
         parts = [
-            "一个定时任务被触发了，请合理完成这个任务。",
+            "A scheduled task has been triggered. Please complete this task appropriately.",
             "",
-            f"标题：{job.name}",
-            f"任务内容：{job.prompt}",
+            f"Title: {job.name}",
+            f"Task: {job.prompt}",
             "",
-            "你的最终回复将发给用户，请合理调用工具完成这个任务，最后进行回复。",
+            "Your final response will be sent to the user. Please use tools as needed to complete the task, then respond.",
             "",
-            "示例：如果任务内容是\"提醒用户去睡觉\"，你应该直接回复：",
-            "\"🌙 夜深了，该休息了。晚安~\"",
+            "Example: If the task is \"remind the user to sleep\", you should reply:",
+            "\"It's getting late, time to rest. Good night!\"",
         ]
         return "\n".join(parts)
 

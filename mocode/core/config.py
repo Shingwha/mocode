@@ -105,13 +105,13 @@ class Config:
         """初始化默认供应商"""
         self.providers = {
             "zhipu": ProviderConfig(
-                name="智谱",
+                name="Zhipu",
                 base_url="https://open.bigmodel.cn/api/coding/paas/v4/",
                 api_key="",
                 models=["glm-5.1", "glm-5"],
             ),
             "step": ProviderConfig(
-                name="阶跃星辰",
+                name="Step",
                 base_url="https://api.stepfun.com/step_plan/v1",
                 api_key="",
                 models=["step-3.5-flash", "step-3.5-flash-2603"],

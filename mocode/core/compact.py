@@ -18,30 +18,30 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONTEXT_WINDOW = 128_000
 
 SUMMARY_SYSTEM_PROMPT = """\
-你是一个对话压缩助手。将以下编码助手对话历史压缩为结构化摘要。
+You are a conversation compression assistant. Compress the following coding assistant conversation history into a structured summary.
 
-## 压缩原则
-- 保留所有事实性信息，丢弃寒暄和重复
-- 具体优于笼统：保留文件路径、函数名、变量名、错误信息，而非模糊描述
-- 每个条目用一句话说清"做了什么"和"为什么"
+## Compression Principles
+- Preserve all factual information; discard pleasantries and repetition
+- Specific over vague: keep file paths, function names, variable names, error messages rather than vague descriptions
+- Each entry should clearly state "what was done" and "why" in one sentence
 
-## 输出格式（严格按此结构）
+## Output Format (strictly follow this structure)
 
-[用户需求]
-用户要求做什么，原始需求的简要描述。
+[User Requirements]
+What the user asked for — a brief description of the original requirements.
 
-[已完成的工作]
-逐条列出对话中已经完成的事项：
-- 具体做了什么（涉及哪些文件、函数、模块）+ 关键决策理由
-- 遇到的错误及解决方案
-- 用户明确表达的技术偏好
+[Completed Work]
+List each completed item from the conversation:
+- What was done specifically (which files, functions, modules were involved) + key decision rationale
+- Errors encountered and their solutions
+- Technical preferences explicitly stated by the user
 
-[当前状态]
-- 最后在做什么，进行到哪一步
-- 当前代码/项目的关键状态（修改了哪些文件、架构变化、未提交的改动等）
+[Current State]
+- What was being worked on last, and progress so far
+- Key state of the code/project (modified files, architectural changes, uncommitted changes, etc.)
 
-[待办事项]
-- 尚未开始或未完成的工作"""
+[Pending Items]
+- Work not yet started or not yet completed"""
 
 
 class CompactManager:
@@ -150,9 +150,9 @@ class CompactManager:
                     {
                         "role": "user",
                         "content": (
-                            "请将以下编码助手对话历史压缩为结构化摘要。\n"
-                            "重点：保留具体事实（文件路径、函数名、错误信息、决策理由），"
-                            "丢弃寒暄和重复内容。不要遗漏用户需求中提到的任何功能点。\n\n"
+                            "Compress the following coding assistant conversation history into a structured summary.\n"
+                            "Focus: preserve specific facts (file paths, function names, error messages, decision rationale), "
+                            "discard pleasantries and repetition. Do not omit any feature points mentioned in the user's requirements.\n\n"
                             f"{messages_text}"
                         ),
                     }

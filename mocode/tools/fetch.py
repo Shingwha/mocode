@@ -49,7 +49,7 @@ def register_fetch_tools():
     ToolRegistry.register(
         Tool(
             "fetch",
-            "获取网页内容并转换为 Markdown 格式。只需提供 URL，工具会自动通过 markdown.new 服务转换。",
+            "Fetch a webpage and convert its content to Markdown. Just provide the URL; the tool converts it automatically via the markdown.new service.",
             {"url": "string", "timeout": "number?"},
             _fetch,
         )
