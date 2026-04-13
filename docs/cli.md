@@ -17,12 +17,12 @@
     └─────────────────┘  └────┬─────┘  └──────┘  └────┬─────┘  └──────────────┘
                               │                       │               │
               ┌───────────────┘                       │               │
-              v 8 个内置命令                            │               │
+              v 7 个内置命令                            │               │
     ┌──────────────────┐                              │               │
     │ /help /provider  │                              │               │
     │ /mode  /session  │                              │               │
     │ /clear /skills   │                              │               │
-    │ /plugin /exit    │                              │               │
+    │ /exit            │                              │               │
     └──────────────────┘                              │               │
                                                       v               v
                                               ┌─────────────────────────┐
@@ -30,7 +30,7 @@
                                               │    (core/orchestrator)   │
                                               │  AsyncAgent · EventBus  │
                                               │  Config · Sessions      │
-                                              │  Plugins · Skills       │
+                                              │  Skills       │
                                               └─────────────────────────┘
 ```
 
@@ -49,7 +49,6 @@ cli/
 │   ├── mode.py              # ModeCommand (/mode)
 │   ├── session.py           # SessionCommand (/session)
 │   ├── skills.py            # SkillsCommand (/skills)
-│   ├── plugin.py            # PluginCommand (/plugin)
 │   └── utils.py             # resolve_selection, parse_selection_arg
 ├── events/
 │   └── handler.py           # CLIEventHandler (EventBus → Display 桥接)
@@ -72,7 +71,7 @@ main() → _run_cli() → CLIApp.run()
   │
   ├─ _initialize()
   │    清屏 → Display 初始化 → 注册工具 → 注册命令
-  │    创建 MocodeCore (含 agent/provider/plugins)
+  │    创建 MocodeCore (含 agent/provider/skills)
   │    创建 CLIEventHandler (订阅 EventBus)
   │    启动 ESCMonitor → 显示欢迎语
   │
@@ -90,7 +89,7 @@ main() → _run_cli() → CLIApp.run()
 
 ### 注册与派发
 
-**注册**: `BUILTIN_COMMANDS` 列举 8 个命令类，`register_builtin_commands()` 实例化并注册到 `CommandRegistry`（单例）。每个命令通过 `@command(name, *aliases, description=...)` 声明元数据。
+**注册**: `BUILTIN_COMMANDS` 列举 7 个命令类，`register_builtin_commands()` 实例化并注册到 `CommandRegistry`（单例）。每个命令通过 `@command(name, *aliases, description=...)` 声明元数据。
 
 **派发** (`CommandExecutor.execute()`):
 1. `registry.find_matches(name)` 前缀匹配
@@ -122,7 +121,6 @@ main() → _run_cli() → CLIApp.run()
 | `/session` | `/s` | session.py | 恢复历史会话 |
 | `/clear` | `/c` | builtin.py | 清空对话（自动保存 session） |
 | `/skills` | | skills.py | 安装/卸载/更新/激活技能 |
-| `/plugin` | | plugin.py | 安装/卸载/更新/开关插件 |
 | `/exit` | `/q`, `/quit` | builtin.py | 退出 |
 
 ## UI 组件

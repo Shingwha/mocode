@@ -1,6 +1,6 @@
 """Core layer - business logic, independent of UI"""
 
-from .config import Config, PluginConfig, ProviderConfig, CurrentConfig, CompactConfig
+from .config import Config, ProviderConfig, CurrentConfig, CompactConfig
 from .events import EventBus, EventType, Event
 from .agent import AsyncAgent
 from .prompt import PromptBuilder, Section, default_prompt, minimal_prompt
@@ -17,7 +17,6 @@ from .permission import (
 )
 from .interrupt import InterruptToken
 from .session import Session, SessionManager
-from .plugin_coordinator import PluginCoordinator
 from .orchestrator import MocodeCore, SessionState
 from .utils import preview_result
 from .installer import (
@@ -40,7 +39,6 @@ from .commands import (
 
 __all__ = [
     "Config",
-    "PluginConfig",
     "ProviderConfig",
     "CurrentConfig",
     "CompactConfig",
@@ -69,7 +67,6 @@ __all__ = [
     "SessionManager",
     "SessionState",
     # Coordinators
-    "PluginCoordinator",
     "MocodeCore",
     # Installer base
     "GitHubInstaller",

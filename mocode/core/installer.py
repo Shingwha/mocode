@@ -10,7 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable
 
-from ..plugins.url_utils import (
+from .utils.url_utils import (
     RepoInfo,
     parse_github_url,
     fetch_repo_tree,

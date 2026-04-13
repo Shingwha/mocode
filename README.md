@@ -103,8 +103,6 @@ Create `~/.mocode/config.json`:
 | `/session` | `/s` | Manage sessions |
 | `/clear` | `/c` | Clear history |
 | `/skills` | | List skills |
-| `/plugin` | | Manage plugins |
-| `/rtk` | | Token optimizer |
 | `/exit` | `/q`, `/quit` | Exit |
 
 ### Context Compaction
@@ -155,7 +153,6 @@ See [Gateway Documentation](docs/gateway.md) for details.
 ## Documentation
 
 - [CLI Commands](docs/cli.md)
-- [Plugin System](docs/plugins.md)
 - [Gateway](docs/gateway.md)
 
 ## License

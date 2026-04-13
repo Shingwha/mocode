@@ -12,12 +12,9 @@ from .message_queue import MessageQueue
 from .permission import DefaultPermissionHandler, PermissionHandler, PermissionChecker
 from .session import Session, SessionManager
 from .prompt import PromptBuilder, default_prompt
-from ..plugins import HookRegistry, PluginInfo, PluginManager
-from ..plugins.context import PluginContext
 from ..providers import AsyncOpenAIProvider
 from ..tools import register_all_tools
 from ..skills import SkillManager
-from .plugin_coordinator import PluginCoordinator
 from .compact import CompactManager
 from .dream import DreamManager, DreamScheduler
 
@@ -49,12 +46,9 @@ class MocodeCore:
         permission_handler: PermissionHandler | None = None,
         permission_checker: PermissionChecker | None = None,
         prompt_builder: "PromptBuilder | None" = None,
-        hook_registry: HookRegistry | None = None,
-        plugin_manager: PluginManager | None = None,
         workdir: str | None = None,
         persistence: bool = True,
         auto_register_tools: bool = True,
-        auto_discover_plugins: bool = True,
     ):
         """Initialize mocode core
 
@@ -66,12 +60,9 @@ class MocodeCore:
             permission_handler: Handler for permission prompts (used to build PermissionChecker if not provided)
             permission_checker: Checker for permission decisions (built from handler if not provided)
             prompt_builder: Builder for system prompts
-            hook_registry: Registry for hooks
-            plugin_manager: Plugin manager instance
             workdir: Working directory
             persistence: Whether to persist config changes
             auto_register_tools: Whether to auto-register tools
-            auto_discover_plugins: Whether to auto-discover plugins
         """
         # Register tools (idempotent)
         if auto_register_tools:
@@ -99,9 +90,6 @@ class MocodeCore:
                 handler=handler,
                 config=self._config,
             )
-
-        # Hook registry
-        self._hook_registry = hook_registry or HookRegistry()
 
         # Prompt builder
         self._prompt_builder = prompt_builder or default_prompt()
@@ -145,23 +133,6 @@ class MocodeCore:
             mark_unsaved_fn=self._mark_unsaved,
         )
 
-        # Plugin management
-        self._plugin_manager = plugin_manager or PluginManager(
-            hook_registry=self._hook_registry,
-            create_plugin_context=self.create_plugin_context,
-            prompt_builder=self._prompt_builder,
-        )
-        self._plugin_coordinator = PluginCoordinator(
-            plugin_manager=self._plugin_manager,
-            config=self._config,
-        )
-
-        # Auto-discover plugins
-        if auto_discover_plugins:
-            self._plugin_coordinator.initialize()
-            # Rebuild prompt to include plugin sections
-            self._rebuild_prompt()
-
     def _on_config_changed(self) -> None:
         """Called after config changes are persisted.
         Updates agent provider to match new config."""
@@ -192,7 +163,6 @@ class MocodeCore:
             interrupt_token=self._interrupt_token,
             config=self._config,
             permission_checker=self._permission_checker,
-            hook_registry=self._hook_registry,
         )
 
     def _switch_provider(self) -> None:
@@ -281,19 +251,6 @@ class MocodeCore:
     def queue_message(self, message: str, conversation_id: str | None = None) -> None:
         """Non-blocking: add message to queue for later processing"""
         self._message_queue.enqueue(message, conversation_id)
-
-    def create_plugin_context(self) -> PluginContext:
-        """Create context for plugins"""
-        return PluginContext(
-            event_bus=self._event_bus,
-            on_event=self._event_bus.on,
-            inject_message=self.inject_message,
-            queue_message=self.queue_message,
-            get_messages=lambda: self._agent.messages.copy(),
-            workdir=self._workdir,
-            is_agent_busy=lambda: self._message_queue.is_processing,
-            current_conversation_id=self._agent.conversation_id,
-        )
 
     def interrupt(self) -> None:
         """Interrupt current operation"""
@@ -460,36 +417,6 @@ class MocodeCore:
     def update_system_prompt(self, prompt: str, clear_history: bool = False) -> None:
         """Directly update system prompt"""
         self._agent.update_system_prompt(prompt, clear_history=clear_history)
-
-    # Plugin operations
-
-    def list_plugins(self) -> list[PluginInfo]:
-        """List all discovered plugins"""
-        return self._plugin_coordinator.list_plugins()
-
-    async def enable_plugin(self, name: str) -> bool:
-        """Enable a plugin"""
-        success = await self._plugin_coordinator.enable_plugin(name)
-        if success:
-            self._config.save()
-            self._rebuild_prompt()
-        return success
-
-    async def disable_plugin(self, name: str) -> bool:
-        """Disable a plugin"""
-        success = await self._plugin_coordinator.disable_plugin(name)
-        if success:
-            self._config.save()
-            self._rebuild_prompt()
-        return success
-
-    def get_plugin_info(self, name: str) -> PluginInfo | None:
-        """Get plugin info by name"""
-        return self._plugin_coordinator.get_plugin_info(name)
-
-    def discover_plugins(self) -> list[PluginInfo]:
-        """Re-discover plugins after installation"""
-        return self._plugin_coordinator.discover_plugins()
 
     # Dream operations
 

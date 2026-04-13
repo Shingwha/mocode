@@ -9,18 +9,6 @@ from .core import PermissionChecker, CheckOutcome, CheckResult, PermissionHandle
 from .core import InterruptToken
 from .core.session import Session, SessionManager
 from .core.prompt import PromptBuilder, Section, default_prompt, minimal_prompt
-from .plugins import (
-    Hook,
-    HookContext,
-    HookPoint,
-    Plugin,
-    PluginManager,
-    PluginInfo,
-    PluginMetadata,
-    PluginState,
-    HookRegistry,
-    hook,
-)
 
 # Backward compatibility alias
 MocodeClient = MocodeCore
@@ -53,15 +41,4 @@ __all__ = [
     "Section",
     "default_prompt",
     "minimal_prompt",
-    # Plugin system
-    "Hook",
-    "HookContext",
-    "HookPoint",
-    "Plugin",
-    "PluginManager",
-    "PluginInfo",
-    "PluginMetadata",
-    "PluginState",
-    "HookRegistry",
-    "hook",
 ]

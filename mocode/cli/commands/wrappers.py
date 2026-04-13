@@ -16,18 +16,14 @@ from ...core.commands import (
     ProviderCommand as CoreProviderCommand,
     SessionCommand as CoreSessionCommand,
     DreamCommand as CoreDreamCommand,
-    PluginCommand as CorePluginCommand,
     SkillsCommand as CoreSkillsCommand,
     CompactCommand as CoreCompactCommand,
     HelpCommand as CoreHelpCommand,
     ClearCommand as CoreClearCommand,
     QuitCommand as CoreQuitCommand,
 )
-from ...plugins import PluginState
-from ...plugins.installer import PluginInstaller
 from ...skills.manager import SkillManager
 from ...skills.installer import SkillInstaller
-from ...paths import PLUGINS_DIR
 from ..ui.prompt import (
     select, ask, confirm, Wizard,
     MenuAction, MenuItem, is_cancelled, is_action,
@@ -393,79 +389,6 @@ class CLIDreamCommand(CoreDreamCommand):
         if is_cancelled(selected_id):
             return None
         return next((s for s in snapshots if s["id"] == selected_id), None)
-
-
-_STATUS_FMT = {
-    PluginState.DISCOVERED: f"{DIM}discovered{RESET}",
-    PluginState.LOADED: f"{YELLOW}loaded{RESET}",
-    PluginState.ENABLED: f"{GREEN}enabled{RESET}",
-    PluginState.DISABLED: f"{YELLOW}disabled{RESET}",
-    PluginState.ERROR: f"{RED}error{RESET}",
-}
-
-
-class CLIPluginCommand(CorePluginCommand):
-
-    def execute(self, ctx: CommandContext) -> CommandResult:
-        arg = ctx.args.strip()
-
-        # Route subcommands
-        result = self._route_subcommand(ctx, arg, self._SUBCOMMANDS)
-        if result is not None:
-            if result.data and result.data.get("action") == "install_multi":
-                return self._multi_install(ctx, result, PluginInstaller(PLUGINS_DIR), ctx.client.discover_plugins)
-            _render_msg(result)
-            return result
-
-        # Default: list and toggle
-        plugins = ctx.client.list_plugins()
-        if not plugins:
-            print(f"{DIM}No plugins discovered.{RESET}")
-            return CommandResult()
-
-        if not arg:
-            selected = self._select_plugin(plugins)
-            if selected:
-                result = self._toggle_plugin(ctx, selected.name)
-                _render_msg(result)
-                return result
-            return CommandResult()
-
-        result = self._toggle_plugin(ctx, arg)
-        _render_msg(result)
-        return result
-
-    def _show_info(self, ctx, name: str) -> CommandResult:
-        result = super()._show_info(ctx, name)
-        if result.data and result.data.get("plugin"):
-            p = result.data["plugin"]
-            print(f"{CYAN}Plugin: {p['name']}{RESET}")
-            print(f"Status: {_STATUS_FMT.get(PluginState(p['status']), p['status'])}")
-            print(f"Path: {p['path']}")
-            for key in ("version", "description", "author"):
-                if key in p:
-                    print(f"{key.capitalize()}: {p[key]}")
-            if "dependencies" in p:
-                print(f"Dependencies: {', '.join(p['dependencies'])}")
-            if "permissions" in p:
-                print(f"Permissions: {', '.join(p['permissions'])}")
-            if "error" in p:
-                print(f"{RED}Error: {p['error']}{RESET}")
-        return result
-
-    def _select_plugin(self, plugins):
-        choices = []
-        for p in plugins:
-            status = _STATUS_FMT.get(p.state, str(p.state.value))
-            version = p.metadata.version if p.metadata else "-"
-            desc = f" - {p.metadata.description}" if p.metadata and p.metadata.description else ""
-            choices.append((p.name, f"{p.name} v{version} [{status}]{desc}"))
-        choices.append(MenuItem.exit_())
-
-        selected = select("Select plugin", choices)
-        if is_cancelled(selected):
-            return None
-        return next((p for p in plugins if p.name == selected), None)
 
 
 class CLISkillsCommand(CoreSkillsCommand):

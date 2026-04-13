@@ -10,7 +10,6 @@ from .dream import DreamCommand
 from .mode import ModeCommand
 from .provider import ProviderCommand
 from .session import SessionCommand
-from .plugin import PluginCommand
 from .skills import SkillsCommand
 
 __all__ = [
@@ -33,7 +32,6 @@ __all__ = [
     "ModeCommand",
     "ProviderCommand",
     "SessionCommand",
-    "PluginCommand",
     "SkillsCommand",
 ]
 
@@ -47,7 +45,6 @@ BUILTIN_COMMANDS = [
     ProviderCommand,
     SkillsCommand,
     SessionCommand,
-    PluginCommand,
     DreamCommand,
 ]
 

@@ -8,7 +8,6 @@ from ..tools.base import ToolRegistry
 from .events import EventType, EventBus
 from .permission import CheckOutcome, PermissionChecker
 from .interrupt import InterruptToken
-from ..plugins import HookRegistry, HookPoint
 
 if TYPE_CHECKING:
     from .config import Config
@@ -27,7 +26,6 @@ class AsyncAgent:
         event_bus: EventBus | None = None,
         interrupt_token: InterruptToken | None = None,
         config: "Config | None" = None,
-        hook_registry: HookRegistry | None = None,
     ):
         self.provider = provider
         self.system_prompt = system_prompt
@@ -37,16 +35,9 @@ class AsyncAgent:
         self.event_bus = event_bus or EventBus()
         self.interrupt_token = interrupt_token
         self.config = config
-        self.hook_registry = hook_registry
         self.conversation_id: str | None = None
         self._compact_manager: CompactManager | None = None
         self._last_usage: dict | None = None
-
-    async def _trigger_hook(self, hook_point: HookPoint, data: dict):
-        """Trigger hooks, returns HookContext or None"""
-        if not self.hook_registry or not self.hook_registry.has_hooks(hook_point):
-            return None
-        return await self.hook_registry.trigger(hook_point, data)
 
     # ---- Event helpers ----
 
@@ -82,14 +73,6 @@ class AsyncAgent:
             self.messages = await self._compact_manager.compact(
                 self.messages, self.provider.model
             )
-
-        # Pre-chat hook
-        ctx = await self._trigger_hook(HookPoint.AGENT_CHAT_START, {"input": user_input})
-        if ctx:
-            if ctx.modified and ctx.result:
-                user_input = ctx.result
-            if ctx.has_error:
-                return f"Hook error: {ctx._error}"
 
         if media:
             content = self._build_user_content(user_input, media)
@@ -173,12 +156,6 @@ class AsyncAgent:
 
             self.messages.extend(tool_results)
 
-        # Post-chat hook
-        await self._trigger_hook(
-            HookPoint.AGENT_CHAT_END,
-            {"response": final_response, "messages": self.messages}
-        )
-
         return final_response
 
     @staticmethod
@@ -259,7 +236,7 @@ class AsyncAgent:
         return result
 
     async def _run_tool_async(self, tool_name: str, tool_args: dict) -> str:
-        """Execute a single tool with permission check, hooks, and interrupt support"""
+        """Execute a single tool with permission check and interrupt support"""
 
         # 1. Permission check
         if self.permission_checker:
@@ -271,22 +248,7 @@ class AsyncAgent:
                 self._emit_tool_complete(tool_name, result.user_input)
                 return result.user_input
 
-        # 2. Pre-run hook
-        ctx = await self._trigger_hook(
-            HookPoint.TOOL_BEFORE_RUN, {"name": tool_name, "args": tool_args}
-        )
-        if ctx:
-            if ctx.modified and "args" in ctx.data:
-                tool_args = ctx.data["args"]
-            if ctx.has_error:
-                return f"Hook error: {ctx._error}"
-            if ctx.result is not None:
-                result = self._apply_result_limit(ctx.result)
-                self._emit_tool_start(tool_name, tool_args)
-                self._emit_tool_complete(tool_name, result)
-                return result
-
-        # 3. Execute tool
+        # 2. Execute tool
         self._emit_tool_start(tool_name, tool_args)
 
         if self.config:
@@ -300,15 +262,7 @@ class AsyncAgent:
         if result is None:
             return self._emit_tool_denied(tool_name, tool_args, "interrupted")
 
-        # 4. Post-run hook
-        ctx = await self._trigger_hook(
-            HookPoint.TOOL_AFTER_RUN,
-            {"name": tool_name, "result": result, "args": tool_args}
-        )
-        if ctx and ctx.modified and ctx.result:
-            result = ctx.result
-
-        # 5. Truncate and emit
+        # 3. Truncate and emit
         result = self._apply_result_limit(result)
         self._emit_tool_complete(tool_name, result)
         return result

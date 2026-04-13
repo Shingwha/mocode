@@ -11,7 +11,7 @@ from ..core.installer import (
     InstallMethod,
     InstalledItemInfo,
 )
-from ..plugins.url_utils import RepoInfo, fetch_raw_file
+from ..core.utils.url_utils import RepoInfo, fetch_raw_file
 from ..paths import SKILLS_DIR
 
 

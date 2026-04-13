@@ -38,15 +38,6 @@ class ModeConfig:
     dangerous_patterns: list[str] = field(default_factory=list)
 
 
-class PluginConfig(dict):
-    """Plugin configuration - maps plugin name to 'enable' or 'disable'
-
-    Example: {"rtk": "enable", "test-plugin": "disable"}
-    """
-
-    pass
-
-
 @dataclass
 class ProviderConfig:
     """供应商配置"""
@@ -73,7 +64,6 @@ class Config:
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     max_tokens: int = 8192
-    plugins: PluginConfig = field(default_factory=PluginConfig)
     tool_result_limit: int = 25000  # Max characters for tool results (0 = no limit)
     gateway: dict = field(default_factory=dict)  # Gateway configuration
     compact: CompactConfig = field(default_factory=CompactConfig)
@@ -213,10 +203,6 @@ class Config:
         if "permission" in data:
             self.permission = PermissionConfig.from_dict(data["permission"])
 
-        # 加载 Plugin 配置
-        if "plugins" in data:
-            self.plugins = PluginConfig(data["plugins"])
-
         # 加载工具结果限制
         if "tool_result_limit" in data:
             self.tool_result_limit = data["tool_result_limit"]
@@ -243,7 +229,6 @@ class Config:
             "providers": {k: asdict(v) for k, v in self.providers.items()},
             "permission": self.permission.to_dict(),
             "max_tokens": self.max_tokens,
-            "plugins": dict(self.plugins),
             "tool_result_limit": self.tool_result_limit,
             "gateway": self.gateway,
             "compact": asdict(self.compact),

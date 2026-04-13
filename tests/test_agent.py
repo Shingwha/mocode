@@ -17,7 +17,6 @@ from mocode.core.permission import (
     DenyAllPermissionHandler,
     PermissionChecker,
 )
-from mocode.plugins import HookRegistry, HookPoint
 from mocode.tools.base import Tool, ToolRegistry
 
 
@@ -222,58 +221,6 @@ class TestPermission:
         assert result == "Done"
 
 
-class TestHooks:
-    @pytest.mark.asyncio
-    async def test_hook_before_tool(self, agent, mock_provider):
-        registry = HookRegistry()
-        agent.hook_registry = registry
-
-        def modify_args(ctx):
-            ctx.data["args"]["msg"] = "modified"
-            ctx.modified = True
-            return ctx
-
-        from mocode.plugins.base import HookContext
-        registry.register(_SimpleHook("mod", HookPoint.TOOL_BEFORE_RUN, 50, modify_args))
-
-        ToolRegistry.register(Tool("echo", "Echo", {"msg": "string"}, lambda a: a["msg"]))
-        tc = _make_tool_call("echo", {"msg": "original"})
-        mock_provider.call.side_effect = [
-            _make_response(None, tool_calls=[tc]),
-            _make_response("ok"),
-        ]
-
-        complete_events = []
-        agent.event_bus.on(EventType.TOOL_COMPLETE, lambda e: complete_events.append(e.data))
-        await agent.chat("Go")
-        # The hook should have modified args
-        assert any(d["result"] == "modified" for d in complete_events)
-
-    @pytest.mark.asyncio
-    async def test_hook_after_tool(self, agent, mock_provider):
-        registry = HookRegistry()
-        agent.hook_registry = registry
-
-        def modify_result(ctx):
-            ctx.result = "HOOKED:" + ctx.data["result"]
-            ctx.modified = True
-            return ctx
-
-        registry.register(_SimpleHook("mod_result", HookPoint.TOOL_AFTER_RUN, 50, modify_result))
-
-        ToolRegistry.register(Tool("get", "Get", {}, lambda a: "original"))
-        tc = _make_tool_call("get", {})
-        mock_provider.call.side_effect = [
-            _make_response(None, tool_calls=[tc]),
-            _make_response("done"),
-        ]
-
-        complete_events = []
-        agent.event_bus.on(EventType.TOOL_COMPLETE, lambda e: complete_events.append(e.data))
-        await agent.chat("Go")
-        assert any("HOOKED:" in d["result"] for d in complete_events)
-
-
 class TestAgentOperations:
     @pytest.mark.asyncio
     async def test_clear(self, agent, mock_provider):
@@ -326,31 +273,3 @@ class TestBuildUserContent:
         assert isinstance(result, str) or isinstance(result, list)
 
 
-# Helper: simple Hook implementation for testing
-from mocode.plugins.base import HookContext
-
-
-class _SimpleHook:
-    def __init__(self, name, hook_point, priority, func):
-        self._name = name
-        self._hook_point = hook_point
-        self._priority = priority
-        self._func = func
-
-    @property
-    def name(self):
-        return self._name
-
-    @property
-    def hook_point(self):
-        return self._hook_point
-
-    @property
-    def priority(self):
-        return self._priority
-
-    def should_execute(self, context):
-        return True
-
-    def execute(self, context):
-        return self._func(context)

@@ -23,9 +23,6 @@ SESSIONS_DIR: Path = MOCODE_HOME / "sessions"
 # 项目级 skills 目录名（相对于当前工作目录）
 PROJECT_SKILLS_DIRNAME: str = ".mocode"
 
-# Plugins 目录
-PLUGINS_DIR: Path = MOCODE_HOME / "plugins"
-
 # Gateway 目录
 GATEWAY_DIR: Path = MOCODE_HOME / "gateway"
 

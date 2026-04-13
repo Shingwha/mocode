@@ -27,14 +27,13 @@ uv sync
 - `core/` - Business logic, event bus, config, permissions, sessions, prompts, commands
 - `core/commands/` - Command infrastructure (CommandContext, CommandResult, CommandRegistry)
 - `tools/` - Tool registry with `@tool` decorator
-- `plugins/` - Hook system, plugin lifecycle, isolated environments
 - `skills/` - Modular instructions loaded on demand
 - `cli/` - Terminal interface, CLI command wrappers, UI components
 - `gateway/` - Third-party platform integration (WeChat, etc.)
 
 **Event-Driven**: `EventBus` decouples agent from UI. Key events: `TEXT_STREAMING`, `TOOL_START/COMPLETE`, `MESSAGE_ADDED`, `ERROR`, `AGENT_IDLE`.
 
-**Data Flow**: User → `MocodeCore.chat()` → `AsyncAgent.chat()` → LLM API → tool execution loop (permission check → hooks → run → truncate) → response.
+**Data Flow**: User → `MocodeCore.chat()` → `AsyncAgent.chat()` → LLM API → tool execution loop (permission check → run → truncate) → response.
 
 ## Configuration
 
@@ -129,47 +128,6 @@ LLM usage instructions...
 
 Discovery: project `.mocode/skills/` → global `~/.mocode/skills/` → builtin.
 
-### Plugins
-
-Extend with hooks, tools, commands. Run in isolated venv.
-
-**Structure**:
-```
-~/.mocode/plugins/plugin-name/
-├── plugin.py      # Required: Plugin class
-├── plugin.yaml    # Optional: metadata
-└── requirements.txt
-```
-
-**Basic plugin**:
-```python
-from mocode.plugins import Plugin, PluginMetadata, hook, HookPoint
-
-@hook(HookPoint.TOOL_AFTER_RUN)
-def my_hook(ctx: HookContext) -> HookContext:
-    # Modify behavior
-    return ctx
-
-class MyPlugin(Plugin):
-    def __init__(self):
-        self.metadata = PluginMetadata(
-            name="my-plugin",
-            dependencies=["requests>=2.0"],
-            replaces_tools=[]
-        )
-
-    def get_hooks(self):
-        return [my_hook]
-
-plugin_class = MyPlugin
-```
-
-**Hook points**: `PLUGIN_LOAD/ENABLE/DISABLE/UNLOAD`, `AGENT_CHAT_START/END`, `TOOL_BEFORE_RUN/AFTER_RUN`, `MESSAGE_BEFORE_SEND/AFTER_RECEIVE`, `PROMPT_BUILD_START/END`, `UI_COMPONENT_CREATED/RENDERED/COMPLETED/CLEARED`.
-
-**Lifecycle**: discover → load → enable (install deps) → disable → unload.
-
-**Discovery**: `~/.mocode/plugins/`, `<workdir>/.mocode/plugins/`, builtin.
-
 **Key Properties**:
 - `client.config`, `client.agent`, `client.event_bus`, `client.workdir`
 - `client.current_model`, `client.current_provider`
@@ -179,7 +137,6 @@ plugin_class = MyPlugin
 - `interrupt()`, `clear_history()`
 - `save_session()`, `load_session(id)`, `list_sessions()`
 - `set_model(model)`, `set_provider(key, model)`
-- `enable_plugin(name)`, `disable_plugin(name)`, `list_plugins()`, `discover_plugins()`
 - `config.set_mode(name)`
 - `on_event(type, handler)`, `off_event(type, handler)`
 - `inject_message(role, content)`, `queue_message(role, content)`
@@ -269,7 +226,6 @@ From `mocode/paths.py`:
 - `CONFIG_PATH` - `~/.mocode/config.json`
 - `SKILLS_DIR` - `~/.mocode/skills`
 - `SESSIONS_DIR` - `~/.mocode/sessions`
-- `PLUGINS_DIR` - `~/.mocode/plugins`
 - `PROJECT_SKILLS_DIRNAME` - `.mocode`
 
 ## Session Management
@@ -287,15 +243,13 @@ CLI auto-saves on exit if conversation has messages.
 
 ## CLI Commands
 
-Built-in: `/help`, `/provider` (model selection), `/session`, `/plugin`, `/skills`, `/clear`, `/exit`.
-
-RTK plugin: `/rtk` (token optimization).
+Built-in: `/help`, `/provider` (model selection), `/session`, `/skills`, `/clear`, `/exit`.
 
 Use ESC to interrupt.
 
 ## Testing
 
-226 tests across 14 files. Dependencies: `pytest>=8.0`, `pytest-asyncio>=0.23`, `pytest-cov`.
+282 tests across 13 files. Dependencies: `pytest>=8.0`, `pytest-asyncio>=0.23`, `pytest-cov`.
 
 **IMPORTANT**: 必须使用 `uv run pytest` 来运行测试。不要使用 `python -c`、`python -m pytest` 或裸 `pytest` 命令，因为项目依赖 uv 管理虚拟环境，直接运行可能找不到正确的 Python 或依赖。
 
@@ -330,7 +284,6 @@ tests/
 ├── test_agent.py                  # AsyncAgent with mock provider (17 tests)
 ├── test_message_queue.py          # MessageQueue async (7 tests)
 ├── test_prompt_builder.py         # PromptBuilder, Section (12 tests)
-├── test_plugins.py                # HookRegistry, decorators, PluginRegistry (30 tests)
 ├── test_orchestrator.py           # MocodeCore integration (23 tests)
 └── test_gateway/
     ├── test_crypto.py             # AES encrypt/decrypt, key parsing (11 tests)
@@ -349,15 +302,6 @@ All tools auto-approved EXCEPT:
 - Tools requiring ASK (yolo only overrides auto-approve eligible)
 
 ## Troubleshooting
-
-### Plugin Not Loading
-
-Check:
-1. Plugin directory exists in `~/.mocode/plugins/` or `.mocode/plugins/`
-2. `plugin.py` defines `plugin_class` variable
-3. Plugin class inherits from `Plugin`
-4. Dependencies installed (check `plugin.yaml` or metadata)
-5. Run `/plugin discover` to re-scan
 
 ### Tool Not Found
 
@@ -397,5 +341,5 @@ Update docs when adding features.
 
 - Codebase: `mocode/`
 - Config: `~/.mocode/config.json`
-- Data: `~/.mocode/{sessions,skills,plugins}/`
+- Data: `~/.mocode/{sessions,skills}/`
 - Logs: terminal output

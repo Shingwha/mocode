@@ -18,7 +18,6 @@ from .wrappers import (
     CLIProviderCommand as ProviderCommand,
     CLISessionCommand as SessionCommand,
     CLIDreamCommand as DreamCommand,
-    CLIPluginCommand as PluginCommand,
     CLISkillsCommand as SkillsCommand,
     CLICompactCommand as CompactCommand,
 )
@@ -28,11 +27,11 @@ __all__ = [
     "CommandExecutor", "command",
     "QuitCommand", "ClearCommand", "HelpCommand", "CompactCommand",
     "ModeCommand", "ProviderCommand", "SkillsCommand",
-    "SessionCommand", "PluginCommand", "DreamCommand",
+    "SessionCommand", "DreamCommand",
 ]
 
 BUILTIN_COMMANDS = [
     QuitCommand, ClearCommand, CompactCommand, HelpCommand,
     ModeCommand, ProviderCommand, SkillsCommand,
-    SessionCommand, PluginCommand, DreamCommand,
+    SessionCommand, DreamCommand,
 ]

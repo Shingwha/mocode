@@ -103,8 +103,6 @@ mocode
 | `/session` | `/s` | 管理会话 |
 | `/clear` | `/c` | 清空历史 |
 | `/skills` | | 管理技能 |
-| `/plugin` | | 管理插件 |
-| `/rtk` | | Token 优化 |
 | `/exit` | `/q`, `/quit` | 退出 |
 
 ### 上下文压缩
@@ -148,7 +146,6 @@ mocode gateway
 ## 文档
 
 - [CLI 命令](docs/cli.md)
-- [插件系统](docs/plugins.md)
 - [Gateway](docs/gateway.md)
 
 ## 许可证

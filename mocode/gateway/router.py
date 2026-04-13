@@ -60,7 +60,6 @@ class UserRouter:
         core = MocodeCore(
             config=config_data,
             persistence=False,
-            auto_discover_plugins=False,
         )
         core.config.set_mode("yolo")
 

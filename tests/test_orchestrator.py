@@ -28,7 +28,6 @@ def core(tmp_path):
         instance = MocodeCore(
             config=config_data,
             persistence=False,
-            auto_discover_plugins=False,
             workdir=str(tmp_path),
         )
         instance._session_manager._sessions_dir = (
