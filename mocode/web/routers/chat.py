@@ -23,7 +23,8 @@ async def chat(
 ):
     """Send a message and stream agent events via SSE."""
     if core.is_agent_busy:
-        raise HTTPException(status_code=409, detail="Agent is busy")
+        core.queue_message(req.message)
+        return {"queued": True}
 
     bridge = SSEEventBridge(core.event_bus)
     bridge.attach()
