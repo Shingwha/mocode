@@ -698,13 +698,19 @@ body {
 /* ========== Tool Cards ========== */
 
 .tool-card {
-  /* 与 .msg 容器外框对齐 */
-  max-width: var(--max-w);
+  /* 与 .msg 内容区对齐 */
+  max-width: calc(var(--max-w) - 2 * var(--msg-padding-x));
   margin: 2px auto;
 
-  /* 动画与过渡 */
   animation: cardIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   transition: border-color 0.2s ease;
+}
+
+@media (max-width: 768px) {
+  .tool-card {
+    max-width: 100%;
+    margin: 2px var(--msg-padding-x);
+  }
 }
 
 @keyframes cardIn {
