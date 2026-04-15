@@ -9,7 +9,7 @@
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  background: #f8f9fa;
+  background: #e8eaed;
   color: #1a1a1a;
   height: 100vh;
   overflow: hidden;
@@ -47,16 +47,22 @@ body {
   flex: 1;
   overflow-y: auto;
   padding: 16px 20px;
+  background: #f0f2f5;
 }
 
 .msg {
   margin-bottom: 12px;
-  max-width: 85%;
 }
 .msg-user {
   margin-left: auto;
+  max-width: 85%;
+  width: fit-content;
 }
-.msg-assistant, .msg-tool, .msg-permission, .msg-error, .msg-interrupted {
+.msg-assistant {
+  margin-right: auto;
+  max-width: 100%;
+}
+.msg-tool, .msg-error, .msg-interrupted {
   margin-right: auto;
 }
 
@@ -68,11 +74,13 @@ body {
   font-size: 14px;
 }
 .msg-user .msg-bubble {
-  background: #e8ecf0;
+  background: #d4dce8;
+  text-align: right;
 }
 .msg-assistant .msg-bubble {
-  background: #fff;
-  border: 1px solid #e0e0e0;
+  background: transparent;
+  border: none;
+  padding: 10px 0;
 }
 
 /* Tool messages */
@@ -86,6 +94,7 @@ body {
   padding: 6px 10px;
   background: #f0f0f0;
   border: 1px solid #ddd;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
   cursor: pointer;
   user-select: none;
   font-size: 13px;
@@ -111,6 +120,7 @@ body {
   background: #fafafa;
   border: 1px solid #ddd;
   border-top: none;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
   font-family: "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 12px;
   white-space: pre-wrap;
@@ -121,71 +131,70 @@ body {
 .msg-tool.expanded .tool-body {
   display: block;
 }
-.msg-tool .tool-label {
-  font-weight: 600;
-  color: #666;
-  margin-top: 6px;
+
+/* Tool sections inside unified card */
+.msg-tool .tool-section {
+  margin-top: 8px;
 }
-.msg-tool .tool-label:first-child {
+.msg-tool .tool-section:first-child {
   margin-top: 0;
 }
-.msg-tool .tool-result {
-  margin-top: 4px;
+.msg-tool .tool-section-label {
+  font-weight: 600;
+  color: #666;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.msg-tool .tool-section-content {
   color: #333;
 }
 
-/* Permission */
-.msg-permission .perm-card {
-  padding: 12px 14px;
+/* Permission section inside unified card */
+.msg-tool .tool-permission {
+  padding: 8px;
   background: #fffde7;
   border: 1px solid #e0d88e;
+  border-radius: 3px;
+  margin-top: 8px;
 }
-.msg-permission .perm-tool {
-  font-weight: 600;
-  font-family: "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 13px;
-  margin-bottom: 6px;
-}
-.msg-permission .perm-desc {
-  font-size: 13px;
-  margin-bottom: 10px;
-  white-space: pre-wrap;
-}
-.msg-permission .perm-actions {
+.msg-tool .tool-permission .perm-actions {
   display: flex;
   gap: 8px;
+  margin-top: 8px;
 }
-.msg-permission .perm-actions button {
+.msg-tool .tool-permission .perm-actions button {
   padding: 5px 16px;
   border: 1px solid #ccc;
   background: #fff;
   cursor: pointer;
   font-size: 13px;
 }
-.msg-permission .perm-actions button:hover {
-  background: #f0f0f0;
-}
-.msg-permission .perm-actions .btn-approve {
+.msg-tool .tool-permission .perm-actions .btn-approve {
   background: #e8f5e9;
   border-color: #a5d6a7;
 }
-.msg-permission .perm-actions .btn-approve:hover {
+.msg-tool .tool-permission .perm-actions .btn-approve:hover {
   background: #c8e6c9;
 }
-.msg-permission .perm-actions .btn-deny {
+.msg-tool .tool-permission .perm-actions .btn-deny {
   background: #ffebee;
   border-color: #ef9a9a;
 }
-.msg-permission .perm-actions .btn-deny:hover {
+.msg-tool .tool-permission .perm-actions .btn-deny:hover {
   background: #ffcdd2;
 }
-.msg-permission.resolved .perm-actions {
+.msg-tool.perm-resolved .tool-permission .perm-actions {
   display: none;
 }
-.msg-permission.resolved .perm-status {
+.msg-tool .tool-permission .perm-status {
   font-size: 12px;
   font-style: italic;
   color: #888;
+}
+.msg-tool.perm-denied .tool-header {
+  opacity: 0.6;
 }
 
 /* Error */
@@ -276,6 +285,7 @@ const interruptBtn = $('#interrupt-btn');
 const statusEl = $('#status');
 
 let busy = false;
+let pendingPermCards = {};
 
 // Auto-resize textarea
 inputEl.addEventListener('input', () => {
@@ -331,6 +341,36 @@ function addAssistantMessage(content) {
 }
 
 function addToolStart(id, name, args) {
+  // Check if there's a pending permission card to merge with
+  let mergedPermId = null;
+  for (const [reqId, info] of Object.entries(pendingPermCards)) {
+    if (info.toolName === name) {
+      mergedPermId = reqId;
+      break;
+    }
+  }
+
+  if (mergedPermId) {
+    const el = pendingPermCards[mergedPermId].el;
+    el.id = `tool-${id}`;
+    el.dataset.permId = mergedPermId;
+    delete pendingPermCards[mergedPermId];
+
+    // Update header toggle
+    const header = el.querySelector('.tool-header');
+    header.setAttribute('onclick', `toggleTool('${id}')`);
+    const toggle = el.querySelector('.tool-toggle');
+    toggle.id = `toggle-${id}`;
+
+    // Update body ID
+    const body = el.querySelector('.tool-body');
+    body.id = `body-${id}`;
+
+    scrollBottom();
+    return;
+  }
+
+  // No matching permission card -- create new tool card
   const el = document.createElement('div');
   el.className = 'msg msg-tool';
   el.id = `tool-${id}`;
@@ -341,7 +381,7 @@ function addToolStart(id, name, args) {
       <span class="tool-name">${escapeHtml(name)}</span>
     </div>
     <div class="tool-body" id="body-${id}">
-      ${argsStr ? `<div class="tool-label">Args:</div><div class="tool-result">${escapeHtml(argsStr)}</div>` : ''}
+      ${argsStr ? `<div class="tool-section"><div class="tool-section-label">Input</div><div class="tool-section-content">${escapeHtml(argsStr)}</div></div>` : ''}
     </div>`;
   messagesEl.appendChild(el);
   scrollBottom();
@@ -352,7 +392,7 @@ function updateToolComplete(id, result) {
   if (!body) return;
   const truncated = result.length > 2000 ? result.slice(0, 2000) + '\n... (truncated)' : result;
   body.insertAdjacentHTML('beforeend',
-    `<div class="tool-label">Result:</div><div class="tool-result">${escapeHtml(truncated)}</div>`
+    `<div class="tool-section"><div class="tool-section-label">Output</div><div class="tool-section-content">${escapeHtml(truncated)}</div></div>`
   );
 }
 
@@ -362,32 +402,50 @@ window.toggleTool = function(id) {
   if (!el) return;
   el.classList.toggle('expanded');
   toggle.innerHTML = el.classList.contains('expanded') ? '&#9660;' : '&#9654;';
+  if (el.classList.contains('expanded')) {
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  }
 };
 
 function addPermission(requestId, toolName, args, description) {
   const el = document.createElement('div');
-  el.className = 'msg msg-permission';
+  el.className = 'msg msg-tool';
   el.id = `perm-${requestId}`;
-  const descHtml = description ? `<div class="perm-desc">${escapeHtml(description)}</div>` : '';
   const argsStr = args ? JSON.stringify(args, null, 2) : '';
+
   el.innerHTML = `
-    <div class="perm-card">
-      <div class="perm-tool">${escapeHtml(toolName)}</div>
-      ${argsStr ? `<div class="perm-desc" style="font-family:monospace;font-size:12px">${escapeHtml(argsStr)}</div>` : ''}
-      ${descHtml}
-      <div class="perm-actions">
-        <button class="btn-approve" onclick="resolvePermission('${requestId}','allow')">Approve</button>
-        <button class="btn-deny" onclick="resolvePermission('${requestId}','deny')">Deny</button>
+    <div class="tool-header" onclick="toggleTool('perm-${requestId}')">
+      <span class="tool-toggle" id="toggle-perm-${requestId}">&#9654;</span>
+      <span class="tool-name">${escapeHtml(toolName)}</span>
+    </div>
+    <div class="tool-body" id="body-perm-${requestId}">
+      ${argsStr ? `<div class="tool-section"><div class="tool-section-label">Input</div><div class="tool-section-content">${escapeHtml(argsStr)}</div></div>` : ''}
+      <div class="tool-permission" id="perm-section-${requestId}">
+        ${description ? `<div class="tool-section-content">${escapeHtml(description)}</div>` : ''}
+        <div class="perm-actions">
+          <button class="btn-approve" onclick="resolvePermission('${requestId}','allow')">Approve</button>
+          <button class="btn-deny" onclick="resolvePermission('${requestId}','deny')">Deny</button>
+        </div>
+        <div class="perm-status"></div>
       </div>
-      <div class="perm-status"></div>
     </div>`;
+
+  // Start expanded so user sees the permission request
+  el.classList.add('expanded');
+  const toggle = el.querySelector('.tool-toggle');
+  toggle.innerHTML = '&#9660;';
+
   messagesEl.appendChild(el);
   scrollBottom();
+
+  pendingPermCards[requestId] = { el, toolName };
 }
 
 window.resolvePermission = async function(requestId, response) {
-  const card = $(`#perm-${requestId} .perm-card`);
-  if (!card) return;
+  const permSection = document.getElementById(`perm-section-${requestId}`);
+  if (!permSection) return;
   try {
     const res = await fetch(`/api/permission/${requestId}`, {
       method: 'POST',
@@ -395,18 +453,25 @@ window.resolvePermission = async function(requestId, response) {
       body: JSON.stringify({ response }),
     });
     if (!res.ok) {
-      card.querySelector('.perm-status').textContent = `Error: ${res.status}`;
+      permSection.querySelector('.perm-status').textContent = `Error: ${res.status}`;
     }
   } catch (e) {
-    card.querySelector('.perm-status').textContent = `Error: ${e.message}`;
+    permSection.querySelector('.perm-status').textContent = `Error: ${e.message}`;
   }
 };
 
 function resolvePermissionCard(requestId, approved) {
-  const el = document.getElementById(`perm-${requestId}`);
-  if (!el) return;
-  el.classList.add('resolved');
-  el.querySelector('.perm-status').textContent = approved ? 'Approved' : 'Denied';
+  const permSection = document.getElementById(`perm-section-${requestId}`);
+  if (!permSection) return;
+  const card = pendingPermCards[requestId];
+  if (card) {
+    card.el.classList.add('perm-resolved');
+    if (!approved) card.el.classList.add('perm-denied');
+  }
+  const actions = permSection.querySelector('.perm-actions');
+  const status = permSection.querySelector('.perm-status');
+  if (actions) actions.style.display = 'none';
+  if (status) status.textContent = approved ? 'Approved' : 'Denied';
 }
 
 function addError(message) {
