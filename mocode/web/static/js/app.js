@@ -37,6 +37,10 @@ document.addEventListener('DOMContentLoaded', function () {
   MoCode.Chat.fetchStatus();
   MoCode.Messages.updateEmptyState(emptyState);
 
+  // Settings module
+  MoCode.Settings.init();
+  MoCode.Sidebar.setupSettingsButton();
+
   // Focus input
   var inputEl = document.getElementById('input');
   if (inputEl) inputEl.focus();

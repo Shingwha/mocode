@@ -28,6 +28,7 @@ def _build_config_response(core) -> ConfigResponse:
         providers[key] = ProviderInfo(
             name=p.name,
             base_url=p.base_url,
+            api_key=p.api_key or "",  # 返回实际 API key（若为空则返回空字符串）
             api_key_set=bool(p.api_key),
             models=list(p.models),
         )

@@ -97,7 +97,8 @@ class ModelRemoveRequest(BaseModel):
 class ProviderInfo(BaseModel):
     name: str
     base_url: str
-    api_key_set: bool
+    api_key: str  # 实际 API key 值（仅用于编辑表单回显）
+    api_key_set: bool  # 是否已设置 key
     models: list[str]
 
 

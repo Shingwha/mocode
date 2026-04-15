@@ -35,7 +35,9 @@ MoCode.Sidebar = (function () {
       var msg = messages[i];
       if (msg.role === 'user' && msg.content) {
         var text = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        return text.slice(0, 40) + (text.length > 40 ? '...' : '');
+        // Split by newline and take only the first line
+        var firstLine = text.split('\n')[0];
+        return firstLine.slice(0, 30) + (firstLine.length > 30 ? '...' : '');
       }
     }
     return session.id.replace(/^session_/, '').replace(/_/g, ' ');
@@ -90,6 +92,18 @@ MoCode.Sidebar = (function () {
     }
   }
 
+  // Setup settings button (called from app.js after init)
+  function setupSettingsButton() {
+    var settingsBtn = document.getElementById('settings-btn');
+    if (settingsBtn) {
+      settingsBtn.addEventListener('click', function () {
+        if (MoCode && MoCode.Settings) {
+          MoCode.Settings.open();
+        }
+      });
+    }
+  }
+
   function setActive(id) {
     var items = document.querySelectorAll('.session-item');
     for (var i = 0; i < items.length; i++) {
@@ -135,6 +149,7 @@ MoCode.Sidebar = (function () {
     deleteSession: deleteSession,
     getSessionTitle: getSessionTitle,
     getSessionById: getSessionById,
+    setupSettingsButton: setupSettingsButton,
     get sessions() { return sessions; },
   };
 })();

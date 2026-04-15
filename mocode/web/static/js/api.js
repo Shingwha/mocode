@@ -46,6 +46,79 @@ MoCode.Api = (function () {
     return request('/api/history', { method: 'DELETE' });
   }
 
+  async function getConfig() {
+    var res = await request('/api/config');
+    return res.ok ? await res.json() : null;
+  }
+
+  async function switchModel({model, provider}) {
+    var res = await request('/api/config/model', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model: model, provider: provider}),
+    });
+    return res.ok ? await res.json() : null;
+  }
+
+  async function switchProvider({provider, model}) {
+    var res = await request('/api/config/provider', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider: provider, model: model}),
+    });
+    return res.ok ? await res.json() : null;
+  }
+
+  async function switchMode(mode) {
+    var res = await request('/api/config/mode', {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({mode: mode}),
+    });
+    return res.ok ? await res.json() : null;
+  }
+
+  async function addProvider({key, name, base_url, api_key, models}) {
+    var res = await request('/api/config/providers', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: key, name: name, base_url: base_url, api_key: api_key, models: models}),
+    });
+    return res.ok ? await res.json() : null;
+  }
+
+  async function updateProvider(key, {name, base_url, api_key}) {
+    var res = await request('/api/config/providers/' + encodeURIComponent(key), {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({name: name, base_url: base_url, api_key: api_key}),
+    });
+    return res.ok ? await res.json() : null;
+  }
+
+  async function removeProvider(key) {
+    var res = await request('/api/config/providers/' + encodeURIComponent(key), {
+      method: 'DELETE',
+    });
+    return res.ok ? await res.json() : null;
+  }
+
+  async function addModel(model, provider) {
+    var res = await request('/api/config/models', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({model: model, provider: provider}),
+    });
+    return res.ok ? await res.json() : null;
+  }
+
+  async function removeModel(model, provider) {
+    var res = await request('/api/config/models/' + encodeURIComponent(model), {
+      method: 'DELETE',
+    });
+    return res.ok ? await res.json() : null;
+  }
+
   function resolvePermission(id, response) {
     return request('/api/permission/' + id, {
       method: 'POST',
@@ -96,6 +169,15 @@ MoCode.Api = (function () {
     saveSession: saveSession,
     deleteSession: deleteSession,
     clearHistory: clearHistory,
+    getConfig: getConfig,
+    switchModel: switchModel,
+    switchProvider: switchProvider,
+    switchMode: switchMode,
+    addProvider: addProvider,
+    updateProvider: updateProvider,
+    removeProvider: removeProvider,
+    addModel: addModel,
+    removeModel: removeModel,
     resolvePermission: resolvePermission,
     parseSSE: parseSSE,
   };
