@@ -8,7 +8,8 @@ from fastapi.responses import JSONResponse
 
 from mocode.core.orchestrator import MocodeCore
 
-from .routers import chat, sessions, config
+from .permission import WebPermissionHandler
+from .routers import chat, sessions, config, permission
 
 logger = logging.getLogger(__name__)
 
@@ -16,17 +17,20 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Create MocodeCore on startup, cleanup on shutdown."""
-    core = MocodeCore(persistence=True)
-    core.config.set_mode("yolo")
-    core.start_dream_scheduler()
+    perm_handler = WebPermissionHandler()
+    core = MocodeCore(
+        persistence=True,
+        permission_handler=perm_handler,
+    )
     app.state.core = core
+    app.state.permission_handler = perm_handler
     logger.info(
         "MoCode web backend started (model=%s, provider=%s)",
         core.current_model,
         core.current_provider,
     )
     yield
-    core.stop_dream_scheduler()
+    perm_handler.cancel_all()
     if core.has_unsaved_changes:
         try:
             core.save_session()
@@ -54,5 +58,6 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(sessions.router)
     app.include_router(config.router)
+    app.include_router(permission.router)
 
     return app

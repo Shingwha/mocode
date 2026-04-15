@@ -1,20 +1,57 @@
 """Chat, interrupt, and status endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException
+import asyncio
+import logging
 
-from ..deps import get_core
-from ..schemas import ChatRequest, ChatResponse, StatusResponse, MessageResponse
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+
+from ..deps import get_core, get_permission_handler
+from ..events import SSEEventBridge
+from ..schemas import ChatRequest, StatusResponse, MessageResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
 
-@router.post("/chat", response_model=ChatResponse)
-async def chat(req: ChatRequest, core=Depends(get_core)):
-    """Send a message and block until response."""
+@router.post("/chat")
+async def chat(
+    req: ChatRequest,
+    core=Depends(get_core),
+    perm_handler=Depends(get_permission_handler),
+):
+    """Send a message and stream agent events via SSE."""
     if core.is_agent_busy:
         raise HTTPException(status_code=409, detail="Agent is busy")
-    response = await core.chat(req.message, req.media)
-    return ChatResponse(response=response)
+
+    bridge = SSEEventBridge(core.event_bus)
+    bridge.attach()
+    perm_handler.set_bridge(bridge)
+
+    async def run_chat():
+        try:
+            response = await core.chat(req.message, req.media)
+            bridge.send_done(response)
+        except asyncio.CancelledError:
+            bridge.stop()
+        except Exception as e:
+            logger.exception("Chat error")
+            bridge.send_error(str(e))
+
+    async def stream():
+        task = asyncio.create_task(run_chat())
+        try:
+            async for event in bridge.events():
+                yield event
+        finally:
+            bridge.detach()
+            perm_handler.set_bridge(None)
+            perm_handler.cancel_all()
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(stream(), media_type="text/event-stream")
 
 
 @router.post("/interrupt", response_model=MessageResponse)

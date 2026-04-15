@@ -10,10 +10,6 @@ class ChatRequest(BaseModel):
     media: list[str] | None = None
 
 
-class ChatResponse(BaseModel):
-    response: str
-
-
 class StatusResponse(BaseModel):
     busy: bool
     model: str
@@ -22,6 +18,12 @@ class StatusResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     ok: bool
+
+
+# --- Permission ---
+
+class PermissionResolveRequest(BaseModel):
+    response: str
 
 
 # --- Sessions ---
