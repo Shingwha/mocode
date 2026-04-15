@@ -203,7 +203,7 @@ MoCode.Chat = (function () {
     var el = document.createElement('div');
     el.id = 'queued-hint';
     el.className = 'msg msg-assistant';
-    el.innerHTML = '<div class="msg-bubble" style="color:#a1a1aa;font-style:italic;font-size:13px;">Message queued, will be processed after current response...</div>';
+    el.innerHTML = '<div class="msg-bubble" style="color:var(--c-text-faint);font-style:italic;font-size:13px;">Message queued, will be processed after current response...</div>';
     var messagesEl = document.getElementById('messages');
     if (messagesEl) messagesEl.appendChild(el);
     MoCode.Messages.scrollToBottom();
