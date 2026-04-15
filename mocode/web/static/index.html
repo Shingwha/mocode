@@ -23,7 +23,6 @@ body {
   margin: 0 auto;
 }
 
-/* Header */
 #header {
   padding: 12px 20px;
   border-bottom: 1px solid #e0e0e0;
@@ -42,7 +41,6 @@ body {
   color: #888;
 }
 
-/* Messages */
 #messages {
   flex: 1;
   overflow-y: auto;
@@ -62,7 +60,7 @@ body {
   margin-right: auto;
   max-width: 100%;
 }
-.msg-tool, .msg-error, .msg-interrupted {
+.msg-error, .msg-interrupted {
   margin-right: auto;
 }
 
@@ -83,128 +81,172 @@ body {
   padding: 10px 0;
 }
 
-/* Tool messages */
-.msg-tool {
+/* ========== Tool Cards (Unified State-Based) ========== */
+
+.tool-card {
   max-width: 90%;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  overflow: hidden;
+  animation: cardIn 0.2s ease-out;
 }
-.msg-tool .tool-header {
+
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.tool-card .card-header {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  background: #f0f0f0;
-  border: 1px solid #ddd;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  gap: 8px;
+  padding: 8px 12px;
   cursor: pointer;
   user-select: none;
   font-size: 13px;
+  transition: background 0.15s;
 }
-.msg-tool .tool-header:hover {
-  background: #e8e8e8;
+.tool-card .card-header:hover {
+  background: rgba(0,0,0,0.02);
 }
-.msg-tool .tool-toggle {
-  font-size: 10px;
-  color: #888;
-  width: 16px;
-  text-align: center;
+
+.tool-card .card-indicator {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
   flex-shrink: 0;
 }
-.msg-tool .tool-name {
+
+.tool-card .card-name {
   font-weight: 600;
   font-family: "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 12px;
+  flex: 1;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.msg-tool .tool-body {
+
+.tool-card .card-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.card-badge.badge-approved { background: #ecfdf5; color: #065f46; }
+.card-badge.badge-denied { background: #fef2f2; color: #991b1b; }
+
+.tool-card .card-toggle {
+  font-size: 10px;
+  color: #aaa;
+  transition: transform 0.2s;
+}
+.tool-card.expanded .card-toggle {
+  transform: rotate(90deg);
+}
+
+.tool-card .card-body {
   display: none;
-  padding: 8px 10px;
-  background: #fafafa;
-  border: 1px solid #ddd;
-  border-top: none;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+  padding: 8px 12px 10px 27px;
+  border-top: 1px solid #f0f0f0;
   font-family: "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-all;
   max-height: 300px;
   overflow-y: auto;
+  color: #555;
+  line-height: 1.5;
 }
-.msg-tool.expanded .tool-body {
+.tool-card.expanded .card-body {
   display: block;
 }
 
-/* Tool sections inside unified card */
-.msg-tool .tool-section {
-  margin-top: 8px;
-}
-.msg-tool .tool-section:first-child {
-  margin-top: 0;
-}
-.msg-tool .tool-section-label {
-  font-weight: 600;
+/* --- State: pending (amber) --- */
+.tool-card[data-state="pending"] { border-left: 3px solid #f59e0b; }
+.tool-card[data-state="pending"] .card-indicator { background: #f59e0b; }
+
+/* --- State: running (indigo) --- */
+.tool-card[data-state="running"] { border-left: 3px solid #6366f1; }
+.tool-card[data-state="running"] .card-indicator { background: #6366f1; animation: pulse 1.5s ease-in-out infinite; }
+
+/* --- State: complete (emerald) --- */
+.tool-card[data-state="complete"] { border-left: 3px solid #10b981; }
+.tool-card[data-state="complete"] .card-indicator { background: #10b981; }
+
+/* --- State: denied (amber, faded) --- */
+.tool-card[data-state="denied"] { border-left: 3px solid #f59e0b; opacity: 0.6; }
+.tool-card[data-state="denied"] .card-indicator { background: #f59e0b; }
+
+/* Permission extras */
+.perm-desc {
+  margin-bottom: 8px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 12px;
   color: #666;
+}
+.perm-actions {
+  display: flex;
+  gap: 8px;
+  max-width: 90%;
+  margin-bottom: 6px;
+  padding: 6px 0;
+}
+.perm-actions button {
+  padding: 5px 16px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.15s;
+  border: 1px solid;
+}
+.btn-approve {
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+  color: #065f46;
+}
+.btn-approve:hover { background: #d1fae5; }
+.btn-deny {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+.btn-deny:hover { background: #fee2e2; }
+
+/* Card body sections */
+.card-section-args {
+}
+.card-section-result {
+  border-top: 1px dashed #e0e0e0;
+  margin-top: 6px;
+  padding-top: 6px;
+}
+.card-section-label {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 11px;
+  font-weight: 600;
+  color: #999;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 4px;
 }
-.msg-tool .tool-section-content {
-  color: #333;
-}
 
-/* Permission section inside unified card */
-.msg-tool .tool-permission {
-  padding: 8px;
-  background: #fffde7;
-  border: 1px solid #e0d88e;
-  border-radius: 3px;
-  margin-top: 8px;
-}
-.msg-tool .tool-permission .perm-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-.msg-tool .tool-permission .perm-actions button {
-  padding: 5px 16px;
-  border: 1px solid #ccc;
-  background: #fff;
-  cursor: pointer;
-  font-size: 13px;
-}
-.msg-tool .tool-permission .perm-actions .btn-approve {
-  background: #e8f5e9;
-  border-color: #a5d6a7;
-}
-.msg-tool .tool-permission .perm-actions .btn-approve:hover {
-  background: #c8e6c9;
-}
-.msg-tool .tool-permission .perm-actions .btn-deny {
-  background: #ffebee;
-  border-color: #ef9a9a;
-}
-.msg-tool .tool-permission .perm-actions .btn-deny:hover {
-  background: #ffcdd2;
-}
-.msg-tool.perm-resolved .tool-permission .perm-actions {
-  display: none;
-}
-.msg-tool .tool-permission .perm-status {
-  font-size: 12px;
-  font-style: italic;
-  color: #888;
-}
-.msg-tool.perm-denied .tool-header {
-  opacity: 0.6;
-}
-
-/* Error */
+/* Error / Interrupted */
 .msg-error .msg-bubble {
   background: #fef2f2;
   border: 1px solid #fca5a5;
   color: #991b1b;
 }
-
-/* Interrupted */
 .msg-interrupted .msg-bubble {
   background: #fffbeb;
   border: 1px solid #fcd34d;
@@ -230,13 +272,8 @@ body {
   line-height: 1.4;
   max-height: 120px;
 }
-#input:focus {
-  border-color: #999;
-}
-#input:disabled {
-  background: #f5f5f5;
-  cursor: not-allowed;
-}
+#input:focus { border-color: #999; }
+#input:disabled { background: #f5f5f5; cursor: not-allowed; }
 #send-btn, #interrupt-btn {
   padding: 8px 18px;
   border: 1px solid #d0d0d0;
@@ -256,9 +293,7 @@ body {
   border-color: #fca5a5;
   background: #fef2f2;
 }
-#interrupt-btn:hover:not(:disabled) {
-  background: #fee2e2;
-}
+#interrupt-btn:hover:not(:disabled) { background: #fee2e2; }
 </style>
 </head>
 <body>
@@ -286,14 +321,17 @@ const statusEl = $('#status');
 
 let busy = false;
 let pendingPermCards = {};
+let inputCards = {};
+let toolNames = {};
+let lastApprovedPerm = null;
+let deniedToolNames = new Set();
+let suppressInterrupt = false;
 
-// Auto-resize textarea
 inputEl.addEventListener('input', () => {
   inputEl.style.height = 'auto';
   inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
 });
 
-// Enter to send, Shift+Enter for newline
 inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -322,86 +360,50 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
-// --- Message renderers ---
+function formatArgs(args) {
+  if (!args || typeof args !== 'object') return '';
+  const keys = Object.keys(args);
+  if (keys.length === 0) return '';
+  return keys.map(k => {
+    const v = args[k];
+    return k + ': ' + (typeof v === 'string' ? v : JSON.stringify(v));
+  }).join('\n');
+}
 
-function addUserMessage(text) {
+function createCard(state, id, name, bodyHtml, expanded) {
   const el = document.createElement('div');
-  el.className = 'msg msg-user';
-  el.innerHTML = `<div class="msg-bubble">${escapeHtml(text)}</div>`;
+  el.className = 'tool-card' + (expanded ? ' expanded' : '');
+  el.dataset.state = state;
+  el.id = id;
+  el.innerHTML =
+    '<div class="card-header" onclick="toggleCard(this.parentElement)">' +
+      '<span class="card-indicator"></span>' +
+      '<span class="card-name">' + escapeHtml(name) + '</span>' +
+      '<span class="card-toggle">&#9654;</span>' +
+    '</div>' +
+    '<div class="card-body">' + bodyHtml + '</div>';
   messagesEl.appendChild(el);
   scrollBottom();
+  return el;
 }
 
-function addAssistantMessage(content) {
-  const el = document.createElement('div');
-  el.className = 'msg msg-assistant';
-  el.innerHTML = `<div class="msg-bubble">${escapeHtml(content)}</div>`;
-  messagesEl.appendChild(el);
-  scrollBottom();
+function setCardState(el, state) {
+  el.dataset.state = state;
 }
 
-function addToolStart(id, name, args) {
-  // Check if there's a pending permission card to merge with
-  let mergedPermId = null;
-  for (const [reqId, info] of Object.entries(pendingPermCards)) {
-    if (info.toolName === name) {
-      mergedPermId = reqId;
-      break;
-    }
-  }
-
-  if (mergedPermId) {
-    const el = pendingPermCards[mergedPermId].el;
-    el.id = `tool-${id}`;
-    el.dataset.permId = mergedPermId;
-    delete pendingPermCards[mergedPermId];
-
-    // Update header toggle
-    const header = el.querySelector('.tool-header');
-    header.setAttribute('onclick', `toggleTool('${id}')`);
-    const toggle = el.querySelector('.tool-toggle');
-    toggle.id = `toggle-${id}`;
-
-    // Update body ID
-    const body = el.querySelector('.tool-body');
-    body.id = `body-${id}`;
-
-    scrollBottom();
-    return;
-  }
-
-  // No matching permission card -- create new tool card
-  const el = document.createElement('div');
-  el.className = 'msg msg-tool';
-  el.id = `tool-${id}`;
-  const argsStr = args ? JSON.stringify(args, null, 2) : '';
-  el.innerHTML = `
-    <div class="tool-header" onclick="toggleTool('${id}')">
-      <span class="tool-toggle" id="toggle-${id}">&#9654;</span>
-      <span class="tool-name">${escapeHtml(name)}</span>
-    </div>
-    <div class="tool-body" id="body-${id}">
-      ${argsStr ? `<div class="tool-section"><div class="tool-section-label">Input</div><div class="tool-section-content">${escapeHtml(argsStr)}</div></div>` : ''}
-    </div>`;
-  messagesEl.appendChild(el);
-  scrollBottom();
+function addBadge(el, text, cls) {
+  const header = el.querySelector('.card-header');
+  const existing = header.querySelector('.card-badge');
+  if (existing) existing.remove();
+  const badge = document.createElement('span');
+  badge.className = 'card-badge ' + cls;
+  badge.textContent = text;
+  header.insertBefore(badge, header.querySelector('.card-toggle'));
 }
 
-function updateToolComplete(id, result) {
-  const body = document.getElementById(`body-${id}`);
-  if (!body) return;
-  const truncated = result.length > 2000 ? result.slice(0, 2000) + '\n... (truncated)' : result;
-  body.insertAdjacentHTML('beforeend',
-    `<div class="tool-section"><div class="tool-section-label">Output</div><div class="tool-section-content">${escapeHtml(truncated)}</div></div>`
-  );
-}
-
-window.toggleTool = function(id) {
-  const el = document.getElementById(`tool-${id}`);
-  const toggle = document.getElementById(`toggle-${id}`);
-  if (!el) return;
+window.toggleCard = function(el) {
+  if (!el || !el.classList) return;
   el.classList.toggle('expanded');
-  toggle.innerHTML = el.classList.contains('expanded') ? '&#9660;' : '&#9654;';
   if (el.classList.contains('expanded')) {
     requestAnimationFrame(() => {
       el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -409,75 +411,117 @@ window.toggleTool = function(id) {
   }
 };
 
-function addPermission(requestId, toolName, args, description) {
+// --- Message renderers ---
+
+function addUserMessage(text) {
   const el = document.createElement('div');
-  el.className = 'msg msg-tool';
-  el.id = `perm-${requestId}`;
-  const argsStr = args ? JSON.stringify(args, null, 2) : '';
-
-  el.innerHTML = `
-    <div class="tool-header" onclick="toggleTool('perm-${requestId}')">
-      <span class="tool-toggle" id="toggle-perm-${requestId}">&#9654;</span>
-      <span class="tool-name">${escapeHtml(toolName)}</span>
-    </div>
-    <div class="tool-body" id="body-perm-${requestId}">
-      ${argsStr ? `<div class="tool-section"><div class="tool-section-label">Input</div><div class="tool-section-content">${escapeHtml(argsStr)}</div></div>` : ''}
-      <div class="tool-permission" id="perm-section-${requestId}">
-        ${description ? `<div class="tool-section-content">${escapeHtml(description)}</div>` : ''}
-        <div class="perm-actions">
-          <button class="btn-approve" onclick="resolvePermission('${requestId}','allow')">Approve</button>
-          <button class="btn-deny" onclick="resolvePermission('${requestId}','deny')">Deny</button>
-        </div>
-        <div class="perm-status"></div>
-      </div>
-    </div>`;
-
-  // Start expanded so user sees the permission request
-  el.classList.add('expanded');
-  const toggle = el.querySelector('.tool-toggle');
-  toggle.innerHTML = '&#9660;';
-
+  el.className = 'msg msg-user';
+  el.innerHTML = '<div class="msg-bubble">' + escapeHtml(text) + '</div>';
   messagesEl.appendChild(el);
   scrollBottom();
-
-  pendingPermCards[requestId] = { el, toolName };
 }
 
-window.resolvePermission = async function(requestId, response) {
-  const permSection = document.getElementById(`perm-section-${requestId}`);
-  if (!permSection) return;
-  try {
-    const res = await fetch(`/api/permission/${requestId}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ response }),
-    });
-    if (!res.ok) {
-      permSection.querySelector('.perm-status').textContent = `Error: ${res.status}`;
-    }
-  } catch (e) {
-    permSection.querySelector('.perm-status').textContent = `Error: ${e.message}`;
+function addAssistantMessage(content) {
+  const el = document.createElement('div');
+  el.className = 'msg msg-assistant';
+  el.innerHTML = '<div class="msg-bubble">' + escapeHtml(content) + '</div>';
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+function addPermission(requestId, toolName, args, description) {
+  const argsHtml = formatArgs(args)
+    ? '<div class="card-section-args"><div class="card-section-label">Input</div>' + escapeHtml(formatArgs(args)) + '</div>'
+    : (description ? '<div class="perm-desc">' + escapeHtml(description) + '</div>' : '');
+
+  const el = createCard('pending', 'perm-' + requestId, toolName, argsHtml, true);
+
+  const actionsEl = document.createElement('div');
+  actionsEl.className = 'perm-actions';
+  actionsEl.id = 'perm-actions-' + requestId;
+  actionsEl.innerHTML =
+    '<button class="btn-approve" onclick="resolvePermission(\'' + requestId + '\',\'allow\')">Approve</button>' +
+    '<button class="btn-deny" onclick="resolvePermission(\'' + requestId + '\',\'deny\')">Deny</button>';
+  el.after(actionsEl);
+
+  pendingPermCards[requestId] = { el, toolName, args };
+}
+
+function addToolStart(id, name, args) {
+  toolNames[id] = name;
+
+  if (lastApprovedPerm) {
+    const cardEl = lastApprovedPerm.cardEl;
+    cardEl.id = 'tool-' + id;
+    inputCards[id] = cardEl;
+    lastApprovedPerm = null;
+    return;
   }
-};
+
+  const argsHtml = formatArgs(args)
+    ? '<div class="card-section-args"><div class="card-section-label">Input</div>' + escapeHtml(formatArgs(args)) + '</div>'
+    : '';
+  const el = createCard('running', 'tool-' + id, name, argsHtml, false);
+  inputCards[id] = el;
+}
+
+function addToolResult(id, name, result) {
+  const cardEl = inputCards[id];
+  if (!cardEl) {
+    const displayName = name || toolNames[id] || 'output';
+    const truncated = result.length > 2000 ? result.slice(0, 2000) + '\n... (truncated)' : result;
+    const bodyHtml = '<div class="card-section-result"><div class="card-section-label">Output</div>' + escapeHtml(truncated) + '</div>';
+    createCard('complete', 'result-' + id, displayName, bodyHtml, false);
+    return;
+  }
+
+  const indicator = cardEl.querySelector('.card-indicator');
+  if (indicator) indicator.style.animation = 'none';
+
+  setCardState(cardEl, 'complete');
+
+  const truncated = result.length > 2000 ? result.slice(0, 2000) + '\n... (truncated)' : result;
+  const body = cardEl.querySelector('.card-body');
+  if (body) {
+    body.insertAdjacentHTML('beforeend',
+      '<div class="card-section-result"><div class="card-section-label">Output</div>' + escapeHtml(truncated) + '</div>'
+    );
+  }
+
+  cardEl.classList.remove('expanded');
+  scrollBottom();
+}
 
 function resolvePermissionCard(requestId, approved) {
-  const permSection = document.getElementById(`perm-section-${requestId}`);
-  if (!permSection) return;
-  const card = pendingPermCards[requestId];
-  if (card) {
-    card.el.classList.add('perm-resolved');
-    if (!approved) card.el.classList.add('perm-denied');
+  const info = pendingPermCards[requestId];
+  if (!info) return;
+
+  const cardEl = info.el;
+  const actions = document.getElementById('perm-actions-' + requestId);
+  if (actions) actions.remove();
+  const desc = cardEl.querySelector('.perm-desc');
+  if (desc) desc.remove();
+
+  if (approved) {
+    setCardState(cardEl, 'running');
+    addBadge(cardEl, 'Approved', 'badge-approved');
+    cardEl.classList.remove('expanded');
+    lastApprovedPerm = { requestId, cardEl, toolName: info.toolName };
+  } else {
+    setCardState(cardEl, 'denied');
+    addBadge(cardEl, 'Denied', 'badge-denied');
+    deniedToolNames.add(info.toolName);
+    suppressInterrupt = true;
+    setTimeout(() => { suppressInterrupt = false; }, 2000);
   }
-  const actions = permSection.querySelector('.perm-actions');
-  const status = permSection.querySelector('.perm-status');
-  if (actions) actions.style.display = 'none';
-  if (status) status.textContent = approved ? 'Approved' : 'Denied';
+
+  delete pendingPermCards[requestId];
 }
 
 function addError(message) {
   const el = document.createElement('div');
   el.className = 'msg msg-error';
-  el.innerHTML = `<div class="msg-bubble">${escapeHtml(message)}</div>`;
+  el.innerHTML = '<div class="msg-bubble">' + escapeHtml(message) + '</div>';
   messagesEl.appendChild(el);
   scrollBottom();
 }
@@ -485,10 +529,29 @@ function addError(message) {
 function addInterrupted() {
   const el = document.createElement('div');
   el.className = 'msg msg-interrupted';
-  el.innerHTML = `<div class="msg-bubble">Interrupted</div>`;
+  el.innerHTML = '<div class="msg-bubble">Interrupted</div>';
   messagesEl.appendChild(el);
   scrollBottom();
 }
+
+// --- Permission resolve ---
+
+window.resolvePermission = async function(requestId, response) {
+  const actions = document.getElementById('perm-actions-' + requestId);
+  if (!actions) return;
+  try {
+    const res = await fetch('/api/permission/' + requestId, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ response }),
+    });
+    if (!res.ok) {
+      actions.innerHTML = '<span style="color:#991b1b;font-size:12px;">Error: ' + res.status + '</span>';
+    }
+  } catch (e) {
+    actions.innerHTML = '<span style="color:#991b1b;font-size:12px;">Error: ' + escapeHtml(e.message) + '</span>';
+  }
+};
 
 // --- SSE stream ---
 
@@ -509,8 +572,8 @@ async function send() {
     });
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-      addError(err.error || err.message || `HTTP ${res.status}`);
+      const err = await res.json().catch(() => ({ error: 'HTTP ' + res.status }));
+      addError(err.error || err.message || 'HTTP ' + res.status);
       setBusy(false);
       return;
     }
@@ -537,8 +600,6 @@ async function send() {
           try { data = JSON.parse(dataStr); } catch { data = dataStr; }
           handleSSE(eventType, data);
           eventType = '';
-        } else if (line.startsWith(': ')) {
-          // keepalive, ignore
         }
       }
     }
@@ -557,10 +618,16 @@ function handleSSE(eventType, data) {
       addAssistantMessage(data.content || '');
       break;
     case 'tool_start':
-      addToolStart(data.id, data.name, data.args);
+      if (!deniedToolNames.has(data.name)) {
+        addToolStart(data.id, data.name, data.args);
+      }
       break;
     case 'tool_complete':
-      updateToolComplete(data.id, data.result || '');
+      if (!deniedToolNames.has(data.name)) {
+        addToolResult(data.id, data.name, data.result || '');
+      } else {
+        deniedToolNames.delete(data.name);
+      }
       break;
     case 'permission_ask':
       addPermission(data.request_id, data.tool_name || data.tool, data.args, data.description);
@@ -569,13 +636,12 @@ function handleSSE(eventType, data) {
       resolvePermissionCard(data.request_id, data.approved);
       break;
     case 'done':
-      // stream complete
       break;
     case 'error':
       addError(data.message || 'Unknown error');
       break;
     case 'interrupted':
-      addInterrupted();
+      if (!suppressInterrupt) addInterrupted();
       break;
   }
 }
