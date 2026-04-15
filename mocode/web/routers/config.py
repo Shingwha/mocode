@@ -1,7 +1,5 @@
 """Config, provider, model, mode, and compact endpoints."""
 
-from dataclasses import asdict
-
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..deps import get_core

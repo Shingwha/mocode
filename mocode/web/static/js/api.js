@@ -1,13 +1,17 @@
 var MoCode = MoCode || {};
 
 MoCode.Api = (function () {
-  async function request(url, options) {
+  function rawRequest(url, options) {
+    return fetch(url, options);
+  }
+
+  async function jsonRequest(url, options) {
     var res = await fetch(url, options);
-    return res;
+    return res.ok ? await res.json() : null;
   }
 
   function chat(message) {
-    return request('/api/chat', {
+    return rawRequest('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: message }),
@@ -15,112 +19,85 @@ MoCode.Api = (function () {
   }
 
   function interrupt() {
-    return request('/api/interrupt', { method: 'POST' });
+    return rawRequest('/api/interrupt', { method: 'POST' });
   }
 
-  async function getStatus() {
-    var res = await request('/api/status');
-    return res.ok ? await res.json() : null;
+  function getStatus() {
+    return jsonRequest('/api/status');
   }
 
-  async function listSessions() {
-    var res = await request('/api/sessions');
-    return res.ok ? await res.json() : { sessions: [] };
+  function listSessions() {
+    return jsonRequest('/api/sessions').then(function (d) { return d || { sessions: [] }; });
   }
 
-  async function loadSession(id) {
-    var res = await request('/api/sessions/' + encodeURIComponent(id));
-    return res.ok ? await res.json() : null;
+  function loadSession(id) {
+    return jsonRequest('/api/sessions/' + encodeURIComponent(id));
   }
 
-  async function saveSession() {
-    var res = await request('/api/sessions', { method: 'POST' });
-    return res.ok ? await res.json() : null;
+  function saveSession() {
+    return jsonRequest('/api/sessions', { method: 'POST' });
   }
 
   function deleteSession(id) {
-    return request('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
+    return rawRequest('/api/sessions/' + encodeURIComponent(id), { method: 'DELETE' });
   }
 
   function clearHistory() {
-    return request('/api/history', { method: 'DELETE' });
+    return rawRequest('/api/history', { method: 'DELETE' });
   }
 
-  async function getConfig() {
-    var res = await request('/api/config');
-    return res.ok ? await res.json() : null;
+  function getConfig() {
+    return jsonRequest('/api/config');
   }
 
-  async function switchModel({model, provider}) {
-    var res = await request('/api/config/model', {
+  function switchModel({model, provider}) {
+    return jsonRequest('/api/config/model', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({model: model, provider: provider}),
     });
-    return res.ok ? await res.json() : null;
   }
 
-  async function switchProvider({provider, model}) {
-    var res = await request('/api/config/provider', {
+  function switchProvider({provider, model}) {
+    return jsonRequest('/api/config/provider', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({provider: provider, model: model}),
     });
-    return res.ok ? await res.json() : null;
   }
 
-  async function switchMode(mode) {
-    var res = await request('/api/config/mode', {
+  function switchMode(mode) {
+    return jsonRequest('/api/config/mode', {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({mode: mode}),
     });
-    return res.ok ? await res.json() : null;
   }
 
-  async function addProvider({key, name, base_url, api_key, models}) {
-    var res = await request('/api/config/providers', {
+  function addProvider({key, name, base_url, api_key, models}) {
+    return jsonRequest('/api/config/providers', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({key: key, name: name, base_url: base_url, api_key: api_key, models: models}),
     });
-    return res.ok ? await res.json() : null;
   }
 
-  async function updateProvider(key, {name, base_url, api_key}) {
-    var res = await request('/api/config/providers/' + encodeURIComponent(key), {
+  function updateProvider(key, {name, base_url, api_key}) {
+    return jsonRequest('/api/config/providers/' + encodeURIComponent(key), {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({name: name, base_url: base_url, api_key: api_key}),
     });
-    return res.ok ? await res.json() : null;
   }
 
-  async function removeProvider(key) {
-    var res = await request('/api/config/providers/' + encodeURIComponent(key), {
+  function removeProvider(key) {
+    return jsonRequest('/api/config/providers/' + encodeURIComponent(key), {
       method: 'DELETE',
     });
-    return res.ok ? await res.json() : null;
-  }
-
-  async function addModel(model, provider) {
-    var res = await request('/api/config/models', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({model: model, provider: provider}),
-    });
-    return res.ok ? await res.json() : null;
-  }
-
-  async function removeModel(model, provider) {
-    var res = await request('/api/config/models/' + encodeURIComponent(model), {
-      method: 'DELETE',
-    });
-    return res.ok ? await res.json() : null;
   }
 
   function resolvePermission(id, response) {
-    return request('/api/permission/' + id, {
+    return rawRequest('/api/permission/' + id, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ response: response }),
@@ -150,7 +127,8 @@ MoCode.Api = (function () {
           var data;
           try {
             data = JSON.parse(dataStr);
-          } catch (_) {
+          } catch (e) {
+            MoCode.Utils.logError('parseSSE', e);
             data = dataStr;
           }
           yield { type: eventType, data: data };
@@ -176,8 +154,6 @@ MoCode.Api = (function () {
     addProvider: addProvider,
     updateProvider: updateProvider,
     removeProvider: removeProvider,
-    addModel: addModel,
-    removeModel: removeModel,
     resolvePermission: resolvePermission,
     parseSSE: parseSSE,
   };

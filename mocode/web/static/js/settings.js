@@ -97,6 +97,27 @@ MoCode.Settings = (function () {
     inputEl.addEventListener('input', clearHandler);
   }
 
+  function createCardShell(title, bodyHtml) {
+    var div = document.createElement('div');
+    div.className = 'settings-card expanded';
+    div.innerHTML =
+      '<div class="card-header" tabindex="0">' +
+        '<span class="card-title">' + MoCode.Utils.escapeHtml(title) + '</span>' +
+        '<svg class="card-toggle" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>' +
+      '</div>' +
+      '<div class="card-body">' + bodyHtml + '</div>';
+    // Bind toggle
+    setTimeout(function() {
+      var header = div.querySelector('.card-header');
+      if (header) {
+        header.addEventListener('click', function() {
+          div.classList.toggle('expanded');
+        });
+      }
+    }, 0);
+    return div;
+  }
+
   function handleClick(e) {
     var actionEl = e.target.closest('[data-action]');
     if (!actionEl) return;
@@ -117,43 +138,31 @@ MoCode.Settings = (function () {
   // ========== Card 1: Model Selection ==========
   var modelCard = {
     render: function(config) {
-      var div = document.createElement('div');
-      div.className = 'settings-card expanded';
-      div.dataset.card = 'model';
-      div.innerHTML = '<div class="card-header" tabindex="0"><span class="card-title">Model Selection</span><svg class="card-toggle" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></div>' +
-        '<div class="card-body">' +
-          '<div class="form-row">' +
-            '<div class="form-group">' +
-              '<label for="settings-provider">Provider</label>' +
-              '<select id="settings-provider">' + this.renderProviderOptions(config.providers, config.current_provider) + '</select>' +
-            '</div>' +
-            '<div class="form-group">' +
-              '<label for="settings-model">Model</label>' +
-              '<select id="settings-model">' + this.renderModelOptions(config.providers, config.current_provider, config.current_model) + '</select>' +
-            '</div>' +
+      var bodyHtml =
+        '<div class="form-row">' +
+          '<div class="form-group">' +
+            '<label for="settings-provider">Provider</label>' +
+            '<select id="settings-provider">' + this.renderProviderOptions(config.providers, config.current_provider) + '</select>' +
+          '</div>' +
+          '<div class="form-group">' +
+            '<label for="settings-model">Model</label>' +
+            '<select id="settings-model">' + this.renderModelOptions(config.providers, config.current_provider, config.current_model) + '</select>' +
           '</div>' +
         '</div>';
-      // Bind events after render
-      setTimeout(function() {
-        var select = div.querySelector('.card-header');
-        if (select) {
-          select.addEventListener('click', function() {
-            div.classList.toggle('expanded');
-          });
-        }
-        var providerSelect = div.querySelector('#settings-provider');
-        var modelSelect = div.querySelector('#settings-model');
-        if (providerSelect) {
-          providerSelect.addEventListener('change', function() {
-            modelCard.onProviderChange(providerSelect.value, modelSelect);
-          });
-        }
-        if (modelSelect) {
-          modelSelect.addEventListener('change', function() {
-            modelCard.onModelChange(modelSelect.value);
-          });
-        }
-      }, 0);
+      var div = createCardShell('Model Selection', bodyHtml);
+
+      var providerSelect = div.querySelector('#settings-provider');
+      var modelSelect = div.querySelector('#settings-model');
+      if (providerSelect) {
+        providerSelect.addEventListener('change', function() {
+          modelCard.onProviderChange(providerSelect.value, modelSelect);
+        });
+      }
+      if (modelSelect) {
+        modelSelect.addEventListener('change', function() {
+          modelCard.onModelChange(modelSelect.value);
+        });
+      }
       return div;
     },
 
@@ -161,7 +170,7 @@ MoCode.Settings = (function () {
       var html = '';
       Object.keys(providers).forEach(function(key) {
         var p = providers[key];
-        html += '<option value="' + escapeHtml(key) + '"' + (key === currentProvider ? ' selected' : '') + '>' + escapeHtml(p.name) + '</option>';
+        html += '<option value="' + MoCode.Utils.escapeHtml(key) + '"' + (key === currentProvider ? ' selected' : '') + '>' + MoCode.Utils.escapeHtml(p.name) + '</option>';
       });
       return html;
     },
@@ -170,7 +179,7 @@ MoCode.Settings = (function () {
       var html = '';
       var models = providers[currentProvider] ? providers[currentProvider].models : [];
       models.forEach(function(m) {
-        html += '<option value="' + escapeHtml(m) + '"' + (m === currentModel ? ' selected' : '') + '>' + escapeHtml(m) + '</option>';
+        html += '<option value="' + MoCode.Utils.escapeHtml(m) + '"' + (m === currentModel ? ' selected' : '') + '>' + MoCode.Utils.escapeHtml(m) + '</option>';
       });
       return html;
     },
@@ -209,27 +218,17 @@ MoCode.Settings = (function () {
   var providerCard = {
     render: function(config) {
       var self = this;
-      var div = document.createElement('div');
-      div.className = 'settings-card expanded';
-      div.dataset.card = 'provider';
-      div.innerHTML = '<div class="card-header" tabindex="0"><span class="card-title">Providers</span><svg class="card-toggle" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></div>' +
-        '<div class="card-body">' +
-          '<div id="provider-list" class="provider-list">' + this.renderProviderList(config.providers) + '</div>' +
-          '<div style="margin-top: 12px;">' +
-            '<button class="btn btn-secondary" data-action="show-add-form">+ Add Provider</button>' +
-          '</div>' +
-          '<div id="provider-form-container" style="display: none; margin-top: 12px;">' +
-            this.renderFormHtml() +
-          '</div>' +
+      var bodyHtml =
+        '<div id="provider-list" class="provider-list">' + this.renderProviderList(config.providers) + '</div>' +
+        '<div style="margin-top: 12px;">' +
+          '<button class="btn btn-secondary" data-action="show-add-form">+ Add Provider</button>' +
+        '</div>' +
+        '<div id="provider-form-container" style="display: none; margin-top: 12px;">' +
+          this.renderFormHtml() +
         '</div>';
+      var div = createCardShell('Providers', bodyHtml);
 
       setTimeout(function() {
-        var header = div.querySelector('.card-header');
-        if (header) {
-          header.addEventListener('click', function() {
-            div.classList.toggle('expanded');
-          });
-        }
         // Bind delete buttons
         div.querySelectorAll('[data-action="delete-provider"]').forEach(function(btn) {
           btn.addEventListener('click', function() {
@@ -256,17 +255,17 @@ MoCode.Settings = (function () {
       Object.keys(providers).forEach(function(key) {
         var p = providers[key];
         var domain = p.base_url ? (new URL(p.base_url, 'http://placeholder')).hostname : p.base_url;
-        html += '<div class="provider-item" data-key="' + escapeHtml(key) + '">' +
+        html += '<div class="provider-item" data-key="' + MoCode.Utils.escapeHtml(key) + '">' +
           '<div class="provider-info">' +
-            '<div class="provider-name">' + escapeHtml(p.name) + '</div>' +
-            '<div class="provider-key">' + escapeHtml(key) + '</div>' +
-            '<div class="provider-url" title="' + escapeHtml(p.base_url) + '">' + escapeHtml(domain) + '</div>' +
+            '<div class="provider-name">' + MoCode.Utils.escapeHtml(p.name) + '</div>' +
+            '<div class="provider-key">' + MoCode.Utils.escapeHtml(key) + '</div>' +
+            '<div class="provider-url" title="' + MoCode.Utils.escapeHtml(p.base_url) + '">' + MoCode.Utils.escapeHtml(domain) + '</div>' +
             '<div class="provider-models">Models: ' + (p.models ? p.models.join(', ') : 'None') + '</div>' +
           '</div>' +
           '<div class="provider-actions">' +
             '<div class="provider-meta"><span class="key-status' + (p.api_key_set ? '' : ' missing') + '"></span>' + (p.api_key_set ? 'Set' : 'Not set') + '</div>' +
-            '<button class="btn-icon btn-ghost" data-action="edit-provider" data-key="' + escapeHtml(key) + '" title="Edit"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
-            '<button class="btn-icon btn-ghost" data-action="delete-provider" data-key="' + escapeHtml(key) + '" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' +
+            '<button class="btn-icon btn-ghost" data-action="edit-provider" data-key="' + MoCode.Utils.escapeHtml(key) + '" title="Edit"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
+            '<button class="btn-icon btn-ghost" data-action="delete-provider" data-key="' + MoCode.Utils.escapeHtml(key) + '" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' +
           '</div>' +
         '</div>';
       });
@@ -391,7 +390,8 @@ MoCode.Settings = (function () {
         }
         try {
           new URL(baseUrl);
-        } catch (_) {
+        } catch (e) {
+          MoCode.Utils.logError('validateUrl', e);
           self.showError(urlInput, 'Invalid URL');
           return;
         }
@@ -446,34 +446,24 @@ MoCode.Settings = (function () {
   // ========== Card 3: Mode Switch ==========
   var modeCard = {
     render: function(config) {
-      var div = document.createElement('div');
-      div.className = 'settings-card expanded';
-      div.dataset.card = 'mode';
-      div.innerHTML = '<div class="card-header" tabindex="0"><span class="card-title">Mode</span><svg class="card-toggle" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg></div>' +
-        '<div class="card-body">' +
-          '<div class="form-group">' +
-            '<label>Execution Mode</label>' +
-            '<div class="radio-group">' +
-              '<div>' +
-                '<input type="radio" id="mode-normal" name="mode" value="normal"' + (config.mode === 'normal' ? ' checked' : '') + '>' +
-                '<label class="radio-option" for="mode-normal">Normal</label>' +
-              '</div>' +
-              '<div>' +
-                '<input type="radio" id="mode-yolo" name="mode" value="yolo"' + (config.mode === 'yolo' ? ' checked' : '') + '>' +
-                '<label class="radio-option" for="mode-yolo">YOLO</label>' +
-              '</div>' +
+      var bodyHtml =
+        '<div class="form-group">' +
+          '<label>Execution Mode</label>' +
+          '<div class="radio-group">' +
+            '<div>' +
+              '<input type="radio" id="mode-normal" name="mode" value="normal"' + (config.mode === 'normal' ? ' checked' : '') + '>' +
+              '<label class="radio-option" for="mode-normal">Normal</label>' +
             '</div>' +
-            '<div class="radio-desc">Normal: All tools require approval before execution. YOLO: Safe tools auto-approved, only dangerous operations require approval.</div>' +
+            '<div>' +
+              '<input type="radio" id="mode-yolo" name="mode" value="yolo"' + (config.mode === 'yolo' ? ' checked' : '') + '>' +
+              '<label class="radio-option" for="mode-yolo">YOLO</label>' +
+            '</div>' +
           '</div>' +
+          '<div class="radio-desc">Normal: All tools require approval before execution. YOLO: Safe tools auto-approved, only dangerous operations require approval.</div>' +
         '</div>';
+      var div = createCardShell('Mode', bodyHtml);
 
       setTimeout(function() {
-        var header = div.querySelector('.card-header');
-        if (header) {
-          header.addEventListener('click', function() {
-            div.classList.toggle('expanded');
-          });
-        }
         var radios = div.querySelectorAll('input[name="mode"]');
         radios.forEach(function(radio) {
           radio.addEventListener('change', function() {
@@ -513,18 +503,5 @@ MoCode.Settings = (function () {
     showToast: showToast,
     showError: showError,
     render: render,
-    _internal: {
-      getConfig: function() { return configCache; },
-      reload: loadConfig,
-    },
   };
 })();
-
-// Utility: HTML escape
-function escapeHtml(s) {
-  if (s === undefined || s === null) return '';
-  s = String(s);
-  var d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}

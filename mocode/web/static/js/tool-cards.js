@@ -9,9 +9,7 @@ MoCode.ToolCards = (function () {
   // --- Helpers ---
 
   function escapeHtml(s) {
-    var d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
+    return MoCode.Utils.escapeHtml(s);
   }
 
   function formatArgs(args) {

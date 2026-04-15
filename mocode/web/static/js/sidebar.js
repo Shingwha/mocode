@@ -6,9 +6,7 @@ MoCode.Sidebar = (function () {
   var sessions = [];
 
   function escapeHtml(s) {
-    var d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
+    return MoCode.Utils.escapeHtml(s);
   }
 
   function formatTime(isoStr) {
@@ -53,7 +51,9 @@ MoCode.Sidebar = (function () {
       var data = await MoCode.Api.listSessions();
       sessions = data.sessions || [];
       render();
-    } catch (_) {}
+    } catch (e) {
+      MoCode.Utils.logError('listSessions', e);
+    }
   }
 
   function render() {
@@ -116,7 +116,8 @@ MoCode.Sidebar = (function () {
       var session = await MoCode.Api.loadSession(id);
       if (!session) return;
       return session;
-    } catch (_) {
+    } catch (e) {
+      MoCode.Utils.logError('loadSession', e);
       return null;
     }
   }
@@ -128,16 +129,10 @@ MoCode.Sidebar = (function () {
       sessions = sessions.filter(function (s) { return s.id !== id; });
       render();
       return true;
-    } catch (_) {
+    } catch (e) {
+      MoCode.Utils.logError('deleteSession', e);
       return false;
     }
-  }
-
-  function getSessionById(id) {
-    for (var i = 0; i < sessions.length; i++) {
-      if (sessions[i].id === id) return sessions[i];
-    }
-    return null;
   }
 
   return {
@@ -148,7 +143,6 @@ MoCode.Sidebar = (function () {
     switchSession: switchSession,
     deleteSession: deleteSession,
     getSessionTitle: getSessionTitle,
-    getSessionById: getSessionById,
     setupSettingsButton: setupSettingsButton,
     get sessions() { return sessions; },
   };

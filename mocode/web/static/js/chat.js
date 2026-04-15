@@ -50,6 +50,12 @@ MoCode.Chat = (function () {
     }
   }
 
+  function resetChatView() {
+    MoCode.Messages.clear();
+    MoCode.ToolCards.clear();
+    MoCode.Messages.updateEmptyState(emptyState);
+  }
+
   async function send() {
     var text = inputEl.value.trim();
     if (!text) return;
@@ -67,12 +73,17 @@ MoCode.Chat = (function () {
       try {
         var res = await MoCode.Api.chat(text);
         if (res.ok) {
-          var data = await res.json().catch(function () { return {}; });
+          var data = await res.json().catch(function (e) {
+            MoCode.Utils.logError('queueCheckJson', e);
+            return {};
+          });
           if (data.queued) {
             showQueuedHint();
           }
         }
-      } catch (_) {}
+      } catch (e) {
+        MoCode.Utils.logError('queueCheck', e);
+      }
       return;
     }
 
@@ -82,7 +93,10 @@ MoCode.Chat = (function () {
       var res = await MoCode.Api.chat(text);
 
       if (!res.ok) {
-        var err = await res.json().catch(function () { return { error: 'HTTP ' + res.status }; });
+        var err = await res.json().catch(function (e) {
+          MoCode.Utils.logError('chatErrorJson', e);
+          return { error: 'HTTP ' + res.status };
+        });
         MoCode.Messages.createError(err.error || err.message || 'HTTP ' + res.status);
         setBusy(false);
         return;
@@ -141,7 +155,9 @@ MoCode.Chat = (function () {
   async function interrupt() {
     try {
       await MoCode.Api.interrupt();
-    } catch (_) {}
+    } catch (e) {
+      MoCode.Utils.logError('interrupt', e);
+    }
   }
 
   async function autoSave() {
@@ -153,20 +169,22 @@ MoCode.Chat = (function () {
       chatTitle.textContent = MoCode.Sidebar.getSessionTitle(session);
       await MoCode.Sidebar.load();
       MoCode.Sidebar.setActive(session.id);
-    } catch (_) {}
+    } catch (e) {
+      MoCode.Utils.logError('autoSave', e);
+    }
   }
 
   async function newChat() {
     if (state.busy) return;
     try {
       await MoCode.Api.clearHistory();
-    } catch (_) {}
+    } catch (e) {
+      MoCode.Utils.logError('clearHistory', e);
+    }
     state.currentSessionId = null;
-    MoCode.Messages.clear();
-    MoCode.ToolCards.clear();
     chatTitle.textContent = 'New Chat';
     MoCode.Sidebar.setActive(null);
-    MoCode.Messages.updateEmptyState(emptyState);
+    resetChatView();
     inputEl.focus();
   }
 
@@ -175,12 +193,10 @@ MoCode.Chat = (function () {
     var session = await MoCode.Sidebar.switchSession(id);
     if (!session) return;
     state.currentSessionId = session.id;
-    MoCode.Messages.clear();
-    MoCode.ToolCards.clear();
-    MoCode.Messages.renderHistory(session.messages || []);
     chatTitle.textContent = MoCode.Sidebar.getSessionTitle(session);
     MoCode.Sidebar.setActive(id);
-    MoCode.Messages.updateEmptyState(emptyState);
+    resetChatView();
+    MoCode.Messages.renderHistory(session.messages || []);
   }
 
   async function deleteSession(id) {
@@ -190,10 +206,12 @@ MoCode.Chat = (function () {
     if (state.currentSessionId === id) {
       state.currentSessionId = null;
       chatTitle.textContent = 'New Chat';
-      try { await MoCode.Api.clearHistory(); } catch (_) {}
-      MoCode.Messages.clear();
-      MoCode.ToolCards.clear();
-      MoCode.Messages.updateEmptyState(emptyState);
+      try {
+        await MoCode.Api.clearHistory();
+      } catch (e) {
+        MoCode.Utils.logError('clearHistoryDelete', e);
+      }
+      resetChatView();
     }
   }
 
@@ -216,7 +234,9 @@ MoCode.Chat = (function () {
       if (data && modelInfo) {
         modelInfo.textContent = data.model || '';
       }
-    } catch (_) {}
+    } catch (e) {
+      MoCode.Utils.logError('fetchStatus', e);
+    }
   }
 
   return {

@@ -24,13 +24,15 @@ MoCode.Messages = (function () {
           if (language && typeof hljs !== 'undefined' && hljs.getLanguage(language)) {
             try {
               highlighted = hljs.highlight(text, { language: language }).value;
-            } catch (_) {
+            } catch (e) {
+              MoCode.Utils.logError('hljsHighlight', e);
               highlighted = escapeHtml(text);
             }
           } else if (typeof hljs !== 'undefined') {
             try {
               highlighted = hljs.highlightAuto(text).value;
-            } catch (_) {
+            } catch (e) {
+              MoCode.Utils.logError('hljsHighlightAuto', e);
               highlighted = escapeHtml(text);
             }
           } else {
@@ -57,28 +59,12 @@ MoCode.Messages = (function () {
     if (typeof marked !== 'undefined') {
       return marked.parse(text);
     }
-    return simpleFormat(text);
-  }
-
-  function simpleFormat(text) {
-    if (!text) return '';
-    var html = escapeHtml(text);
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function (_, lang, code) {
-      return '<pre><code>' + code.trimEnd() + '</code></pre>';
-    });
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/__(.+?)__/g, '<strong>$1</strong>');
-    html = html.replace(/\n\n+/g, '</p><p>');
-    html = html.replace(/\n/g, '<br>');
-    if (!html.startsWith('<')) html = '<p>' + html + '</p>';
-    return html;
+    // Fallback: plain text escape only
+    return '<p>' + escapeHtml(text).replace(/\n/g, '<br>') + '</p>';
   }
 
   function escapeHtml(s) {
-    var d = document.createElement('div');
-    d.textContent = s;
-    return d.innerHTML;
+    return MoCode.Utils.escapeHtml(s);
   }
 
   function createUser(text) {
@@ -190,7 +176,9 @@ MoCode.Messages = (function () {
             var tc = msg.tool_calls[j];
             var tcName = tc.function && tc.function.name || 'tool';
             var tcArgs = null;
-            try { tcArgs = JSON.parse(tc.function.arguments); } catch (_) {}
+            try { tcArgs = JSON.parse(tc.function.arguments); } catch (e) {
+              MoCode.Utils.logError('parseToolArgs', e);
+            }
             callInfo[tc.id] = { name: tcName, args: tcArgs };
             callOrder.push(tc.id);
           }
@@ -238,7 +226,8 @@ MoCode.Messages = (function () {
         btn.innerHTML = COPY_SVG;
         btn.classList.remove('copied');
       }, 1500);
-    }).catch(function () {
+    }).catch(function (e) {
+      MoCode.Utils.logError('copyCode', e);
       btn.innerHTML = CHECK_SVG;
       btn.classList.add('copied');
       setTimeout(function () {
