@@ -99,7 +99,7 @@ MoCode.Settings = (function () {
 
   function createCardShell(title, bodyHtml) {
     var div = document.createElement('div');
-    div.className = 'settings-card expanded';
+    div.className = 'card settings-card expanded';
     div.innerHTML =
       '<div class="card-header" tabindex="0">' +
         '<span class="card-title">' + MoCode.Utils.escapeHtml(title) + '</span>' +

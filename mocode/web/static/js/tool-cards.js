@@ -29,12 +29,12 @@ MoCode.ToolCards = (function () {
     this.name = name;
     this.state = null;
     this.el = document.createElement('div');
-    this.el.className = 'tool-card';
+    this.el.className = 'card tool-card';
     this.el.id = id;
     this.el.innerHTML =
-      '<div class="card-header">' +
-        '<span class="card-name">' + escapeHtml(name) + '</span>' +
-        '<span class="card-toggle">&#9654;</span>' +
+      '<div class="card-header" tabindex="0">' +
+        '<span class="card-title">' + escapeHtml(name) + '</span>' +
+        '<svg class="card-toggle" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>' +
       '</div>' +
       '<div class="card-body"></div>';
     container.appendChild(this.el);
