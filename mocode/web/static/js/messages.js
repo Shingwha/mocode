@@ -7,44 +7,48 @@ MoCode.Messages = (function () {
     containerEl = el;
   }
 
+  var COPY_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+  var CHECK_SVG = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+
   function setupMarkdown() {
     if (typeof marked === 'undefined') return;
 
-    var renderer = new marked.Renderer();
+    marked.use({
+      useNewRenderer: true,
+      renderer: {
+        code: function (_ref) {
+          var text = _ref.text;
+          var lang = _ref.lang;
+          var language = lang || '';
+          var highlighted;
+          if (language && typeof hljs !== 'undefined' && hljs.getLanguage(language)) {
+            try {
+              highlighted = hljs.highlight(text, { language: language }).value;
+            } catch (_) {
+              highlighted = escapeHtml(text);
+            }
+          } else if (typeof hljs !== 'undefined') {
+            try {
+              highlighted = hljs.highlightAuto(text).value;
+            } catch (_) {
+              highlighted = escapeHtml(text);
+            }
+          } else {
+            highlighted = escapeHtml(text);
+          }
 
-    renderer.code = function (code, lang) {
-      var language = lang || '';
-      var highlighted;
-      if (language && typeof hljs !== 'undefined' && hljs.getLanguage(language)) {
-        try {
-          highlighted = hljs.highlight(code, { language: language }).value;
-        } catch (_) {
-          highlighted = escapeHtml(code);
-        }
-      } else if (typeof hljs !== 'undefined') {
-        try {
-          highlighted = hljs.highlightAuto(code).value;
-        } catch (_) {
-          highlighted = escapeHtml(code);
-        }
-      } else {
-        highlighted = escapeHtml(code);
-      }
-
-      var langLabel = language ? '<span class="code-lang">' + escapeHtml(language) + '</span>' : '';
-      return '<div class="code-block-wrapper">' +
-        '<div class="code-block-header">' +
-          langLabel +
-          '<button class="code-copy-btn" title="Copy code">Copy</button>' +
-        '</div>' +
-        '<pre><code class="hljs' + (language ? ' language-' + language : '') + '">' + highlighted + '</code></pre>' +
-      '</div>';
-    };
-
-    marked.setOptions({
+          var langLabel = language ? '<span class="code-lang">' + escapeHtml(language) + '</span>' : '';
+          return '<div class="code-block-wrapper">' +
+            '<div class="code-block-header">' +
+              langLabel +
+              '<button class="code-copy-btn" title="Copy code">' + COPY_SVG + '</button>' +
+            '</div>' +
+            '<pre><code class="hljs' + (language ? ' language-' + language : '') + '">' + highlighted + '</code></pre>' +
+          '</div>';
+        },
+      },
       breaks: true,
       gfm: true,
-      renderer: renderer,
     });
   }
 
@@ -221,16 +225,27 @@ MoCode.Messages = (function () {
 
   // Code copy button handler - event delegation
   document.addEventListener('click', function (e) {
-    if (e.target.classList.contains('code-copy-btn')) {
-      var wrapper = e.target.closest('.code-block-wrapper');
-      if (!wrapper) return;
-      var codeEl = wrapper.querySelector('code');
-      if (!codeEl) return;
-      navigator.clipboard.writeText(codeEl.textContent).then(function () {
-        e.target.textContent = 'Copied!';
-        setTimeout(function () { e.target.textContent = 'Copy'; }, 1500);
-      });
-    }
+    var btn = e.target.closest('.code-copy-btn');
+    if (!btn) return;
+    var wrapper = btn.closest('.code-block-wrapper');
+    if (!wrapper) return;
+    var codeEl = wrapper.querySelector('code');
+    if (!codeEl) return;
+    navigator.clipboard.writeText(codeEl.textContent).then(function () {
+      btn.innerHTML = CHECK_SVG;
+      btn.classList.add('copied');
+      setTimeout(function () {
+        btn.innerHTML = COPY_SVG;
+        btn.classList.remove('copied');
+      }, 1500);
+    }).catch(function () {
+      btn.innerHTML = CHECK_SVG;
+      btn.classList.add('copied');
+      setTimeout(function () {
+        btn.innerHTML = COPY_SVG;
+        btn.classList.remove('copied');
+      }, 1500);
+    });
   });
 
   return {
