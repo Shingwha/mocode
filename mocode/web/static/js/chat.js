@@ -116,23 +116,11 @@ MoCode.Chat = (function () {
         MoCode.Messages.createAssistant(data.content || '');
         break;
       case 'tool_start':
-        if (!MoCode.ToolCards.isDenied(data.name)) {
-          MoCode.ToolCards.addToolStart(data.id, data.name, data.args);
-        }
-        break;
       case 'tool_complete':
-        if (!MoCode.ToolCards.isDenied(data.name)) {
-          MoCode.ToolCards.addToolResult(data.id, data.name, data.result || '');
-        } else {
-          MoCode.ToolCards.clearDenied(data.name);
-        }
-        break;
       case 'permission_ask':
-        MoCode.ToolCards.addPermission(data.request_id, data.tool_name || data.tool, data.args, data.description);
-        break;
       case 'permission_resolved':
-        MoCode.ToolCards.resolvePermissionCard(data.request_id, data.approved);
-        if (!data.approved) {
+        MoCode.ToolCards.handleEvent(eventType, data);
+        if (eventType === 'permission_resolved' && !data.approved) {
           state.suppressInterrupt = true;
           setTimeout(function () { state.suppressInterrupt = false; }, 2000);
         }

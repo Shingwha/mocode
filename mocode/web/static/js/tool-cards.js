@@ -2,48 +2,16 @@ var MoCode = MoCode || {};
 
 MoCode.ToolCards = (function () {
   var containerEl;
-  var pendingPermCards = {};
-  var inputCards = {};
-  var approvedPermMap = {}; // toolName -> { cardEl, requestId }
-  var deniedToolNames = {};
+  var cards = {};       // id -> ToolCard (all cards by current ID)
+  var pending = {};     // requestId -> ToolCard (permission cards awaiting resolution)
+  var nameIndex = {};   // toolName -> ToolCard (correlates permission -> tool_start)
+
+  // --- Helpers ---
 
   function escapeHtml(s) {
     var d = document.createElement('div');
     d.textContent = s;
     return d.innerHTML;
-  }
-
-  function init(el) {
-    containerEl = el;
-    // Event delegation for card toggle
-    el.addEventListener('click', function (e) {
-      var header = e.target.closest('.card-header');
-      if (header) {
-        var card = header.parentElement;
-        if (card && card.classList.contains('tool-card')) {
-          toggleCard(card);
-        }
-      }
-      // Event delegation for expand-output buttons
-      var expandBtn = e.target.closest('.expand-output-btn');
-      if (expandBtn) {
-        var wrapper = expandBtn.closest('.card-section-result');
-        if (wrapper) {
-          wrapper.classList.add('expanded');
-          expandBtn.remove();
-        }
-      }
-    });
-  }
-
-  function toggleCard(el) {
-    if (!el || !el.classList) return;
-    el.classList.toggle('expanded');
-    if (el.classList.contains('expanded')) {
-      requestAnimationFrame(function () {
-        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      });
-    }
   }
 
   function formatArgs(args) {
@@ -56,39 +24,49 @@ MoCode.ToolCards = (function () {
     }).join('\n');
   }
 
-  function createCard(state, id, name, bodyHtml, expanded) {
-    var el = document.createElement('div');
-    el.className = 'tool-card' + (expanded ? ' expanded' : '');
-    el.dataset.state = state;
-    el.id = id;
-    el.innerHTML =
+  // --- ToolCard class ---
+
+  function ToolCard(id, name, container) {
+    this.id = id;
+    this.name = name;
+    this.state = null;
+    this.el = document.createElement('div');
+    this.el.className = 'tool-card';
+    this.el.id = id;
+    this.el.innerHTML =
       '<div class="card-header">' +
-        '<span class="card-indicator"></span>' +
         '<span class="card-name">' + escapeHtml(name) + '</span>' +
         '<span class="card-toggle">&#9654;</span>' +
       '</div>' +
-      '<div class="card-body">' + bodyHtml + '</div>';
-    containerEl.appendChild(el);
+      '<div class="card-body"></div>';
+    container.appendChild(this.el);
     MoCode.Messages.scrollToBottom();
-    return el;
   }
 
-  function createFromHistory(name, result) {
-    var bodyHtml = '<div class="card-section-result"><div class="card-section-label">Output</div>' +
-      escapeHtml(result) + '</div>';
-    createCard('complete', 'hist-' + name + '-' + Date.now(), name, bodyHtml, false);
-  }
+  ToolCard.prototype.setArgs = function (args) {
+    var text = formatArgs(args);
+    if (!text) return;
+    var body = this.el.querySelector('.card-body');
+    if (!body) return;
+    if (body.querySelector('.card-section-args')) return;
+    body.insertAdjacentHTML('beforeend',
+      '<div class="card-section-args">' + escapeHtml(text) + '</div>');
+  };
 
-  function addPermission(requestId, toolName, args, description) {
-    var argsHtml = formatArgs(args)
-      ? '<div class="card-section-args"><div class="card-section-label">Input</div>' + escapeHtml(formatArgs(args)) + '</div>'
-      : (description ? '<div class="perm-desc">' + escapeHtml(description) + '</div>' : '');
+  ToolCard.prototype.setDescription = function (text) {
+    if (!text) return;
+    var body = this.el.querySelector('.card-body');
+    if (!body) return;
+    body.insertAdjacentHTML('afterbegin',
+      '<div class="perm-desc">' + escapeHtml(text) + '</div>');
+  };
 
-    var cardEl = createCard('pending', 'perm-' + requestId, toolName, argsHtml, true);
+  ToolCard.prototype.showPermissionButtons = function (requestId) {
+    var body = this.el.querySelector('.card-body');
+    if (!body) return;
 
     var actionsEl = document.createElement('div');
     actionsEl.className = 'perm-actions';
-    actionsEl.id = 'perm-actions-' + requestId;
 
     var approveBtn = document.createElement('button');
     approveBtn.className = 'btn-approve';
@@ -106,103 +84,166 @@ MoCode.ToolCards = (function () {
 
     actionsEl.appendChild(approveBtn);
     actionsEl.appendChild(denyBtn);
-    cardEl.after(actionsEl);
+    body.appendChild(actionsEl);
+  };
 
-    pendingPermCards[requestId] = { cardEl: cardEl, toolName: toolName, args: args };
-  }
+  ToolCard.prototype.removePermissionButtons = function () {
+    var actions = this.el.querySelector('.perm-actions');
+    if (actions) actions.remove();
+    var desc = this.el.querySelector('.perm-desc');
+    if (desc) desc.remove();
+  };
 
-  function addToolStart(id, name, args) {
-    // Check if there's a recently approved permission card for this tool
-    if (approvedPermMap[name]) {
-      var info = approvedPermMap[name];
-      var cardEl = info.cardEl;
-      cardEl.id = 'tool-' + id;
-      inputCards[id] = cardEl;
-      delete approvedPermMap[name];
-      return;
+  ToolCard.prototype.transitionTo = function (newState) {
+    var valid = {
+      pending: ['running', 'denied'],
+      running: ['complete'],
+    };
+    var allowed = valid[this.state];
+    if (!allowed || allowed.indexOf(newState) === -1) return;
+    this.state = newState;
+    this.el.dataset.state = newState;
+    if (this.state !== 'running') {
+      var indicator = this.el.querySelector('.card-indicator');
+      if (indicator) indicator.style.animation = 'none';
     }
+  };
 
-    var argsHtml = formatArgs(args)
-      ? '<div class="card-section-args"><div class="card-section-label">Input</div>' + escapeHtml(formatArgs(args)) + '</div>'
-      : '';
-    var el = createCard('running', 'tool-' + id, name, argsHtml, false);
-    inputCards[id] = el;
-  }
-
-  function addToolResult(id, name, result) {
-    var cardEl = inputCards[id];
-    if (!cardEl) {
-      var displayName = name || 'output';
-      var truncated = result.length > 500 ? result.slice(0, 500) : result;
-      var isLong = result.length > 500;
-      var bodyHtml = '<div class="card-section-result"><div class="card-section-label">Output</div>' +
-        escapeHtml(truncated) +
-        (isLong ? '<button class="expand-output-btn">Show full output (' + result.length + ' chars)</button>' +
-          '<div class="full-output">' + escapeHtml(result) + '</div>' : '') +
-        '</div>';
-      createCard('complete', 'result-' + id, displayName, bodyHtml, false);
-      return;
-    }
-
-    var indicator = cardEl.querySelector('.card-indicator');
-    if (indicator) indicator.style.animation = 'none';
-
-    cardEl.dataset.state = 'complete';
-
+  ToolCard.prototype.setResult = function (result) {
     var truncated = result.length > 500 ? result.slice(0, 500) : result;
     var isLong = result.length > 500;
-    var body = cardEl.querySelector('.card-body');
+    var body = this.el.querySelector('.card-body');
     if (body) {
       body.insertAdjacentHTML('beforeend',
-        '<div class="card-section-result"><div class="card-section-label">Output</div>' +
+        '<div class="card-section-result">' +
         escapeHtml(truncated) +
         (isLong ? '<button class="expand-output-btn">Show full output (' + result.length + ' chars)</button>' +
           '<div class="full-output">' + escapeHtml(result) + '</div>' : '') +
-        '</div>'
-      );
+        '</div>');
     }
-
-    cardEl.classList.remove('expanded');
+    this.transitionTo('complete');
+    this.el.classList.remove('expanded');
     MoCode.Messages.scrollToBottom();
+  };
+
+  ToolCard.prototype.updateId = function (newId) {
+    delete cards[this.id];
+    this.id = newId;
+    this.el.id = newId;
+    cards[newId] = this;
+  };
+
+  ToolCard.prototype.collapse = function () {
+    this.el.classList.remove('expanded');
+  };
+
+  ToolCard.prototype.expand = function () {
+    this.el.classList.add('expanded');
+    requestAnimationFrame(function () {
+      this.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }.bind(this));
+  };
+
+  ToolCard.prototype.destroy = function () {
+    if (this.el.parentNode) this.el.parentNode.removeChild(this.el);
+    delete cards[this.id];
+  };
+
+  // --- Module-level event handling ---
+
+  function handleEvent(type, data) {
+    switch (type) {
+      case 'permission_ask':
+        handlePermissionAsk(data);
+        break;
+      case 'permission_resolved':
+        handlePermissionResolved(data);
+        break;
+      case 'tool_start':
+        handleToolStart(data);
+        break;
+      case 'tool_complete':
+        handleToolComplete(data);
+        break;
+    }
   }
 
-  function addBadge(el, text, cls) {
-    var header = el.querySelector('.card-header');
-    var existing = header.querySelector('.card-badge');
-    if (existing) existing.remove();
-    var badge = document.createElement('span');
-    badge.className = 'card-badge ' + cls;
-    badge.textContent = text;
-    header.insertBefore(badge, header.querySelector('.card-toggle'));
+  function handlePermissionAsk(data) {
+    var requestId = data.request_id;
+    var toolName = data.tool_name || data.tool;
+    var card = new ToolCard('perm-' + requestId, toolName, containerEl);
+    card.state = 'pending';
+    card.el.dataset.state = 'pending';
+    card.el.classList.add('expanded');
+    card.setArgs(data.args);
+    card.setDescription(data.description);
+    card.showPermissionButtons(requestId);
+
+    cards[card.id] = card;
+    pending[requestId] = card;
+    nameIndex[toolName] = card;
   }
 
-  function resolvePermissionCard(requestId, approved) {
-    var info = pendingPermCards[requestId];
-    if (!info) return;
+  function handlePermissionResolved(data) {
+    var card = pending[data.request_id];
+    if (!card) return;
 
-    var cardEl = info.cardEl;
-    var actions = document.getElementById('perm-actions-' + requestId);
-    if (actions) actions.remove();
-    var desc = cardEl.querySelector('.perm-desc');
-    if (desc) desc.remove();
+    card.removePermissionButtons();
 
-    if (approved) {
-      cardEl.dataset.state = 'running';
-      addBadge(cardEl, 'Approved', 'badge-approved');
-      cardEl.classList.remove('expanded');
-      // Store by toolName so the next tool_start can find it
-      approvedPermMap[info.toolName] = { cardEl: cardEl, requestId: requestId };
+    if (data.approved) {
+      card.transitionTo('running');
+      card.collapse();
     } else {
-      cardEl.dataset.state = 'denied';
-      addBadge(cardEl, 'Denied', 'badge-denied');
-      deniedToolNames[info.toolName] = true;
+      card.transitionTo('denied');
     }
 
-    delete pendingPermCards[requestId];
+    delete pending[data.request_id];
   }
+
+  function handleToolStart(data) {
+    var existing = nameIndex[data.name];
+    if (existing) {
+      if (existing.state === 'running') {
+        existing.updateId('tool-' + data.id);
+        existing.setArgs(data.args);
+        delete nameIndex[data.name];
+        return;
+      }
+      if (existing.state === 'denied') {
+        existing.updateId('tool-' + data.id);
+        delete nameIndex[data.name];
+        return;
+      }
+    }
+
+    var card = new ToolCard('tool-' + data.id, data.name, containerEl);
+    card.state = 'running';
+    card.el.dataset.state = 'running';
+    card.setArgs(data.args);
+    cards[card.id] = card;
+  }
+
+  function handleToolComplete(data) {
+    var card = cards['tool-' + data.id];
+
+    if (!card) {
+      createFromHistory(data.name || 'output', data.result || '');
+      return;
+    }
+
+    if (card.state === 'denied') {
+      return;
+    }
+
+    card.setResult(data.result || '');
+  }
+
+  // --- Permission resolution (API call) ---
 
   async function resolvePermission(requestId, response) {
-    var actions = document.getElementById('perm-actions-' + requestId);
+    var card = pending[requestId];
+    if (!card) return;
+    var actions = card.el.querySelector('.perm-actions');
     if (!actions) return;
     try {
       var res = await MoCode.Api.resolvePermission(requestId, response);
@@ -214,32 +255,68 @@ MoCode.ToolCards = (function () {
     }
   }
 
-  function isDenied(toolName) {
-    return !!deniedToolNames[toolName];
+  // --- Session restore ---
+
+  function createFromHistory(name, result, args) {
+    var card = new ToolCard('hist-' + name + '-' + Date.now(), name, containerEl);
+    card.state = 'complete';
+    card.el.dataset.state = 'complete';
+    var body = card.el.querySelector('.card-body');
+    if (body) {
+      var html = '';
+      if (args) {
+        var argsText = formatArgs(args);
+        if (argsText) html += '<div class="card-section-args">' + escapeHtml(argsText) + '</div>';
+      }
+      html += '<div class="card-section-result">' + escapeHtml(result) + '</div>';
+      body.innerHTML = html;
+    }
+    cards[card.id] = card;
   }
 
-  function clearDenied(toolName) {
-    delete deniedToolNames[toolName];
+  // --- Init and clear ---
+
+  function init(el) {
+    containerEl = el;
+    el.addEventListener('click', function (e) {
+      var header = e.target.closest('.card-header');
+      if (header) {
+        var cardEl = header.parentElement;
+        if (cardEl && cardEl.classList.contains('tool-card')) {
+          cardEl.classList.toggle('expanded');
+          if (cardEl.classList.contains('expanded')) {
+            requestAnimationFrame(function () {
+              cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            });
+          }
+        }
+      }
+      var expandBtn = e.target.closest('.expand-output-btn');
+      if (expandBtn) {
+        var wrapper = expandBtn.closest('.card-section-result');
+        if (wrapper) {
+          wrapper.classList.add('expanded');
+          expandBtn.remove();
+        }
+      }
+    });
   }
 
   function clear() {
-    pendingPermCards = {};
-    inputCards = {};
-    approvedPermMap = {};
-    deniedToolNames = {};
+    var ids = Object.keys(cards);
+    for (var i = 0; i < ids.length; i++) {
+      var card = cards[ids[i]];
+      if (card.el.parentNode) card.el.parentNode.removeChild(card.el);
+    }
+    cards = {};
+    pending = {};
+    nameIndex = {};
   }
 
   return {
     init: init,
-    createCard: createCard,
+    handleEvent: handleEvent,
     createFromHistory: createFromHistory,
-    addPermission: addPermission,
-    addToolStart: addToolStart,
-    addToolResult: addToolResult,
-    resolvePermissionCard: resolvePermissionCard,
-    resolvePermission: resolvePermission,
-    isDenied: isDenied,
-    clearDenied: clearDenied,
     clear: clear,
   };
 })();

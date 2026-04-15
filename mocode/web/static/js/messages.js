@@ -178,12 +178,39 @@ MoCode.Messages = (function () {
         if (msg.content) {
           createAssistant(extractText(msg.content));
         }
-        i++;
+        // Correlate tool_calls with subsequent tool result messages
+        if (msg.tool_calls && msg.tool_calls.length > 0) {
+          var callInfo = {};
+          var callOrder = [];
+          for (var j = 0; j < msg.tool_calls.length; j++) {
+            var tc = msg.tool_calls[j];
+            var tcName = tc.function && tc.function.name || 'tool';
+            var tcArgs = null;
+            try { tcArgs = JSON.parse(tc.function.arguments); } catch (_) {}
+            callInfo[tc.id] = { name: tcName, args: tcArgs };
+            callOrder.push(tc.id);
+          }
+          // Collect following tool result messages
+          var toolResults = {};
+          var k = i + 1;
+          while (k < messages.length && messages[k].role === 'tool') {
+            toolResults[messages[k].tool_call_id] = extractText(messages[k].content);
+            k++;
+          }
+          // Create cards with both input and output
+          for (var m = 0; m < callOrder.length; m++) {
+            var info = callInfo[callOrder[m]];
+            var result = toolResults[callOrder[m]] || '';
+            var truncated = result.length > 2000 ? result.slice(0, 2000) + '\n...(truncated)' : result;
+            MoCode.ToolCards.createFromHistory(info.name, truncated, info.args);
+          }
+          i = k;
+        } else {
+          i++;
+        }
       } else if (msg.role === 'tool') {
-        var toolName = msg.name || 'tool';
-        var result = extractText(msg.content);
-        var truncated = result.length > 2000 ? result.slice(0, 2000) + '\n...(truncated)' : result;
-        MoCode.ToolCards.createFromHistory(toolName, truncated);
+        // Orphan tool result (fallback)
+        MoCode.ToolCards.createFromHistory(msg.name || 'tool', extractText(msg.content));
         i++;
       } else {
         i++;

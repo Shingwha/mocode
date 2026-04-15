@@ -54,7 +54,6 @@
   --c-warning: #eab308;
   --c-error: #ef4444;
   --c-info: #3b82f6;
-  --c-denied: #f97316;
 
   /* Message types */
   --c-error-bg: #fef2f2;
@@ -68,12 +67,6 @@
   --c-code-bg: #18181b;
   --c-code-text: #e4e4e7;
   --c-code-inline-bg: rgba(0,0,0,0.06);
-
-  /* Badges */
-  --c-approved-bg: #f0fdf4;
-  --c-approved-text: #15803d;
-  --c-denied-badge-bg: #fef2f2;
-  --c-denied-badge-text: #b91c1c;
 
   /* Interrupt */
   --c-interrupt-bg: #fee2e2;
@@ -624,13 +617,13 @@ body {
 /* ========== Tool Cards ========== */
 
 .tool-card {
-  max-width: var(--max-w);
+  max-width: calc(var(--max-w) - 48px);
   margin: 4px auto;
   border-radius: var(--radius);
   background: var(--c-bg);
   overflow: hidden;
   animation: cardIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-  border: 1px solid var(--c-border-subtle);
+  border: 1px solid var(--c-border);
   transition: border-color 0.2s ease;
 }
 
@@ -639,16 +632,11 @@ body {
   to { opacity: 1; transform: translateY(0); }
 }
 
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-
 .tool-card .card-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 12px;
+  padding: 8px 12px;
   cursor: pointer;
   user-select: none;
   font-size: 13px;
@@ -658,15 +646,8 @@ body {
   background: rgba(0,0,0,0.015);
 }
 
-.tool-card .card-indicator {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
 .tool-card .card-name {
-  font-weight: 550;
+  font-weight: 500;
   font-family: var(--font-mono);
   font-size: 11.5px;
   flex: 1;
@@ -676,18 +657,6 @@ body {
   white-space: nowrap;
   letter-spacing: 0.2px;
 }
-
-.tool-card .card-badge {
-  font-size: 10px;
-  padding: 2px 7px;
-  border-radius: 5px;
-  font-weight: 600;
-  letter-spacing: 0.3px;
-  text-transform: uppercase;
-}
-
-.card-badge.badge-approved { background: var(--c-approved-bg); color: var(--c-approved-text); }
-.card-badge.badge-denied { background: var(--c-denied-badge-bg); color: var(--c-denied-badge-text); }
 
 .tool-card .card-toggle {
   font-size: 9px;
@@ -700,7 +669,7 @@ body {
 
 .tool-card .card-body {
   display: none;
-  padding: 8px 12px 10px 26px;
+  padding: 6px 12px 8px;
   border-top: 1px solid var(--c-border-subtle);
   font-family: var(--font-mono);
   font-size: 12px;
@@ -709,24 +678,21 @@ body {
   max-height: 300px;
   overflow-y: auto;
   color: var(--c-text-muted);
-  line-height: 1.55;
+  line-height: 1.5;
 }
 
 .tool-card.expanded .card-body {
   display: block;
 }
 
-.tool-card[data-state="pending"] { border-left: 3px solid var(--c-warning); }
-.tool-card[data-state="pending"] .card-indicator { background: var(--c-warning); }
-.tool-card[data-state="running"] { border-left: 3px solid var(--c-info); }
-.tool-card[data-state="running"] .card-indicator { background: var(--c-info); animation: pulse 1.2s ease-in-out infinite; }
-.tool-card[data-state="complete"] { border-left: 3px solid var(--c-success); }
-.tool-card[data-state="complete"] .card-indicator { background: var(--c-success); }
-.tool-card[data-state="denied"] { border-left: 3px solid var(--c-denied); opacity: 0.55; }
-.tool-card[data-state="denied"] .card-indicator { background: var(--c-denied); }
+/* State — border color on all sides */
+.tool-card[data-state="pending"] { border-color: var(--c-warning); }
+.tool-card[data-state="running"] { border-color: var(--c-info); }
+.tool-card[data-state="complete"] { border-color: var(--c-success); }
+.tool-card[data-state="denied"] { border-color: var(--c-error); }
 
 .perm-desc {
-  margin-bottom: 8px;
+  margin-bottom: 6px;
   font-family: var(--font);
   font-size: 12px;
   color: var(--c-text-dim);
@@ -735,14 +701,12 @@ body {
 .perm-actions {
   display: flex;
   gap: 8px;
-  max-width: var(--max-w);
-  margin: 0 auto 6px;
-  padding: 4px 24px;
+  margin-top: 6px;
 }
 
 .perm-actions button {
-  padding: 6px 18px;
-  border-radius: 7px;
+  padding: 5px 16px;
+  border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
@@ -768,16 +732,6 @@ body {
   border-top: 1px dashed var(--c-border);
   margin-top: 6px;
   padding-top: 6px;
-}
-
-.card-section-label {
-  font-family: var(--font);
-  font-size: 10px;
-  font-weight: 650;
-  color: var(--c-text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  margin-bottom: 4px;
 }
 
 /* Expand/collapse long output */
