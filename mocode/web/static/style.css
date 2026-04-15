@@ -249,10 +249,6 @@ body {
 /* ========== Sidebar Toggle ========== */
 
 #sidebar-toggle {
-  position: fixed;
-  top: 12px;
-  left: calc(var(--sidebar-w) + 6px);
-  z-index: 20;
   width: 32px;
   height: 32px;
   border: none;
@@ -263,7 +259,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: left 0.3s cubic-bezier(0.16, 1, 0.3, 1), color var(--transition), background var(--transition);
+  transition: color var(--transition), background var(--transition);
+  flex-shrink: 0;
 }
 
 #sidebar-toggle:hover {
@@ -271,8 +268,8 @@ body {
   color: var(--c-text-muted);
 }
 
-#sidebar.collapsed ~ #sidebar-toggle {
-  left: 10px;
+#sidebar-toggle .icon-close {
+  display: none;
 }
 
 /* ========== Chat Panel ========== */
@@ -286,14 +283,14 @@ body {
 }
 
 #chat-header {
-  padding: 10px 20px 10px 48px;
+  padding: 10px 20px 10px 12px;
   background: var(--chat-header-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--c-border-subtle);
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-height: 48px;
   position: relative;
   z-index: 5;
@@ -631,14 +628,17 @@ body {
 /* ========== Tool Cards ========== */
 
 .tool-card {
-  max-width: calc(var(--max-w) - 48px);
-  margin: 4px auto;
+  max-width: calc(var(--max-w) - 56px);
+  margin: 2px auto;
   border-radius: var(--radius);
   background: var(--c-bg);
   overflow: hidden;
   animation: cardIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   border: 1px solid var(--c-border);
   transition: border-color 0.2s ease;
+  /* Match message horizontal padding for consistent width */
+  padding: 2px var(--msg-padding-x);
+  box-sizing: border-box;
 }
 
 @keyframes cardIn {
@@ -650,10 +650,10 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 12px;
+  padding: 6px 0;
   cursor: pointer;
   user-select: none;
-  font-size: 13px;
+  font-size: 12.5px;
   transition: background var(--transition);
 }
 .tool-card .card-header:hover {
@@ -663,7 +663,7 @@ body {
 .tool-card .card-name {
   font-weight: 500;
   font-family: var(--font-mono);
-  font-size: 11.5px;
+  font-size: 11px;
   flex: 1;
   color: var(--c-text-muted);
   overflow: hidden;
@@ -683,13 +683,13 @@ body {
 
 .tool-card .card-body {
   display: none;
-  padding: 6px 12px 8px;
+  padding: 4px 0 6px;
   border-top: 1px solid var(--c-border-subtle);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 11.5px;
   white-space: pre-wrap;
   word-break: break-all;
-  max-height: 300px;
+  max-height: 280px;
   overflow-y: auto;
   color: var(--c-text-muted);
   line-height: 1.5;
@@ -699,6 +699,21 @@ body {
   display: block;
 }
 
+/* Permission card: sticky footer with always-visible buttons */
+/* Override block display for pending state */
+.tool-card[data-state="pending"] .card-body {
+  display: flex !important;
+  flex-direction: column;
+  max-height: 280px; /* slightly taller to accommodate buttons */
+}
+
+.tool-card[data-state="pending"] .card-section-args {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 4px;
+  margin-bottom: 6px;
+}
+
 /* State — border color on all sides */
 .tool-card[data-state="pending"] { border-color: var(--c-warning); }
 .tool-card[data-state="running"] { border-color: var(--c-info); }
@@ -706,23 +721,27 @@ body {
 .tool-card[data-state="denied"] { border-color: var(--c-error); }
 
 .perm-desc {
-  margin-bottom: 6px;
+  margin-bottom: 4px;
   font-family: var(--font);
-  font-size: 12px;
+  font-size: 11px;
   color: var(--c-text-dim);
+  flex-shrink: 0;
 }
 
 .perm-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 6px;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 3px 0;
+  border-top: 1px solid var(--c-border-subtle);
+  margin-top: 3px;
 }
 
 .perm-actions button {
-  padding: 5px 16px;
-  border-radius: 8px;
+  padding: 4px 12px;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   transition: all var(--transition);
   border: 1px solid;
@@ -744,8 +763,8 @@ body {
 
 .card-section-result {
   border-top: 1px dashed var(--c-border);
-  margin-top: 6px;
-  padding-top: 6px;
+  margin: 4px 0 0;
+  padding: 4px 4px 0;
 }
 
 /* Expand/collapse long output */
@@ -883,23 +902,48 @@ body {
     left: 0;
     height: 100vh;
     box-shadow: 8px 0 30px rgba(66,109,165,0.25);
+    z-index: 20;
+    /* Reset desktop transitions for mobile */
+    transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   #sidebar.collapsed {
-    margin-left: calc(-1 * var(--sidebar-w));
+    transform: translateX(-100%);
+    margin-left: 0;
     box-shadow: none;
   }
 
-  #sidebar-toggle {
-    left: 10px;
+  /* Mobile overlay */
+  #sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.25);
+    z-index: 15;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  #sidebar-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
   }
 
-  #sidebar:not(.collapsed) ~ #sidebar-toggle {
-    left: calc(var(--sidebar-w) + 6px);
+  /* Mobile: fixed toggle button, always visible above sidebar */
+  #sidebar-toggle {
+    position: fixed;
+    top: 10px;
+    left: 8px;
+    z-index: 25;
+  }
+
+  /* Add left margin to title so it doesn't overlap with fixed button */
+  #chat-title {
+    margin-left: 40px;
   }
 
   #chat-header {
-    padding-left: 46px;
+    padding-left: 8px;
   }
 
   .msg {

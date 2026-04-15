@@ -15,13 +15,38 @@ document.addEventListener('DOMContentLoaded', function () {
   });
   MoCode.Chat.init();
 
-  // Sidebar toggle
+  // Sidebar toggle + mobile overlay
   var sidebarToggle = document.getElementById('sidebar-toggle');
   var sidebar = document.getElementById('sidebar');
+  var overlay = document.getElementById('sidebar-overlay');
+
+  function updateOverlay() {
+    if (!overlay) return;
+    var isMobile = window.matchMedia('(max-width: 768px)').matches;
+    var isSidebarOpen = !sidebar.classList.contains('collapsed');
+
+    if (isMobile && isSidebarOpen) {
+      overlay.classList.add('visible');
+    } else {
+      overlay.classList.remove('visible');
+    }
+  }
+
+  function closeSidebar() {
+    sidebar.classList.add('collapsed');
+    updateOverlay();
+  }
+
   if (sidebarToggle && sidebar) {
     sidebarToggle.addEventListener('click', function () {
       sidebar.classList.toggle('collapsed');
+      updateOverlay();
     });
+  }
+
+  // Overlay click to close (mobile only)
+  if (overlay) {
+    overlay.addEventListener('click', closeSidebar);
   }
 
   // New chat button
@@ -40,6 +65,10 @@ document.addEventListener('DOMContentLoaded', function () {
   // Settings module
   MoCode.Settings.init();
   MoCode.Sidebar.setupSettingsButton();
+
+  // Responsive overlay update
+  window.addEventListener('resize', updateOverlay);
+  updateOverlay();
 
   // Focus input
   var inputEl = document.getElementById('input');
