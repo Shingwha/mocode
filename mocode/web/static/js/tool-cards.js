@@ -14,12 +14,57 @@ MoCode.ToolCards = (function () {
 
   function formatArgs(args) {
     if (!args || typeof args !== 'object') return '';
+    try {
+      return JSON.stringify(args, null, 2);
+    } catch (e) {
+      var keys = Object.keys(args);
+      if (keys.length === 0) return '';
+      return keys.map(function (k) {
+        var v = args[k];
+        return k + ': ' + (typeof v === 'string' ? v : JSON.stringify(v));
+      }).join('\n');
+    }
+  }
+
+  function generateTitle(toolName, args) {
+    if (!args || typeof args !== 'object' || Object.keys(args).length === 0) {
+      return toolName;
+    }
+
     var keys = Object.keys(args);
-    if (keys.length === 0) return '';
-    return keys.map(function (k) {
-      var v = args[k];
-      return k + ': ' + (typeof v === 'string' ? v : JSON.stringify(v));
-    }).join('\n');
+
+    // 只有一个参数，直接显示该参数的值
+    if (keys.length === 1) {
+      var v = args[keys[0]];
+      var valueStr = (typeof v === 'string' ? v : JSON.stringify(v));
+      // 截断过长的值
+      if (valueStr.length > 80) {
+        valueStr = valueStr.slice(0, 77) + '...';
+      }
+      return toolName + ': ' + valueStr;
+    }
+
+    // 多个参数，优先显示 path 参数
+    var pathKeys = ['path', 'file_path', 'filepath', 'filename', 'file'];
+    for (var i = 0; i < pathKeys.length; i++) {
+      if (args.hasOwnProperty(pathKeys[i])) {
+        var pathVal = args[pathKeys[i]];
+        var pathStr = (typeof pathVal === 'string' ? pathVal : JSON.stringify(pathVal));
+        if (pathStr.length > 60) {
+          pathStr = pathStr.slice(0, 57) + '...';
+        }
+        return toolName + ': ' + pathStr;
+      }
+    }
+
+    // 没有 path 参数，显示第一个参数的值
+    var firstKey = keys[0];
+    var firstVal = args[firstKey];
+    var firstStr = (typeof firstVal === 'string' ? firstVal : JSON.stringify(firstVal));
+    if (firstStr.length > 60) {
+      firstStr = firstStr.slice(0, 57) + '...';
+    }
+    return toolName + ': ' + firstStr;
   }
 
   // --- ToolCard class ---
@@ -33,7 +78,7 @@ MoCode.ToolCards = (function () {
     this.el.id = id;
     this.el.innerHTML =
       '<div class="card-header" tabindex="0">' +
-        '<span class="card-title">' + escapeHtml(name) + '</span>' +
+        '<span class="card-title"></span>' +
         '<svg class="card-toggle" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>' +
       '</div>' +
       '<div class="card-body"></div>';
@@ -41,7 +86,17 @@ MoCode.ToolCards = (function () {
     MoCode.Messages.scrollToBottom();
   }
 
+  ToolCard.prototype.setTitle = function(title) {
+    var titleEl = this.el.querySelector('.card-title');
+    if (titleEl) {
+      titleEl.textContent = title;
+    }
+  };
+
   ToolCard.prototype.setArgs = function (args) {
+    // 更新标题显示参数摘要
+    this.setTitle(generateTitle(this.name, args));
+
     var text = formatArgs(args);
     if (!text) return;
     var body = this.el.querySelector('.card-body');
@@ -49,14 +104,6 @@ MoCode.ToolCards = (function () {
     if (body.querySelector('.card-section-args')) return;
     body.insertAdjacentHTML('beforeend',
       '<div class="card-section-args">' + escapeHtml(text) + '</div>');
-  };
-
-  ToolCard.prototype.setDescription = function (text) {
-    if (!text) return;
-    var body = this.el.querySelector('.card-body');
-    if (!body) return;
-    body.insertAdjacentHTML('afterbegin',
-      '<div class="perm-desc">' + escapeHtml(text) + '</div>');
   };
 
   ToolCard.prototype.showPermissionButtons = function (requestId) {
@@ -88,8 +135,6 @@ MoCode.ToolCards = (function () {
   ToolCard.prototype.removePermissionButtons = function () {
     var actions = this.el.querySelector('.perm-actions');
     if (actions) actions.remove();
-    var desc = this.el.querySelector('.perm-desc');
-    if (desc) desc.remove();
   };
 
   ToolCard.prototype.transitionTo = function (newState) {
@@ -113,6 +158,7 @@ MoCode.ToolCards = (function () {
     var body = this.el.querySelector('.card-body');
     if (body) {
       body.insertAdjacentHTML('beforeend',
+        '<div class="card-section-result-divider"></div>' +
         '<div class="card-section-result">' +
         escapeHtml(truncated) +
         (isLong ? '<button class="expand-output-btn">Show full output (' + result.length + ' chars)</button>' +
@@ -174,7 +220,6 @@ MoCode.ToolCards = (function () {
     card.el.dataset.state = 'pending';
     card.el.classList.add('expanded');
     card.setArgs(data.args);
-    card.setDescription(data.description);
     card.showPermissionButtons(requestId);
 
     cards[card.id] = card;
@@ -259,6 +304,10 @@ MoCode.ToolCards = (function () {
     var card = new ToolCard('hist-' + name + '-' + Date.now(), name, containerEl);
     card.state = 'complete';
     card.el.dataset.state = 'complete';
+    // 设置标题（如果有参数）
+    if (args) {
+      card.setTitle(generateTitle(name, args));
+    }
     var body = card.el.querySelector('.card-body');
     if (body) {
       var html = '';
@@ -266,7 +315,8 @@ MoCode.ToolCards = (function () {
         var argsText = formatArgs(args);
         if (argsText) html += '<div class="card-section-args">' + escapeHtml(argsText) + '</div>';
       }
-      html += '<div class="card-section-result">' + escapeHtml(result) + '</div>';
+      html += '<div class="card-section-result-divider"></div>' +
+              '<div class="card-section-result">' + escapeHtml(result) + '</div>';
       body.innerHTML = html;
     }
     cards[card.id] = card;

@@ -53,12 +53,13 @@ class AsyncAgent:
             "conversation_id": self.conversation_id,
         })
 
-    def _emit_tool_denied(self, tool_name: str, tool_args: dict, reason: str) -> str:
-        """Emit tool denial events and return interrupt sentinel"""
+    def _emit_tool_denied(self, tool_name: str, tool_args: dict, reason: str) -> tuple[str, bool]:
+        """Emit tool denial events and return (result_message, should_interrupt)"""
         self._emit_tool_start(tool_name, tool_args)
-        self._emit_tool_complete(tool_name, f"User {reason} this operation")
+        msg = f"User {reason} this operation"
+        self._emit_tool_complete(tool_name, msg)
         self.event_bus.emit(EventType.INTERRUPTED, {"reason": reason, "tool": tool_name})
-        return "[interrupted]"
+        return (msg, True)
 
     # ---- Chat loop ----
 
@@ -126,24 +127,37 @@ class AsyncAgent:
                 })
 
             if message.tool_calls:
+                interrupted = False
                 for tool_call in message.tool_calls:
                     if self.interrupt_token and self.interrupt_token.is_interrupted:
                         self.event_bus.emit(EventType.INTERRUPTED, None)
-                        return "[interrupted]"
+                        interrupted = True
+                        break
 
                     import json
                     tool_name = tool_call.function.name
                     tool_args = json.loads(tool_call.function.arguments)
 
-                    result = await self._run_tool_async(tool_name, tool_args)
-                    if result == "[interrupted]":
-                        return "[interrupted]"
-
+                    result, should_interrupt = await self._run_tool_async(tool_name, tool_args)
                     tool_results.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
                         "content": result,
                     })
+                    if should_interrupt:
+                        interrupted = True
+                        break
+
+                # Save assistant message and tool results before interrupting
+                if interrupted:
+                    self.messages.append({
+                        "role": "assistant",
+                        "content": message.content or "",
+                        "tool_calls": [tc.model_dump() for tc in (message.tool_calls or [])],
+                    })
+                    if tool_results:
+                        self.messages.extend(tool_results)
+                    return "[interrupted]"
 
             self.messages.append({
                 "role": "assistant",
@@ -235,8 +249,10 @@ class AsyncAgent:
             return truncate_result(result, self.config.tool_result_limit)
         return result
 
-    async def _run_tool_async(self, tool_name: str, tool_args: dict) -> str:
-        """Execute a single tool with permission check and interrupt support"""
+    async def _run_tool_async(self, tool_name: str, tool_args: dict) -> tuple[str, bool]:
+        """Execute a single tool with permission check and interrupt support.
+        Returns: (result_message, should_interrupt)
+        """
 
         # 1. Permission check
         if self.permission_checker:
@@ -246,7 +262,7 @@ class AsyncAgent:
             elif result.outcome == CheckOutcome.USER_INPUT:
                 self._emit_tool_start(tool_name, tool_args)
                 self._emit_tool_complete(tool_name, result.user_input)
-                return result.user_input
+                return (result.user_input, False)
 
         # 2. Execute tool
         self._emit_tool_start(tool_name, tool_args)
@@ -265,7 +281,7 @@ class AsyncAgent:
             )
         except asyncio.TimeoutError:
             self._emit_tool_complete(tool_name, f"Tool timed out after {timeout}s")
-            return f"error: tool '{tool_name}' timed out after {timeout}s"
+            return (f"error: tool '{tool_name}' timed out after {timeout}s", False)
 
         if result is None:
             return self._emit_tool_denied(tool_name, tool_args, "interrupted")
@@ -273,7 +289,7 @@ class AsyncAgent:
         # 3. Truncate and emit
         result = self._apply_result_limit(result)
         self._emit_tool_complete(tool_name, result)
-        return result
+        return (result, False)
 
     def clear(self):
         """Clear conversation history"""

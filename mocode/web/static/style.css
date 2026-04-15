@@ -778,14 +778,6 @@ body {
   border-color: var(--c-error);
 }
 
-.perm-desc {
-  margin-bottom: 4px;
-  font-family: var(--font);
-  font-size: 11px;
-  color: var(--c-text-dim);
-  flex-shrink: 0;
-}
-
 .perm-actions {
   display: flex;
   gap: 6px;
@@ -827,9 +819,15 @@ body {
 }
 
 .card-section-result {
-  border-top: 1px dashed var(--c-border);
   margin: 4px 0 0;
   padding: 4px 4px 0;
+}
+
+/* Divider between input and output */
+.card-section-result-divider {
+  height: 0;
+  border-top: 3px solid var(--c-border);
+  margin: 16px 0;
 }
 
 /* Expand/collapse long output */
