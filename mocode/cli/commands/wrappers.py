@@ -224,7 +224,7 @@ class CLIProviderCommand(CoreProviderCommand):
             return
 
         pconfig = client.providers[key]
-        name, base_url, api_key = pconfig.name, pconfig.base_url, pconfig.api_key
+        name, base_url, api_key, models = pconfig.name, pconfig.base_url, pconfig.api_key, pconfig.models
 
         while True:
             api_display = f"{'*' * min(len(api_key), 8) if api_key else '(not set)'} {DIM}(current){RESET}"
@@ -232,6 +232,7 @@ class CLIProviderCommand(CoreProviderCommand):
                 ("name", f"Display name: {name} {DIM}(current){RESET}"),
                 ("base_url", f"Base URL: {base_url} {DIM}(current){RESET}"),
                 ("api_key", f"API Key: {api_display}"),
+                ("models", f"Models: {', '.join(models) if models else '(none)'} {DIM}(current){RESET}"),
                 MenuItem.done(), MenuItem.back(),
             ])
             if is_cancelled(field):
@@ -250,9 +251,13 @@ class CLIProviderCommand(CoreProviderCommand):
                 v = ask("API Key", default=api_key)
                 if v is not None:
                     api_key = v
+            elif field == "models":
+                v = ask("Models (one per line)", default="\n".join(models) if models else "", multiline=True)
+                if v is not None:
+                    models = [m.strip() for m in v.strip().split("\n") if m.strip()]
 
         try:
-            client.update_provider(key, name=name, base_url=base_url, api_key=api_key)
+            client.update_provider(key, name=name, base_url=base_url, api_key=api_key, models=models)
             success(f"Updated provider '{key}'")
         except ValueError as e:
             error(str(e))

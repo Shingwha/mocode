@@ -464,6 +464,7 @@ class Config:
         name: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
+        models: list[str] | None = None,
     ) -> bool:
         """Update provider configuration
 
@@ -472,6 +473,7 @@ class Config:
             name: New display name (optional)
             base_url: New API endpoint (optional)
             api_key: New API key (optional)
+            models: New models list (optional)
 
         Returns:
             True if current provider was updated
@@ -489,6 +491,8 @@ class Config:
             pconfig.base_url = base_url
         if api_key is not None:
             pconfig.api_key = api_key
+        if models is not None:
+            pconfig.models = models
 
         result = self.current.provider == key
         self._persist()

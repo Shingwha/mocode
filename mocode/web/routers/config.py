@@ -98,6 +98,7 @@ async def update_provider(
             name=req.name,
             base_url=req.base_url,
             api_key=req.api_key,
+            models=req.models,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

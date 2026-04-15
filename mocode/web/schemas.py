@@ -82,6 +82,7 @@ class ProviderUpdateRequest(BaseModel):
     name: str | None = None
     base_url: str | None = None
     api_key: str | None = None
+    models: list[str] | None = None
 
 
 class ModelAddRequest(BaseModel):

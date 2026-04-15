@@ -190,6 +190,7 @@ MoCode.Settings = (function () {
         // Reload config to get updated providers/models
         var config = await MoCode.Api.getConfig();
         modelSelect.innerHTML = modelCard.renderModelOptions(config.providers, config.current_provider, config.current_model);
+        configCache = config;
         MoCode.Settings.configCache = config;
         MoCode.Settings.showToast('Provider switched');
       } else {
@@ -201,6 +202,7 @@ MoCode.Settings = (function () {
       var provider = document.getElementById('settings-provider').value;
       var result = await MoCode.Api.switchModel({provider: provider, model: model});
       if (result) {
+        configCache = result;
         MoCode.Settings.configCache = result;
         MoCode.Settings.showToast('Model switched');
       } else {
@@ -377,22 +379,11 @@ MoCode.Settings = (function () {
         var modelsText = modelsInput.value.trim();
 
         if (!key) {
-          self.showError(keyInput, 'Key is required');
-          return;
-        }
-        if (!/^[a-z0-9_]+$/.test(key)) {
-          self.showError(keyInput, 'Key must be lowercase letters, numbers, or underscores');
+          MoCode.Settings.showError(keyInput, 'Key is required');
           return;
         }
         if (!baseUrl) {
-          self.showError(urlInput, 'Base URL is required');
-          return;
-        }
-        try {
-          new URL(baseUrl);
-        } catch (e) {
-          MoCode.Utils.logError('validateUrl', e);
-          self.showError(urlInput, 'Invalid URL');
+          MoCode.Settings.showError(urlInput, 'Base URL is required');
           return;
         }
         var models = modelsText ? modelsText.split('\n').map(function(m) { return m.trim(); }).filter(function(m) { return m; }) : [];
@@ -401,11 +392,12 @@ MoCode.Settings = (function () {
         if (mode === 'add') {
           result = await MoCode.Api.addProvider({key: key, name: name, base_url: baseUrl, api_key: apiKey, models: models});
         } else {
-          result = await MoCode.Api.updateProvider(editKey, {name: name, base_url: baseUrl, api_key: apiKey});
+          result = await MoCode.Api.updateProvider(editKey, {name: name, base_url: baseUrl, api_key: apiKey, models: models});
         }
 
         if (result) {
           document.getElementById('provider-form-container').style.display = 'none';
+          configCache = result;
           MoCode.Settings.configCache = result;
           MoCode.Settings.render();
           MoCode.Settings.showToast(mode === 'add' ? 'Provider added' : 'Provider updated');
@@ -420,6 +412,7 @@ MoCode.Settings = (function () {
       if (!confirm('Delete provider "' + key + '"? This cannot be undone.')) return;
       var result = await MoCode.Api.removeProvider(key);
       if (result) {
+        configCache = result;
         MoCode.Settings.configCache = result;
         MoCode.Settings.render();
         MoCode.Settings.showToast('Provider deleted');
@@ -477,6 +470,7 @@ MoCode.Settings = (function () {
     onModeChange: async function(mode) {
       var result = await MoCode.Api.switchMode(mode);
       if (result) {
+        configCache = result;
         MoCode.Settings.configCache = result;
         MoCode.Settings.showToast('Mode switched to ' + mode);
       } else {

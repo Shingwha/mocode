@@ -82,11 +82,11 @@ MoCode.Api = (function () {
     });
   }
 
-  function updateProvider(key, {name, base_url, api_key}) {
+  function updateProvider(key, {name, base_url, api_key, models}) {
     return jsonRequest('/api/config/providers/' + encodeURIComponent(key), {
       method: 'PUT',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({name: name, base_url: base_url, api_key: api_key}),
+      body: JSON.stringify({name: name, base_url: base_url, api_key: api_key, models: models}),
     });
   }
 
