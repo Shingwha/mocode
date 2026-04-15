@@ -259,15 +259,15 @@ MoCode.Settings = (function () {
         var domain = p.base_url ? (new URL(p.base_url, 'http://placeholder')).hostname : p.base_url;
         html += '<div class="provider-item" data-key="' + MoCode.Utils.escapeHtml(key) + '">' +
           '<div class="provider-info">' +
-            '<div class="provider-name">' + MoCode.Utils.escapeHtml(p.name) + '</div>' +
-            '<div class="provider-key">' + MoCode.Utils.escapeHtml(key) + '</div>' +
-            '<div class="provider-url" title="' + MoCode.Utils.escapeHtml(p.base_url) + '">' + MoCode.Utils.escapeHtml(domain) + '</div>' +
-            '<div class="provider-models">Models: ' + (p.models ? p.models.join(', ') : 'None') + '</div>' +
+            '<div class="provider-header-row">' +
+              '<div class="provider-name">' + MoCode.Utils.escapeHtml(p.name) + '</div>' +
+              '<span class="provider-key">' + MoCode.Utils.escapeHtml(key) + '</span>' +
+            '</div>' +
+            '<div class="provider-models">' + (p.models ? p.models.map(function(m) { return '<span class="model-tag">' + MoCode.Utils.escapeHtml(m) + '</span>'; }).join('') : '<span class="model-tag">None</span>') + '</div>' +
           '</div>' +
           '<div class="provider-actions">' +
-            '<div class="provider-meta"><span class="key-status' + (p.api_key_set ? '' : ' missing') + '"></span>' + (p.api_key_set ? 'Set' : 'Not set') + '</div>' +
-            '<button class="btn-icon btn-ghost" data-action="edit-provider" data-key="' + MoCode.Utils.escapeHtml(key) + '" title="Edit"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
-            '<button class="btn-icon btn-ghost" data-action="delete-provider" data-key="' + MoCode.Utils.escapeHtml(key) + '" title="Delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' +
+            '<button class="btn-icon" data-action="edit-provider" data-key="' + MoCode.Utils.escapeHtml(key) + '" title="Edit"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>' +
+            '<button class="btn-icon" data-action="delete-provider" data-key="' + MoCode.Utils.escapeHtml(key) + '" title="Delete"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg></button>' +
           '</div>' +
         '</div>';
       });
@@ -440,19 +440,11 @@ MoCode.Settings = (function () {
   var modeCard = {
     render: function(config) {
       var bodyHtml =
-        '<div class="form-group">' +
-          '<label>Execution Mode</label>' +
-          '<div class="radio-group">' +
-            '<div>' +
-              '<input type="radio" id="mode-normal" name="mode" value="normal"' + (config.mode === 'normal' ? ' checked' : '') + '>' +
-              '<label class="radio-option" for="mode-normal">Normal</label>' +
-            '</div>' +
-            '<div>' +
-              '<input type="radio" id="mode-yolo" name="mode" value="yolo"' + (config.mode === 'yolo' ? ' checked' : '') + '>' +
-              '<label class="radio-option" for="mode-yolo">YOLO</label>' +
-            '</div>' +
-          '</div>' +
-          '<div class="radio-desc">Normal: All tools require approval before execution. YOLO: Safe tools auto-approved, only dangerous operations require approval.</div>' +
+        '<div class="radio-group">' +
+          '<input type="radio" id="mode-normal" name="mode" value="normal"' + (config.mode === 'normal' ? ' checked' : '') + '>' +
+          '<label class="radio-option" for="mode-normal">Normal</label>' +
+          '<input type="radio" id="mode-yolo" name="mode" value="yolo"' + (config.mode === 'yolo' ? ' checked' : '') + '>' +
+          '<label class="radio-option" for="mode-yolo">YOLO</label>' +
         '</div>';
       var div = createCardShell('Mode', bodyHtml);
 
