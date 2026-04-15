@@ -2,9 +2,11 @@
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from mocode.core.orchestrator import MocodeCore
 
@@ -59,5 +61,8 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router)
     app.include_router(config.router)
     app.include_router(permission.router)
+
+    static_dir = Path(__file__).parent / "static"
+    app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
     return app

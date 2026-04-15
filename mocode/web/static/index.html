@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MoCode</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #f8f9fa;
+  color: #1a1a1a;
+  height: 100vh;
+  overflow: hidden;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+/* Header */
+#header {
+  padding: 12px 20px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+#header h1 {
+  font-size: 16px;
+  font-weight: 600;
+  color: #333;
+}
+#status {
+  font-size: 12px;
+  color: #888;
+}
+
+/* Messages */
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+
+.msg {
+  margin-bottom: 12px;
+  max-width: 85%;
+}
+.msg-user {
+  margin-left: auto;
+}
+.msg-assistant, .msg-tool, .msg-permission, .msg-error, .msg-interrupted {
+  margin-right: auto;
+}
+
+.msg-bubble {
+  padding: 10px 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+}
+.msg-user .msg-bubble {
+  background: #e8ecf0;
+}
+.msg-assistant .msg-bubble {
+  background: #fff;
+  border: 1px solid #e0e0e0;
+}
+
+/* Tool messages */
+.msg-tool {
+  max-width: 90%;
+}
+.msg-tool .tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  background: #f0f0f0;
+  border: 1px solid #ddd;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+}
+.msg-tool .tool-header:hover {
+  background: #e8e8e8;
+}
+.msg-tool .tool-toggle {
+  font-size: 10px;
+  color: #888;
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.msg-tool .tool-name {
+  font-weight: 600;
+  font-family: "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+}
+.msg-tool .tool-body {
+  display: none;
+  padding: 8px 10px;
+  background: #fafafa;
+  border: 1px solid #ddd;
+  border-top: none;
+  font-family: "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.msg-tool.expanded .tool-body {
+  display: block;
+}
+.msg-tool .tool-label {
+  font-weight: 600;
+  color: #666;
+  margin-top: 6px;
+}
+.msg-tool .tool-label:first-child {
+  margin-top: 0;
+}
+.msg-tool .tool-result {
+  margin-top: 4px;
+  color: #333;
+}
+
+/* Permission */
+.msg-permission .perm-card {
+  padding: 12px 14px;
+  background: #fffde7;
+  border: 1px solid #e0d88e;
+}
+.msg-permission .perm-tool {
+  font-weight: 600;
+  font-family: "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.msg-permission .perm-desc {
+  font-size: 13px;
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+}
+.msg-permission .perm-actions {
+  display: flex;
+  gap: 8px;
+}
+.msg-permission .perm-actions button {
+  padding: 5px 16px;
+  border: 1px solid #ccc;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+}
+.msg-permission .perm-actions button:hover {
+  background: #f0f0f0;
+}
+.msg-permission .perm-actions .btn-approve {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+}
+.msg-permission .perm-actions .btn-approve:hover {
+  background: #c8e6c9;
+}
+.msg-permission .perm-actions .btn-deny {
+  background: #ffebee;
+  border-color: #ef9a9a;
+}
+.msg-permission .perm-actions .btn-deny:hover {
+  background: #ffcdd2;
+}
+.msg-permission.resolved .perm-actions {
+  display: none;
+}
+.msg-permission.resolved .perm-status {
+  font-size: 12px;
+  font-style: italic;
+  color: #888;
+}
+
+/* Error */
+.msg-error .msg-bubble {
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #991b1b;
+}
+
+/* Interrupted */
+.msg-interrupted .msg-bubble {
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  color: #92400e;
+}
+
+/* Input bar */
+#input-bar {
+  padding: 12px 20px;
+  border-top: 1px solid #e0e0e0;
+  background: #fff;
+  display: flex;
+  gap: 8px;
+}
+#input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #d0d0d0;
+  font-size: 14px;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+  line-height: 1.4;
+  max-height: 120px;
+}
+#input:focus {
+  border-color: #999;
+}
+#input:disabled {
+  background: #f5f5f5;
+  cursor: not-allowed;
+}
+#send-btn, #interrupt-btn {
+  padding: 8px 18px;
+  border: 1px solid #d0d0d0;
+  background: #fff;
+  font-size: 13px;
+  cursor: pointer;
+}
+#send-btn:hover:not(:disabled), #interrupt-btn:hover:not(:disabled) {
+  background: #f0f0f0;
+}
+#send-btn:disabled, #interrupt-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+#interrupt-btn {
+  display: none;
+  border-color: #fca5a5;
+  background: #fef2f2;
+}
+#interrupt-btn:hover:not(:disabled) {
+  background: #fee2e2;
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="header">
+    <h1>MoCode</h1>
+    <span id="status">idle</span>
+  </div>
+  <div id="messages"></div>
+  <div id="input-bar">
+    <textarea id="input" rows="1" placeholder="Type a message..." autofocus></textarea>
+    <button id="send-btn">Send</button>
+    <button id="interrupt-btn">Interrupt</button>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const messagesEl = $('#messages');
+const inputEl = $('#input');
+const sendBtn = $('#send-btn');
+const interruptBtn = $('#interrupt-btn');
+const statusEl = $('#status');
+
+let busy = false;
+
+// Auto-resize textarea
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 120) + 'px';
+});
+
+// Enter to send, Shift+Enter for newline
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+sendBtn.addEventListener('click', send);
+interruptBtn.addEventListener('click', interrupt);
+
+function setBusy(val) {
+  busy = val;
+  inputEl.disabled = val;
+  sendBtn.disabled = val;
+  interruptBtn.style.display = val ? 'inline-block' : 'none';
+  statusEl.textContent = val ? 'busy' : 'idle';
+}
+
+function scrollBottom() {
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// --- Message renderers ---
+
+function addUserMessage(text) {
+  const el = document.createElement('div');
+  el.className = 'msg msg-user';
+  el.innerHTML = `<div class="msg-bubble">${escapeHtml(text)}</div>`;
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+function addAssistantMessage(content) {
+  const el = document.createElement('div');
+  el.className = 'msg msg-assistant';
+  el.innerHTML = `<div class="msg-bubble">${escapeHtml(content)}</div>`;
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+function addToolStart(id, name, args) {
+  const el = document.createElement('div');
+  el.className = 'msg msg-tool';
+  el.id = `tool-${id}`;
+  const argsStr = args ? JSON.stringify(args, null, 2) : '';
+  el.innerHTML = `
+    <div class="tool-header" onclick="toggleTool('${id}')">
+      <span class="tool-toggle" id="toggle-${id}">&#9654;</span>
+      <span class="tool-name">${escapeHtml(name)}</span>
+    </div>
+    <div class="tool-body" id="body-${id}">
+      ${argsStr ? `<div class="tool-label">Args:</div><div class="tool-result">${escapeHtml(argsStr)}</div>` : ''}
+    </div>`;
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+function updateToolComplete(id, result) {
+  const body = document.getElementById(`body-${id}`);
+  if (!body) return;
+  const truncated = result.length > 2000 ? result.slice(0, 2000) + '\n... (truncated)' : result;
+  body.insertAdjacentHTML('beforeend',
+    `<div class="tool-label">Result:</div><div class="tool-result">${escapeHtml(truncated)}</div>`
+  );
+}
+
+window.toggleTool = function(id) {
+  const el = document.getElementById(`tool-${id}`);
+  const toggle = document.getElementById(`toggle-${id}`);
+  if (!el) return;
+  el.classList.toggle('expanded');
+  toggle.innerHTML = el.classList.contains('expanded') ? '&#9660;' : '&#9654;';
+};
+
+function addPermission(requestId, toolName, args, description) {
+  const el = document.createElement('div');
+  el.className = 'msg msg-permission';
+  el.id = `perm-${requestId}`;
+  const descHtml = description ? `<div class="perm-desc">${escapeHtml(description)}</div>` : '';
+  const argsStr = args ? JSON.stringify(args, null, 2) : '';
+  el.innerHTML = `
+    <div class="perm-card">
+      <div class="perm-tool">${escapeHtml(toolName)}</div>
+      ${argsStr ? `<div class="perm-desc" style="font-family:monospace;font-size:12px">${escapeHtml(argsStr)}</div>` : ''}
+      ${descHtml}
+      <div class="perm-actions">
+        <button class="btn-approve" onclick="resolvePermission('${requestId}','allow')">Approve</button>
+        <button class="btn-deny" onclick="resolvePermission('${requestId}','deny')">Deny</button>
+      </div>
+      <div class="perm-status"></div>
+    </div>`;
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+window.resolvePermission = async function(requestId, response) {
+  const card = $(`#perm-${requestId} .perm-card`);
+  if (!card) return;
+  try {
+    const res = await fetch(`/api/permission/${requestId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ response }),
+    });
+    if (!res.ok) {
+      card.querySelector('.perm-status').textContent = `Error: ${res.status}`;
+    }
+  } catch (e) {
+    card.querySelector('.perm-status').textContent = `Error: ${e.message}`;
+  }
+};
+
+function resolvePermissionCard(requestId, approved) {
+  const el = document.getElementById(`perm-${requestId}`);
+  if (!el) return;
+  el.classList.add('resolved');
+  el.querySelector('.perm-status').textContent = approved ? 'Approved' : 'Denied';
+}
+
+function addError(message) {
+  const el = document.createElement('div');
+  el.className = 'msg msg-error';
+  el.innerHTML = `<div class="msg-bubble">${escapeHtml(message)}</div>`;
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+function addInterrupted() {
+  const el = document.createElement('div');
+  el.className = 'msg msg-interrupted';
+  el.innerHTML = `<div class="msg-bubble">Interrupted</div>`;
+  messagesEl.appendChild(el);
+  scrollBottom();
+}
+
+// --- SSE stream ---
+
+async function send() {
+  const text = inputEl.value.trim();
+  if (!text || busy) return;
+
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  addUserMessage(text);
+  setBusy(true);
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+      addError(err.error || err.message || `HTTP ${res.status}`);
+      setBusy(false);
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      let eventType = '';
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          const dataStr = line.slice(6);
+          let data;
+          try { data = JSON.parse(dataStr); } catch { data = dataStr; }
+          handleSSE(eventType, data);
+          eventType = '';
+        } else if (line.startsWith(': ')) {
+          // keepalive, ignore
+        }
+      }
+    }
+  } catch (e) {
+    if (e.name !== 'AbortError') {
+      addError(e.message);
+    }
+  } finally {
+    setBusy(false);
+  }
+}
+
+function handleSSE(eventType, data) {
+  switch (eventType) {
+    case 'text_complete':
+      addAssistantMessage(data.content || '');
+      break;
+    case 'tool_start':
+      addToolStart(data.id, data.name, data.args);
+      break;
+    case 'tool_complete':
+      updateToolComplete(data.id, data.result || '');
+      break;
+    case 'permission_ask':
+      addPermission(data.request_id, data.tool_name || data.tool, data.args, data.description);
+      break;
+    case 'permission_resolved':
+      resolvePermissionCard(data.request_id, data.approved);
+      break;
+    case 'done':
+      // stream complete
+      break;
+    case 'error':
+      addError(data.message || 'Unknown error');
+      break;
+    case 'interrupted':
+      addInterrupted();
+      break;
+  }
+}
+
+async function interrupt() {
+  try {
+    await fetch('/api/interrupt', { method: 'POST' });
+  } catch {}
+}
+</script>
+</body>
+</html>
