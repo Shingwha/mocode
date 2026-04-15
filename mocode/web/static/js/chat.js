@@ -62,6 +62,9 @@ MoCode.Chat = (function () {
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
+    if (!state.currentSessionId) {
+      chatTitle.textContent = text.split('\n')[0].slice(0, 50) + (text.split('\n')[0].length > 50 ? '...' : '');
+    }
     MoCode.Messages.createUser(text);
 
     emptyState.classList.remove('visible');
@@ -166,7 +169,6 @@ MoCode.Chat = (function () {
       if (!data || !data.session) return;
       var session = data.session;
       state.currentSessionId = session.id;
-      chatTitle.textContent = MoCode.Sidebar.getSessionTitle(session);
       await MoCode.Sidebar.load();
       MoCode.Sidebar.setActive(session.id);
     } catch (e) {
@@ -197,6 +199,7 @@ MoCode.Chat = (function () {
     MoCode.Sidebar.setActive(id);
     resetChatView();
     MoCode.Messages.renderHistory(session.messages || []);
+    MoCode.Messages.updateEmptyState(emptyState);
   }
 
   async function deleteSession(id) {

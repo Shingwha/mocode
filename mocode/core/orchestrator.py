@@ -337,6 +337,7 @@ class MocodeCore:
         result = self._session_manager.delete_session(session_id)
         if result and self._session_state.current_session_id == session_id:
             self._session_state.current_session_id = None
+            self._agent.clear()
         return result
 
     # Config operations
@@ -398,9 +399,10 @@ class MocodeCore:
         name: str | None = None,
         base_url: str | None = None,
         api_key: str | None = None,
+        models: list[str] | None = None,
     ) -> None:
         """Update provider configuration"""
-        was_current = self._config.update_provider(key, name, base_url, api_key)
+        was_current = self._config.update_provider(key, name, base_url, api_key, models)
         if was_current:
             self._switch_provider()
 
