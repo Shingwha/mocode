@@ -23,6 +23,7 @@ from .agent import Agent
 from .compact import CompactManager
 from .message_queue import MessageQueue
 from .tools import register_basic_tools, register_system_tools
+from .skills.manager import SkillManager
 
 
 @dataclass
@@ -41,6 +42,7 @@ class App:
     provider: Any  # Provider
     agent: Agent
     tools: ToolRegistry
+    skill_manager: SkillManager  # 新增
     event_bus: EventBus
     sessions: SessionManager
     cancel_token: CancellationToken
@@ -359,6 +361,9 @@ class AppBuilder:
         tools = ToolRegistry()
         register_basic_tools(tools, config)
 
+        # Skill Manager（注册 skill 工具）
+        skill_manager = SkillManager(registry=tools)
+
         # Compact
         compact = CompactManager(config.compact, provider, event_bus)
 
@@ -374,6 +379,7 @@ class AppBuilder:
         prompt_builder = default_prompt()
         system_prompt = prompt_builder.context(
             tools=tools,
+            skill_manager=skill_manager,  # 注入 skill_manager
             cwd=workdir,
         ).build()
 
@@ -422,6 +428,7 @@ class AppBuilder:
             provider=provider,
             agent=agent,
             tools=tools,
+            skill_manager=skill_manager,  # 传入 skill_manager
             event_bus=event_bus,
             sessions=sessions,
             cancel_token=cancel_token,
