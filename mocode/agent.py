@@ -49,6 +49,7 @@ class Agent:
         self.messages: list[dict] = []
         self._last_usage: Usage | None = None
         self.conversation_id: str | None = None
+        self._tools.state["messages"] = self.messages
 
     # ---- Event helpers ----
 

@@ -100,6 +100,7 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
+        self.state: dict = {}  # 共享状态，供工具访问 Agent 的 messages
 
     def register(self, tool: Tool) -> None:
         """注册工具"""

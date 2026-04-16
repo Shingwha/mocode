@@ -22,7 +22,7 @@ from .prompt import PromptBuilder, default_prompt
 from .agent import Agent
 from .compact import CompactManager
 from .message_queue import MessageQueue
-from .tools import register_all_tools
+from .tools import register_basic_tools, register_system_tools
 
 
 @dataclass
@@ -47,7 +47,6 @@ class App:
     _prompt_builder: PromptBuilder
     _compact: CompactManager | None
     _dream: Any | None = None  # DreamManager | None
-    _dream_scheduler: Any | None = None  # DreamScheduler | None
     _session_state: SessionState = field(default_factory=SessionState)
     _message_queue: MessageQueue | None = None
 
@@ -246,34 +245,6 @@ class App:
             "skipped": result.skipped,
         }
 
-    def start_dream_scheduler(self) -> None:
-        if not self._dream:
-            return
-        if self._dream_scheduler is not None:
-            return
-        from .dream import DreamScheduler
-        self._dream_scheduler = DreamScheduler(
-            dream_manager=self._dream,
-            interval_seconds=self.config.dream.interval_seconds,
-        )
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._dream_scheduler.start())
-        except RuntimeError:
-            pass
-
-    def stop_dream_scheduler(self) -> None:
-        if self._dream_scheduler is None:
-            return
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._dream_scheduler.stop())
-        except RuntimeError:
-            pass
-        self._dream_scheduler = None
-
     # -- Properties --
 
     @property
@@ -384,9 +355,12 @@ class AppBuilder:
             base_url=config.base_url or None,
         )
 
-        # Tools (实例作用域)
+        # Tools（基础工具）
         tools = ToolRegistry()
-        register_all_tools(tools, config)
+        register_basic_tools(tools, config)
+
+        # Compact
+        compact = CompactManager(config.compact, provider, event_bus)
 
         # Permission
         handler = self._permission_handler or DefaultPermissionHandler()
@@ -395,9 +369,6 @@ class AppBuilder:
             handler=handler,
             config=config,
         )
-
-        # Compact
-        compact = CompactManager(config.compact, provider, event_bus)
 
         # Prompt
         prompt_builder = default_prompt()
@@ -418,14 +389,8 @@ class AppBuilder:
             compact=compact,
         )
 
-        # Sessions
-        from .store import FileSessionStore, InMemorySessionStore
-        session_store = FileSessionStore() if self._persistence else InMemorySessionStore()
-        sessions = SessionManager(workdir=workdir, store=session_store)
-
-        # Dream
+        # Dream + 系统工具注册
         dream = None
-        dream_scheduler = None
         if config.dream.enabled:
             from .dream import DreamManager
             dream = DreamManager(
@@ -434,6 +399,12 @@ class AppBuilder:
                 tools=tools,
                 event_bus=event_bus,
             )
+        register_system_tools(tools, config, provider=provider, compact=compact, dream=dream)
+
+        # Sessions
+        from .store import FileSessionStore, InMemorySessionStore
+        session_store = FileSessionStore() if self._persistence else InMemorySessionStore()
+        sessions = SessionManager(workdir=workdir, store=session_store)
 
         # Wire events
         session_state = SessionState()
@@ -457,7 +428,6 @@ class AppBuilder:
             _prompt_builder=prompt_builder,
             _compact=compact,
             _dream=dream,
-            _dream_scheduler=dream_scheduler,
             _session_state=session_state,
         )
 
