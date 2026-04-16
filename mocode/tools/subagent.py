@@ -3,6 +3,19 @@
 from ..tool import Tool, ToolRegistry
 from ..subagent import SubAgent, SubAgentConfig
 
+SUBAGENT_SYSTEM_PROMPT = """\
+You are a sub-agent executing a specific task delegated by the parent agent.
+Your output is returned to the parent agent — it is not shown to the user directly.
+
+Guidelines:
+- Focus on completing the task. No greetings, no summaries, no unnecessary explanations.
+- Use your tools freely to get the job done. If something fails, diagnose and retry before reporting back.
+- Return clear, concise results. Report file paths, key data, or a brief status — whatever the task requires.
+- If the task cannot be completed with your available tools, state what is missing briefly.
+- You cannot ask follow-up questions. Work autonomously with what you have.
+- Any special requirements or constraints are specified in the task description below — follow them precisely.\
+"""
+
 
 def register_subagent_tools(registry: ToolRegistry, config, provider) -> None:
     parent_tools = registry
@@ -13,15 +26,21 @@ def register_subagent_tools(registry: ToolRegistry, config, provider) -> None:
         if args.get("tools"):
             tool_names = [t.strip() for t in args["tools"].split(",") if t.strip()]
 
+        # 禁止子 Agent 使用的工具：防止嵌套派生、上下文压缩、后台反思等
+        _BLOCKED_TOOLS = {"sub_agent", "compact", "dream"}
+        if tool_names is not None:
+            tool_names = [t for t in tool_names if t not in _BLOCKED_TOOLS]
+        # blocked tools 也从 derived registry 中移除，双重保险
+        derived_tools = parent_tools.derived(exclude=_BLOCKED_TOOLS)
+
         sub_config = SubAgentConfig(
-            system_prompt=args.get("system_prompt", "You are a helpful assistant."),
+            system_prompt=SUBAGENT_SYSTEM_PROMPT,
             tool_names=tool_names,
-            max_tool_calls=args.get("max_tool_calls", 20),
-            max_tokens=args.get("max_tokens", 4096),
+            max_tool_calls=args.get("max_tool_calls", 50),
+            max_tokens=args.get("max_tokens", 8192),
             bypass_permissions=True,
             tool_timeout=config.tool_timeout,
         )
-        derived_tools = parent_tools.derived()
         sub = SubAgent(provider=provider, tools=derived_tools, config=sub_config)
         result = await sub.run(task)
         if result.had_error:
@@ -30,13 +49,20 @@ def register_subagent_tools(registry: ToolRegistry, config, provider) -> None:
 
     registry.register(Tool(
         "sub_agent",
-        "Delegate a task to a sub-agent with independent system prompt and tool subset.",
+        "Delegate a task to a sub-agent that inherits ALL your tools by default. "
+        "The sub-agent runs autonomously with its own message history and returns the final result. "
+        "Put any special requirements or constraints directly in the task description.",
         {
-            "task": {"type": "string", "description": "The task to delegate"},
-            "system_prompt": {"type": "string", "description": "Custom system prompt", "default": "You are a helpful assistant."},
-            "tools": {"type": "string", "description": "Comma-separated tool names (empty = all)", "default": ""},
-            "max_tool_calls": {"type": "integer", "description": "Max tool calls", "default": 20},
-            "max_tokens": {"type": "integer", "description": "Max response tokens", "default": 4096},
+            "task": {"type": "string", "description": "The task to delegate to the sub-agent"},
+            "tools": {
+                "type": "string",
+                "description": "Comma-separated allowlist of tool names. LEAVE EMPTY to give the sub-agent full access to all tools — "
+                "this is strongly recommended unless you have a clear reason to restrict (e.g. a read-only research task). "
+                "Unnecessarily limiting tools will likely cause the sub-agent to fail.",
+                "default": "",
+            },
+            "max_tool_calls": {"type": "integer", "description": "Max tool calls (default 50)", "default": 50},
+            "max_tokens": {"type": "integer", "description": "Max response tokens (default 8192)", "default": 8192},
         },
         _sub_agent,
     ))

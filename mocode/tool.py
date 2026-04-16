@@ -160,8 +160,11 @@ class ToolRegistry:
             return f"error: unknown tool '{name}'"
         return await tool.run_async(args)
 
-    def derived(self) -> "ToolRegistry":
-        """创建派生注册表 — 共享工具但隔离 state"""
+    def derived(self, exclude: set[str] | None = None) -> "ToolRegistry":
+        """创建派生注册表 — 共享工具但隔离 state，可选排除指定工具"""
         new = ToolRegistry()
-        new._tools = self._tools
+        if exclude:
+            new._tools = {k: v for k, v in self._tools.items() if k not in exclude}
+        else:
+            new._tools = self._tools
         return new
