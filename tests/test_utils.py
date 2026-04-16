@@ -1,0 +1,29 @@
+"""Utility function tests"""
+
+from mocode.tools.utils import truncate_result
+
+
+class TestTruncateResult:
+    def test_within_limit(self):
+        result = truncate_result("hello", limit=100)
+        assert result == "hello"
+
+    def test_exceeds_limit(self):
+        result = truncate_result("a" * 200, limit=100)
+        assert len(result) > 100
+        assert result.startswith("a" * 100)
+        assert "truncated" in result
+
+    def test_zero_limit(self):
+        long_text = "a" * 1000
+        result = truncate_result(long_text, limit=0)
+        assert result == long_text
+
+    def test_exact_limit(self):
+        text = "a" * 100
+        result = truncate_result(text, limit=100)
+        assert result == text
+
+    def test_custom_message(self):
+        result = truncate_result("a" * 200, limit=100, truncate_message="[CUT]")
+        assert result.endswith("[CUT]")
