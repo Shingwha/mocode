@@ -192,7 +192,18 @@ class Agent:
                     continue
                 except Exception:
                     pass
-            parts.append({"type": "text", "text": f"User sent you a file: {p.name} (path: {path_str}). If user did not include any message with this file, ask the user what they would like to do with it."})
+            # Non-image files: do NOT embed content, just inform
+            parts.append({
+                "type": "text",
+                "text": (
+                    f"[File received: {p.name} at {path_str}]\n\n"
+                    f"IMPORTANT: The user has sent a file. "
+                    f"DO NOT read, analyze, or process this file automatically. "
+                    f"WAIT for the user's instructions. "
+                    f"If the user's message does not specify what they want you to do with this file, "
+                    f"ask them directly what task they would like you to perform."
+                )
+            })
 
         if not has_images and not parts:
             return text
