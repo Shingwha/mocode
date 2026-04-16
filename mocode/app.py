@@ -405,7 +405,8 @@ class AppBuilder:
                 tools=tools,
                 event_bus=event_bus,
             )
-        register_system_tools(tools, config, provider=provider, compact=compact, dream=dream)
+        register_system_tools(tools, config, provider=provider, compact=compact, dream=dream,
+                              event_bus=event_bus, cancel_token=cancel_token)
 
         # Sessions
         from .store import FileSessionStore, InMemorySessionStore

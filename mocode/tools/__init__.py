@@ -22,7 +22,8 @@ def register_basic_tools(registry, config) -> None:
     register_fetch_tools(registry)
 
 
-def register_system_tools(registry, config, *, provider=None, compact=None, dream=None) -> None:
+def register_system_tools(registry, config, *, provider=None, compact=None, dream=None,
+                          event_bus=None, cancel_token=None) -> None:
     """注册系统级工具（compact, dream, sub_agent）"""
     from .compact import register_compact_tools
     from .dream import register_dream_tools

@@ -1,9 +1,13 @@
 """Tool dataclass + ToolRegistry (实例作用域)
 
-v0.2 关键改进：ToolRegistry 不再是类变量全局单例，而是实例作用域。
-每个 App 拥有自己的 ToolRegistry 实例。
+v0.2 关键改进：
+- ToolRegistry 不再是类变量全局单例，而是实例作用域
+- Tool 支持同步和异步函数（is_async 标志 + run_async 方法）
+- ToolRegistry.run_async() 统一异步调度
+- ToolRegistry.derived() 共享工具但隔离 state
 """
 
+import inspect
 from typing import Callable
 
 
@@ -17,7 +21,7 @@ class ToolError(Exception):
 
 
 class Tool:
-    """工具类"""
+    """工具类 — 支持同步和异步函数"""
 
     def __init__(
         self,
@@ -30,12 +34,29 @@ class Tool:
         self.description = description
         self.params = params
         self.func = func
+        self.is_async = inspect.iscoroutinefunction(func)
 
     def run(self, args: dict) -> str:
-        """执行工具"""
+        """同步执行工具（仅适用于同步函数）"""
         try:
             validated = self._validate_args(args)
             return self.func(validated)
+        except ToolError as e:
+            return f"error [{e.code}]: {e.message}"
+        except Exception as err:
+            return f"error: {err}"
+
+    async def run_async(self, args: dict) -> str:
+        """异步执行工具 — async 函数直接 await，sync 函数同步调用
+
+        注意：BaseException（如 Interrupted）不在此捕获，向上传播。
+        """
+        try:
+            validated = self._validate_args(args)
+            if self.is_async:
+                return await self.func(validated)
+            else:
+                return self.func(validated)
         except ToolError as e:
             return f"error [{e.code}]: {e.message}"
         except Exception as err:
@@ -126,8 +147,21 @@ class ToolRegistry:
         return [t.to_schema() for t in self._tools.values()]
 
     def run(self, name: str, args: dict) -> str:
-        """运行工具"""
+        """同步运行工具"""
         tool = self.get(name)
         if not tool:
             return f"error: unknown tool '{name}'"
         return tool.run(args)
+
+    async def run_async(self, name: str, args: dict) -> str:
+        """异步运行工具 — async 工具直接 await，sync 工具同步调用"""
+        tool = self.get(name)
+        if not tool:
+            return f"error: unknown tool '{name}'"
+        return await tool.run_async(args)
+
+    def derived(self) -> "ToolRegistry":
+        """创建派生注册表 — 共享工具但隔离 state"""
+        new = ToolRegistry()
+        new._tools = self._tools
+        return new

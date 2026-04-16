@@ -226,13 +226,18 @@ class Agent:
         self._emit_tool_start(tool_name, tool_args)
 
         timeout = self.config.tool_timeout
+        tool = self._tools.get(tool_name)
+
         try:
-            result = await asyncio.wait_for(
-                self.cancel_token.cancellable(
+            if tool is not None and tool.is_async:
+                coro = self.cancel_token.cancellable(
+                    self._tools.run_async(tool_name, tool_args)
+                )
+            else:
+                coro = self.cancel_token.cancellable(
                     asyncio.to_thread(self._tools.run, tool_name, tool_args)
-                ),
-                timeout=timeout,
-            )
+                )
+            result = await asyncio.wait_for(coro, timeout=timeout)
         except asyncio.TimeoutError:
             self._emit_tool_complete(tool_name, f"Tool timed out after {timeout}s")
             return (f"error: tool '{tool_name}' timed out after {timeout}s", False)

@@ -117,7 +117,11 @@ class SubAgent:
         # 2. Execute tool
         self._emit(EventType.TOOL_START, {"name": name, "args": args})
 
-        coro = asyncio.to_thread(self._tools.run, name, args)
+        tool = self._tools.get(name)
+        if tool is not None and tool.is_async:
+            coro = self._tools.run_async(name, args)
+        else:
+            coro = asyncio.to_thread(self._tools.run, name, args)
         if self._cancel_token:
             coro = self._cancel_token.cancellable(coro)
 

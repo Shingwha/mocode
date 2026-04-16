@@ -48,6 +48,14 @@ class _DreamToolRegistry:
             args["path"] = str(MEMORY_DIR / filename)
         return self._inner.run(name, args)
 
+    async def run_async(self, name: str, args: dict) -> str:
+        if "path" in args and not _is_absolute(args["path"]):
+            args = dict(args)
+            filename = args["path"]
+            filename = filename.removeprefix("./")
+            args["path"] = str(MEMORY_DIR / filename)
+        return await self._inner.run_async(name, args)
+
 
 class DreamAgent:
     """Unified dream agent: single tool-call loop for analysis and editing."""

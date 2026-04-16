@@ -1,7 +1,5 @@
 """SubAgent tool — LLM 可将任务委派给子 Agent"""
 
-import asyncio
-
 from ..tool import Tool, ToolRegistry
 from ..subagent import SubAgent, SubAgentConfig
 
@@ -9,7 +7,7 @@ from ..subagent import SubAgent, SubAgentConfig
 def register_subagent_tools(registry: ToolRegistry, config, provider) -> None:
     parent_tools = registry
 
-    def _sub_agent(args: dict) -> str:
+    async def _sub_agent(args: dict) -> str:
         task = args.get("task", "")
         tool_names = None
         if args.get("tools"):
@@ -23,8 +21,9 @@ def register_subagent_tools(registry: ToolRegistry, config, provider) -> None:
             bypass_permissions=True,
             tool_timeout=config.tool_timeout,
         )
-        sub = SubAgent(provider=provider, tools=parent_tools, config=sub_config)
-        result = asyncio.run(sub.run(task))
+        derived_tools = parent_tools.derived()
+        sub = SubAgent(provider=provider, tools=derived_tools, config=sub_config)
+        result = await sub.run(task)
         if result.had_error:
             return f"[SubAgent error] {result.content}"
         return result.content
