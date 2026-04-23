@@ -1,7 +1,7 @@
 """CLI entry point for MoCode v0.2
 
 Supports:
-  mocode gateway --type <type>   Launch gateway mode (e.g. weixin)
+  mocode gateway [--type <type>]   Launch gateway (auto-discovers enabled channels)
   mocode web [--host HOST] [--port PORT]   Launch web backend (placeholder)
   mocode                        Launch CLI mode (placeholder)
 """
@@ -22,10 +22,10 @@ def main():
 
 
 def _run_gateway(args: list[str]) -> int:
-    """Run gateway mode: mocode gateway --type <type>"""
+    """Run gateway mode: mocode gateway [--type <type>]"""
     from .gateway.app import GatewayApp
 
-    gateway_type = "weixin"
+    gateway_type = None  # None = auto-discover from config
     for i, arg in enumerate(args):
         if arg == "--type" and i + 1 < len(args):
             gateway_type = args[i + 1]
