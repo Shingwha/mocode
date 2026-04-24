@@ -38,12 +38,24 @@ def _run_gateway(args: list[str]) -> int:
 
 
 def _run_web(args: list[str]) -> int:
-    """Run web backend: mocode web [--host HOST] [--port PORT]
+    """Run web backend: mocode web [--host HOST] [--port PORT]"""
+    import uvicorn
 
-    Placeholder — web backend has not been ported to v0.2 yet.
-    """
-    print("Web backend is not yet available in v0.2", file=sys.stderr)
-    return 1
+    from .web import create_app
+
+    host = "127.0.0.1"
+    port = 8000
+    for i, arg in enumerate(args):
+        if arg == "--host" and i + 1 < len(args):
+            host = args[i + 1]
+        if arg == "--port" and i + 1 < len(args):
+            port = int(args[i + 1])
+
+    try:
+        uvicorn.run(create_app(), host=host, port=port)
+    except KeyboardInterrupt:
+        pass
+    return 0
 
 
 def _run_cli() -> int:
