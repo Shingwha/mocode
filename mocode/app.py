@@ -112,6 +112,7 @@ class App:
             api_key=self.config.api_key,
             model=self.config.model,
             base_url=self.config.base_url or None,
+            extra_body=self.config.extra_body,
         )
         self.provider = new_provider
         self.agent.update_provider(new_provider)
@@ -355,6 +356,7 @@ class AppBuilder:
             api_key=config.api_key,
             model=config.model,
             base_url=config.base_url or None,
+            extra_body=config.extra_body,
         )
 
         # Tools（基础工具）

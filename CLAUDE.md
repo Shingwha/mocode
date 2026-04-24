@@ -149,7 +149,7 @@ Config is stored at `~/.mocode/config.json` (or `MOCODE_HOME/config.json`). Defa
 | Provider | Base URL | Default Model |
 |----------|----------|---------------|
 | zhipu    | https://open.bigmodel.cn/api/coding/paas/v4/ | glm-5 / glm-5.1 |
-| step     | https://api.stepfun.com/step_plan/v1 | step-3.5-flash |
+| deepseek | https://api.deepseek.com | deepseek-v4-pro / deepseek-chat |
 
 To add a custom provider:
 ```python

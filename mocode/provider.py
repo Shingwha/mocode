@@ -66,9 +66,11 @@ class OpenAIProvider:
         api_key: str,
         model: str = "gpt-4o",
         base_url: str | None = None,
+        extra_body: dict[str, Any] | None = None,
     ):
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self._model = model
+        self._extra_body = extra_body
 
     @property
     def model(self) -> str:
@@ -88,6 +90,7 @@ class OpenAIProvider:
             messages=openai_messages,
             tools=tools or None,  # type: ignore[arg-type]
             max_tokens=max_tokens,
+            extra_body=self._extra_body,
         )
 
         choice = raw.choices[0]

@@ -5,7 +5,7 @@ v0.2 关键改进：Config 不调用 save()、不持有 CONFIG_PATH、不触发 
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from .permission import PermissionConfig
 
@@ -43,6 +43,7 @@ class ProviderConfig:
     base_url: str
     api_key: str
     models: list[str] = field(default_factory=list)
+    extra_body: dict[str, dict[str, Any]] | None = None
 
 
 @dataclass
@@ -85,11 +86,11 @@ class Config:
                 api_key="",
                 models=["glm-5.1", "glm-5"],
             ),
-            "step": ProviderConfig(
-                name="Step",
-                base_url="https://api.stepfun.com/step_plan/v1",
+            "deepseek": ProviderConfig(
+                name="DeepSeek",
+                base_url="https://api.deepseek.com",
                 api_key="",
-                models=["step-3.5-flash", "step-3.5-flash-2603"],
+                models=["deepseek-v4-pro", "deepseek-chat"],
             ),
         }
 
@@ -185,6 +186,13 @@ class Config:
         provider = self.current_provider
         name = provider.name if provider else self.current.provider
         return f"{self.current.model} ({name})"
+
+    @property
+    def extra_body(self) -> dict[str, Any] | None:
+        provider = self.current_provider
+        if provider and provider.extra_body:
+            return provider.extra_body.get(self.model)
+        return None
 
     # ---- Mode operations ----
 

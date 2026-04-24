@@ -87,6 +87,15 @@ Before first run, create config file `~/.mocode/config.json`:
       "base_url": "https://open.bigmodel.cn/api/coding/paas/v4/",
       "api_key": "your-api-key",
       "models": ["glm-5.1", "glm-5"]
+    },
+    "deepseek": {
+      "name": "DeepSeek",
+      "base_url": "https://api.deepseek.com",
+      "api_key": "your-api-key",
+      "models": ["deepseek-v4-pro", "deepseek-chat"],
+      "extra_body": {
+        "deepseek-v4-pro": {"thinking": {"type": "enabled"}}
+      }
     }
   },
   "gateway": {
@@ -108,6 +117,16 @@ Before first run, create config file `~/.mocode/config.json`:
   }
 }
 ```
+
+Provider config fields:
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `name` | Display name | required |
+| `base_url` | API endpoint | required |
+| `api_key` | API key | required |
+| `models` | Available model names | `[]` |
+| `extra_body` | Per-model extra request params, `{model_name: {...}}` | `null` |
 
 Gateway config fields (feishu):
 

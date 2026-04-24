@@ -140,3 +140,59 @@ class TestConfigProperties:
         config = Config()
         config.current.provider = "nonexistent"
         assert config.current_provider is None
+
+
+class TestConfigExtraBody:
+    def test_extra_body_none_by_default(self, config):
+        assert config.extra_body is None
+
+    def test_extra_body_from_dict(self):
+        data = {
+            "current": {"provider": "test", "model": "m1"},
+            "providers": {
+                "test": {
+                    "name": "Test",
+                    "base_url": "https://test.com/v1",
+                    "api_key": "k",
+                    "models": ["m1"],
+                    "extra_body": {
+                        "m1": {"thinking": {"type": "enabled"}},
+                    },
+                }
+            },
+        }
+        config = Config.from_dict(data)
+        assert config.extra_body == {"thinking": {"type": "enabled"}}
+
+    def test_extra_body_roundtrip(self):
+        data = {
+            "current": {"provider": "test", "model": "m1"},
+            "providers": {
+                "test": {
+                    "name": "Test",
+                    "base_url": "https://test.com/v1",
+                    "api_key": "k",
+                    "models": ["m1"],
+                    "extra_body": {"m1": {"thinking": {"type": "enabled"}}},
+                }
+            },
+        }
+        config = Config.from_dict(data)
+        d = config.to_dict()
+        assert d["providers"]["test"]["extra_body"]["m1"] == {"thinking": {"type": "enabled"}}
+
+    def test_extra_body_returns_none_for_missing_model(self):
+        data = {
+            "current": {"provider": "test", "model": "m2"},
+            "providers": {
+                "test": {
+                    "name": "Test",
+                    "base_url": "https://test.com/v1",
+                    "api_key": "k",
+                    "models": ["m1", "m2"],
+                    "extra_body": {"m1": {"thinking": {"type": "enabled"}}},
+                }
+            },
+        }
+        config = Config.from_dict(data)
+        assert config.extra_body is None
