@@ -15,7 +15,7 @@ class CompactConfig:
     """上下文压缩配置"""
     enabled: bool = True
     threshold: float = 0.80
-    keep_recent_turns: int = 1
+    keep_recent_turns: int = 0
     context_windows: dict[str, int] = field(default_factory=dict)
 
 
