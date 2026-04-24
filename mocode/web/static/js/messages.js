@@ -91,8 +91,9 @@ MoCode.Messages = (function () {
     el.className = 'thinking-card';
     el.innerHTML =
       '<div class="thinking-header">' +
-        '<svg class="thinking-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>' +
+        '<svg class="thinking-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a8 8 0 0 0-8 8c0 3.4 2.1 6.3 5 7.5V20h6v-2.5c2.9-1.2 5-4.1 5-7.5a8 8 0 0 0-8-8z"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="10" y1="22" x2="14" y2="22"/></svg>' +
         '<span class="thinking-label">Thinking</span>' +
+        '<svg class="thinking-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>' +
       '</div>' +
       '<div class="thinking-body">' + escapeHtml(content) + '</div>';
     el.querySelector('.thinking-header').addEventListener('click', function () {

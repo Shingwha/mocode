@@ -904,7 +904,13 @@ body {
   color: var(--c-thinking);
 }
 
+.thinking-icon {
+  color: var(--c-thinking);
+  flex-shrink: 0;
+}
+
 .thinking-chevron {
+  margin-left: auto;
   color: var(--c-text-faint);
   transition: transform 0.2s ease;
 }
