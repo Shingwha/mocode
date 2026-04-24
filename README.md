@@ -10,15 +10,14 @@ An LLM-powered assistant. v0.2 is a rewrite using modular, dependency-injection 
 ## Installation
 
 ```bash
-# Direct install (current version on refactor-v0.2 branch)
-uv tool install git+https://github.com/Shingwha/mocode.git@refactor-v0.2
+# Direct install
+uv tool install git+https://github.com/Shingwha/mocode.git
 ```
 
 ### Developer Install
 
 ```bash
-# Clone specific branch
-git clone -b refactor-v0.2 https://github.com/Shingwha/mocode.git
+git clone https://github.com/Shingwha/mocode.git
 cd mocode
 
 # Install in editable mode
