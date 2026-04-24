@@ -34,6 +34,7 @@ class Response:
     tool_calls: list[ToolCall] | None = None
     usage: Usage | None = None
     finish_reason: str | None = None
+    reasoning_content: str | None = None
 
 
 # ---- Protocol ----
@@ -83,7 +84,7 @@ class OpenAIProvider:
         tools: list[dict[str, Any]],
         max_tokens: int,
     ) -> Response:
-        openai_messages = [{"role": "system", "content": system}, *messages]
+        openai_messages = [{"role": "system", "content": system}, *self._normalize_messages(messages)]
 
         raw = await self._client.chat.completions.create(
             model=self._model,
@@ -116,9 +117,26 @@ class OpenAIProvider:
                 completion_tokens=raw.usage.completion_tokens or 0,
             )
 
+        # Extract reasoning_content (DeepSeek thinking models)
+        reasoning_content = getattr(message, "reasoning_content", None)
+
         return Response(
             content=message.content,
             tool_calls=tool_calls,
             usage=usage,
             finish_reason=choice.finish_reason,
+            reasoning_content=reasoning_content,
         )
+
+    @staticmethod
+    def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Strip empty tool_calls arrays from assistant messages (DeepSeek rejects them)."""
+        result = []
+        for msg in messages:
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                if not msg["tool_calls"]:
+                    cleaned = {k: v for k, v in msg.items() if k != "tool_calls"}
+                    result.append(cleaned)
+                    continue
+            result.append(msg)
+        return result

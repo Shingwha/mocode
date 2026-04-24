@@ -17,6 +17,7 @@ Handler = Union[Callable[["Event"], None], Callable[["Event"], Awaitable[None]]]
 
 class EventType(Enum):
     TEXT_COMPLETE = auto()
+    REASONING = auto()
     TOOL_START = auto()
     TOOL_COMPLETE = auto()
     TOOL_PROGRESS = auto()

@@ -85,6 +85,24 @@ MoCode.Messages = (function () {
     return el;
   }
 
+  function createThinking(content) {
+    removeTypingIndicator();
+    var el = document.createElement('div');
+    el.className = 'thinking-card';
+    el.innerHTML =
+      '<div class="thinking-header">' +
+        '<svg class="thinking-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>' +
+        '<span class="thinking-label">Thinking</span>' +
+      '</div>' +
+      '<div class="thinking-body">' + escapeHtml(content) + '</div>';
+    el.querySelector('.thinking-header').addEventListener('click', function () {
+      el.classList.toggle('expanded');
+    });
+    containerEl.appendChild(el);
+    scrollToBottom();
+    return el;
+  }
+
   function createError(message) {
     removeTypingIndicator();
     var el = document.createElement('div');
@@ -164,6 +182,9 @@ MoCode.Messages = (function () {
         createUser(extractText(msg.content));
         i++;
       } else if (msg.role === 'assistant') {
+        if (msg.reasoning_content) {
+          createThinking(msg.reasoning_content);
+        }
         if (msg.content) {
           createAssistant(extractText(msg.content));
         }
@@ -236,6 +257,7 @@ MoCode.Messages = (function () {
     setupMarkdown: setupMarkdown,
     createUser: createUser,
     createAssistant: createAssistant,
+    createThinking: createThinking,
     createError: createError,
     createInterrupted: createInterrupted,
     showTypingIndicator: showTypingIndicator,

@@ -23,6 +23,7 @@ class SSEEventBridge:
         """Subscribe to EventBus events."""
         mapping = {
             EventType.TEXT_COMPLETE: self._on_text_complete,
+            EventType.REASONING: self._on_reasoning,
             EventType.TOOL_START: self._on_tool_start,
             EventType.TOOL_COMPLETE: self._on_tool_complete,
             EventType.INTERRUPTED: self._on_interrupted,
@@ -78,6 +79,10 @@ class SSEEventBridge:
     def _on_text_complete(self, event):
         data = event.data or {}
         self.push("text_complete", {"content": data.get("content", "")})
+
+    def _on_reasoning(self, event):
+        data = event.data or {}
+        self.push("reasoning", {"content": data.get("content", "")})
 
     def _on_tool_start(self, event):
         data = event.data or {}

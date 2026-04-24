@@ -119,6 +119,12 @@ class Agent:
 
             tool_results = []
 
+            if response.reasoning_content:
+                self.event_bus.emit(EventType.REASONING, {
+                    "content": response.reasoning_content,
+                    "conversation_id": self.conversation_id,
+                })
+
             if response.content:
                 final_response = response.content
                 self.event_bus.emit(EventType.TEXT_COMPLETE, {
@@ -141,25 +147,21 @@ class Agent:
                             raise Interrupted(InterruptReason.PERMISSION_DENIED)
                 finally:
                     # Save partial state (assistant + any tool results collected)
-                    self.messages.append({
-                        "role": "assistant",
-                        "content": response.content or "",
-                        "tool_calls": [
-                            {"id": t.id, "type": "function", "function": {"name": t.name, "arguments": t.arguments}}
-                            for t in (response.tool_calls or [])
-                        ],
-                    })
+                    assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
+                    if response.reasoning_content:
+                        assistant_msg["reasoning_content"] = response.reasoning_content
+                    assistant_msg["tool_calls"] = [
+                        {"id": t.id, "type": "function", "function": {"name": t.name, "arguments": t.arguments}}
+                        for t in (response.tool_calls or [])
+                    ]
+                    self.messages.append(assistant_msg)
                     if tool_results:
                         self.messages.extend(tool_results)
             else:
-                self.messages.append({
-                    "role": "assistant",
-                    "content": response.content or "",
-                    "tool_calls": [
-                        {"id": t.id, "type": "function", "function": {"name": t.name, "arguments": t.arguments}}
-                        for t in (response.tool_calls or [])
-                    ],
-                })
+                assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
+                if response.reasoning_content:
+                    assistant_msg["reasoning_content"] = response.reasoning_content
+                self.messages.append(assistant_msg)
                 break
 
             if not tool_results:

@@ -86,6 +86,10 @@
   --tool-running-bg: rgba(74, 111, 165, 0.04);
   --tool-complete: #4f9a62;
   --tool-complete-bg: rgba(79, 154, 98, 0.04);
+
+  /* Thinking cards */
+  --c-thinking: #8b6fc0;
+  --c-thinking-bg: rgba(139, 111, 192, 0.04);
 }
 
 body {
@@ -860,6 +864,69 @@ body {
 }
 .expand-output-btn:hover {
   color: var(--c-accent);
+}
+
+/* ========== Thinking Cards ========== */
+
+.thinking-card {
+  max-width: calc(var(--max-w) - 2 * var(--msg-padding-x));
+  margin: 3px auto;
+  border-left: 2.5px solid var(--c-thinking);
+  background: var(--c-thinking-bg);
+  border-radius: 0 8px 8px 0;
+  overflow: hidden;
+  animation: cardIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (max-width: 768px) {
+  .thinking-card {
+    max-width: 100%;
+    margin: 3px var(--msg-padding-x);
+  }
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.thinking-header:hover {
+  background: rgba(139, 111, 192, 0.06);
+}
+
+.thinking-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--c-thinking);
+}
+
+.thinking-chevron {
+  color: var(--c-text-faint);
+  transition: transform 0.2s ease;
+}
+
+.thinking-card.expanded .thinking-chevron {
+  transform: rotate(90deg);
+}
+
+.thinking-body {
+  display: none;
+  padding: 0 10px 8px;
+  font-size: 12px;
+  color: var(--c-text-muted);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.thinking-card.expanded .thinking-body {
+  display: block;
 }
 
 .full-output {

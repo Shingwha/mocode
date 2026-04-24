@@ -127,6 +127,9 @@ MoCode.Chat = (function () {
       case 'text_complete':
         MoCode.Messages.createAssistant(data.content || '');
         break;
+      case 'reasoning':
+        MoCode.Messages.createThinking(data.content || '');
+        break;
       case 'tool_start':
       case 'tool_complete':
         MoCode.ToolCards.handleEvent(eventType, data);
