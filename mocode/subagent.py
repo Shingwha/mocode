@@ -186,6 +186,8 @@ class SubAgent:
 
             # Build assistant message
             assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
+            if response.reasoning_content:
+                assistant_msg["reasoning_content"] = response.reasoning_content
             if response.tool_calls:
                 assistant_msg["tool_calls"] = [
                     {
