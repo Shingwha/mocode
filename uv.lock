@@ -402,7 +402,7 @@ wheels = [
 [[package]]
 name = "mocode"
 version = "0.2.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "croniter" },
     { name = "fastapi" },

@@ -103,6 +103,9 @@ class CompactManager:
     def update_usage(self, prompt_tokens: int) -> None:
         self._last_prompt_tokens = prompt_tokens
 
+    def reset(self) -> None:
+        self._last_prompt_tokens = 0
+
     @property
     def model(self) -> str:
         return self._provider.model

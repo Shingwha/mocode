@@ -157,6 +157,8 @@ class App:
             self._session_state.current_session_id = session_id
             self._session_state.has_unsaved_changes = False
             self.agent.messages = session.messages.copy()
+            if self._compact:
+                self._compact.reset()
         return session
 
     def list_sessions(self) -> list[Session]:
@@ -173,6 +175,8 @@ class App:
         self.agent.clear()
         self._session_state.current_session_id = None
         self._session_state.has_unsaved_changes = False
+        if self._compact:
+            self._compact.reset()
 
     def clear_history_with_save(self) -> Session | None:
         saved = None

@@ -5,6 +5,7 @@ MoCode.Chat = (function () {
     busy: false,
     currentSessionId: null,
   };
+  var _sessionIdGen = 0;
 
   var inputEl, sendBtn, interruptBtn, statusEl, emptyState, chatTitle, modelInfo;
 
@@ -154,13 +155,24 @@ MoCode.Chat = (function () {
   }
 
   async function autoSave() {
+    var gen = _sessionIdGen;
     try {
       var data = await MoCode.Api.saveSession();
       if (!data || !data.session) return;
+      if (gen !== _sessionIdGen) return;
       var session = data.session;
+      var prevId = state.currentSessionId;
       state.currentSessionId = session.id;
       await MoCode.Sidebar.load();
       MoCode.Sidebar.setActive(session.id);
+      if (prevId !== session.id) {
+        var detail = await MoCode.Api.loadSession(session.id);
+        if (detail) {
+          resetChatView();
+          MoCode.Messages.renderHistory(detail.messages || []);
+          MoCode.Messages.updateEmptyState(emptyState);
+        }
+      }
     } catch (e) {
       MoCode.Utils.logError('autoSave', e);
     }
@@ -168,6 +180,7 @@ MoCode.Chat = (function () {
 
   async function newChat() {
     if (state.busy) return;
+    _sessionIdGen++;
     try {
       await MoCode.Api.clearHistory();
     } catch (e) {
@@ -182,6 +195,7 @@ MoCode.Chat = (function () {
 
   async function switchSession(id) {
     if (state.busy) return;
+    _sessionIdGen++;
     var session = await MoCode.Sidebar.switchSession(id);
     if (!session) return;
     state.currentSessionId = session.id;
@@ -197,6 +211,7 @@ MoCode.Chat = (function () {
     var deleted = await MoCode.Sidebar.deleteSession(id);
     if (!deleted) return;
     if (state.currentSessionId === id) {
+      _sessionIdGen++;
       state.currentSessionId = null;
       chatTitle.textContent = 'New Chat';
       try {

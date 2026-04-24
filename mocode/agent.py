@@ -46,10 +46,19 @@ class Agent:
         self.permission_checker = permission_checker
         self.config = config
         self._compact = compact
-        self.messages: list[dict] = []
+        self._messages: list[dict] = []
         self._last_usage: Usage | None = None
         self.conversation_id: str | None = None
-        self._tools.state["messages"] = self.messages
+        self._tools.state["messages"] = self._messages
+
+    @property
+    def messages(self) -> list[dict]:
+        return self._messages
+
+    @messages.setter
+    def messages(self, value: list[dict]) -> None:
+        self._messages = value
+        self._tools.state["messages"] = value
 
     # ---- Event helpers ----
 
@@ -272,7 +281,7 @@ class Agent:
             self.messages.clear()
 
     def clear(self) -> None:
-        self.messages.clear()
+        self.messages = []
 
     def spawn(self, system_prompt: str, **kwargs) -> "SubAgent":
         """从当前 Agent 的基础设施创建子 Agent"""
