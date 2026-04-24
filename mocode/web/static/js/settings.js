@@ -186,6 +186,10 @@ MoCode.Settings = (function () {
         configCache = config;
         MoCode.Settings.configCache = config;
         MoCode.Settings.showToast('Provider switched');
+        var modelInfo = document.getElementById('model-info');
+        if (modelInfo && config.current_model) {
+          modelInfo.textContent = config.current_model;
+        }
       } else {
         MoCode.Settings.showToast('Failed to switch provider', 'error');
       }
@@ -198,6 +202,10 @@ MoCode.Settings = (function () {
         configCache = result;
         MoCode.Settings.configCache = result;
         MoCode.Settings.showToast('Model switched');
+        var modelInfo = document.getElementById('model-info');
+        if (modelInfo && result.current_model) {
+          modelInfo.textContent = result.current_model;
+        }
       } else {
         MoCode.Settings.showToast('Failed to switch model', 'error');
       }
