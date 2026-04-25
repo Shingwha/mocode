@@ -129,7 +129,53 @@ MoCode.Settings = (function () {
     });
   }
 
-  // ========== Card 1: Model Selection ==========
+  // ========== Card 1: Theme ==========
+  var themeCard = {
+    render: function(config) {
+      var current = MoCode.Theme.getCurrent();
+      var bodyHtml =
+        '<div class="form-group">' +
+          '<div class="theme-options">' +
+            '<label class="theme-option' + (current === 'system' ? ' selected' : '') + '">' +
+              '<input type="radio" name="theme" value="system"' + (current === 'system' ? ' checked' : '') + '>' +
+              '<span class="theme-option-label">System</span>' +
+              '<span class="theme-option-desc">Follow OS</span>' +
+            '</label>' +
+            '<label class="theme-option' + (current === 'light' ? ' selected' : '') + '">' +
+              '<input type="radio" name="theme" value="light"' + (current === 'light' ? ' checked' : '') + '>' +
+              '<span class="theme-option-label">Light</span>' +
+              '<span class="theme-option-desc">Always light</span>' +
+            '</label>' +
+            '<label class="theme-option' + (current === 'dark' ? ' selected' : '') + '">' +
+              '<input type="radio" name="theme" value="dark"' + (current === 'dark' ? ' checked' : '') + '>' +
+              '<span class="theme-option-label">Dark</span>' +
+              '<span class="theme-option-desc">Always dark</span>' +
+            '</label>' +
+          '</div>' +
+        '</div>';
+      var div = createCardShell('Appearance', bodyHtml);
+
+      setTimeout(function() {
+        div.querySelectorAll('input[name="theme"]').forEach(function(radio) {
+          radio.addEventListener('change', function() {
+            MoCode.Theme.set(radio.value);
+            div.querySelectorAll('.theme-option').forEach(function(opt) {
+              opt.classList.remove('selected');
+            });
+            radio.closest('.theme-option').classList.add('selected');
+          });
+        });
+      }, 0);
+
+      return div;
+    },
+
+    onAction: function(action, key, value, e) {
+      return false;
+    },
+  };
+
+  // ========== Card 2: Model Selection ==========
   var modelCard = {
     render: function(config) {
       var bodyHtml =
@@ -428,6 +474,7 @@ MoCode.Settings = (function () {
     },
   };
 
+  registerCard('theme', themeCard);
   registerCard('model', modelCard);
   registerCard('provider', providerCard);
 

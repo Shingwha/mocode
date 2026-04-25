@@ -1,4 +1,5 @@
 document.addEventListener('DOMContentLoaded', function () {
+  MoCode.Theme.init();
   MoCode.Messages.setupMarkdown();
 
   var messagesEl = document.getElementById('messages');
