@@ -87,6 +87,12 @@ class SubAgent:
 
     # ---- Event helpers ----
 
+    _call_seq = 0
+
+    def _next_call_id(self) -> str:
+        SubAgent._call_seq += 1
+        return f"sub_call_{SubAgent._call_seq}"
+
     def _emit(self, event_type: EventType, data: dict) -> None:
         if self._event_bus:
             self._event_bus.emit(event_type, data)
@@ -101,21 +107,23 @@ class SubAgent:
 
     async def _execute_tool(self, name: str, args: dict) -> str:
         """执行单个工具：权限检查 → 执行 → 超时 → 截断 → 事件"""
+        call_id = self._next_call_id()
+
         # 1. Permission check (unless bypassed)
         if not self._config.bypass_permissions and self._permission_checker:
             result = await self._permission_checker.check(name, args)
             if result.outcome == CheckOutcome.DENY:
                 msg = f"Permission denied: {result.reason}"
-                self._emit(EventType.TOOL_START, {"name": name, "args": args})
-                self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": msg})
+                self._emit(EventType.TOOL_START, {"name": name, "args": args, "call_id": call_id})
+                self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": msg, "call_id": call_id})
                 raise Interrupted()
             elif result.outcome == CheckOutcome.USER_INPUT:
-                self._emit(EventType.TOOL_START, {"name": name, "args": args})
-                self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": result.user_input})
+                self._emit(EventType.TOOL_START, {"name": name, "args": args, "call_id": call_id})
+                self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": result.user_input, "call_id": call_id})
                 return result.user_input or ""
 
         # 2. Execute tool
-        self._emit(EventType.TOOL_START, {"name": name, "args": args})
+        self._emit(EventType.TOOL_START, {"name": name, "args": args, "call_id": call_id})
 
         tool = self._tools.get(name)
         if tool is not None and tool.is_async:
@@ -133,14 +141,69 @@ class SubAgent:
                 result = await coro
         except asyncio.TimeoutError:
             msg = f"error: tool '{name}' timed out after {timeout}s"
-            self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": msg})
+            self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": msg, "call_id": call_id})
             return msg
 
         # 3. Truncate
         result = self._apply_result_limit(result)
 
-        self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": result})
+        self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": result, "call_id": call_id})
         return result
+
+    async def _execute_tools_parallel(
+        self, tool_calls: list
+    ) -> tuple[list[dict], int]:
+        """并行执行多个 tool_calls，返回 (results, tool_calls_made_count)"""
+        # Fast path: single tool
+        if len(tool_calls) == 1:
+            tc = tool_calls[0]
+            if self._cancel_token:
+                self._cancel_token.check()
+            try:
+                tool_args = json.loads(tc.arguments) if tc.arguments else {}
+            except json.JSONDecodeError:
+                tool_args = {}
+            result = await self._execute_tool(tc.name, tool_args)
+            return ([{"role": "tool", "tool_call_id": tc.id, "content": result}], 1)
+
+        # Parse all arguments
+        if self._cancel_token:
+            self._cancel_token.check()
+        parsed = []
+        for tc in tool_calls:
+            try:
+                tool_args = json.loads(tc.arguments) if tc.arguments else {}
+            except json.JSONDecodeError:
+                tool_args = {}
+            parsed.append((tc, tool_args))
+
+        async def _run_one(tc, args):
+            result = await self._execute_tool(tc.name, args)
+            return {"role": "tool", "tool_call_id": tc.id, "content": result}
+
+        raw_results = await asyncio.gather(
+            *[_run_one(tc, args) for tc, args in parsed],
+            return_exceptions=True,
+        )
+
+        tool_results = []
+        tool_calls_made = 0
+
+        for i, raw in enumerate(raw_results):
+            tc = tool_calls[i]
+            if isinstance(raw, BaseException):
+                if isinstance(raw, Interrupted):
+                    raise raw
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": f"error: {raw}",
+                })
+            else:
+                tool_results.append(raw)
+            tool_calls_made += 1
+
+        return (tool_results, tool_calls_made)
 
     # ---- Core loop ----
 
@@ -203,27 +266,10 @@ class SubAgent:
             if not response.tool_calls:
                 break
 
-            # Execute tool calls
-            for tc in response.tool_calls:
-                if self._cancel_token:
-                    self._cancel_token.check()
-
-                try:
-                    tool_args = json.loads(tc.arguments) if tc.arguments else {}
-                except json.JSONDecodeError:
-                    tool_args = {}
-
-                try:
-                    result = await self._execute_tool(tc.name, tool_args)
-                except Interrupted:
-                    raise
-
-                tool_calls_made += 1
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": result,
-                })
+            # Execute tool calls (parallel)
+            tool_results, count = await self._execute_tools_parallel(response.tool_calls)
+            tool_calls_made += count
+            messages.extend(tool_results)
 
             if response.finish_reason == "stop":
                 break

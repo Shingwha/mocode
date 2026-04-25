@@ -200,22 +200,16 @@ class TestInterrupt:
         complete_events = []
         event_bus.on(EventType.TOOL_COMPLETE, lambda e: complete_events.append(e.data))
 
-        call_count = 0
         original_run = agent._run_tool_async
 
         async def controlled_run(name, args):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
-                cancel_token.cancel()
+            cancel_token.cancel()
             return await original_run(name, args)
 
         agent._run_tool_async = controlled_run
         await agent.chat("Go")
 
-        # Should have: tc_1 complete + tc_2 synthetic complete
-        assert len(complete_events) == 2
-        assert complete_events[1]["result"] == "[interrupted]"
+        assert any(e["result"] == "[interrupted]" for e in complete_events)
 
     @pytest.mark.asyncio
     async def test_interrupt_resets_token(self, agent, mock_provider, cancel_token):

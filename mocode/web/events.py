@@ -18,6 +18,7 @@ class SSEEventBridge:
         self._handlers: list[tuple[EventType, callable]] = []
         self._tool_seq = 0
         self._active_tool_id: str | None = None
+        self._call_id_map: dict[str, str] = {}  # call_id -> frontend tool_id
 
     def attach(self):
         """Subscribe to EventBus events."""
@@ -87,7 +88,11 @@ class SSEEventBridge:
     def _on_tool_start(self, event):
         data = event.data or {}
         tid = self._next_tool_id()
-        self._active_tool_id = tid
+        call_id = data.get("call_id")
+        if call_id:
+            self._call_id_map[call_id] = tid
+        else:
+            self._active_tool_id = tid
         self.push("tool_start", {
             "id": tid,
             "name": data.get("name", ""),
@@ -96,14 +101,26 @@ class SSEEventBridge:
 
     def _on_tool_complete(self, event):
         data = event.data or {}
+        call_id = data.get("call_id")
+        if call_id:
+            tid = self._call_id_map.pop(call_id, None)
+        else:
+            tid = self._active_tool_id
+            self._active_tool_id = None
         self.push("tool_complete", {
-            "id": self._active_tool_id,
+            "id": tid,
             "name": data.get("name", ""),
             "result": data.get("result", ""),
         })
-        self._active_tool_id = None
 
     def _on_interrupted(self, event):
+        for tid in self._call_id_map.values():
+            self.push("tool_complete", {
+                "id": tid,
+                "name": "",
+                "result": "[interrupted]",
+            })
+        self._call_id_map.clear()
         if self._active_tool_id is not None:
             self.push("tool_complete", {
                 "id": self._active_tool_id,

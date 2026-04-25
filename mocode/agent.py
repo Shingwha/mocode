@@ -62,22 +62,30 @@ class Agent:
 
     # ---- Event helpers ----
 
-    def _emit_tool_start(self, tool_name: str, tool_args: dict) -> None:
+    _call_seq = 0
+
+    def _next_call_id(self) -> str:
+        Agent._call_seq += 1
+        return f"call_{Agent._call_seq}"
+
+    def _emit_tool_start(self, tool_name: str, tool_args: dict, call_id: str | None = None) -> None:
         self.event_bus.emit(EventType.TOOL_START, {
             "name": tool_name, "args": tool_args,
+            "call_id": call_id,
             "conversation_id": self.conversation_id,
         })
 
-    def _emit_tool_complete(self, tool_name: str, result: str) -> None:
+    def _emit_tool_complete(self, tool_name: str, result: str, call_id: str | None = None) -> None:
         self.event_bus.emit(EventType.TOOL_COMPLETE, {
             "name": tool_name, "result": result,
+            "call_id": call_id,
             "conversation_id": self.conversation_id,
         })
 
-    def _deny_tool(self, tool_name: str, tool_args: dict, reason: str) -> tuple[str, bool]:
-        self._emit_tool_start(tool_name, tool_args)
+    def _deny_tool(self, tool_name: str, tool_args: dict, reason: str, call_id: str | None = None) -> tuple[str, bool]:
+        self._emit_tool_start(tool_name, tool_args, call_id)
         msg = f"User {reason} this operation"
-        self._emit_tool_complete(tool_name, msg)
+        self._emit_tool_complete(tool_name, msg, call_id)
         return (msg, True)
 
     # ---- Chat loop ----
@@ -145,21 +153,11 @@ class Agent:
             if response.tool_calls:
                 _interrupted_tc_id: str | None = None
                 try:
-                    for tc in response.tool_calls:
-                        self.cancel_token.check()
-                        tool_args = json.loads(tc.arguments)
-                        try:
-                            result, denied = await self._run_tool_async(tc.name, tool_args)
-                        except Interrupted:
-                            _interrupted_tc_id = tc.id
-                            raise
-                        tool_results.append({
-                            "role": "tool",
-                            "tool_call_id": tc.id,
-                            "content": result,
-                        })
-                        if denied:
-                            raise Interrupted(InterruptReason.PERMISSION_DENIED)
+                    tool_results, _interrupted_tc_id = await self._run_tool_calls_parallel(
+                        response.tool_calls
+                    )
+                    if _interrupted_tc_id:
+                        raise Interrupted(InterruptReason.PERMISSION_DENIED)
                 finally:
                     # 为被中断的工具发射合成 TOOL_COMPLETE
                     if _interrupted_tc_id is not None:
@@ -256,18 +254,20 @@ class Agent:
 
     async def _run_tool_async(self, tool_name: str, tool_args: dict) -> tuple[str, bool]:
         """工具执行：权限检查 → 执行 → 截断"""
+        call_id = self._next_call_id()
+
         # 1. Permission check
         if self.permission_checker:
             result = await self.permission_checker.check(tool_name, tool_args)
             if result.outcome == CheckOutcome.DENY:
-                return self._deny_tool(tool_name, tool_args, result.reason)
+                return self._deny_tool(tool_name, tool_args, result.reason, call_id)
             elif result.outcome == CheckOutcome.USER_INPUT:
-                self._emit_tool_start(tool_name, tool_args)
-                self._emit_tool_complete(tool_name, result.user_input)
+                self._emit_tool_start(tool_name, tool_args, call_id)
+                self._emit_tool_complete(tool_name, result.user_input, call_id)
                 return (result.user_input, False)
 
         # 2. Execute tool
-        self._emit_tool_start(tool_name, tool_args)
+        self._emit_tool_start(tool_name, tool_args, call_id)
 
         timeout = self.config.tool_timeout
         tool = self._tools.get(tool_name)
@@ -283,13 +283,70 @@ class Agent:
                 )
             result = await asyncio.wait_for(coro, timeout=timeout)
         except asyncio.TimeoutError:
-            self._emit_tool_complete(tool_name, f"Tool timed out after {timeout}s")
+            self._emit_tool_complete(tool_name, f"Tool timed out after {timeout}s", call_id)
             return (f"error: tool '{tool_name}' timed out after {timeout}s", False)
 
         # 3. Truncate and emit
         result = self._apply_result_limit(result)
-        self._emit_tool_complete(tool_name, result)
+        self._emit_tool_complete(tool_name, result, call_id)
         return (result, False)
+
+    async def _run_tool_calls_parallel(
+        self, tool_calls: list
+    ) -> tuple[list[dict], str | None]:
+        """并行执行多个 tool_calls，返回 (results, interrupted_tc_id | None)"""
+        # Fast path: single tool
+        if len(tool_calls) == 1:
+            tc = tool_calls[0]
+            self.cancel_token.check()
+            tool_args = json.loads(tc.arguments)
+            try:
+                result, denied = await self._run_tool_async(tc.name, tool_args)
+            except Interrupted:
+                return ([], tc.id)
+            return ([{"role": "tool", "tool_call_id": tc.id, "content": result}],
+                    tc.id if denied else None)
+
+        # Parse all arguments first (cheap, sequential)
+        self.cancel_token.check()
+        parsed = [(tc, json.loads(tc.arguments)) for tc in tool_calls]
+
+        # Per-tool wrapper that captures Interrupted instead of raising
+        _INTERRUPTED = object()
+
+        async def _run_one(tc, args):
+            try:
+                result, denied = await self._run_tool_async(tc.name, args)
+                return ({"role": "tool", "tool_call_id": tc.id, "content": result},
+                        denied)
+            except Interrupted:
+                return _INTERRUPTED
+
+        raw_results = await asyncio.gather(
+            *[_run_one(tc, args) for tc, args in parsed],
+            return_exceptions=True,
+        )
+
+        tool_results = []
+        interrupted_tc_id = None
+
+        for i, raw in enumerate(raw_results):
+            tc = tool_calls[i]
+            if raw is _INTERRUPTED:
+                interrupted_tc_id = tc.id
+            elif isinstance(raw, BaseException):
+                tool_results.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": f"error: {raw}",
+                })
+            else:
+                result_dict, denied = raw
+                tool_results.append(result_dict)
+                if denied and interrupted_tc_id is None:
+                    interrupted_tc_id = tc.id
+
+        return (tool_results, interrupted_tc_id)
 
     # ---- Mutation methods ----
 
