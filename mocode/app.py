@@ -156,7 +156,8 @@ class App:
         if session:
             self._session_state.current_session_id = session_id
             self._session_state.has_unsaved_changes = False
-            self.agent.messages = session.messages.copy()
+            from .message_utils import sanitize_messages
+            self.agent.messages = sanitize_messages(session.messages.copy())
             if self._compact:
                 self._compact.reset()
         return session

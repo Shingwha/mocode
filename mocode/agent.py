@@ -106,6 +106,7 @@ class Agent:
         try:
             return await self._agent_loop()
         except Interrupted as exc:
+            self.cancel_token.reset()
             self.event_bus.emit(EventType.INTERRUPTED, {"reason": exc.reason.name})
             return "[interrupted]"
 
@@ -142,11 +143,16 @@ class Agent:
                 })
 
             if response.tool_calls:
+                _interrupted_tc_id: str | None = None
                 try:
                     for tc in response.tool_calls:
                         self.cancel_token.check()
                         tool_args = json.loads(tc.arguments)
-                        result, denied = await self._run_tool_async(tc.name, tool_args)
+                        try:
+                            result, denied = await self._run_tool_async(tc.name, tool_args)
+                        except Interrupted:
+                            _interrupted_tc_id = tc.id
+                            raise
                         tool_results.append({
                             "role": "tool",
                             "tool_call_id": tc.id,
@@ -155,17 +161,33 @@ class Agent:
                         if denied:
                             raise Interrupted(InterruptReason.PERMISSION_DENIED)
                 finally:
-                    # Save partial state (assistant + any tool results collected)
-                    assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
-                    if response.reasoning_content:
-                        assistant_msg["reasoning_content"] = response.reasoning_content
-                    assistant_msg["tool_calls"] = [
+                    # 为被中断的工具发射合成 TOOL_COMPLETE
+                    if _interrupted_tc_id is not None:
+                        for tc in response.tool_calls:
+                            if tc.id == _interrupted_tc_id:
+                                self._emit_tool_complete(tc.name, "[interrupted]")
+                                break
+
+                    # 修复消息：只保留有 result 的 tool_calls，合成缺失的 result
+                    from .message_utils import repair_interrupted_state
+                    all_tc_dicts = [
                         {"id": t.id, "type": "function", "function": {"name": t.name, "arguments": t.arguments}}
                         for t in (response.tool_calls or [])
                     ]
+                    trimmed_calls, synthetic_results = repair_interrupted_state(
+                        all_tc_dicts, tool_results, _interrupted_tc_id
+                    )
+
+                    assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
+                    if response.reasoning_content:
+                        assistant_msg["reasoning_content"] = response.reasoning_content
+                    if trimmed_calls:
+                        assistant_msg["tool_calls"] = trimmed_calls
                     self.messages.append(assistant_msg)
                     if tool_results:
                         self.messages.extend(tool_results)
+                    if synthetic_results:
+                        self.messages.extend(synthetic_results)
             else:
                 assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
                 if response.reasoning_content:

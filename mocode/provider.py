@@ -130,13 +130,29 @@ class OpenAIProvider:
 
     @staticmethod
     def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Strip empty tool_calls arrays from assistant messages (DeepSeek rejects them)."""
+        """Strip empty/orphaned tool_calls from assistant messages."""
+        # Collect all tool_call_ids that have matching results
+        result_ids = {
+            m["tool_call_id"]
+            for m in messages
+            if m.get("role") == "tool" and m.get("tool_call_id")
+        }
         result = []
         for msg in messages:
             if msg.get("role") == "assistant" and "tool_calls" in msg:
-                if not msg["tool_calls"]:
-                    cleaned = {k: v for k, v in msg.items() if k != "tool_calls"}
-                    result.append(cleaned)
+                tcs = msg["tool_calls"]
+                if not tcs:
+                    result.append({k: v for k, v in msg.items() if k != "tool_calls"})
                     continue
-            result.append(msg)
+                valid = [tc for tc in tcs if tc.get("id") in result_ids]
+                if not valid:
+                    result.append({k: v for k, v in msg.items() if k != "tool_calls"})
+                elif len(valid) < len(tcs):
+                    cleaned = dict(msg)
+                    cleaned["tool_calls"] = valid
+                    result.append(cleaned)
+                else:
+                    result.append(msg)
+            else:
+                result.append(msg)
         return result

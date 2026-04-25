@@ -153,6 +153,87 @@ class TestInterrupt:
         await agent.chat("Hello")
         assert len(interrupted_events) >= 1
 
+    @pytest.mark.asyncio
+    async def test_interrupt_during_tool_message_consistency(self, agent, mock_provider, registry, cancel_token):
+        """Interrupt during 2nd tool: messages must have no orphaned tool_calls."""
+        registry.register(Tool("echo", "Echo", {"x": "string"}, lambda a: "r-" + a["x"]))
+
+        tc1 = ToolCall(id="tc_1", name="echo", arguments=json.dumps({"x": "1"}))
+        tc2 = ToolCall(id="tc_2", name="echo", arguments=json.dumps({"x": "2"}))
+        tc3 = ToolCall(id="tc_3", name="echo", arguments=json.dumps({"x": "3"}))
+        mock_provider.call.return_value = Response(content="", tool_calls=[tc1, tc2, tc3])
+
+        call_count = 0
+        original_run = agent._run_tool_async
+
+        async def controlled_run(name, args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                cancel_token.cancel()
+            return await original_run(name, args)
+
+        agent._run_tool_async = controlled_run
+        result = await agent.chat("Go")
+        assert result == "[interrupted]"
+
+        # Verify: every tool_call in assistant messages must have a matching tool result
+        for msg in agent.messages:
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                tc_ids = {tc["id"] for tc in msg["tool_calls"]}
+                result_ids = {
+                    m["tool_call_id"]
+                    for m in agent.messages
+                    if m.get("role") == "tool"
+                }
+                assert tc_ids.issubset(result_ids), f"Orphaned tool_calls: {tc_ids - result_ids}"
+
+    @pytest.mark.asyncio
+    async def test_interrupt_emits_synthetic_tool_complete(self, agent, mock_provider, registry, event_bus, cancel_token):
+        """Interrupted tool should get a synthetic TOOL_COMPLETE event."""
+        registry.register(Tool("echo", "Echo", {}, lambda a: "ok"))
+
+        tc1 = ToolCall(id="tc_1", name="echo", arguments="{}")
+        tc2 = ToolCall(id="tc_2", name="echo", arguments="{}")
+        mock_provider.call.return_value = Response(content="", tool_calls=[tc1, tc2])
+
+        complete_events = []
+        event_bus.on(EventType.TOOL_COMPLETE, lambda e: complete_events.append(e.data))
+
+        call_count = 0
+        original_run = agent._run_tool_async
+
+        async def controlled_run(name, args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 2:
+                cancel_token.cancel()
+            return await original_run(name, args)
+
+        agent._run_tool_async = controlled_run
+        await agent.chat("Go")
+
+        # Should have: tc_1 complete + tc_2 synthetic complete
+        assert len(complete_events) == 2
+        assert complete_events[1]["result"] == "[interrupted]"
+
+    @pytest.mark.asyncio
+    async def test_interrupt_resets_token(self, agent, mock_provider, cancel_token):
+        """After interrupt, token should be reset (ready for next chat)."""
+        async def slow_call(*args, **kwargs):
+            await asyncio.sleep(1.0)
+            return Response(content="x")
+
+        mock_provider.call.side_effect = slow_call
+
+        async def cancel_soon():
+            await asyncio.sleep(0.05)
+            cancel_token.cancel()
+
+        asyncio.create_task(cancel_soon())
+        await agent.chat("Hello")
+        assert not cancel_token.is_cancelled
+
 
 class TestPermission:
     @pytest.mark.asyncio

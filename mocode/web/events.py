@@ -104,4 +104,11 @@ class SSEEventBridge:
         self._active_tool_id = None
 
     def _on_interrupted(self, event):
+        if self._active_tool_id is not None:
+            self.push("tool_complete", {
+                "id": self._active_tool_id,
+                "name": "",
+                "result": "[interrupted]",
+            })
+            self._active_tool_id = None
         self.push("interrupted", event.data or {})
