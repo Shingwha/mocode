@@ -141,7 +141,7 @@ MoCode.Chat = (function () {
         MoCode.Messages.createError(data.message || 'Unknown error');
         break;
       case 'interrupted':
-        MoCode.Messages.createInterrupted();
+        MoCode.Messages.createInterrupted(data);
         break;
     }
   }

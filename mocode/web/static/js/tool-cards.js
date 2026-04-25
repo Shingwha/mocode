@@ -54,6 +54,7 @@ MoCode.ToolCards = (function () {
 
   var SPINNER_SVG = '<svg class="tool-spinner" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 2a10 10 0 0 1 10 10" /></svg>';
   var CHECK_SVG = '<svg class="tool-check" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+  var STOP_SVG = '<svg class="tool-stop" width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
 
   // --- ToolCard class ---
 
@@ -96,26 +97,35 @@ MoCode.ToolCards = (function () {
   };
 
   ToolCard.prototype.setResult = function (result) {
-    var truncated = result.length > 300 ? result.slice(0, 300) : result;
-    var isLong = result.length > 300;
+    var isInterrupted = (result === '[interrupted]');
+    var displayText = isInterrupted ? 'Cancelled' : result;
+    var truncated = displayText.length > 300 ? displayText.slice(0, 300) : displayText;
+    var isLong = displayText.length > 300;
     var resultEl = this.el.querySelector('.tool-result');
     if (resultEl) {
       resultEl.textContent = truncated;
-      if (isLong) {
+      if (!isInterrupted && isLong) {
         var btn = document.createElement('button');
         btn.className = 'expand-output-btn';
-        btn.textContent = 'Show full output (' + result.length + ' chars)';
+        btn.textContent = 'Show full output (' + displayText.length + ' chars)';
         var fullPre = document.createElement('pre');
         fullPre.className = 'full-output';
-        fullPre.textContent = result;
+        fullPre.textContent = displayText;
         resultEl.appendChild(btn);
         resultEl.appendChild(fullPre);
       }
     }
-    this.el.dataset.state = 'complete';
-    this.state = 'complete';
-    var statusEl = this.el.querySelector('.tool-status');
-    if (statusEl) statusEl.innerHTML = CHECK_SVG;
+    if (isInterrupted) {
+      this.el.dataset.state = 'interrupted';
+      this.state = 'interrupted';
+      var statusEl = this.el.querySelector('.tool-status');
+      if (statusEl) statusEl.innerHTML = STOP_SVG;
+    } else {
+      this.el.dataset.state = 'complete';
+      this.state = 'complete';
+      var statusEl = this.el.querySelector('.tool-status');
+      if (statusEl) statusEl.innerHTML = CHECK_SVG;
+    }
     this.el.classList.remove('expanded');
     MoCode.Messages.scrollToBottom();
   };
@@ -165,27 +175,37 @@ MoCode.ToolCards = (function () {
 
   function createFromHistory(name, result, args) {
     var card = new ToolCard('hist-' + name + '-' + Date.now(), name, containerEl);
-    card.el.dataset.state = 'complete';
-    card.state = 'complete';
-    var statusEl = card.el.querySelector('.tool-status');
-    if (statusEl) statusEl.innerHTML = CHECK_SVG;
+    var isInterrupted = (result === '[interrupted]');
+    var displayText = isInterrupted ? 'Cancelled' : result;
+
+    if (isInterrupted) {
+      card.el.dataset.state = 'interrupted';
+      card.state = 'interrupted';
+      var statusEl = card.el.querySelector('.tool-status');
+      if (statusEl) statusEl.innerHTML = STOP_SVG;
+    } else {
+      card.el.dataset.state = 'complete';
+      card.state = 'complete';
+      var statusEl = card.el.querySelector('.tool-status');
+      if (statusEl) statusEl.innerHTML = CHECK_SVG;
+    }
 
     if (args) {
       card.setArgs(args);
     }
 
-    var truncated = result.length > 300 ? result.slice(0, 300) : result;
-    var isLong = result.length > 300;
+    var truncated = displayText.length > 300 ? displayText.slice(0, 300) : displayText;
+    var isLong = displayText.length > 300;
     var resultEl = card.el.querySelector('.tool-result');
     if (resultEl) {
       resultEl.textContent = truncated;
-      if (isLong) {
+      if (!isInterrupted && isLong) {
         var btn = document.createElement('button');
         btn.className = 'expand-output-btn';
-        btn.textContent = 'Show full output (' + result.length + ' chars)';
+        btn.textContent = 'Show full output (' + displayText.length + ' chars)';
         var fullPre = document.createElement('pre');
         fullPre.className = 'full-output';
-        fullPre.textContent = result;
+        fullPre.textContent = displayText;
         resultEl.appendChild(btn);
         resultEl.appendChild(fullPre);
       }

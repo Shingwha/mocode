@@ -113,11 +113,23 @@ MoCode.Messages = (function () {
     scrollToBottom();
   }
 
-  function createInterrupted() {
+  function createInterrupted(data) {
     removeTypingIndicator();
+    var reason = (data && data.reason) || 'USER';
+    var label = reason === 'PERMISSION_DENIED'
+      ? 'Permission denied'
+      : 'Cancelled';
     var el = document.createElement('div');
     el.className = 'msg msg-interrupted';
-    el.innerHTML = '<div class="msg-bubble">Interrupted</div>';
+    el.innerHTML =
+      '<div class="interrupt-divider">' +
+        '<div class="interrupt-line"></div>' +
+        '<span class="interrupt-label">' +
+          '<svg class="interrupt-icon" width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>' +
+          escapeHtml(label) +
+        '</span>' +
+        '<div class="interrupt-line"></div>' +
+      '</div>';
     containerEl.appendChild(el);
     scrollToBottom();
   }

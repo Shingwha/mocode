@@ -68,10 +68,6 @@
   --c-error-bg: #fce8e8;
   --c-error-border: #f0b8b8;
   --c-error-text: #7a1c1c;
-  --c-interrupted-bg: #fef5e0;
-  --c-interrupted-border: #f0dba0;
-  --c-interrupted-text: #5e440e;
-
   /* Code */
   --c-code-bg: #161a24;
   --c-code-text: #dde0ea;
@@ -148,10 +144,6 @@
   --c-error-bg: #221616;
   --c-error-border: #3a2020;
   --c-error-text: #f0a0a0;
-  --c-interrupted-bg: #221e14;
-  --c-interrupted-border: #3a3220;
-  --c-interrupted-text: #e0c878;
-
   --c-code-bg: #111216;
   --c-code-text: #c8cad4;
   --c-code-inline-bg: rgba(110, 168, 254, 0.10);
@@ -571,8 +563,7 @@ body {
 }
 
 .msg-assistant,
-.msg-error,
-.msg-interrupted {
+.msg-error {
   display: flex;
   justify-content: flex-start;
   animation: msgFadeIn 0.3s ease-out;
@@ -632,12 +623,44 @@ body {
   font-size: 13px;
 }
 
-.msg-interrupted .msg-bubble {
-  background: var(--c-interrupted-bg);
-  border: 1px solid var(--c-interrupted-border);
-  border-radius: var(--radius);
-  color: var(--c-interrupted-text);
-  font-size: 13px;
+/* ========== Interrupt Divider ========== */
+
+.msg-interrupted {
+  display: flex;
+  justify-content: center;
+  padding: 6px var(--msg-padding-x);
+  animation: msgFadeIn 0.3s ease-out;
+}
+
+.interrupt-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: var(--max-w);
+  width: 100%;
+  padding: 0 12px;
+}
+
+.interrupt-line {
+  flex: 1;
+  height: 1px;
+  background: var(--c-border);
+}
+
+.interrupt-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--c-text-faint);
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+.interrupt-icon {
+  color: var(--c-text-faint);
+  flex-shrink: 0;
 }
 
 /* ========== Markdown Content ========== */
@@ -834,6 +857,11 @@ body {
   background: var(--tool-complete-bg);
 }
 
+.tool-card[data-state="interrupted"] {
+  border-left-color: var(--c-text-faint);
+  background: var(--c-subtle-bg);
+}
+
 /* Header — single line */
 .tool-header {
   display: flex;
@@ -893,6 +921,10 @@ body {
 
 .tool-check {
   color: var(--tool-complete);
+}
+
+.tool-stop {
+  color: var(--c-text-faint);
 }
 
 .tool-toggle {
