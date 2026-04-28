@@ -13,6 +13,7 @@ from .permission import PermissionConfig
 @dataclass
 class CompactConfig:
     """上下文压缩配置"""
+
     enabled: bool = True
     threshold: float = 0.80
     keep_recent_turns: int = 0
@@ -22,6 +23,7 @@ class CompactConfig:
 @dataclass
 class DreamConfig:
     """Dream 系统配置"""
+
     enabled: bool = True
     interval_seconds: int = 7200
     max_tool_calls: int = 10
@@ -31,6 +33,7 @@ class DreamConfig:
 @dataclass
 class ModeConfig:
     """模式配置（内存态，不持久化）"""
+
     name: str
     auto_approve: bool = False
     dangerous_patterns: list[str] = field(default_factory=list)
@@ -39,6 +42,7 @@ class ModeConfig:
 @dataclass
 class ProviderConfig:
     """供应商配置"""
+
     name: str
     base_url: str
     api_key: str
@@ -49,6 +53,7 @@ class ProviderConfig:
 @dataclass
 class CurrentConfig:
     """当前使用配置"""
+
     provider: str = "zhipu"
     model: str = "glm-5"
 
@@ -62,7 +67,7 @@ class Config:
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     max_tokens: int = 8192
     tool_result_limit: int = 25000
-    tool_timeout: int = 120
+    tool_timeout: int = 240
     compact: CompactConfig = field(default_factory=CompactConfig)
     dream: DreamConfig = field(default_factory=DreamConfig)
 
@@ -101,9 +106,21 @@ class Config:
                 name="yolo",
                 auto_approve=True,
                 dangerous_patterns=[
-                    "rm ", "rm\t", "rmdir ", "rd ",
-                    "dd ", "mv ", "del ", "copy ", "xcopy ",
-                    "chmod ", "chown ", "sudo ", "format ", "mkfs ", "fdisk ",
+                    "rm ",
+                    "rm\t",
+                    "rmdir ",
+                    "rd ",
+                    "dd ",
+                    "mv ",
+                    "del ",
+                    "copy ",
+                    "xcopy ",
+                    "chmod ",
+                    "chown ",
+                    "sudo ",
+                    "format ",
+                    "mkfs ",
+                    "fdisk ",
                 ],
             ),
         }
@@ -271,7 +288,9 @@ class Config:
             raise ValueError(f"Provider '{provider_key}' does not exist")
         pconfig = self.providers[provider_key]
         if model not in pconfig.models:
-            raise ValueError(f"Model '{model}' does not exist in provider '{provider_key}'")
+            raise ValueError(
+                f"Model '{model}' does not exist in provider '{provider_key}'"
+            )
         new_model = None
         if self.current.provider == provider_key and self.current.model == model:
             remaining = [m for m in pconfig.models if m != model]

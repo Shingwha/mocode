@@ -68,21 +68,35 @@ class Agent:
         Agent._call_seq += 1
         return f"call_{Agent._call_seq}"
 
-    def _emit_tool_start(self, tool_name: str, tool_args: dict, call_id: str | None = None) -> None:
-        self.event_bus.emit(EventType.TOOL_START, {
-            "name": tool_name, "args": tool_args,
-            "call_id": call_id,
-            "conversation_id": self.conversation_id,
-        })
+    def _emit_tool_start(
+        self, tool_name: str, tool_args: dict, call_id: str | None = None
+    ) -> None:
+        self.event_bus.emit(
+            EventType.TOOL_START,
+            {
+                "name": tool_name,
+                "args": tool_args,
+                "call_id": call_id,
+                "conversation_id": self.conversation_id,
+            },
+        )
 
-    def _emit_tool_complete(self, tool_name: str, result: str, call_id: str | None = None) -> None:
-        self.event_bus.emit(EventType.TOOL_COMPLETE, {
-            "name": tool_name, "result": result,
-            "call_id": call_id,
-            "conversation_id": self.conversation_id,
-        })
+    def _emit_tool_complete(
+        self, tool_name: str, result: str, call_id: str | None = None
+    ) -> None:
+        self.event_bus.emit(
+            EventType.TOOL_COMPLETE,
+            {
+                "name": tool_name,
+                "result": result,
+                "call_id": call_id,
+                "conversation_id": self.conversation_id,
+            },
+        )
 
-    def _deny_tool(self, tool_name: str, tool_args: dict, reason: str, call_id: str | None = None) -> tuple[str, bool]:
+    def _deny_tool(
+        self, tool_name: str, tool_args: dict, reason: str, call_id: str | None = None
+    ) -> tuple[str, bool]:
         self._emit_tool_start(tool_name, tool_args, call_id)
         msg = f"User {reason} this operation"
         self._emit_tool_complete(tool_name, msg, call_id)
@@ -106,10 +120,14 @@ class Agent:
             content = user_input
 
         self.messages.append({"role": "user", "content": content})
-        self.event_bus.emit(EventType.MESSAGE_ADDED, {
-            "role": "user", "content": user_input,
-            "conversation_id": self.conversation_id,
-        })
+        self.event_bus.emit(
+            EventType.MESSAGE_ADDED,
+            {
+                "role": "user",
+                "content": user_input,
+                "conversation_id": self.conversation_id,
+            },
+        )
 
         try:
             return await self._agent_loop()
@@ -124,8 +142,10 @@ class Agent:
             self.cancel_token.check()
             response = await self.cancel_token.cancellable(
                 self.provider.call(
-                    self.messages, self.system_prompt,
-                    self._tools.all_schemas(), self.config.max_tokens,
+                    self.messages,
+                    self.system_prompt,
+                    self._tools.all_schemas(),
+                    self.config.max_tokens,
                 )
             )
 
@@ -138,24 +158,31 @@ class Agent:
             tool_results = []
 
             if response.reasoning_content:
-                self.event_bus.emit(EventType.REASONING, {
-                    "content": response.reasoning_content,
-                    "conversation_id": self.conversation_id,
-                })
+                self.event_bus.emit(
+                    EventType.REASONING,
+                    {
+                        "content": response.reasoning_content,
+                        "conversation_id": self.conversation_id,
+                    },
+                )
 
             if response.content:
                 final_response = response.content
-                self.event_bus.emit(EventType.TEXT_COMPLETE, {
-                    "content": response.content,
-                    "conversation_id": self.conversation_id,
-                })
+                self.event_bus.emit(
+                    EventType.TEXT_COMPLETE,
+                    {
+                        "content": response.content,
+                        "conversation_id": self.conversation_id,
+                    },
+                )
 
             if response.tool_calls:
                 _interrupted_tc_id: str | None = None
                 try:
-                    tool_results, _interrupted_tc_id = await self._run_tool_calls_parallel(
-                        response.tool_calls
-                    )
+                    (
+                        tool_results,
+                        _interrupted_tc_id,
+                    ) = await self._run_tool_calls_parallel(response.tool_calls)
                     if _interrupted_tc_id:
                         raise Interrupted(InterruptReason.PERMISSION_DENIED)
                 finally:
@@ -168,15 +195,23 @@ class Agent:
 
                     # 修复消息：只保留有 result 的 tool_calls，合成缺失的 result
                     from .message_utils import repair_interrupted_state
+
                     all_tc_dicts = [
-                        {"id": t.id, "type": "function", "function": {"name": t.name, "arguments": t.arguments}}
+                        {
+                            "id": t.id,
+                            "type": "function",
+                            "function": {"name": t.name, "arguments": t.arguments},
+                        }
                         for t in (response.tool_calls or [])
                     ]
                     trimmed_calls, synthetic_results = repair_interrupted_state(
                         all_tc_dicts, tool_results, _interrupted_tc_id
                     )
 
-                    assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
+                    assistant_msg: dict = {
+                        "role": "assistant",
+                        "content": response.content or "",
+                    }
                     if response.reasoning_content:
                         assistant_msg["reasoning_content"] = response.reasoning_content
                     if trimmed_calls:
@@ -187,7 +222,10 @@ class Agent:
                     if synthetic_results:
                         self.messages.extend(synthetic_results)
             else:
-                assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
+                assistant_msg: dict = {
+                    "role": "assistant",
+                    "content": response.content or "",
+                }
                 if response.reasoning_content:
                     assistant_msg["reasoning_content"] = response.reasoning_content
                 self.messages.append(assistant_msg)
@@ -215,26 +253,30 @@ class Agent:
                 try:
                     data = p.read_bytes()
                     b64 = base64.b64encode(data).decode()
-                    parts.append({
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/{ext[1:]};base64,{b64}"},
-                    })
+                    parts.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/{ext[1:]};base64,{b64}"},
+                        }
+                    )
                     has_images = True
                     continue
                 except Exception:
                     pass
             # Non-image files: do NOT embed content, just inform
-            parts.append({
-                "type": "text",
-                "text": (
-                    f"[File received: {p.name} at {path_str}]\n\n"
-                    f"IMPORTANT: The user has sent a file. "
-                    f"DO NOT read, analyze, or process this file automatically. "
-                    f"WAIT for the user's instructions. "
-                    f"If the user's message does not specify what they want you to do with this file, "
-                    f"ask them directly what task they would like you to perform."
-                )
-            })
+            parts.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"[File received: {p.name} at {path_str}]\n\n"
+                        f"IMPORTANT: The user has sent a file. "
+                        f"DO NOT read, analyze, or process this file automatically. "
+                        f"WAIT for the user's instructions. "
+                        f"If the user's message does not specify what they want you to do with this file, "
+                        f"ask them directly what task they would like you to perform."
+                    ),
+                }
+            )
 
         if not has_images and not parts:
             return text
@@ -249,10 +291,13 @@ class Agent:
     def _apply_result_limit(self, result: str) -> str:
         if self.config.tool_result_limit > 0:
             from .tools.utils import truncate_result
+
             return truncate_result(result, self.config.tool_result_limit)
         return result
 
-    async def _run_tool_async(self, tool_name: str, tool_args: dict) -> tuple[str, bool]:
+    async def _run_tool_async(
+        self, tool_name: str, tool_args: dict
+    ) -> tuple[str, bool]:
         """工具执行：权限检查 → 执行 → 截断"""
         call_id = self._next_call_id()
 
@@ -283,7 +328,9 @@ class Agent:
                 )
             result = await asyncio.wait_for(coro, timeout=timeout)
         except asyncio.TimeoutError:
-            self._emit_tool_complete(tool_name, f"Tool timed out after {timeout}s", call_id)
+            self._emit_tool_complete(
+                tool_name, f"Tool timed out after {timeout}s", call_id
+            )
             return (f"error: tool '{tool_name}' timed out after {timeout}s", False)
 
         # 3. Truncate and emit
@@ -304,8 +351,10 @@ class Agent:
                 result, denied = await self._run_tool_async(tc.name, tool_args)
             except Interrupted:
                 return ([], tc.id)
-            return ([{"role": "tool", "tool_call_id": tc.id, "content": result}],
-                    tc.id if denied else None)
+            return (
+                [{"role": "tool", "tool_call_id": tc.id, "content": result}],
+                tc.id if denied else None,
+            )
 
         # Parse all arguments first (cheap, sequential)
         self.cancel_token.check()
@@ -317,8 +366,10 @@ class Agent:
         async def _run_one(tc, args):
             try:
                 result, denied = await self._run_tool_async(tc.name, args)
-                return ({"role": "tool", "tool_call_id": tc.id, "content": result},
-                        denied)
+                return (
+                    {"role": "tool", "tool_call_id": tc.id, "content": result},
+                    denied,
+                )
             except Interrupted:
                 return _INTERRUPTED
 
@@ -335,11 +386,13 @@ class Agent:
             if raw is _INTERRUPTED:
                 interrupted_tc_id = tc.id
             elif isinstance(raw, BaseException):
-                tool_results.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": f"error: {raw}",
-                })
+                tool_results.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": f"error: {raw}",
+                    }
+                )
             else:
                 result_dict, denied = raw
                 tool_results.append(result_dict)
@@ -365,6 +418,7 @@ class Agent:
     def spawn(self, system_prompt: str, **kwargs) -> "SubAgent":
         """从当前 Agent 的基础设施创建子 Agent"""
         from .subagent import SubAgent, SubAgentConfig
+
         config = SubAgentConfig(
             system_prompt=system_prompt,
             tool_names=kwargs.get("tool_names"),
@@ -372,15 +426,19 @@ class Agent:
             max_tokens=kwargs.get("max_tokens", self.config.max_tokens),
             bypass_permissions=kwargs.get("bypass_permissions", False),
             tool_timeout=kwargs.get("tool_timeout", self.config.tool_timeout),
-            tool_result_limit=kwargs.get("tool_result_limit", self.config.tool_result_limit),
+            tool_result_limit=kwargs.get(
+                "tool_result_limit", self.config.tool_result_limit
+            ),
         )
         return SubAgent(
-            provider=self.provider,
+            provider=lambda: self.provider,  # 动态获取最新 provider
             tools=self._tools,
             config=config,
             event_bus=kwargs.get("event_bus", self.event_bus),
             cancel_token=kwargs.get("cancel_token", self.cancel_token),
-            permission_checker=kwargs.get("permission_checker", self.permission_checker),
+            permission_checker=kwargs.get(
+                "permission_checker", self.permission_checker
+            ),
         )
 
     @property

@@ -8,6 +8,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -34,7 +35,7 @@ class SubAgentConfig:
     max_tool_calls: int = 50
     max_tokens: int = 4096
     bypass_permissions: bool = True  # 默认跳过权限检查
-    tool_timeout: int | None = None  # None = 无超时
+    tool_timeout: int | None = 240  # 默认 240s
     tool_result_limit: int = 0  # 0 = 不截断
 
 
@@ -53,18 +54,25 @@ class SubAgent:
 
     核心循环复用主 Agent 的消息序列化格式和 tool call 解析逻辑。
     所有可选功能（event_bus / cancel_token / permission_checker）为 None 时跳过。
+
+    v0.2 改进：支持 provider_getter 回调，动态获取最新 provider，
+    确保模型切换后 SubAgent 使用新模型。
     """
 
     def __init__(
         self,
-        provider: "Provider",
+        provider: "Provider | Callable[[], Provider]",
         tools: ToolRegistry,
         config: SubAgentConfig,
         event_bus: "EventBus | None" = None,
         cancel_token: "CancellationToken | None" = None,
         permission_checker: "PermissionChecker | None" = None,
     ):
-        self._provider = provider
+        # 支持直接传入 provider 或 provider_getter 回调
+        if callable(provider) and not hasattr(provider, "call"):
+            self._provider_getter = provider
+        else:
+            self._provider_getter = lambda: provider
         self._tools = tools
         self._config = config
         self._event_bus = event_bus
@@ -73,6 +81,11 @@ class SubAgent:
 
         # 预计算 tool schemas
         self._tool_schemas = self._compute_tool_schemas()
+
+    @property
+    def _provider(self) -> "Provider":
+        """动态获取当前 provider"""
+        return self._provider_getter()
 
     def _compute_tool_schemas(self) -> list[dict]:
         """按 tool_names 过滤并预计算 tool schemas"""
@@ -102,6 +115,7 @@ class SubAgent:
     def _apply_result_limit(self, result: str) -> str:
         if self._config.tool_result_limit > 0:
             from .tools.utils import truncate_result
+
             return truncate_result(result, self._config.tool_result_limit)
         return result
 
@@ -114,16 +128,30 @@ class SubAgent:
             result = await self._permission_checker.check(name, args)
             if result.outcome == CheckOutcome.DENY:
                 msg = f"Permission denied: {result.reason}"
-                self._emit(EventType.TOOL_START, {"name": name, "args": args, "call_id": call_id})
-                self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": msg, "call_id": call_id})
+                self._emit(
+                    EventType.TOOL_START,
+                    {"name": name, "args": args, "call_id": call_id},
+                )
+                self._emit(
+                    EventType.TOOL_COMPLETE,
+                    {"name": name, "result": msg, "call_id": call_id},
+                )
                 raise Interrupted()
             elif result.outcome == CheckOutcome.USER_INPUT:
-                self._emit(EventType.TOOL_START, {"name": name, "args": args, "call_id": call_id})
-                self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": result.user_input, "call_id": call_id})
+                self._emit(
+                    EventType.TOOL_START,
+                    {"name": name, "args": args, "call_id": call_id},
+                )
+                self._emit(
+                    EventType.TOOL_COMPLETE,
+                    {"name": name, "result": result.user_input, "call_id": call_id},
+                )
                 return result.user_input or ""
 
         # 2. Execute tool
-        self._emit(EventType.TOOL_START, {"name": name, "args": args, "call_id": call_id})
+        self._emit(
+            EventType.TOOL_START, {"name": name, "args": args, "call_id": call_id}
+        )
 
         tool = self._tools.get(name)
         if tool is not None and tool.is_async:
@@ -141,18 +169,22 @@ class SubAgent:
                 result = await coro
         except asyncio.TimeoutError:
             msg = f"error: tool '{name}' timed out after {timeout}s"
-            self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": msg, "call_id": call_id})
+            self._emit(
+                EventType.TOOL_COMPLETE,
+                {"name": name, "result": msg, "call_id": call_id},
+            )
             return msg
 
         # 3. Truncate
         result = self._apply_result_limit(result)
 
-        self._emit(EventType.TOOL_COMPLETE, {"name": name, "result": result, "call_id": call_id})
+        self._emit(
+            EventType.TOOL_COMPLETE,
+            {"name": name, "result": result, "call_id": call_id},
+        )
         return result
 
-    async def _execute_tools_parallel(
-        self, tool_calls: list
-    ) -> tuple[list[dict], int]:
+    async def _execute_tools_parallel(self, tool_calls: list) -> tuple[list[dict], int]:
         """并行执行多个 tool_calls，返回 (results, tool_calls_made_count)"""
         # Fast path: single tool
         if len(tool_calls) == 1:
@@ -194,11 +226,13 @@ class SubAgent:
             if isinstance(raw, BaseException):
                 if isinstance(raw, Interrupted):
                     raise raw
-                tool_results.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": f"error: {raw}",
-                })
+                tool_results.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": f"error: {raw}",
+                    }
+                )
             else:
                 tool_results.append(raw)
             tool_calls_made += 1
@@ -248,7 +282,10 @@ class SubAgent:
                 final_content = response.content
 
             # Build assistant message
-            assistant_msg: dict = {"role": "assistant", "content": response.content or ""}
+            assistant_msg: dict = {
+                "role": "assistant",
+                "content": response.content or "",
+            }
             if response.reasoning_content:
                 assistant_msg["reasoning_content"] = response.reasoning_content
             if response.tool_calls:
@@ -267,7 +304,9 @@ class SubAgent:
                 break
 
             # Execute tool calls (parallel)
-            tool_results, count = await self._execute_tools_parallel(response.tool_calls)
+            tool_results, count = await self._execute_tools_parallel(
+                response.tool_calls
+            )
             tool_calls_made += count
             messages.extend(tool_results)
 

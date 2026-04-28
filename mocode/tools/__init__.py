@@ -22,8 +22,16 @@ def register_basic_tools(registry, config) -> None:
     register_fetch_tools(registry)
 
 
-def register_system_tools(registry, config, *, provider=None, compact=None, dream=None,
-                          event_bus=None, cancel_token=None) -> None:
+def register_system_tools(
+    registry,
+    config,
+    *,
+    provider_getter=None,
+    compact=None,
+    dream=None,
+    event_bus=None,
+    cancel_token=None,
+) -> None:
     """注册系统级工具（compact, dream, sub_agent）"""
     from .compact import register_compact_tools
     from .dream import register_dream_tools
@@ -31,5 +39,5 @@ def register_system_tools(registry, config, *, provider=None, compact=None, drea
 
     register_compact_tools(registry, compact)
     register_dream_tools(registry, dream)
-    if provider is not None:
-        register_subagent_tools(registry, config, provider)
+    if provider_getter is not None:
+        register_subagent_tools(registry, config, provider_getter)

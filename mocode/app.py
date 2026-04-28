@@ -29,6 +29,7 @@ from .skills.manager import SkillManager
 @dataclass
 class SessionState:
     """Tracks current session state"""
+
     current_session_id: str | None = None
     has_unsaved_changes: bool = False
 
@@ -60,6 +61,7 @@ class App:
 
     def interrupt(self) -> None:
         from .interrupt import InterruptReason
+
         self.cancel_token.cancel(InterruptReason.USER)
 
     # -- Config mutations --
@@ -74,13 +76,23 @@ class App:
         self._config_store.save(self.config.to_dict())
         self._switch_provider()
 
-    def add_provider(self, key: str, name: str, base_url: str, api_key: str = "", models: list[str] | None = None, set_current: bool = False) -> None:
+    def add_provider(
+        self,
+        key: str,
+        name: str,
+        base_url: str,
+        api_key: str = "",
+        models: list[str] | None = None,
+        set_current: bool = False,
+    ) -> None:
         self.config.add_provider(key, name, base_url, api_key, models)
         self._config_store.save(self.config.to_dict())
         if set_current:
             self.set_provider(key)
 
-    def add_model(self, model: str, provider: str | None = None, set_current: bool = False) -> None:
+    def add_model(
+        self, model: str, provider: str | None = None, set_current: bool = False
+    ) -> None:
         self.config.add_model(model, provider)
         self._config_store.save(self.config.to_dict())
         if set_current:
@@ -101,7 +113,14 @@ class App:
         if new_model:
             self._switch_provider()
 
-    def update_provider(self, key: str, name: str | None = None, base_url: str | None = None, api_key: str | None = None, models: list[str] | None = None) -> None:
+    def update_provider(
+        self,
+        key: str,
+        name: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        models: list[str] | None = None,
+    ) -> None:
         was_current = self.config.update_provider(key, name, base_url, api_key, models)
         self._config_store.save(self.config.to_dict())
         if was_current:
@@ -157,6 +176,7 @@ class App:
             self._session_state.current_session_id = session_id
             self._session_state.has_unsaved_changes = False
             from .message_utils import sanitize_messages
+
             self.agent.messages = sanitize_messages(session.messages.copy())
             if self._compact:
                 self._compact.reset()
@@ -196,7 +216,9 @@ class App:
 
     # -- Prompt --
 
-    def rebuild_system_prompt(self, context: dict[str, Any] | None = None, clear_history: bool = False) -> None:
+    def rebuild_system_prompt(
+        self, context: dict[str, Any] | None = None, clear_history: bool = False
+    ) -> None:
         ctx = context or {}
         system_prompt = self._prompt_builder.context(
             tools=self.tools,
@@ -210,7 +232,9 @@ class App:
 
     # -- Message injection --
 
-    async def inject_message(self, message: str, conversation_id: str | None = None) -> str:
+    async def inject_message(
+        self, message: str, conversation_id: str | None = None
+    ) -> str:
         if not self._message_queue:
             return await self.chat(message)
         return await self._message_queue.inject(message, conversation_id)
@@ -227,7 +251,8 @@ class App:
 
         old_count = len(self.agent.messages)
         self.agent.messages = await self._compact.compact(
-            self.agent.messages, self.config.model,
+            self.agent.messages,
+            self.config.model,
         )
         self._session_state.current_session_id = None
         self._session_state.has_unsaved_changes = True
@@ -348,7 +373,9 @@ class AppBuilder:
 
         # Store
         store = self._config_store or (
-            FileConfigStore() if self._persistence else InMemoryConfigStore(config.to_dict())
+            FileConfigStore()
+            if self._persistence
+            else InMemoryConfigStore(config.to_dict())
         )
 
         # Core components
@@ -406,18 +433,29 @@ class AppBuilder:
         dream = None
         if config.dream.enabled:
             from .dream import DreamManager
+
             dream = DreamManager(
                 config=config.dream,
                 provider=provider,
                 tools=tools,
                 event_bus=event_bus,
             )
-        register_system_tools(tools, config, provider=provider, compact=compact, dream=dream,
-                              event_bus=event_bus, cancel_token=cancel_token)
+        register_system_tools(
+            tools,
+            config,
+            provider_getter=lambda: agent.provider,
+            compact=compact,
+            dream=dream,
+            event_bus=event_bus,
+            cancel_token=cancel_token,
+        )
 
         # Sessions
         from .store import FileSessionStore, InMemorySessionStore
-        session_store = FileSessionStore() if self._persistence else InMemorySessionStore()
+
+        session_store = (
+            FileSessionStore() if self._persistence else InMemorySessionStore()
+        )
         sessions = SessionManager(workdir=workdir, store=session_store)
 
         # Wire events
@@ -450,7 +488,7 @@ class AppBuilder:
         app._message_queue = MessageQueue(
             chat_fn=lambda msg, conv_id=None: agent.chat(msg),
             event_bus=event_bus,
-            mark_unsaved_fn=lambda: setattr(session_state, 'has_unsaved_changes', True),
+            mark_unsaved_fn=lambda: setattr(session_state, "has_unsaved_changes", True),
         )
 
         return app
