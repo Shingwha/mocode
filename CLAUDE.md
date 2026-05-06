@@ -52,12 +52,15 @@ mocode/
   paths.py          — Centralized path constants (MOCODE_HOME, CONFIG_PATH, etc.)
   permission.py     — PermissionChecker + PermissionHandler + mode system
   message_queue.py  — MessageQueue for async message injection
+  message_utils.py  — Message manipulation utilities
+  main.py           — CLI entry point (gateway, web, cli subcommands)
   tools/
     __init__.py     — register_basic_tools() + register_system_tools()
     file.py         — read, write, append, edit
     bash.py         — bash (persistent Git Bash session)
     search.py       — glob, grep
     fetch.py        — fetch (HTTP with httpx)
+    image.py        — image generation/editing tool
     compact.py      — compact tool
     dream.py        — dream tool
     subagent.py     — sub_agent tool
@@ -67,10 +70,24 @@ mocode/
     manager.py      — DreamManager (orchestrates cycle)
     cursor.py       — DreamCursor (processed summary tracking)
     snapshot.py     — SnapshotStore (memory file backups)
+    scheduler.py    — Dream scheduler (cron-based)
     prompts.py      — DREAM_SYSTEM_PROMPT + build_dream_prompt()
   skills/
     manager.py      — SkillManager (SKILL.md discovery + `skill` tool)
     schema.py       — Skill + SkillMetadata dataclasses
+  gateway/          — Gateway mode (WeChat, Feishu, etc.)
+    app.py          — GatewayApp (main gateway runner)
+    base.py         — Base channel abstraction
+    router.py       — Gateway message routing
+    manager.py      — Gateway manager
+    weixin/         — WeChat channel implementation
+    feishu/         — Feishu channel implementation
+    cron/           — Cron/scheduled task system
+  web/              — Web backend (FastAPI)
+    app.py          — FastAPI app factory
+    deps.py         — Dependency injection
+    routers/        — API routers (chat, sessions, config)
+    schemas.py      — Pydantic request/response models
   .mocode/
     skills/         — Project-level skills (highest priority)
 ```
@@ -138,9 +155,15 @@ uv run ruff check --fix .
 uv run ruff format .
 ```
 
-### Running the CLI (not yet ported)
+### Running the CLI
 
-The `mocode` console script entry point is defined in `pyproject.toml` as `mocode = "mocode.main:main"`. The `main.py` file has not yet been ported to v0.2 — this is a known gap.
+The `mocode` console script entry point is defined in `pyproject.toml` as `mocode = "mocode.main:main"`. Three subcommands:
+
+```bash
+mocode gateway [--type <type>]   # Launch gateway (WeChat, Feishu, etc.)
+mocode web [--host HOST] [--port PORT]  # Launch web backend (FastAPI)
+mocode                          # Launch CLI mode (placeholder)
+```
 
 ## Configuration
 
@@ -218,16 +241,15 @@ Tool arguments are inspected to extract target (e.g., `bash` command, file `path
 
 - Uses `pytest` with `pytest-asyncio` (Mode.STRICT)
 - Test fixtures in `tests/conftest.py`: `config`, `event_bus`, `cancel_token`, `registry`
-- 215 tests covering agent, app, compact, dream, permission, session, tools, subagent
+- 248 tests covering agent, app, compact, dream, permission, session, tools, subagent
 - Tests use `InMemoryConfigStore` / `InMemorySessionStore` for isolation
 - Mock provider pattern: pass a simple object with `.call()` returning `Response` DTO
 
 ## Not Yet Implemented (v0.2 gap)
 
-- `mocode/main.py` — CLI entry point (being ported)
+- CLI mode (`mocode` with no subcommand) — placeholder
 - REPL/REPL server integration
-- Gateway/http server (was in v0.1)
-- Cron/scheduled tasks wiring to Dream
+- Cron/scheduled tasks wiring to Dream (scheduler exists in `gateway/cron/`)
 - Message queue full implementation
 
 ## Code Style
