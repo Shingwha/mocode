@@ -31,6 +31,16 @@ class DreamConfig:
 
 
 @dataclass
+class ImageConfig:
+    """图片生成工具配置"""
+
+    enabled: bool = False
+    base_url: str = "https://api.openai.com"
+    api_key: str = ""
+    model: str = "dall-e-3"
+
+
+@dataclass
 class ModeConfig:
     """模式配置（内存态，不持久化）"""
 
@@ -70,6 +80,7 @@ class Config:
     tool_timeout: int = 240
     compact: CompactConfig = field(default_factory=CompactConfig)
     dream: DreamConfig = field(default_factory=DreamConfig)
+    image: ImageConfig = field(default_factory=ImageConfig)
 
     # 内存态（不持久化）
     modes: dict[str, ModeConfig] = field(init=False)
@@ -153,6 +164,8 @@ class Config:
             self.compact = CompactConfig(**data["compact"])
         if "dream" in data:
             self.dream = DreamConfig(**data["dream"])
+        if "image" in data:
+            self.image = ImageConfig(**data["image"])
 
     def to_dict(self) -> dict:
         """序列化为字典"""
@@ -167,6 +180,7 @@ class Config:
             "tool_timeout": self.tool_timeout,
             "compact": asdict(self.compact),
             "dream": asdict(self.dream),
+            "image": asdict(self.image),
         }
 
     # ---- Convenience properties ----

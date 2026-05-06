@@ -21,6 +21,11 @@ def register_basic_tools(registry, config) -> None:
     register_bash_tools(registry, config)
     register_fetch_tools(registry)
 
+    # Image tool (opt-in via config)
+    if config.image.enabled:
+        from .image import register_image_tools
+        register_image_tools(registry, config)
+
 
 def register_system_tools(
     registry,
