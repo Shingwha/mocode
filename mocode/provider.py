@@ -4,6 +4,7 @@
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from openai import AsyncOpenAI
@@ -156,3 +157,60 @@ class OpenAIProvider:
             else:
                 result.append(msg)
         return result
+
+    @staticmethod
+    def _image_placeholder(path: str) -> str:
+        name = Path(path).name if path else ""
+        if name and path:
+            return (
+                f"[File received: {name} at {path}]\n\n"
+                f"IMPORTANT: The user has sent an image, but the current model "
+                f"does not support image content. "
+                f"DO NOT attempt to read or process this file automatically. "
+                f"WAIT for the user's instructions. "
+                f"If the user's message does not specify what they want you to do, "
+                f"ask them directly what task they would like you to perform."
+            )
+        return "[image omitted]"
+
+    @staticmethod
+    def strip_image_content(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]] | None:
+        """Replace image_url blocks with text placeholder. Returns None if no images found."""
+        found = False
+        result = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                new_content = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "image_url":
+                        path = (block.get("_meta") or {}).get("path", "")
+                        new_content.append(
+                            {
+                                "type": "text",
+                                "text": OpenAIProvider._image_placeholder(path),
+                            }
+                        )
+                        found = True
+                    else:
+                        new_content.append(block)
+                result.append({**msg, "content": new_content})
+            else:
+                result.append(msg)
+        return result if found else None
+
+    @staticmethod
+    def strip_image_content_inplace(messages: list[dict[str, Any]]) -> None:
+        """Permanently strip image_url blocks in-place."""
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for i, block in enumerate(content):
+                    if isinstance(block, dict) and block.get("type") == "image_url":
+                        path = (block.get("_meta") or {}).get("path", "")
+                        content[i] = {
+                            "type": "text",
+                            "text": OpenAIProvider._image_placeholder(path),
+                        }

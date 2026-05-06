@@ -9,6 +9,7 @@ v0.2 关键改进：
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 import base64
 from typing import TYPE_CHECKING
@@ -17,6 +18,7 @@ from .event import EventType, EventBus
 from .interrupt import CancellationToken, Interrupted, InterruptReason
 from .permission import CheckOutcome, PermissionChecker
 from .provider import Response, Usage
+from openai import BadRequestError
 from .tool import ToolRegistry
 
 if TYPE_CHECKING:
@@ -140,14 +142,35 @@ class Agent:
         final_response = ""
         while True:
             self.cancel_token.check()
-            response = await self.cancel_token.cancellable(
-                self.provider.call(
-                    self.messages,
-                    self.system_prompt,
-                    self._tools.all_schemas(),
-                    self.config.max_tokens,
+
+            try:
+                response = await self.cancel_token.cancellable(
+                    self.provider.call(
+                        self.messages,
+                        self.system_prompt,
+                        self._tools.all_schemas(),
+                        self.config.max_tokens,
+                    )
                 )
-            )
+            except BadRequestError:
+                from .provider import OpenAIProvider
+
+                stripped = OpenAIProvider.strip_image_content(self.messages)
+                if stripped is not None:
+                    logging.getLogger(__name__).warning(
+                        "BadRequestError with image content, retrying without images"
+                    )
+                    response = await self.cancel_token.cancellable(
+                        self.provider.call(
+                            stripped,
+                            self.system_prompt,
+                            self._tools.all_schemas(),
+                            self.config.max_tokens,
+                        )
+                    )
+                    OpenAIProvider.strip_image_content_inplace(self.messages)
+                else:
+                    raise
 
             # Track token usage
             if response.usage:
@@ -257,6 +280,13 @@ class Agent:
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:image/{ext[1:]};base64,{b64}"},
+                            "_meta": {"path": path_str},
+                        }
+                    )
+                    parts.append(
+                        {
+                            "type": "text",
+                            "text": f"[Image: {p.name} at {path_str}]",
                         }
                     )
                     has_images = True
