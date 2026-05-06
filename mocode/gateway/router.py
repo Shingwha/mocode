@@ -9,7 +9,7 @@ v0.2 adaptation:
 import asyncio
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..config import Config
@@ -72,13 +72,8 @@ class UserRouter:
         """Create a new user session with isolated App instance."""
         logger.info("Creating session: %s", session_key)
 
-        config_data = {
-            "current": asdict(self._base_config.current),
-            "providers": {k: asdict(v) for k, v in self._base_config.providers.items()},
-            "permission": {"*": "allow"},  # yolo-style for gateway
-            "tool_result_limit": self._base_config.tool_result_limit,
-            "dream": asdict(self._base_config.dream),
-        }
+        config_data = self._base_config.to_dict()
+        config_data["permission"] = {"*": "allow"}  # yolo-style for gateway
 
         app = (AppBuilder()
             .with_config(config_data)
