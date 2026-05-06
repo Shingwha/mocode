@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 
 from ..config import Config
+from ..paths import IMAGES_DIR
 from ..tool import Tool, ToolError, ToolRegistry
 
 
@@ -21,9 +22,8 @@ def register_image_tools(registry: ToolRegistry, config: Config) -> None:
         output_dir = args.get("output_dir", "")
         image_paths_raw = args.get("image_paths", "")
 
-        # TODO: 未来可改为 paths.MEDIA_DIR 统一存放
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_dir = Path(output_dir) if output_dir else Path.cwd()
+        out_dir = Path(output_dir) if output_dir else IMAGES_DIR
         out_dir.mkdir(parents=True, exist_ok=True)
 
         headers = {"Authorization": f"Bearer {ic.api_key}"}
@@ -120,12 +120,12 @@ def register_image_tools(registry: ToolRegistry, config: Config) -> None:
     registry.register(Tool(
         "image",
         "Generate an image from a text prompt, or edit an existing image. "
-        "Use mode='generate' to create a new image. "
-        "Use mode='edit' to modify existing image(s) with a prompt.",
+        "Use mode='generate' to create a new image from scratch. "
+        "Use mode='edit' when the user uploads a reference image or wants to modify an existing image.",
         {
             "mode": {
                 "type": "string",
-                "description": "'generate' to create a new image, 'edit' to modify existing image(s)",
+                "description": "'generate' to create a new image from scratch, 'edit' when user uploads a reference image or wants to modify an existing image",
                 "enum": ["generate", "edit"],
             },
             "prompt": {
@@ -139,12 +139,12 @@ def register_image_tools(registry: ToolRegistry, config: Config) -> None:
             },
             "output_dir": {
                 "type": "string",
-                "description": "Directory to save the image. Defaults to current working directory.",
+                "description": "Directory to save the image. Defaults to ~/.mocode/media/images/.",
                 "default": "",
             },
             "image_paths": {
                 "type": "string",
-                "description": "Comma-separated paths to image files. Required for edit mode.",
+                "description": "Comma-separated paths to reference image files. REQUIRED when mode='edit', omit for generate.",
                 "default": "",
             },
             "size": {

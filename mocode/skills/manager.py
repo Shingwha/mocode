@@ -19,13 +19,15 @@ class SkillManager:
 
     def __init__(self, skills_dirs: Optional[list[Path]] = None, registry: Optional[ToolRegistry] = None):
         self.skills_dirs = skills_dirs or self.DEFAULT_SKILLS_DIRS.copy()
-        # 添加项目级 skills 目录（优先级最高）
+        # 添加项目级 skills 目录（优先级最高，仅当已存在时不自动创建）
         project_skills = Path.cwd() / PROJECT_SKILLS_DIRNAME / "skills"
-        if project_skills not in self.skills_dirs:
+        if project_skills not in self.skills_dirs and project_skills.exists():
             self.skills_dirs.append(project_skills)
 
-        # 确保技能目录存在
+        # 确保全局技能目录存在（不创建项目级目录）
         for skills_dir in self.skills_dirs:
+            if skills_dir == project_skills:
+                continue
             skills_dir.mkdir(parents=True, exist_ok=True)
 
         self._skills: dict[str, Skill] = {}

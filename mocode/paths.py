@@ -25,6 +25,7 @@ GATEWAY_DIR: Path = MOCODE_HOME / "gateway"
 
 # Media 目录
 MEDIA_DIR: Path = MOCODE_HOME / "media"
+IMAGES_DIR: Path = MEDIA_DIR / "images"
 
 # Memory 目录
 MEMORY_DIR: Path = MOCODE_HOME / "memory"
