@@ -97,6 +97,12 @@ Before first run, create config file `~/.mocode/config.json`:
       }
     }
   },
+  "image": {
+    "enabled": true,
+    "base_url": "https://api.openai.com",
+    "api_key": "your-api-key",
+    "model": "gpt-image-2"
+  },
   "gateway": {
     "channels": {
       "weixin": {
@@ -139,6 +145,17 @@ Gateway config fields (feishu):
 | `allow_from` | Allowed user IDs, `["*"]` = all | `["*"]` |
 | `group_policy` | Group message policy: `open` or `mention` | `mention` |
 | `reply_to_message` | Quote original message in reply | `false` |
+
+Image config fields:
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `enabled` | Enable image generation tool | `false` |
+| `base_url` | OpenAI-compatible image API endpoint | `https://api.openai.com` |
+| `api_key` | API key | required |
+| `model` | Model name | `gpt-image-2` |
+
+Generated images are saved to `~/.mocode/media/images/` by default. Use the `output_dir` parameter to override.
 
 More options see [CLAUDE.md](CLAUDE.md).
 

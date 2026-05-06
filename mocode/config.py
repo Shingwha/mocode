@@ -37,7 +37,7 @@ class ImageConfig:
     enabled: bool = False
     base_url: str = "https://api.openai.com"
     api_key: str = ""
-    model: str = "dall-e-3"
+    model: str = "gpt-image-2"
 
 
 @dataclass
