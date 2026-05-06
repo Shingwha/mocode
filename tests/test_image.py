@@ -25,7 +25,7 @@ def image_config():
             "enabled": True,
             "base_url": "https://api.test.com",
             "api_key": "img-key",
-            "model": "dall-e-3",
+            "model": "gpt-image-2",
         },
     })
 
@@ -36,22 +36,22 @@ class TestImageConfig:
         assert ic.enabled is False
         assert ic.base_url == "https://api.openai.com"
         assert ic.api_key == ""
-        assert ic.model == "dall-e-3"
+        assert ic.model == "gpt-image-2"
 
     def test_from_dict(self, image_config):
         assert image_config.image.enabled is True
         assert image_config.image.base_url == "https://api.test.com"
         assert image_config.image.api_key == "img-key"
-        assert image_config.image.model == "dall-e-3"
+        assert image_config.image.model == "gpt-image-2"
 
     def test_to_dict_roundtrip(self, image_config):
         d = image_config.to_dict()
         assert "image" in d
         assert d["image"]["enabled"] is True
-        assert d["image"]["model"] == "dall-e-3"
+        assert d["image"]["model"] == "gpt-image-2"
         restored = Config.from_dict(d)
         assert restored.image.enabled is True
-        assert restored.image.model == "dall-e-3"
+        assert restored.image.model == "gpt-image-2"
 
 
 class TestImageRegistration:

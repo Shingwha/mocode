@@ -40,7 +40,8 @@ class TestPromptBuilder:
         builder = PromptBuilder()
         builder.add(Section(name="remove_me", priority=10, render=lambda ctx: "X"))
         builder.remove("remove_me")
-        assert builder.build() == ""
+        result = builder.build()
+        assert "X" not in result
 
     def test_context_passing(self):
         builder = PromptBuilder()
@@ -57,7 +58,9 @@ class TestPromptBuilder:
         builder.add(Section(name="empty", priority=10, render=lambda ctx: ""))
         builder.add(Section(name="real", priority=20, render=lambda ctx: "Here"))
         result = builder.build()
-        assert result == "Here"
+        assert "Here" in result
+        assert "<system-prompt>" in result
+        assert "</system-prompt>" in result
 
     def test_get_section(self):
         builder = PromptBuilder()

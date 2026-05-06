@@ -70,7 +70,8 @@ class PromptBuilder:
             key=lambda s: (s.priority, s.name),
         )
         parts = [s.render(self._context) for s in sorted_sections if s.enabled]
-        return "\n\n".join(p for p in parts if p)
+        body = "\n\n".join(p for p in parts if p)
+        return f"<system-prompt>\n\n{body}\n\n</system-prompt>"
 
 
 # === Built-in renderers ===
@@ -112,34 +113,37 @@ def _render_soul(ctx: dict[str, Any]) -> str:
     content = _read_memory_file("SOUL.md")
     if not content:
         return ""
-    return f"## SOUL\n(Edit: {MEMORY_DIR / 'SOUL.md'})\n\n{content}"
+    path = MEMORY_DIR / 'SOUL.md'
+    return f'<soul file="{path}">\n{content}\n</soul>'
 
 
 def _render_user(ctx: dict[str, Any]) -> str:
     content = _read_memory_file("USER.md")
     if not content:
         return ""
-    return f"## USER\n(Edit: {MEMORY_DIR / 'USER.md'})\n\n{content}"
+    path = MEMORY_DIR / 'USER.md'
+    return f'<user file="{path}">\n{content}\n</user>'
 
 
 def _render_memory(ctx: dict[str, Any]) -> str:
     content = _read_memory_file("MEMORY.md")
     if not content:
         return ""
-    return f"## MEMORY\n(Edit: {MEMORY_DIR / 'MEMORY.md'})\n\n{content}"
+    path = MEMORY_DIR / 'MEMORY.md'
+    return f'<memory file="{path}">\n{content}\n</memory>'
 
 
 def _render_environment(ctx: dict[str, Any]) -> str:
     cwd = ctx.get("cwd") or os.getcwd()
-    lines = [
-        "## Environment",
-        f"- Working directory: {cwd}",
-        f"- MoCode home: {MOCODE_HOME}",
-        f"- MoCode config file: {CONFIG_PATH}",
-        f"- Skills directory: {SKILLS_DIR}",
-        f"- Sessions directory: {SESSIONS_DIR}",
-    ]
-    return "\n".join(lines)
+    return (
+        f'<environment'
+        f' cwd="{cwd}"'
+        f' home="{MOCODE_HOME}"'
+        f' config="{CONFIG_PATH}"'
+        f' skills="{SKILLS_DIR}"'
+        f' sessions="{SESSIONS_DIR}"'
+        f'>\n</environment>'
+    )
 
 
 def _render_tools(ctx: dict[str, Any]) -> str:
@@ -150,9 +154,10 @@ def _render_tools(ctx: dict[str, Any]) -> str:
     all_tools = tools.all()
     if not all_tools:
         return ""
-    lines = ["You have access to the following tools:"]
+    lines = ["<tools>"]
     for tool in all_tools:
         lines.append(f"- {tool.name}: {tool.description}")
+    lines.append("</tools>")
     return "\n".join(lines)
 
 
@@ -163,13 +168,10 @@ def _render_skills(ctx: dict[str, Any]) -> str:
     skills = skill_manager.get_all_metadata()
     if not skills:
         return ""
-    lines = [
-        "## Available Skills",
-        "",
-        "Use the `skill` tool to load detailed instructions:",
-    ]
+    lines = ["<skills>"]
     for skill in skills:
-        lines.append(f"- **{skill.name}**: {skill.description}")
+        lines.append(f"- {skill.name}: {skill.description}")
+    lines.append("</skills>")
     return "\n".join(lines)
 
 
