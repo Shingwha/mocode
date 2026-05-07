@@ -18,7 +18,7 @@ from .event import EventBus, EventType
 from .interrupt import CancellationToken
 from .permission import DefaultPermissionHandler, PermissionHandler, PermissionChecker
 from .session import SessionManager
-from .prompt import PromptBuilder, default_prompt
+from .prompt import PromptBuilder, system_prompt
 from .agent import Agent
 from .compact import CompactManager
 from .message_queue import MessageQueue
@@ -224,7 +224,7 @@ class App:
             tools=self.tools,
             cwd=self.workdir,
             **ctx,
-        ).build()
+        ).build(format="xml")
         self.agent.update_system_prompt(system_prompt, clear_history=clear_history)
 
     def update_system_prompt(self, prompt: str, clear_history: bool = False) -> None:
@@ -410,17 +410,17 @@ class AppBuilder:
         )
 
         # Prompt
-        prompt_builder = default_prompt()
-        system_prompt = prompt_builder.context(
+        prompt_builder = system_prompt()
+        prompt_str = prompt_builder.context(
             tools=tools,
-            skill_manager=skill_manager,  # 注入 skill_manager
+            skill_manager=skill_manager,
             cwd=workdir,
-        ).build()
+        ).build(format="xml")
 
         # Agent
         agent = Agent(
             provider=provider,
-            system_prompt=system_prompt,
+            system_prompt=prompt_str,
             tools=tools,
             event_bus=event_bus,
             cancel_token=cancel_token,

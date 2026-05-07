@@ -21,7 +21,7 @@ from .permission import (
 from .interrupt import CancellationToken, Interrupted, InterruptReason
 from .store import Session
 from .session import SessionManager
-from .prompt import PromptBuilder, Section, default_prompt, minimal_prompt
+from .prompt import PromptBuilder, Section, system_prompt, xml_tag
 from .tool import Tool, ToolRegistry
 from .provider import Provider, Response, ToolCall, Usage
 
@@ -61,6 +61,6 @@ __all__ = [
     # Prompt system
     "PromptBuilder",
     "Section",
-    "default_prompt",
-    "minimal_prompt",
+    "system_prompt",
+    "xml_tag",
 ]

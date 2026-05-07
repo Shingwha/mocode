@@ -1,27 +1,30 @@
-"""Dream system prompt templates"""
+"""Dream prompt templates — XML format."""
 
-DREAM_SYSTEM_PROMPT = """\
-You are a memory consolidation assistant. Your task is to analyze conversation summaries and current memory files, then decide whether memory updates are needed.
+from ..prompt import xml_tag
 
-## Memory Files
-- SOUL.md: AI assistant identity, behavioral guidelines, and style preferences
-- USER.md: User profile, preferences, tech stack, work habits
-- MEMORY.md: Long-term memory, important facts, project decisions, key context
-
-## Workflow
-1. Analyze conversation summaries to determine if there is new information worth recording
-2. When updates are needed: use the read tool first to check current content, then use the edit tool to modify
-3. When no updates are needed: reply in text explaining why no update is needed, without calling any tools
-
-## Tool Usage
-You can use read, edit, and append tools to operate on memory files. File names are "SOUL.md", "USER.md", or "MEMORY.md".
-
-## Rules
-1. Only make genuinely valuable updates — don't update for the sake of updating
-2. Use edit for modifying existing content, append for adding new content
-3. New additions should be concise and structured
-4. Do not duplicate content already in the files
-5. Always read the file first to confirm current content before each modification"""
+DREAM_SYSTEM_PROMPT = "\n\n".join([
+    xml_tag("identity",
+        "You are a memory consolidation assistant. Analyze conversation summaries "
+        "and current memory files, then decide whether memory updates are needed."),
+    xml_tag("memory-files", "\n".join([
+        "- SOUL.md: AI assistant identity, behavioral guidelines, style preferences",
+        "- USER.md: User profile, preferences, tech stack, work habits",
+        "- MEMORY.md: Long-term memory, important facts, project decisions, key context",
+    ])),
+    xml_tag("workflow", "\n".join([
+        "1. Analyze conversation summaries for new information worth recording",
+        "2. When updates needed: read first, then edit",
+        "3. When no updates needed: reply explaining why, no tool calls",
+    ])),
+    xml_tag("tools", "You can use read, edit, and append tools on memory files."),
+    xml_tag("rules", "\n".join([
+        "1. Only make genuinely valuable updates",
+        "2. Use edit for modifications, append for new content",
+        "3. Be concise and structured",
+        "4. No duplicates",
+        "5. Always read before modifying",
+    ])),
+])
 
 
 def build_dream_prompt(
@@ -30,15 +33,13 @@ def build_dream_prompt(
     user: str,
     memory: str,
 ) -> str:
-    """Build user prompt with summaries and current memory for the unified dream agent."""
-    parts = ["## Conversation Summaries"]
-
-    for i, s in enumerate(summaries, 1):
-        parts.append(f"### Summary {i}\n{s}")
-
-    parts.append("## Current Memory Files")
-    parts.append(f"### SOUL.md\n{soul}")
-    parts.append(f"### USER.md\n{user}")
-    parts.append(f"### MEMORY.md\n{memory}")
-
-    return "\n\n".join(parts)
+    """Build dream user prompt with summaries and current memory."""
+    summary_parts = [xml_tag(f"summary-{i}", s) for i, s in enumerate(summaries, 1)]
+    return "\n\n".join([
+        xml_tag("summaries", "\n\n".join(summary_parts)),
+        xml_tag("current-memory", "\n\n".join([
+            xml_tag("soul", soul),
+            xml_tag("user", user),
+            xml_tag("memory", memory),
+        ])),
+    ])

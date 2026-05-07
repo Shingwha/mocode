@@ -2,7 +2,32 @@
 
 import pytest
 
-from mocode.prompt import PromptBuilder, PromptContributions, Section
+from mocode.prompt import PromptBuilder, Section, xml_tag
+
+
+class TestXmlTag:
+    def test_basic(self):
+        result = xml_tag("tag", "content")
+        assert result == "<tag>\ncontent\n</tag>"
+
+    def test_with_attrs(self):
+        result = xml_tag("tag", "x", file="a.md")
+        assert result == '<tag file="a.md">\nx\n</tag>'
+
+    def test_multiple_attrs(self):
+        result = xml_tag("tag", "x", a="1", b="2")
+        assert 'a="1"' in result
+        assert 'b="2"' in result
+        assert result.startswith("<tag ")
+        assert result.endswith("</tag>")
+
+    def test_empty_content(self):
+        result = xml_tag("tag")
+        assert result == "<tag></tag>"
+
+    def test_empty_content_with_attrs(self):
+        result = xml_tag("env", key="val")
+        assert result == '<env key="val"></env>'
 
 
 class TestPromptBuilder:
@@ -11,6 +36,7 @@ class TestPromptBuilder:
         builder.add(Section(name="intro", priority=10, render=lambda ctx: "Hello"))
         result = builder.build()
         assert "Hello" in result
+        assert "<system-prompt>" not in result
 
     def test_priority_sorting(self):
         builder = PromptBuilder()
@@ -59,14 +85,13 @@ class TestPromptBuilder:
         builder.add(Section(name="real", priority=20, render=lambda ctx: "Here"))
         result = builder.build()
         assert "Here" in result
-        assert "<system-prompt>" in result
-        assert "</system-prompt>" in result
+        assert "<system-prompt>" not in result
 
-    def test_get_section(self):
+    def test_section_lookup(self):
         builder = PromptBuilder()
         builder.add(Section(name="findme", priority=10, render=lambda ctx: "x"))
-        assert builder.get_section("findme") is not None
-        assert builder.get_section("nope") is None
+        assert builder.section("findme") is not None
+        assert builder.section("nope") is None
 
     def test_fluent_api(self):
         builder = PromptBuilder()
@@ -78,17 +103,55 @@ class TestPromptBuilder:
         )
         assert result is builder
 
+    def test_build_text_format(self):
+        builder = PromptBuilder()
+        builder.add(Section(name="a", priority=10, render=lambda ctx: "Hello"))
+        result = builder.build(format="text")
+        assert result == "Hello"
 
-class TestPromptContributions:
-    def test_default_empty(self):
-        pc = PromptContributions()
-        assert pc.add == []
-        assert pc.disable == []
-        assert pc.replace == {}
+    def test_build_xml_format(self):
+        builder = PromptBuilder()
+        builder.add(Section(name="greeting", priority=10, render=lambda ctx: "Hello"))
+        result = builder.build(format="xml")
+        assert "<system-prompt>" in result
+        assert "</system-prompt>" in result
+        assert "<greeting>" in result
+        assert "</greeting>" in result
 
-    def test_with_sections(self):
-        section = Section(name="plugin_section", priority=5, render=lambda ctx: "Plugin")
-        pc = PromptContributions(add=[section], disable=["soul"], replace={"tools": section})
-        assert len(pc.add) == 1
-        assert "soul" in pc.disable
-        assert "tools" in pc.replace
+    def test_build_xml_custom_wrap(self):
+        builder = PromptBuilder()
+        builder.add(Section(name="msg", priority=10, render=lambda ctx: "Hi"))
+        result = builder.build(format="xml", wrap="custom-prompt")
+        assert "<custom-prompt>" in result
+        assert "</custom-prompt>" in result
+        assert "<system-prompt>" not in result
+
+    def test_section_attrs_in_xml_mode(self):
+        builder = PromptBuilder()
+        builder.add(Section(
+            name="soul", priority=10,
+            render=lambda ctx: "content",
+            attrs={"file": "/path/to/soul.md"},
+        ))
+        result = builder.build(format="xml")
+        assert 'file="/path/to/soul.md"' in result
+        assert "<soul" in result
+
+    def test_section_attrs_not_in_text_mode(self):
+        builder = PromptBuilder()
+        builder.add(Section(
+            name="soul", priority=10,
+            render=lambda ctx: "content",
+            attrs={"file": "/path/to/soul.md"},
+        ))
+        result = builder.build(format="text")
+        assert "file=" not in result
+        assert result == "content"
+
+    def test_multiple_sections_xml(self):
+        builder = PromptBuilder()
+        builder.add(Section(name="a", priority=10, render=lambda ctx: "AAA"))
+        builder.add(Section(name="b", priority=20, render=lambda ctx: "BBB"))
+        result = builder.build(format="xml")
+        assert result.index("<a>") < result.index("<b>")
+        assert "<system-prompt>" in result

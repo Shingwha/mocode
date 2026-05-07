@@ -1,7 +1,4 @@
-"""CompactManager — 使用 Response DTO
-
-v0.2 关键改进：不再访问 response.choices[0].message.content，使用 resp.content。
-"""
+"""CompactManager — 使用 Response DTO"""
 
 import json
 import logging
@@ -10,6 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .paths import DREAM_DIR
+from .prompt import xml_tag
 
 if TYPE_CHECKING:
     from .config import CompactConfig
@@ -20,70 +18,59 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONTEXT_WINDOW = 128_000
 
-SUMMARY_SYSTEM_PROMPT = """\
-You are a conversation compression assistant. Your task is to compress the following coding assistant conversation history into a detailed, information-dense summary that preserves maximum useful context for continuing the work.
+SUMMARY_SYSTEM_PROMPT = "\n\n".join([
+    xml_tag("role",
+        "You are a conversation compression assistant. Compress coding assistant "
+        "conversation history into a detailed, information-dense summary."),
+    xml_tag("principle",
+        "**Maximize information density.** The summary must contain enough specific detail "
+        "that a developer reading only the summary can resume work without loss of critical context. "
+        "When in doubt, include rather than exclude."),
+    xml_tag("preserve", "\n".join([
+        "- File paths, function/class/variable names, line numbers",
+        "- Error messages and their full text, stack traces, root causes",
+        "- Code snippets that represent key decisions or non-obvious logic",
+        "- User's explicit preferences, constraints, and rejected alternatives",
+        "- Tool call results that revealed important facts (file contents, search results, command output)",
+        "- Architectural decisions and the reasoning behind them",
+        "- Dependencies added/removed, config changes",
+        "- Git state: branches, uncommitted changes, PR numbers",
+    ])),
+    xml_tag("discard", "\n".join([
+        "- Pleasantries, acknowledgments, filler phrases",
+        "- Redundant repetitions of the same fact",
+        "- Intermediate exploratory steps that led nowhere (unless they ruled out important alternatives)",
+        "- Verbose file listings or search results that were not acted upon",
+    ])),
+    xml_tag("output-format", "\n".join([
+        "[User Requirements] Complete list of what the user asked for. Preserve exact feature requirements, constraints, and preferences stated.",
+        "",
+        "[Completed Work] Chronological list of completed actions. Each entry: What (files, functions, modules), Why (reason/rationale), How (approach). Separate subsections for distinct features or phases.",
+        "",
+        "[Errors & Resolutions] List every error encountered and how it was resolved. Include error message or symptom and the fix applied.",
+        "",
+        "[Technical Decisions & Context] Architectural choices and alternatives rejected (with reasons). User preferences explicitly stated. Non-obvious constraints or dependencies discovered.",
+        "",
+        "[Current State] What was actively being worked on when the conversation ended. Modified files and their current state. Project state: build status, test status, any known issues.",
+        "",
+        "[Pending Items] Work mentioned but not yet started. Partially completed work that needs continuation.",
+    ])),
+])
 
-## Core Principle
-**Maximize information density.** The summary must contain enough specific detail that a developer reading only the summary can resume work without loss of critical context. When in doubt, include rather than exclude.
-
-## What to PRESERVE (high value)
-- File paths, function/class/variable names, line numbers
-- Error messages and their full text, stack traces, root causes
-- Code snippets that represent key decisions or non-obvious logic
-- User's explicit preferences, constraints, and rejected alternatives
-- Tool call results that revealed important facts (file contents, search results, command output)
-- Architectural decisions and the reasoning behind them
-- Dependencies added/removed, config changes
-- Git state: branches, uncommitted changes, PR numbers
-
-## What to DISCARD (low value)
-- Pleasantries, acknowledgments, filler phrases
-- Redundant repetitions of the same fact
-- Intermediate exploratory steps that led nowhere (unless they ruled out important alternatives)
-- Verbose file listings or search results that were not acted upon
-
-## Output Format
-
-[User Requirements]
-Complete list of what the user asked for. Preserve exact feature requirements, constraints, and preferences stated.
-
-[Completed Work]
-Chronological list of completed actions. Each entry must include:
-- **What**: Specific files, functions, modules modified/created/deleted
-- **Why**: The reason for the change or the decision rationale
-- **How**: Brief description of the approach taken (especially for non-obvious solutions)
-Separate subsections for distinct features or phases if the conversation covers multiple topics.
-
-[Errors & Resolutions]
-List every error encountered and how it was resolved. Include the error message or symptom and the fix applied.
-
-[Technical Decisions & Context]
-- Architectural choices made and alternatives rejected (with reasons)
-- User preferences explicitly stated
-- Non-obvious constraints or dependencies discovered during work
-
-[Current State]
-- What was actively being worked on when the conversation ended
-- Modified files and their current state (uncommitted changes, etc.)
-- Project state: build status, test status, any known issues
-
-[Pending Items]
-- Work mentioned but not yet started
-- Partially completed work that needs continuation"""
-
-COMPACT_USER_PROMPT = """\
-Compress the following conversation into a detailed summary following the structured format above.
-
-Critical requirements:
-1. Preserve ALL specific technical details — file paths, function names, error messages, code snippets
-2. Include every feature point from the user's requirements, even if not yet implemented
-3. Keep tool call results that contain important facts (file contents, command outputs, search results)
-4. Do NOT summarize away specifics into vagueness — "changed authenticate() in auth.py" is better than "modified authentication"
-5. If the user expressed a preference or rejected an approach, record it
-
-Conversation to compress:
-
-{messages_text}"""
+COMPACT_USER_PROMPT = "\n".join([
+    "Compress the following conversation into a detailed summary following the structured format above.",
+    "",
+    "Critical requirements:",
+    "1. Preserve ALL specific technical details — file paths, function names, error messages, code snippets",
+    "2. Include every feature point from the user's requirements, even if not yet implemented",
+    "3. Keep tool call results that contain important facts (file contents, command outputs, search results)",
+    "4. Do NOT summarize away specifics into vagueness — \"changed authenticate() in auth.py\" is better than \"modified authentication\"",
+    "5. If the user expressed a preference or rejected an approach, record it",
+    "",
+    "Conversation to compress:",
+    "",
+    "{messages_text}",
+])
 
 
 class CompactManager:
