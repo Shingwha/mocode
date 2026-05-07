@@ -7,31 +7,23 @@ v0.2 关键改进：
 """
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Self
 
 from .config import Config
-from .store import ConfigStore, FileConfigStore, InMemoryConfigStore, Session
+from .store import ConfigStore, FileConfigStore, InMemoryConfigStore
 from .provider import OpenAIProvider
 from .tool import ToolRegistry
 from .event import EventBus, EventType
 from .interrupt import CancellationToken
 from .permission import DefaultPermissionHandler, PermissionHandler, PermissionChecker
-from .session import SessionManager
+from .session import Session, SessionStore, SessionManager, FileSessionStore, InMemorySessionStore
 from .prompt import PromptBuilder, system_prompt
 from .agent import Agent
 from .compact import CompactManager
 from .message_queue import MessageQueue
 from .tools import register_basic_tools, register_system_tools
 from .skills.manager import SkillManager
-
-
-@dataclass
-class SessionState:
-    """Tracks current session state"""
-
-    current_session_id: str | None = None
-    has_unsaved_changes: bool = False
 
 
 @dataclass
@@ -43,20 +35,19 @@ class App:
     provider: Any  # Provider
     agent: Agent
     tools: ToolRegistry
-    skill_manager: SkillManager  # 新增
+    skill_manager: SkillManager
     event_bus: EventBus
     sessions: SessionManager
     cancel_token: CancellationToken
     _prompt_builder: PromptBuilder
     _compact: CompactManager | None
     _dream: Any | None = None  # DreamManager | None
-    _session_state: SessionState = field(default_factory=SessionState)
     _message_queue: MessageQueue | None = None
 
     # -- Chat --
 
     async def chat(self, message: str, media: list[str] | None = None) -> str:
-        self._session_state.has_unsaved_changes = True
+        self.sessions.mark_dirty()
         return await self.agent.chat(message, media)
 
     def interrupt(self) -> None:
@@ -146,56 +137,32 @@ class App:
     # -- Sessions --
 
     def save_session(self) -> Session:
-        messages = self.agent.messages
-        model = self.current_model
-        provider = self.current_provider
-
-        if self._session_state.current_session_id:
-            session = self.sessions.update_session(
-                session_id=self._session_state.current_session_id,
-                messages=messages,
-                model=model,
-                provider=provider,
-            )
-            if session:
-                self._session_state.has_unsaved_changes = False
-                return session
-
-        session = self.sessions.save_session(
-            messages=messages,
-            model=model,
-            provider=provider,
+        return self.sessions.save(
+            self.agent.messages,
+            self.current_model,
+            self.current_provider,
         )
-        self._session_state.current_session_id = session.id
-        self._session_state.has_unsaved_changes = False
-        return session
 
     def load_session(self, session_id: str) -> Session | None:
-        session = self.sessions.load_session(session_id)
+        session = self.sessions.resume(session_id)
         if session:
-            self._session_state.current_session_id = session_id
-            self._session_state.has_unsaved_changes = False
-            from .message_utils import sanitize_messages
-
-            self.agent.messages = sanitize_messages(session.messages.copy())
+            self.agent.messages = session.messages.copy()
             if self._compact:
                 self._compact.reset()
         return session
 
-    def list_sessions(self) -> list[Session]:
-        return self.sessions.list_sessions()
+    def list_sessions(self, source: str | None = None, channel: str | None = None) -> list[Session]:
+        return self.sessions.list(source=source, channel=channel)
 
     def delete_session(self, session_id: str) -> bool:
-        result = self.sessions.delete_session(session_id)
-        if result and self._session_state.current_session_id == session_id:
-            self._session_state.current_session_id = None
+        result = self.sessions.delete(session_id)
+        if result and self.sessions.active_id is None:
             self.agent.clear()
         return result
 
     def clear_history(self) -> None:
         self.agent.clear()
-        self._session_state.current_session_id = None
-        self._session_state.has_unsaved_changes = False
+        self.sessions.clear()
         if self._compact:
             self._compact.reset()
 
@@ -246,7 +213,7 @@ class App:
     # -- Compact --
 
     async def compact(self) -> dict:
-        if self._session_state.current_session_id:
+        if self.sessions.active_id:
             self.save_session()
 
         old_count = len(self.agent.messages)
@@ -254,8 +221,7 @@ class App:
             self.agent.messages,
             self.config.model,
         )
-        self._session_state.current_session_id = None
-        self._session_state.has_unsaved_changes = True
+        self.sessions.invalidate()
         return {
             "action": "compact_complete",
             "old_count": old_count,
@@ -302,7 +268,7 @@ class App:
 
     @property
     def workdir(self) -> str:
-        return self.sessions._workdir
+        return self.sessions.workdir
 
     @property
     def dream_manager(self):
@@ -324,11 +290,11 @@ class App:
 
     @property
     def current_session_id(self) -> str | None:
-        return self._session_state.current_session_id
+        return self.sessions.active_id
 
     @property
     def has_unsaved_changes(self) -> bool:
-        return self._session_state.has_unsaved_changes
+        return self.sessions.is_dirty
 
 
 class AppBuilder:
@@ -337,6 +303,7 @@ class AppBuilder:
     def __init__(self):
         self._config_data: dict | None = None
         self._config_store: ConfigStore | None = None
+        self._session_store: SessionStore | None = None
         self._permission_handler: PermissionHandler | None = None
         self._cancel_token: CancellationToken | None = None
         self._workdir: str | None = None
@@ -348,6 +315,10 @@ class AppBuilder:
 
     def with_config_store(self, store: ConfigStore) -> Self:
         self._config_store = store
+        return self
+
+    def with_session_store(self, store: SessionStore) -> Self:
+        self._session_store = store
         return self
 
     def with_permission_handler(self, handler: PermissionHandler) -> Self:
@@ -371,7 +342,7 @@ class AppBuilder:
         # Config
         config = self._load_config()
 
-        # Store
+        # Config Store
         store = self._config_store or (
             FileConfigStore()
             if self._persistence
@@ -451,21 +422,13 @@ class AppBuilder:
         )
 
         # Sessions
-        from .store import FileSessionStore, InMemorySessionStore
-
-        session_store = (
+        session_store = self._session_store or (
             FileSessionStore() if self._persistence else InMemorySessionStore()
         )
         sessions = SessionManager(workdir=workdir, store=session_store)
 
         # Wire events
-        session_state = SessionState()
-
-        def _on_context_compact(event):
-            session_state.current_session_id = None
-            session_state.has_unsaved_changes = True
-
-        event_bus.on(EventType.CONTEXT_COMPACT, _on_context_compact)
+        event_bus.on(EventType.CONTEXT_COMPACT, lambda e: sessions.invalidate())
 
         # Build App
         app = App(
@@ -474,21 +437,20 @@ class AppBuilder:
             provider=provider,
             agent=agent,
             tools=tools,
-            skill_manager=skill_manager,  # 传入 skill_manager
+            skill_manager=skill_manager,
             event_bus=event_bus,
             sessions=sessions,
             cancel_token=cancel_token,
             _prompt_builder=prompt_builder,
             _compact=compact,
             _dream=dream,
-            _session_state=session_state,
         )
 
         # Message queue
         app._message_queue = MessageQueue(
             chat_fn=lambda msg, conv_id=None: agent.chat(msg),
             event_bus=event_bus,
-            mark_unsaved_fn=lambda: setattr(session_state, "has_unsaved_changes", True),
+            mark_unsaved_fn=sessions.mark_dirty,
         )
 
         return app

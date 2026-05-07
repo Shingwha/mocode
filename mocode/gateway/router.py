@@ -16,6 +16,8 @@ from ..config import Config
 from ..event import Event, EventType
 from ..app import AppBuilder
 from ..permission import DefaultPermissionHandler
+from ..session import FileSessionStore
+from ..store import InMemoryConfigStore
 from .tools import register_gateway_tools
 
 if TYPE_CHECKING:
@@ -77,7 +79,8 @@ class UserRouter:
 
         app = (AppBuilder()
             .with_config(config_data)
-            .without_persistence()
+            .with_config_store(InMemoryConfigStore())
+            .with_session_store(FileSessionStore())
             .with_permission_handler(DefaultPermissionHandler())
             .build())
         app.config.set_mode("yolo")
@@ -181,13 +184,15 @@ class UserRouter:
         session = self._sessions.pop(session_key, None)
         if session is None:
             return
-        # Clear event subscriptions
         session.core.event_bus.clear()
-        if session.core.has_unsaved_changes:
-            try:
-                session.core.save_session()
-            except Exception as e:
-                logger.warning("Failed to save session %s: %s", session_key, e)
+        try:
+            session.core.sessions.save_if_dirty(
+                session.core.agent.messages,
+                session.core.current_model,
+                session.core.current_provider,
+            )
+        except Exception as e:
+            logger.warning("Failed to save session %s: %s", session_key, e)
 
     async def shutdown_all(self) -> None:
         """Save all sessions and cleanup."""

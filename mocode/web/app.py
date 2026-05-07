@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ..app import AppBuilder
 from ..permission import DefaultPermissionHandler
+from ..session import FileSessionStore
 from .routers import chat, sessions, config
 
 logger = logging.getLogger(__name__)
@@ -20,9 +21,11 @@ async def lifespan(app: FastAPI):
     """Create App on startup, cleanup on shutdown."""
     mocode_app = (
         AppBuilder()
+        .with_session_store(FileSessionStore())
         .with_permission_handler(DefaultPermissionHandler())
         .build()
     )
+    mocode_app.sessions._dirty = True  # mark so first save works
     app.state.app = mocode_app
     logger.info(
         "MoCode web backend started (model=%s, provider=%s)",

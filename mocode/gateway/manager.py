@@ -132,11 +132,14 @@ class ChannelManager:
                                     media=[media_path],
                                 )
                             )
-                        # Auto-save session after each chat (same as CLI)
-                        if session.core.has_unsaved_changes:
-                            try:
-                                session.core.save_session()
-                            except Exception as e:
+                        # Auto-save session after each chat
+                        try:
+                            session.core.sessions.save_if_dirty(
+                                session.core.agent.messages,
+                                session.core.current_model,
+                                session.core.current_provider,
+                            )
+                        except Exception as e:
                                 logger.warning(
                                     "Failed to save session %s: %s",
                                     msg.session_key, e,

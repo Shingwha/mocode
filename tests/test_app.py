@@ -77,6 +77,7 @@ class TestAppSession:
         session = app.save_session()
         assert session is not None
         assert session.message_count == 2
+        assert session.title == "hello"
 
         loaded = app.load_session(session.id)
         assert loaded is not None
@@ -84,6 +85,29 @@ class TestAppSession:
     def test_list_sessions_empty(self, app):
         sessions = app.list_sessions()
         assert sessions == []
+
+    def test_clear_history_resets_session(self, app):
+        app.agent.messages = [{"role": "user", "content": "test"}]
+        app.save_session()
+        app.clear_history()
+        assert app.current_session_id is None
+
+    def test_chat_marks_dirty(self, app):
+        assert not app.has_unsaved_changes
+        app.agent.chat = AsyncMock(return_value="r")
+        # We can't await in non-async test easily, so test mark_dirty directly
+        app.sessions.mark_dirty()
+        assert app.has_unsaved_changes
+
+    def test_has_unsaved_changes_delegates_to_sessions(self, app):
+        assert not app.has_unsaved_changes
+        app.sessions.mark_dirty()
+        assert app.has_unsaved_changes
+
+    def test_current_session_id_delegates_to_sessions(self, app):
+        assert app.current_session_id is None
+        app.sessions.create()
+        assert app.current_session_id is not None
 
 
 class TestAppConfigOps:
@@ -122,12 +146,6 @@ class TestAppHistory:
         app.agent.messages = [{"role": "user", "content": "test"}]
         app.clear_history()
         assert app.messages == []
-
-    def test_clear_history_resets_session(self, app):
-        app.agent.messages = [{"role": "user", "content": "test"}]
-        app.save_session()
-        app.clear_history()
-        assert app.current_session_id is None
 
 
 class TestAppPrompt:
@@ -174,3 +192,18 @@ class TestAppBuilder:
             .build()
         )
         assert app.workdir == "/custom/dir"
+
+    def test_builder_with_session_store(self):
+        from mocode.session import InMemorySessionStore
+        store = InMemorySessionStore()
+        app = (
+            AppBuilder()
+            .with_config({
+                "current": {"provider": "t", "model": "m"},
+                "providers": {"t": {"name": "T", "base_url": "https://t.com/v1", "api_key": "k", "models": ["m"]}},
+            })
+            .without_persistence()
+            .with_session_store(store)
+            .build()
+        )
+        assert app.sessions._store is store

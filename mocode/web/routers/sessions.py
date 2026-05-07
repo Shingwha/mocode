@@ -1,6 +1,6 @@
 """Session CRUD and history endpoints (v0.2)."""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from ..deps import get_app
 from ..schemas import (
@@ -17,9 +17,13 @@ router = APIRouter(prefix="/api", tags=["sessions"])
 
 
 @router.get("/sessions", response_model=SessionListResponse)
-async def list_sessions(app: App = Depends(get_app)):
+async def list_sessions(
+    source: str | None = Query(None),
+    channel: str | None = Query(None),
+    app: App = Depends(get_app),
+):
     """List sessions (summaries, no messages)."""
-    sessions = app.list_sessions()
+    sessions = app.list_sessions(source=source, channel=channel)
     summaries = [
         SessionSummary(
             id=s.id,
@@ -29,6 +33,7 @@ async def list_sessions(app: App = Depends(get_app)):
             model=s.model,
             provider=s.provider,
             message_count=s.message_count,
+            title=s.title,
         )
         for s in sessions
     ]
@@ -48,6 +53,7 @@ async def save_session(app: App = Depends(get_app)):
             model=session.model,
             provider=session.provider,
             message_count=session.message_count,
+            title=session.title,
         )
     )
 
@@ -66,6 +72,7 @@ async def load_session(session_id: str, app: App = Depends(get_app)):
         model=session.model,
         provider=session.provider,
         message_count=session.message_count,
+        title=session.title,
         messages=session.messages,
     )
 
