@@ -138,6 +138,10 @@ class ChannelManager:
                                 session.core.agent.messages,
                                 session.core.current_model,
                                 session.core.current_provider,
+                                metadata={
+                                    "gateway_session_key": msg.session_key,
+                                    "channel": msg.channel,
+                                },
                             )
                         except Exception as e:
                                 logger.warning(

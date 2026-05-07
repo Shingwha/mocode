@@ -209,6 +209,7 @@ class SessionManager:
         model: str = "",
         provider: str = "",
         title: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Session:
         now = datetime.now().isoformat()
         if title is None:
@@ -237,6 +238,7 @@ class SessionManager:
             title=title,
             model=model,
             provider=provider,
+            metadata=metadata or {},
         )
         self._store.save(self._workdir, session)
         self._active_id = session_id
@@ -248,10 +250,11 @@ class SessionManager:
         messages: list[dict[str, Any]],
         model: str = "",
         provider: str = "",
+        metadata: dict[str, Any] | None = None,
     ) -> Session | None:
         if not self._dirty:
             return None
-        return self.save(messages, model, provider)
+        return self.save(messages, model, provider, metadata=metadata)
 
     def list(
         self,

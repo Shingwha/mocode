@@ -96,6 +96,15 @@ class UserRouter:
         # Subscribe to per-session events for logging
         self._subscribe_session_events(session_key, app)
 
+        # Resume last session for this user
+        user_sessions = [
+            s for s in app.sessions.list()
+            if s.metadata.get("gateway_session_key") == session_key
+        ]
+        if user_sessions:
+            app.load_session(user_sessions[0].id)
+            logger.info("Resumed session %s for %s", user_sessions[0].id, session_key)
+
         return UserSession(
             session_key=session_key,
             core=app,
