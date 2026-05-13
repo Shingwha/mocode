@@ -1,0 +1,166 @@
+"""OpenAI-compatible provider implementation.
+
+Depends on the `openai` package. Install with: uv pip install "mocode[openai]"
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from openai import AsyncOpenAI, BadRequestError
+
+from ..core.provider import Provider, Response, ToolCall, Usage
+
+
+class OpenAIProvider:
+    """OpenAI-compatible API provider — implements Provider Protocol."""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "gpt-4o",
+        base_url: str | None = None,
+        extra_body: dict[str, Any] | None = None,
+    ):
+        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._model = model
+        self._extra_body = extra_body
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    async def call(
+        self,
+        messages: list[dict[str, Any]],
+        system: str,
+        tools: list[dict[str, Any]],
+        max_tokens: int,
+    ) -> Response:
+        openai_messages = [
+            {"role": "system", "content": system},
+            *self._normalize_messages(messages),
+        ]
+
+        raw = await self._client.chat.completions.create(
+            model=self._model,
+            messages=openai_messages,
+            tools=tools or None,  # type: ignore[arg-type]
+            max_tokens=max_tokens,
+            extra_body=self._extra_body,
+        )
+
+        choice = raw.choices[0]
+        message = choice.message
+
+        tool_calls = None
+        if message.tool_calls:
+            tool_calls = [
+                ToolCall(
+                    id=tc.id,
+                    name=tc.function.name,
+                    arguments=tc.function.arguments,
+                )
+                for tc in message.tool_calls
+            ]
+
+        usage = None
+        if raw.usage:
+            usage = Usage(
+                prompt_tokens=raw.usage.prompt_tokens or 0,
+                completion_tokens=raw.usage.completion_tokens or 0,
+            )
+
+        reasoning_content = getattr(message, "reasoning_content", None)
+
+        return Response(
+            content=message.content,
+            tool_calls=tool_calls,
+            usage=usage,
+            finish_reason=choice.finish_reason,
+            reasoning_content=reasoning_content,
+        )
+
+    @staticmethod
+    def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Strip empty/orphaned tool_calls from assistant messages."""
+        result_ids = {
+            m["tool_call_id"]
+            for m in messages
+            if m.get("role") == "tool" and m.get("tool_call_id")
+        }
+        result = []
+        for msg in messages:
+            if msg.get("role") == "assistant" and "tool_calls" in msg:
+                tcs = msg["tool_calls"]
+                if not tcs:
+                    result.append({k: v for k, v in msg.items() if k != "tool_calls"})
+                    continue
+                valid = [tc for tc in tcs if tc.get("id") in result_ids]
+                if not valid:
+                    result.append({k: v for k, v in msg.items() if k != "tool_calls"})
+                elif len(valid) < len(tcs):
+                    cleaned = dict(msg)
+                    cleaned["tool_calls"] = valid
+                    result.append(cleaned)
+                else:
+                    result.append(msg)
+            else:
+                result.append(msg)
+        return result
+
+    @staticmethod
+    def _image_placeholder(path: str) -> str:
+        name = Path(path).name if path else ""
+        if name and path:
+            return (
+                f"[File received: {name} at {path}]\n\n"
+                f"IMPORTANT: The user has sent an image, but the current model "
+                f"does not support image content. "
+                f"DO NOT attempt to read or process this file automatically. "
+                f"WAIT for the user's instructions. "
+                f"If the user's message does not specify what they want you to do, "
+                f"ask them directly what task they would like you to perform."
+            )
+        return "[image omitted]"
+
+    @staticmethod
+    def strip_image_content(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]] | None:
+        """Replace image_url blocks with text placeholder. Returns None if no images found."""
+        found = False
+        result = []
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                new_content = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "image_url":
+                        path = (block.get("_meta") or {}).get("path", "")
+                        new_content.append(
+                            {"type": "text", "text": OpenAIProvider._image_placeholder(path)}
+                        )
+                        found = True
+                    else:
+                        new_content.append(block)
+                result.append({**msg, "content": new_content})
+            else:
+                result.append(msg)
+        return result if found else None
+
+    @staticmethod
+    def strip_image_content_inplace(messages: list[dict[str, Any]]) -> None:
+        """Permanently strip image_url blocks in-place."""
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for i, block in enumerate(content):
+                    if isinstance(block, dict) and block.get("type") == "image_url":
+                        path = (block.get("_meta") or {}).get("path", "")
+                        content[i] = {
+                            "type": "text",
+                            "text": OpenAIProvider._image_placeholder(path),
+                        }
