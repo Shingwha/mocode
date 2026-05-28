@@ -163,7 +163,7 @@ def create_agent(display):
     )
 
     tools = ToolRegistry()
-    for t in [ReadTool(), EditTool, GlobTool, GrepTool, BashTool()]:
+    for t in [ReadTool(), EditTool(), GlobTool(), GrepTool(), BashTool()]:
         tools.register(t)
 
     ic = config.image

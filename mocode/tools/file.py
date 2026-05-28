@@ -35,31 +35,79 @@ class ImageInjectionHook(AgentHook):
 
 
 def _read_text(p: Path, offset: int, limit: int) -> str:
+    """Read text file with line numbers. offset is 1-based."""
+    # Binary detection
     try:
-        lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+        chunk = p.read_bytes()[:8192]
+        if b"\x00" in chunk:
+            raise ToolError(f"File appears to be binary: {p}", "binary_file")
+    except OSError as e:
+        raise ToolError(f"Cannot read file: {e}", "read_error")
+
+    # Read with encoding fallback
+    try:
+        all_lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
     except UnicodeDecodeError:
-        lines = p.read_text(encoding="gbk", errors="replace").splitlines(keepends=True)
-    selected = lines[offset : offset + limit]
-    return "".join(f"{offset + idx + 1:4}| {line}" for idx, line in enumerate(selected))
+        all_lines = p.read_text(encoding="gbk", errors="replace").splitlines(keepends=True)
+
+    total = len(all_lines)
+    size_kb = p.stat().st_size / 1024
+
+    # Convert 1-based offset to 0-based index, clamp to valid range
+    start = max(0, offset - 1)
+    end = start + limit if limit else total
+    selected = all_lines[start:end]
+
+    if not selected:
+        raise ToolError(
+            f"Line {offset} is beyond end of file (file has {total} lines)",
+            "out_of_range",
+        )
+
+    header = f"[{p} | {total} lines | {size_kb:.1f} KB]"
+    lines_text = "".join(
+        f"{start + idx + 1:>5} | {line}" for idx, line in enumerate(selected)
+    )
+
+    end_line = start + len(selected)
+    if end_line < total:
+        footer = f"\n[Showing lines {start + 1}-{end_line} of {total}. Use offset={end_line + 1} to read more.]"
+    else:
+        footer = ""
+
+    return header + "\n" + lines_text + footer
+
+
+_READ_PARAMS = {
+    "path": {"type": "string", "description": "File path to read"},
+    "offset": {"type": "integer", "description": "Line number to start from (1-based, default 1)", "default": 1},
+    "limit": {"type": "integer", "description": "Max lines to read (0 = all lines)", "default": 0},
+}
+
+_READ_DESC = (
+    "Read a file and return its contents with line numbers. "
+    "Supports text files with UTF-8/GBK encoding. "
+    "For image files (png/jpg/jpeg/gif/webp/bmp), attaches the image for visual analysis. "
+    "Use offset and limit to read specific line ranges. Line numbers are 1-based. "
+    "The output includes file metadata (total lines, size) and truncation info when the file is too long."
+)
 
 
 def ReadTool(image_hook: ImageInjectionHook | None = None) -> Tool:
     """Create a read tool. Pass image_hook to enable image reading."""
 
     if image_hook is None:
-        # Pure text mode
         def _read(args: dict) -> str:
             p = Path(args["path"])
             if not p.exists():
                 raise ToolError(f"File not found: {p}", "file_not_found")
             if p.is_dir():
                 raise ToolError(f"Path is a directory: {p}", "invalid_path")
-            offset = int(args.get("offset", 0))
+            offset = max(1, int(args.get("offset", 1)))
             limit = int(args.get("limit", 0)) or 999999
             return _read_text(p, offset, limit)
 
     else:
-        # Image-capable mode — inject images via hook
         def _read(args: dict) -> str:
             p = Path(args["path"])
             if not p.exists():
@@ -84,26 +132,22 @@ def ReadTool(image_hook: ImageInjectionHook | None = None) -> Tool:
                 size_kb = p.stat().st_size / 1024
                 return f"Image loaded from {p} ({size_kb:.1f} KB, {media_type})"
 
-            offset = int(args.get("offset", 0))
+            offset = max(1, int(args.get("offset", 1)))
             limit = int(args.get("limit", 0)) or 999999
             return _read_text(p, offset, limit)
 
-    return Tool(
-        "read",
-        "Read a file. For text files, returns content with line numbers. "
-        "For image files (png/jpg/jpeg/gif/webp/bmp), attaches the image to the conversation for visual analysis.",
-        {"path": "string", "offset": "number?", "limit": "number?"},
-        _read,
-    )
+    return Tool("read", _READ_DESC, _READ_PARAMS, _read)
 
 
 def _write(args: dict) -> str:
     p = Path(args["path"])
     if p.is_dir():
         raise ToolError(f"Path is a directory: {p}", "invalid_path")
+    content = args["content"]
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(args["content"], encoding="utf-8")
-    return "ok"
+    p.write_text(content, encoding="utf-8")
+    line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+    return f"Wrote {line_count} lines to {p.name}"
 
 
 def _append(args: dict) -> str:
@@ -119,7 +163,8 @@ def _append(args: dict) -> str:
 
     with open(p, "a", encoding="utf-8") as f:
         f.write(content)
-    return "ok"
+    line_count = content.strip("\n").count("\n") + 1
+    return f"Appended {line_count} lines to {p.name}"
 
 
 def _edit(args: dict) -> str:
@@ -131,37 +176,59 @@ def _edit(args: dict) -> str:
     old, new = args["old"], args["new"]
 
     if old not in text:
-        raise ToolError("old_string not found", "not_found")
+        raise ToolError("old_string not found in file", "not_found")
 
     count = text.count(old)
-    if not args.get("all") and count > 1:
+    replace_all = args.get("all", False)
+    if not replace_all and count > 1:
         raise ToolError(
             f"old_string appears {count} times, must be unique (use all=true)",
             "not_unique",
         )
 
-    replacement = text.replace(old, new) if args.get("all") else text.replace(old, new, 1)
+    replacement = text.replace(old, new) if replace_all else text.replace(old, new, 1)
     p.write_text(replacement, encoding="utf-8")
-    return "ok"
+    actual = count if replace_all else 1
+    return f"Replaced {actual} occurrence(s) in {p.name}"
 
 
-WriteTool = Tool(
-    "write",
-    "Write content to file",
-    {"path": "string", "content": "string"},
-    _write,
-)
+def WriteTool() -> Tool:
+    return Tool(
+        "write",
+        "Write content to a file. Creates the file and any parent directories if they don't exist. "
+        "Overwrites existing content entirely. For appending, use the append tool instead.",
+        {
+            "path": {"type": "string", "description": "File path to write"},
+            "content": {"type": "string", "description": "Content to write (UTF-8)"},
+        },
+        _write,
+    )
 
-AppendTool = Tool(
-    "append",
-    "Append content to file (creates if not exists)",
-    {"path": "string", "content": "string"},
-    _append,
-)
 
-EditTool = Tool(
-    "edit",
-    "Replace old with new in file (old must be unique unless all=true)",
-    {"path": "string", "old": "string", "new": "string", "all": "boolean?"},
-    _edit,
-)
+def AppendTool() -> Tool:
+    return Tool(
+        "append",
+        "Append content to the end of a file. Creates the file if it doesn't exist. "
+        "Automatically adds a newline before the content if the existing file doesn't end with one.",
+        {
+            "path": {"type": "string", "description": "File path to append to"},
+            "content": {"type": "string", "description": "Content to append (UTF-8)"},
+        },
+        _append,
+    )
+
+
+def EditTool() -> Tool:
+    return Tool(
+        "edit",
+        "Find and replace text in a file. The old_string must match exactly (including whitespace and indentation). "
+        "By default, old_string must appear exactly once in the file — the tool will fail if it matches multiple locations. "
+        "Use all=true to replace every occurrence. The file must already exist.",
+        {
+            "path": {"type": "string", "description": "File path to edit"},
+            "old": {"type": "string", "description": "Exact text to find (must be unique unless all=true)"},
+            "new": {"type": "string", "description": "Replacement text"},
+            "all": {"type": "boolean", "description": "Replace all occurrences instead of just the first", "default": False},
+        },
+        _edit,
+    )
