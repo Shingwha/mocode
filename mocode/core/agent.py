@@ -37,6 +37,9 @@ class LoopResult:
 class AgentLoop:
     """LLM chat engine — receives all dependencies via constructor."""
 
+    INTERRUPT_MSG = "[Response was interrupted by the user before completion.]"
+    INTERRUPT_TOOL_MSG = "[Tool execution was interrupted by the user before completion.]"
+
     def __init__(
         self,
         provider: Provider,
@@ -107,12 +110,16 @@ class AgentLoop:
             if ctx.compact_old:
                 await self.hooks.on_compact(ctx)
 
-            response: Response = await self.provider.call(
-                self._messages,
-                self.system_prompt,
-                self._tools.all_schemas(),
-                self.config.max_tokens,
-            )
+            try:
+                response: Response = await self.provider.call(
+                    self._messages,
+                    self.system_prompt,
+                    self._tools.all_schemas(),
+                    self.config.max_tokens,
+                )
+            except asyncio.CancelledError:
+                self._messages.append({"role": "assistant", "content": self.INTERRUPT_MSG})
+                raise
 
             ctx.reset_response()
             if response.usage:
@@ -129,12 +136,21 @@ class AgentLoop:
             await self.hooks.on_response(ctx)
 
             if response.tool_calls:
-                tool_results = await self._run_tool_calls_parallel(response.tool_calls, ctx)
-                self._tool_call_count += len(response.tool_calls)
                 all_tc_dicts = [
                     {"id": t.id, "type": "function", "function": {"name": t.name, "arguments": t.arguments}}
                     for t in response.tool_calls
                 ]
+                try:
+                    tool_results = await self._run_tool_calls_parallel(response.tool_calls, ctx)
+                except asyncio.CancelledError:
+                    tool_results = [
+                        {"role": "tool", "tool_call_id": tc.id, "content": self.INTERRUPT_TOOL_MSG}
+                        for tc in response.tool_calls
+                    ]
+                    self._messages.append(self._assistant_msg(response, all_tc_dicts))
+                    self._messages.extend(tool_results)
+                    raise
+                self._tool_call_count += len(response.tool_calls)
                 self._messages.append(self._assistant_msg(response, all_tc_dicts))
                 self._messages.extend(tool_results)
 

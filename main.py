@@ -5,6 +5,7 @@ Usage:
 """
 
 import asyncio
+import signal
 import sys
 from pathlib import Path
 
@@ -231,7 +232,22 @@ async def main():
         if user_input.lower() in ("exit", "quit"):
             break
         print()
-        result = await agent.chat(user_input)
+
+        def _make_interrupt_handler(task):
+            def handler(signum, frame):
+                if not task.done():
+                    task.cancel()
+            return handler
+
+        task = asyncio.ensure_future(agent.chat(user_input))
+        original_handler = signal.signal(signal.SIGINT, _make_interrupt_handler(task))
+        try:
+            result = await task
+        except asyncio.CancelledError:
+            print(f"\n{_s('Response interrupted.', YELLOW)}\n")
+            continue
+        finally:
+            signal.signal(signal.SIGINT, original_handler)
         if result:
             display.response(result)
 
