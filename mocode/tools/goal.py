@@ -1,4 +1,4 @@
-"""GoalTool — LLM-callable tool for set/status/clear goal actions.
+"""GoalTool — LLM-callable tool for goal lifecycle management.
 
 GoalHook lives in mocode/hooks/goal.py.
 """
@@ -9,7 +9,7 @@ from ..core.tool import Tool
 
 
 def GoalTool(goal_hook) -> Tool:
-    """Create a tool that lets the LLM set, check, or clear a goal."""
+    """Create a tool that lets the LLM set, pause, resume, check, or clear a goal."""
 
     async def _handle(args: dict) -> str:
         action = args.get("action", "status")
@@ -20,6 +20,22 @@ def GoalTool(goal_hook) -> Tool:
                 return "Error: 'goal' is required for 'set' action"
             goal_hook.set_goal(goal)
             return f"Goal set: {goal}"
+
+        if action == "pause":
+            if not goal_hook.condition:
+                return "No active goal to pause"
+            if goal_hook.paused:
+                return f"Goal already paused: {goal_hook.condition}"
+            goal_hook.pause_goal()
+            return f"Goal paused: {goal_hook.condition}"
+
+        if action == "resume":
+            if not goal_hook.condition:
+                return "No goal to resume"
+            if not goal_hook.paused:
+                return f"Goal is not paused: {goal_hook.condition}"
+            goal_hook.resume_goal()
+            return f"Goal resumed: {goal_hook.condition} (turn counter reset, {goal_hook.max_turns} turns remaining)"
 
         if action == "clear":
             condition = goal_hook.condition
@@ -32,16 +48,17 @@ def GoalTool(goal_hook) -> Tool:
         condition = goal_hook.condition
         if not condition:
             return "No active goal"
-        return f"Goal: {condition}\nTurn: {goal_hook.turn_count}/{goal_hook._max_turns}"
+        state = "paused" if goal_hook.paused else "active"
+        return f"Goal: {condition}\nState: {state}\nTurn: {goal_hook.turn_count}/{goal_hook.max_turns}"
 
     return Tool(
         "goal",
-        "Set, check, or clear a goal condition that the agent will work toward.",
+        "Manage a goal condition that the agent works toward. Actions: set (create goal), pause (temporarily stop), resume (continue paused goal), status (check state), clear (remove goal).",
         {
             "action": {
                 "type": "string",
                 "description": "Action to perform",
-                "enum": ["set", "status", "clear"],
+                "enum": ["set", "pause", "resume", "status", "clear"],
                 "default": "status",
             },
             "goal": {

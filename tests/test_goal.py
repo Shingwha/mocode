@@ -34,7 +34,7 @@ class TestGoalHook:
         assert len(ctx.messages) == 2
 
     @pytest.mark.asyncio
-    async def test_max_turns_safety(self):
+    async def test_max_turns_pauses_goal(self):
         hook = GoalHook(max_turns=2)
         hook.set_goal("impossible goal")
 
@@ -49,11 +49,50 @@ class TestGoalHook:
         await hook.after_iteration(ctx)
         assert ctx.continue_loop is True
 
-        # Turn 3 — exceeds max
+        # Turn 3 — exceeds max, pauses instead of clearing
         ctx.continue_loop = False
         await hook.after_iteration(ctx)
         assert ctx.continue_loop is False
-        assert hook.condition is None
+        assert hook.condition == "impossible goal"
+        assert hook.paused is True
+        # Injected user message about pausing
+        assert any("[Goal]" in m.get("content", "") for m in ctx.messages)
+
+    @pytest.mark.asyncio
+    async def test_paused_goal_stops_loop(self):
+        hook = GoalHook()
+        hook.set_goal("something")
+        hook.pause_goal()
+
+        ctx = AgentHookContext(messages=[{"role": "user", "content": "hi"}])
+        await hook.after_iteration(ctx)
+        assert ctx.continue_loop is False
+        assert hook.turn_count == 0
+
+    @pytest.mark.asyncio
+    async def test_resumed_goal_continues_loop(self):
+        hook = GoalHook(max_turns=5)
+        hook.set_goal("something")
+        # Simulate reaching max turns
+        hook._turn_count = 5
+        hook.pause_goal()
+        hook.resume_goal()
+
+        assert hook.turn_count == 0
+        ctx = AgentHookContext(messages=[{"role": "user", "content": "hi"}])
+        await hook.after_iteration(ctx)
+        assert ctx.continue_loop is True
+        assert hook.turn_count == 1
+
+    @pytest.mark.asyncio
+    async def test_after_tools_ticks(self):
+        hook = GoalHook()
+        hook.set_goal("something")
+
+        ctx = AgentHookContext(messages=[{"role": "user", "content": "hi"}])
+        await hook.after_tools(ctx)
+        assert ctx.continue_loop is True
+        assert hook.turn_count == 1
 
     def test_set_and_clear_goal(self):
         hook = GoalHook()
@@ -64,6 +103,15 @@ class TestGoalHook:
         assert hook.turn_count == 0
         hook.clear_goal()
         assert hook.condition is None
+
+    def test_set_resets_pause(self):
+        hook = GoalHook()
+        hook.set_goal("old")
+        hook.pause_goal()
+        assert hook.paused is True
+        hook.set_goal("new")
+        assert hook.paused is False
+        assert hook.condition == "new"
 
 
 # ---- GoalTool ----
@@ -78,7 +126,7 @@ class TestGoalTool:
         props = schema["function"]["parameters"]["properties"]
         assert "action" in props
         assert "goal" in props
-        assert props["action"]["enum"] == ["set", "status", "clear"]
+        assert props["action"]["enum"] == ["set", "pause", "resume", "status", "clear"]
 
     @pytest.mark.asyncio
     async def test_set_action(self):
@@ -96,6 +144,64 @@ class TestGoalTool:
 
         result = await tool.run_async({"action": "set"})
         assert "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_pause_action(self):
+        hook = GoalHook()
+        hook.set_goal("something")
+        tool = GoalTool(hook)
+
+        result = await tool.run_async({"action": "pause"})
+        assert "paused" in result.lower()
+        assert hook.paused is True
+
+    @pytest.mark.asyncio
+    async def test_pause_no_goal(self):
+        hook = GoalHook()
+        tool = GoalTool(hook)
+
+        result = await tool.run_async({"action": "pause"})
+        assert "No active goal" in result
+
+    @pytest.mark.asyncio
+    async def test_pause_already_paused(self):
+        hook = GoalHook()
+        hook.set_goal("something")
+        hook.pause_goal()
+        tool = GoalTool(hook)
+
+        result = await tool.run_async({"action": "pause"})
+        assert "already paused" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_resume_action(self):
+        hook = GoalHook()
+        hook.set_goal("something")
+        hook._turn_count = 100
+        hook.pause_goal()
+        tool = GoalTool(hook)
+
+        result = await tool.run_async({"action": "resume"})
+        assert "resumed" in result.lower()
+        assert hook.paused is False
+        assert hook.turn_count == 0
+
+    @pytest.mark.asyncio
+    async def test_resume_not_paused(self):
+        hook = GoalHook()
+        hook.set_goal("something")
+        tool = GoalTool(hook)
+
+        result = await tool.run_async({"action": "resume"})
+        assert "not paused" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_resume_no_goal(self):
+        hook = GoalHook()
+        tool = GoalTool(hook)
+
+        result = await tool.run_async({"action": "resume"})
+        assert "No goal" in result
 
     @pytest.mark.asyncio
     async def test_clear_action(self):
@@ -131,3 +237,14 @@ class TestGoalTool:
         tool = GoalTool(hook)
         result = await tool.run_async({"action": "status"})
         assert "complete the task" in result
+        assert "active" in result
+
+    @pytest.mark.asyncio
+    async def test_status_shows_paused(self):
+        hook = GoalHook()
+        hook.set_goal("something")
+        hook.pause_goal()
+
+        tool = GoalTool(hook)
+        result = await tool.run_async({"action": "status"})
+        assert "paused" in result

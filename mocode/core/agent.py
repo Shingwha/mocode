@@ -159,20 +159,25 @@ class AgentLoop:
             msg["tool_calls"] = tool_calls
         return msg
 
+    _IMG_MEDIA = {
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+    }
+
     @staticmethod
     def _build_user_content(text: str, images: list[str]) -> list[dict] | str:
-        IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
         parts: list[dict] = []
 
         for path_str in images:
             p = Path(path_str)
-            if not p.exists() or p.suffix.lower() not in IMAGE_EXTS:
+            if not p.exists() or p.suffix.lower() not in AgentLoop._IMG_MEDIA:
                 continue
             try:
                 b64 = base64.b64encode(p.read_bytes()).decode()
+                media_type = AgentLoop._IMG_MEDIA[p.suffix.lower()]
                 parts.append({
                     "type": "image_url",
-                    "image_url": {"url": f"data:image/{p.suffix[1:]};base64,{b64}"},
+                    "image_url": {"url": f"data:{media_type};base64,{b64}"},
                 })
             except Exception:
                 continue
@@ -226,12 +231,13 @@ class AgentLoop:
             return self._truncate(result)
         except ToolError as e:
             result = f"{e.code}: {e.message}"
+            ctx.tool_error = result
         except Exception as e:
             result = f"error: {e}"
+            ctx.tool_error = result
 
         result = self._truncate(result)
         ctx.tool_result = result
-        ctx.tool_error = None
         ctx.tool_timeout = None
         await self.hooks.on_tool_complete(ctx)
         return result
