@@ -58,6 +58,10 @@ def _tool_summary(name: str, args: dict) -> str:
 
 
 class CLIDisplayHook(AgentHook):
+    async def on_response(self, ctx: AgentHookContext) -> None:
+        if ctx.final_content and ctx.response and ctx.response.tool_calls:
+            print(ctx.final_content)
+
     async def on_tool_start(self, ctx: AgentHookContext) -> None:
         summary = _tool_summary(ctx.tool_name, ctx.tool_args)
         print(f"  {ctx.tool_name}({summary})")

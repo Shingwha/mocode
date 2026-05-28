@@ -120,6 +120,10 @@ class AgentLoop:
                 final_response = response.content
                 ctx.final_content = response.content
 
+            ctx.response = response
+            ctx.stop_reason = response.finish_reason
+            await self.hooks.on_response(ctx)
+
             if response.tool_calls:
                 tool_results = await self._run_tool_calls_parallel(response.tool_calls, ctx)
                 self._tool_call_count += len(response.tool_calls)

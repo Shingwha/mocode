@@ -52,6 +52,9 @@ class AgentHook:
     async def before_iteration(self, ctx: AgentHookContext) -> None:
         """Before each LLM call. ctx.messages is modifiable."""
 
+    async def on_response(self, ctx: AgentHookContext) -> None:
+        """After each LLM response. Read ctx.response/final_content/usage."""
+
     async def after_tools(self, ctx: AgentHookContext) -> None:
         """After all tool results are collected. ctx.messages is modifiable."""
 
@@ -88,6 +91,13 @@ class HookRunner:
         for h in self._hooks:
             try:
                 await h.after_tools(ctx)
+            except Exception:
+                pass
+
+    async def on_response(self, ctx: AgentHookContext) -> None:
+        for h in self._hooks:
+            try:
+                await h.on_response(ctx)
             except Exception:
                 pass
 
