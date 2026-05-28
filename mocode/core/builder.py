@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any, Self
 
 from .agent import AgentLoop, AgentConfig
-from .hook import Hooks
+from .hook import AgentHook, HookRunner
 from .prompt import Prompt, Section
 from .provider import Provider
 from .tool import Tool, ToolRegistry
@@ -30,7 +30,7 @@ class Agent:
         self._provider: Provider | None = None
         self._system_prompt: str | Prompt | list[Section] | None = None
         self._tools: ToolRegistry | list[Tool] | None = None
-        self._hooks: Hooks | None = None
+        self._hooks: list[AgentHook] | None = None
         self._agent_config: AgentConfig | None = None
         self._prompt_context: dict[str, Any] | None = None
         self._prompt_format: str = "xml"
@@ -47,7 +47,7 @@ class Agent:
         self._tools = tools
         return self
 
-    def hooks(self, hooks: Hooks) -> Self:
+    def hooks(self, hooks: list[AgentHook]) -> Self:
         self._hooks = hooks
         return self
 
@@ -96,6 +96,6 @@ class Agent:
             provider=self._provider,
             system_prompt=prompt_str,
             tools=registry,
-            hooks=self._hooks or Hooks(),
+            hooks=HookRunner(self._hooks or []),
             config=self._agent_config or AgentConfig(),
         )

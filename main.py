@@ -1,4 +1,4 @@
-"""MoCode 0.3 — Multi-channel agent gateway.
+"""MoCode 0.3 — CLI agent tool.
 
 Usage:
     uv run main.py
@@ -8,17 +8,15 @@ import asyncio
 import logging
 from pathlib import Path
 
-from mocode.app import Config, FileSessionStore, Gateway
-from mocode.app.gateway import register_gateway_tools
-from mocode.channels import WeixinChannel
-from mocode.core import Agent, Hooks, TOOL_START, TOOL_COMPLETE
+from mocode.app import Config
+from mocode.core import Agent, AgentHook, AgentHookContext
 from mocode.core.skill import SkillManager
 from mocode.core.tool import ToolRegistry
 from mocode.prompts.app import build_system_prompt
 from mocode.providers.openai import OpenAIProvider
 from mocode.tools import (
     BashTool, ReadTool, EditTool, GlobTool, GrepTool,
-    CompactManager, CompactTool, SubAgentTool, SkillTool,
+    CompactHook, CompactTool, SubAgentTool, SkillTool,
     ImageTool,
 )
 
@@ -28,7 +26,6 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
-log = logging.getLogger("tools")
 
 HOME = Path.home() / ".mocode"
 
@@ -42,25 +39,30 @@ def _read_memory(name: str) -> str:
     return p.read_text(encoding="utf-8").strip() if p.exists() else ""
 
 
-def _setup_hooks() -> Hooks:
-    hooks = Hooks()
+def _tool_summary(name: str, args: dict) -> str:
+    """Extract the key param for concise one-line display."""
+    if name in ("read", "write", "append", "edit"):
+        return args.get("path", "")
+    if name == "bash":
+        cmd = args.get("command", "")
+        return cmd[:60] + ("..." if len(cmd) > 60 else "")
+    if name in ("glob", "grep"):
+        return args.get("pat", "")
+    if name == "fetch":
+        return args.get("url", "")
+    if name == "sub_agent":
+        task = args.get("task", "")
+        return task[:60] + ("..." if len(task) > 60 else "")
+    return str(args)[:80]
 
-    def on_start(d):
-        log.info("▶ %s(%s)", d.get("name"), str(d.get("args", ""))[:200])
 
-    def on_complete(d):
-        if "error" in d:
-            log.warning("✖ %s: %s", d.get("name"), d["error"])
-        elif "timeout" in d:
-            log.warning("⏱ %s: timeout %ss", d.get("name"), d["timeout"])
-        else:
-            log.info("✔ %s → %s", d.get("name"), str(d.get("result", ""))[:300])
-
-    return hooks.on(TOOL_START, on_start).on(TOOL_COMPLETE, on_complete)
+class CLIDisplayHook(AgentHook):
+    async def on_tool_start(self, ctx: AgentHookContext) -> None:
+        summary = _tool_summary(ctx.tool_name, ctx.tool_args)
+        print(f"  {ctx.tool_name}({summary})")
 
 
-def create_agent(session_key: str):
-    """Per-user agent via standard build flow."""
+def create_agent():
     pc = config.current
 
     provider = OpenAIProvider(
@@ -69,9 +71,8 @@ def create_agent(session_key: str):
     )
 
     tools = ToolRegistry()
-    for t in [ReadTool, EditTool, GlobTool, GrepTool, BashTool()]:
+    for t in [ReadTool(), EditTool, GlobTool, GrepTool, BashTool()]:
         tools.register(t)
-    register_gateway_tools(tools)
 
     ic = config.image
     if ic.enabled:
@@ -90,45 +91,41 @@ def create_agent(session_key: str):
         skills_dir=str(HOME / "skills"), sessions_dir=str(HOME / "sessions"),
     )
 
-    hooks = _setup_hooks()
+    compact_hook = CompactHook(provider)
 
-    # Standard build flow: Agent() -> .provider() -> .prompt() -> .tools() -> .hooks() -> .build()
     agent = (
         Agent()
         .provider(provider)
         .prompt(prompt)
         .tools(tools)
-        .hooks(hooks)
+        .hooks([CLIDisplayHook(), compact_hook])
         .build()
     )
 
-    # Post-build tools (need agent reference)
-    compact = CompactManager(provider, hooks=hooks)
-    compact.register(agent)
-    tools.register(CompactTool(lambda: agent.messages, compact))
+    tools.register(CompactTool(provider, lambda: agent.messages))
     tools.register(SubAgentTool(lambda: agent.provider, tools, tool_timeout=agent.config.tool_timeout))
 
     return agent
 
 
 async def main():
-    channel = WeixinChannel(
-        state_dir=HOME / "weixin",
-        media_dir=HOME / "media" / "weixin",
-        provider_config=config.current,
-    )
-    if not await channel.login():
-        return
+    agent = create_agent()
+    print("MoCode CLI Agent (type 'exit' to quit)\n")
 
-    gateway = Gateway(
-        channels={"weixin": channel},
-        agent_factory=create_agent,
-        session_store=FileSessionStore(HOME / "sessions"),
-    )
-    try:
-        await gateway.run()
-    except KeyboardInterrupt:
-        await gateway.shutdown()
+    while True:
+        try:
+            user_input = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in ("exit", "quit"):
+            break
+
+        result = await agent.chat(user_input)
+        print(f"\n{result}\n")
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from mocode.app.gateway import (
     register_gateway_tools,
 )
 from mocode.channels.types import InboundMessage, OutboundMessage
-from mocode.core import AgentConfig, AgentLoop, Hooks, ToolRegistry
+from mocode.core import AgentConfig, AgentLoop, HookRunner, ToolRegistry
 from mocode.core.provider import Response
 
 
@@ -42,7 +42,7 @@ def _make_agent(session_key: str) -> AgentLoop:
         provider=provider,
         system_prompt="test",
         tools=ToolRegistry(),
-        hooks=Hooks(),
+        hooks=HookRunner(),
         config=AgentConfig(),
     )
 

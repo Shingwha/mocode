@@ -4,12 +4,9 @@ from __future__ import annotations
 
 import base64
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+from ..core.hook import AgentHook, AgentHookContext
 from ..core.tool import Tool, ToolError
-
-if TYPE_CHECKING:
-    from ..core.hook import Hooks
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _EXT_TO_MEDIA = {
@@ -22,6 +19,21 @@ _EXT_TO_MEDIA = {
 }
 
 
+class ImageInjectionHook(AgentHook):
+    """Hook for ReadTool to inject image messages after tool execution."""
+
+    def __init__(self):
+        self._pending: list[dict] = []
+
+    def add_pending(self, msg: dict) -> None:
+        self._pending.append(msg)
+
+    async def after_tools(self, ctx: AgentHookContext) -> None:
+        if self._pending:
+            ctx.messages.extend(list(self._pending))
+            self._pending.clear()
+
+
 def _read_text(p: Path, offset: int, limit: int) -> str:
     try:
         lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
@@ -31,11 +43,11 @@ def _read_text(p: Path, offset: int, limit: int) -> str:
     return "".join(f"{offset + idx + 1:4}| {line}" for idx, line in enumerate(selected))
 
 
-def ReadTool(hooks: Hooks | None = None) -> Tool:
-    """Create a read tool. Pass hooks to enable image reading."""
+def ReadTool(image_hook: ImageInjectionHook | None = None) -> Tool:
+    """Create a read tool. Pass image_hook to enable image reading."""
 
-    if hooks is None:
-        # Pure text mode — same as before
+    if image_hook is None:
+        # Pure text mode
         def _read(args: dict) -> str:
             p = Path(args["path"])
             if not p.exists():
@@ -48,8 +60,6 @@ def ReadTool(hooks: Hooks | None = None) -> Tool:
 
     else:
         # Image-capable mode — inject images via hook
-        _pending: list[dict] = []
-
         def _read(args: dict) -> str:
             p = Path(args["path"])
             if not p.exists():
@@ -64,7 +74,7 @@ def ReadTool(hooks: Hooks | None = None) -> Tool:
                     raise ToolError(f"Failed to read image: {e}", "read_error")
 
                 media_type = _EXT_TO_MEDIA[p.suffix.lower()]
-                _pending.append({
+                image_hook.add_pending({
                     "role": "user",
                     "content": [
                         {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{b64}"}},
@@ -77,14 +87,6 @@ def ReadTool(hooks: Hooks | None = None) -> Tool:
             offset = int(args.get("offset", 0))
             limit = int(args.get("limit", 0)) or 999999
             return _read_text(p, offset, limit)
-
-        async def _inject_images(messages: list[dict]) -> list[dict]:
-            if _pending:
-                messages.extend(list(_pending))
-                _pending.clear()
-            return messages
-
-        hooks.on("post_tool_results", _inject_images)
 
     return Tool(
         "read",

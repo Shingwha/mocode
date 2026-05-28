@@ -10,11 +10,9 @@ from mocode.core import (
     Tool,
     ToolRegistry,
     ToolError,
-    Hooks,
-    TEXT_COMPLETE,
-    MESSAGE_ADDED,
-    TOOL_START,
-    TOOL_COMPLETE,
+    AgentHook,
+    AgentHookContext,
+    HookRunner,
     Prompt,
     Section,
     Provider,
@@ -96,9 +94,10 @@ class TestBuilder:
         assert agent._tools.all() == []
 
     def test_hooks(self):
-        hooks = Hooks()
-        agent = Agent().provider(MockProvider()).prompt("t").hooks(hooks).build()
-        assert agent.hooks is hooks
+        hook = AgentHook()
+        agent = Agent().provider(MockProvider()).prompt("t").hooks([hook]).build()
+        assert isinstance(agent.hooks, HookRunner)
+        assert len(agent.hooks._hooks) == 1
 
 
 # ---- Chat ----
@@ -127,13 +126,14 @@ class TestChat:
     @pytest.mark.asyncio
     async def test_hooks_emitted(self):
         events = []
-        hooks = Hooks()
-        hooks.on(TEXT_COMPLETE, lambda data: events.append(TEXT_COMPLETE))
-        hooks.on(MESSAGE_ADDED, lambda data: events.append(MESSAGE_ADDED))
-        agent = Agent().provider(MockProvider([Response(content="hi")])).prompt("t").hooks(hooks).build()
+
+        class TestHook(AgentHook):
+            async def after_iteration(self, ctx):
+                events.append("after_iteration")
+
+        agent = Agent().provider(MockProvider([Response(content="hi")])).prompt("t").hooks([TestHook()]).build()
         await agent.chat("hello")
-        assert MESSAGE_ADDED in events
-        assert TEXT_COMPLETE in events
+        assert "after_iteration" in events
 
     @pytest.mark.asyncio
     async def test_cancel_propagates(self):
@@ -146,7 +146,7 @@ class TestChat:
             provider=MockProvider(),
             system_prompt="t",
             tools=ToolRegistry(),
-            hooks=Hooks(),
+            hooks=HookRunner(),
         )
         agent.provider.call = delayed_call
         agent.messages.append({"role": "user", "content": "hello"})
@@ -345,58 +345,92 @@ class TestTool:
         assert reg.get("b") is not None
 
 
-# ---- Hooks ----
+# ---- AgentHook / HookRunner ----
 
 
-class TestHooks:
+class TestAgentHook:
     @pytest.mark.asyncio
-    async def test_emit_receive(self):
-        hooks = Hooks()
-        got = []
-        hooks.on(TEXT_COMPLETE, lambda data: got.append(data))
-        await hooks.emit(TEXT_COMPLETE, {"x": 1})
-        assert got == [{"x": 1}]
+    async def test_hook_receives_ctx(self):
+        received = []
 
-    @pytest.mark.asyncio
-    async def test_priority(self):
-        hooks = Hooks()
-        order = []
-        hooks.on(TEXT_COMPLETE, lambda data: order.append("lo"), priority=100)
-        hooks.on(TEXT_COMPLETE, lambda data: order.append("hi"), priority=10)
-        await hooks.emit(TEXT_COMPLETE)
-        assert order == ["hi", "lo"]
+        class TestHook(AgentHook):
+            async def after_iteration(self, ctx):
+                received.append(ctx)
+
+        ctx = AgentHookContext(final_content="test")
+        runner = HookRunner([TestHook()])
+        await runner.after_iteration(ctx)
+        assert len(received) == 1
+        assert received[0].final_content == "test"
 
     @pytest.mark.asyncio
-    async def test_off(self):
-        hooks = Hooks()
-        n = [0]
-        h = lambda data: n.__setitem__(0, n[0] + 1)
-        hooks.on(TEXT_COMPLETE, h)
-        await hooks.emit(TEXT_COMPLETE)
-        assert n[0] == 1
-        hooks.off(TEXT_COMPLETE, h)
-        await hooks.emit(TEXT_COMPLETE)
-        assert n[0] == 1
+    async def test_multiple_hooks_fan_out(self):
+        calls = []
+
+        class H1(AgentHook):
+            async def before_iteration(self, ctx):
+                calls.append("h1")
+
+        class H2(AgentHook):
+            async def before_iteration(self, ctx):
+                calls.append("h2")
+
+        runner = HookRunner([H1(), H2()])
+        await runner.before_iteration(AgentHookContext())
+        assert calls == ["h1", "h2"]
 
     @pytest.mark.asyncio
-    async def test_custom_hook(self):
-        hooks = Hooks()
-        got = []
-        hooks.on("custom", lambda data: got.append(data))
-        await hooks.emit("custom", "hello")
-        assert got == ["hello"]
+    async def test_error_isolation(self):
+        class BadHook(AgentHook):
+            async def before_iteration(self, ctx):
+                raise RuntimeError("boom")
+
+        calls = []
+
+        class GoodHook(AgentHook):
+            async def before_iteration(self, ctx):
+                calls.append("good")
+
+        runner = HookRunner([BadHook(), GoodHook()])
+        await runner.before_iteration(AgentHookContext())
+        assert calls == ["good"]
 
     @pytest.mark.asyncio
-    async def test_clear(self):
-        hooks = Hooks()
-        hooks.on(TEXT_COMPLETE, lambda data: None)
-        hooks.clear()
-        await hooks.emit(TEXT_COMPLETE)  # no raise
+    async def test_before_iteration_modifies_messages(self):
+        class FilterHook(AgentHook):
+            async def before_iteration(self, ctx):
+                ctx.messages[:] = [m for m in ctx.messages if m.get("role") != "system"]
+
+        runner = HookRunner([FilterHook()])
+        ctx = AgentHookContext(messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hi"},
+        ])
+        await runner.before_iteration(ctx)
+        assert len(ctx.messages) == 1
+        assert ctx.messages[0]["role"] == "user"
 
     @pytest.mark.asyncio
-    async def test_interceptor(self):
-        hooks = Hooks()
-        hooks.on("pre_loop", lambda data: [m for m in data if m.get("role") != "system"])
-        result = await hooks.emit("pre_loop", [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}])
-        assert len(result) == 1
-        assert result[0]["role"] == "user"
+    async def test_add_hook(self):
+        runner = HookRunner()
+        assert len(runner._hooks) == 0
+        runner.add(AgentHook())
+        assert len(runner._hooks) == 1
+
+    @pytest.mark.asyncio
+    async def test_tool_hooks(self):
+        events = []
+
+        class ToolHook(AgentHook):
+            async def on_tool_start(self, ctx):
+                events.append(("start", ctx.tool_name))
+
+            async def on_tool_complete(self, ctx):
+                events.append(("complete", ctx.tool_name, ctx.tool_result))
+
+        runner = HookRunner([ToolHook()])
+        ctx = AgentHookContext(tool_name="bash", tool_args={"cmd": "ls"}, tool_call_id="c1")
+        await runner.on_tool_start(ctx)
+        ctx.tool_result = "file1\nfile2"
+        await runner.on_tool_complete(ctx)
+        assert events == [("start", "bash"), ("complete", "bash", "file1\nfile2")]

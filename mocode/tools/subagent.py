@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..core.agent import AgentConfig, AgentLoop
-from ..core.hook import Hooks
+from ..core.hook import AgentHook, HookRunner
 from ..core.tool import Tool, ToolRegistry
 from ..prompts.subagent import subagent_system_prompt
 from .utils import resolve_provider_getter
@@ -50,12 +50,12 @@ class SubAgent:
         provider: Provider | Callable[[], Provider],
         tools: ToolRegistry,
         config: SubAgentConfig,
-        hooks: Hooks | None = None,
+        hooks: list[AgentHook] | None = None,
     ):
         self._provider_getter = resolve_provider_getter(provider)
         self._tools = tools
         self._config = config
-        self._hooks: Hooks | None = hooks
+        self._hooks: list[AgentHook] | None = hooks
 
     def _build_agent_loop(self) -> AgentLoop:
         """Construct an AgentLoop with SubAgent's configuration."""
@@ -81,7 +81,7 @@ class SubAgent:
             provider=provider,
             system_prompt=self._config.system_prompt,
             tools=filtered_tools,
-            hooks=self._hooks or Hooks(),
+            hooks=HookRunner(self._hooks or []),
             config=agent_config,
         )
 

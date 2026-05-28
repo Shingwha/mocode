@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .hook import Hooks, MESSAGE_ADDED, TEXT_COMPLETE, TOOL_START, TOOL_COMPLETE, USAGE_UPDATE, PRE_LOOP
+from .hook import HookRunner, AgentHookContext
 from .provider import Provider, Response, Usage
 from .tool import ToolError, ToolRegistry
 
@@ -42,7 +42,7 @@ class AgentLoop:
         provider: Provider,
         system_prompt: str,
         tools: ToolRegistry,
-        hooks: Hooks,
+        hooks: HookRunner,
         config: AgentConfig | None = None,
     ):
         self.provider = provider
@@ -73,10 +73,7 @@ class AgentLoop:
         else:
             content = user_input
 
-        msg = await self._emit(MESSAGE_ADDED, {"role": "user", "content": content})
-        self.messages.append(msg)
-
-        self.messages = await self.hooks.emit(PRE_LOOP, self.messages)
+        self._messages.append({"role": "user", "content": content})
 
         return await self._loop()
 
@@ -99,12 +96,17 @@ class AgentLoop:
             )
 
     async def _loop(self) -> str:
+        ctx = AgentHookContext(messages=self._messages)
         final_response = ""
         self._iteration_count = 0
         self._tool_call_count = 0
+
         while True:
+            await self.hooks.before_iteration(ctx)
+            self._messages = ctx.messages
+
             response: Response = await self.provider.call(
-                self.messages,
+                self._messages,
                 self.system_prompt,
                 self._tools.all_schemas(),
                 self.config.max_tokens,
@@ -112,26 +114,34 @@ class AgentLoop:
 
             if response.usage:
                 self._last_usage = response.usage
-                await self._emit(USAGE_UPDATE, {"prompt_tokens": response.usage.prompt_tokens})
+                ctx.usage = response.usage
 
             if response.content:
-                final_response = await self._emit(TEXT_COMPLETE, response.content)
+                final_response = response.content
+                ctx.final_content = response.content
 
             if response.tool_calls:
-                tool_results = await self._run_tool_calls_parallel(response.tool_calls)
+                tool_results = await self._run_tool_calls_parallel(response.tool_calls, ctx)
                 self._tool_call_count += len(response.tool_calls)
                 all_tc_dicts = [
                     {"id": t.id, "type": "function", "function": {"name": t.name, "arguments": t.arguments}}
                     for t in response.tool_calls
                 ]
-                self.messages.append(self._assistant_msg(response, all_tc_dicts))
-                self.messages.extend(tool_results)
-                self.messages = await self._emit("post_tool_results", self.messages)
+                self._messages.append(self._assistant_msg(response, all_tc_dicts))
+                self._messages.extend(tool_results)
+
+                ctx.tool_calls = response.tool_calls
+                ctx.tool_results = tool_results
+                ctx.messages = self._messages
+                await self.hooks.after_tools(ctx)
+                self._messages = ctx.messages
+
                 self._iteration_count += 1
                 if self.config.max_iterations > 0 and self._iteration_count >= self.config.max_iterations:
                     break
             else:
-                self.messages.append(self._assistant_msg(response))
+                self._messages.append(self._assistant_msg(response))
+                await self.hooks.after_iteration(ctx)
                 break
 
         return final_response
@@ -177,17 +187,19 @@ class AgentLoop:
             return result[:limit] + "\n... [truncated]"
         return result
 
-    async def _run_tool_async(self, tool_name: str, tool_args: dict) -> str:
+    async def _run_tool_async(self, tool_name: str, tool_args: dict, ctx: AgentHookContext) -> str:
         """Returns tool result string."""
         call_id = self._next_call_id()
 
-        tool_data = await self._emit(TOOL_START, {"name": tool_name, "args": tool_args, "call_id": call_id})
-        tool_name = tool_data["name"]
-        tool_args = tool_data["args"]
+        ctx.tool_name = tool_name
+        ctx.tool_args = tool_args
+        ctx.tool_call_id = call_id
+        await self.hooks.on_tool_start(ctx)
 
         tool = self._tools.get(tool_name)
         if tool is None:
-            await self._emit(TOOL_COMPLETE, {"name": tool_name, "error": f"unknown tool '{tool_name}'", "call_id": call_id})
+            ctx.tool_error = f"unknown tool '{tool_name}'"
+            await self.hooks.on_tool_complete(ctx)
             return f"unknown tool '{tool_name}'"
 
         try:
@@ -203,7 +215,10 @@ class AgentLoop:
                 )
         except asyncio.TimeoutError:
             result = f"timeout: {self.config.tool_timeout}s"
-            await self._emit(TOOL_COMPLETE, {"name": tool_name, "timeout": self.config.tool_timeout, "call_id": call_id})
+            ctx.tool_timeout = self.config.tool_timeout
+            ctx.tool_result = None
+            ctx.tool_error = None
+            await self.hooks.on_tool_complete(ctx)
             return self._truncate(result)
         except ToolError as e:
             result = f"{e.code}: {e.message}"
@@ -211,13 +226,16 @@ class AgentLoop:
             result = f"error: {e}"
 
         result = self._truncate(result)
-        tc_data = await self._emit(TOOL_COMPLETE, {"name": tool_name, "result": result, "call_id": call_id})
-        return tc_data["result"]
+        ctx.tool_result = result
+        ctx.tool_error = None
+        ctx.tool_timeout = None
+        await self.hooks.on_tool_complete(ctx)
+        return result
 
-    async def _run_tool_calls_parallel(self, tool_calls: list) -> list[dict]:
+    async def _run_tool_calls_parallel(self, tool_calls: list, ctx: AgentHookContext) -> list[dict]:
         async def _run_one(tc):
             tool_args = json.loads(tc.arguments)
-            result = await self._run_tool_async(tc.name, tool_args)
+            result = await self._run_tool_async(tc.name, tool_args, ctx)
             return {"role": "tool", "tool_call_id": tc.id, "content": result}
 
         if len(tool_calls) == 1:
@@ -242,9 +260,6 @@ class AgentLoop:
         return tool_results
 
     # ---- Helpers ----
-
-    async def _emit(self, name: str, data: Any = None) -> Any:
-        return await self.hooks.emit(name, data)
 
     def _next_call_id(self) -> str:
         self._call_seq += 1

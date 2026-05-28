@@ -3,7 +3,7 @@
 import pytest
 
 from mocode.core import (
-    Hooks, TOOL_START, TOOL_COMPLETE, Response, ToolCall, Tool, ToolRegistry,
+    AgentHook, AgentHookContext, Response, ToolCall, Tool, ToolRegistry,
 )
 from mocode.tools.subagent import (
     SubAgent, SubAgentConfig, SubAgentResult, SubAgentTool,
@@ -182,10 +182,14 @@ class TestSubAgent:
 
     @pytest.mark.asyncio
     async def test_hooks_emitted(self):
-        hooks = Hooks()
         events = []
-        hooks.on(TOOL_START, lambda data: events.append(("start", data["name"])))
-        hooks.on(TOOL_COMPLETE, lambda data: events.append(("complete", data["name"])))
+
+        class TestHook(AgentHook):
+            async def on_tool_start(self, ctx):
+                events.append(("start", ctx.tool_name))
+
+            async def on_tool_complete(self, ctx):
+                events.append(("complete", ctx.tool_name))
 
         tool = Tool("ping", "Ping", {}, lambda a: "pong")
         registry = ToolRegistry()
@@ -196,7 +200,7 @@ class TestSubAgent:
             Response(content="done"),
         ])
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(provider=provider, tools=registry, config=cfg, hooks=hooks)
+        sub = SubAgent(provider=provider, tools=registry, config=cfg, hooks=[TestHook()])
         await sub.run("ping")
 
         assert ("start", "ping") in events
