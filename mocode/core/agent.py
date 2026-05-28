@@ -114,10 +114,10 @@ class AgentLoop:
                 self.config.max_tokens,
             )
 
+            ctx.reset_response()
             if response.usage:
                 self._last_usage = response.usage
                 ctx.usage = response.usage
-
             if response.content:
                 final_response = response.content
                 ctx.final_content = response.content
@@ -208,6 +208,7 @@ class AgentLoop:
         """Returns tool result string."""
         call_id = self._next_call_id()
 
+        ctx.reset_tool()
         ctx.tool_name = tool_name
         ctx.tool_args = tool_args
         ctx.tool_call_id = call_id
@@ -231,12 +232,9 @@ class AgentLoop:
                     timeout=self.config.tool_timeout,
                 )
         except asyncio.TimeoutError:
-            result = f"timeout: {self.config.tool_timeout}s"
             ctx.tool_timeout = self.config.tool_timeout
-            ctx.tool_result = None
-            ctx.tool_error = None
             await self.hooks.on_tool_complete(ctx)
-            return self._truncate(result)
+            return self._truncate(f"timeout: {self.config.tool_timeout}s")
         except ToolError as e:
             result = f"{e.code}: {e.message}"
             ctx.tool_error = result
@@ -244,11 +242,9 @@ class AgentLoop:
             result = f"error: {e}"
             ctx.tool_error = result
 
-        result = self._truncate(result)
-        ctx.tool_result = result
-        ctx.tool_timeout = None
+        ctx.tool_result = self._truncate(result)
         await self.hooks.on_tool_complete(ctx)
-        return result
+        return ctx.tool_result
 
     async def _run_tool_calls_parallel(self, tool_calls: list, ctx: AgentHookContext) -> list[dict]:
         async def _run_one(tc):

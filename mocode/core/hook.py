@@ -41,6 +41,22 @@ class AgentHookContext:
     compact_old: int = 0
     compact_new: int = 0
 
+    def reset_response(self) -> None:
+        """Clear response-level fields before each iteration."""
+        self.final_content = ""
+        self.reasoning_content = ""
+        self.usage = None
+        self.stop_reason = None
+
+    def reset_tool(self) -> None:
+        """Clear tool-level fields before each tool call."""
+        self.tool_name = ""
+        self.tool_args = {}
+        self.tool_call_id = ""
+        self.tool_result = None
+        self.tool_error = None
+        self.tool_timeout = None
+
 
 class AgentHook:
     """Base class for AgentLoop lifecycle hooks.
