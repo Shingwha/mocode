@@ -17,9 +17,9 @@ from mocode.providers.openai import OpenAIProvider
 from mocode.tools import (
     BashTool, ReadTool, EditTool, GlobTool, GrepTool,
     CompactTool, SubAgentTool, SkillTool,
-    ImageTool,
+    ImageTool, GoalTool,
 )
-from mocode.hooks import CompactHook
+from mocode.hooks import CompactHook, GoalHook
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,18 +93,20 @@ def create_agent():
     )
 
     compact_hook = CompactHook(provider)
+    goal_hook = GoalHook()
 
     agent = (
         Agent()
         .provider(provider)
         .prompt(prompt)
         .tools(tools)
-        .hooks([CLIDisplayHook(), compact_hook])
+        .hooks([CLIDisplayHook(), compact_hook, goal_hook])
         .build()
     )
 
     tools.register(CompactTool(provider, lambda: agent.messages))
     tools.register(SubAgentTool(lambda: agent.provider, tools, tool_timeout=agent.config.tool_timeout))
+    tools.register(GoalTool(goal_hook))
 
     return agent
 

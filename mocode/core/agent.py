@@ -142,6 +142,10 @@ class AgentLoop:
             else:
                 self._messages.append(self._assistant_msg(response))
                 await self.hooks.after_iteration(ctx)
+                self._messages = ctx.messages
+                if ctx.continue_loop:
+                    ctx.continue_loop = False
+                    continue
                 break
 
         return final_response

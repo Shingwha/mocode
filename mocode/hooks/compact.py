@@ -17,12 +17,10 @@ class CompactHook(AgentHook):
         self,
         provider,
         threshold: float = 0.80,
-        keep_recent_turns: int = 0,
         context_window: int = 128_000,
     ):
         self._provider = provider
         self._threshold = threshold
-        self._keep_recent_turns = keep_recent_turns
         self._context_window = context_window
         self._last_prompt_tokens: int = 0
 
@@ -37,7 +35,6 @@ class CompactHook(AgentHook):
             old_count = len(ctx.messages)
             ctx.messages[:] = await compact_messages(
                 self._provider, ctx.messages,
-                keep_recent_turns=self._keep_recent_turns,
             )
             ctx.compact_old = old_count
             ctx.compact_new = len(ctx.messages)

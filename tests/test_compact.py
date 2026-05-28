@@ -5,7 +5,7 @@ import pytest
 from mocode.core import AgentHookContext, Response, Usage
 from mocode.tools.compact import (
     compact_messages, CompactTool,
-    find_turn_starts, strip_tool_messages, format_messages_for_summary,
+    format_messages_for_summary,
 )
 from mocode.hooks.compact import CompactHook
 
@@ -33,12 +33,12 @@ class MockProvider:
 
 class TestCompactMessages:
     @pytest.mark.asyncio
-    async def test_returns_original_when_few_turns(self):
+    async def test_returns_original_when_few_messages(self):
         messages = [
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
         ]
-        result = await compact_messages(MockProvider(), messages, keep_recent_turns=2)
+        result = await compact_messages(MockProvider(), messages)
         assert result is messages
 
     @pytest.mark.asyncio
@@ -51,13 +51,12 @@ class TestCompactMessages:
             {"role": "user", "content": "Now add tests"},
             {"role": "assistant", "content": "Added test_auth.py"},
         ]
-        result = await compact_messages(provider, messages, keep_recent_turns=0)
+        result = await compact_messages(provider, messages)
 
-        assert len(result) == 2
+        assert len(result) == 1
         assert result[0]["role"] == "user"
         assert "[Context Summary]" in result[0]["content"]
         assert "Summary of conversation" in result[0]["content"]
-        assert result[1]["role"] == "assistant"
 
     @pytest.mark.asyncio
     async def test_fallback_summary(self):
@@ -66,30 +65,12 @@ class TestCompactMessages:
         messages = [
             {"role": "user", "content": "Hello there"},
             {"role": "assistant", "content": "Hi!"},
+            {"role": "user", "content": "Do something"},
         ]
-        result = await compact_messages(provider, messages, keep_recent_turns=0)
+        result = await compact_messages(provider, messages)
 
-        assert len(result) == 2
+        assert len(result) == 1
         assert "Conversation summary" in result[0]["content"]
-
-    @pytest.mark.asyncio
-    async def test_strips_tool_messages_from_recent(self):
-        provider = MockProvider(responses=[Response(content="summary")])
-
-        messages = [
-            {"role": "user", "content": "old message"},
-            {"role": "assistant", "content": "old response"},
-            {"role": "user", "content": "run the tool"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]},
-            {"role": "tool", "tool_call_id": "1", "content": "output"},
-            {"role": "assistant", "content": "done"},
-        ]
-        result = await compact_messages(provider, messages, keep_recent_turns=1)
-
-        assert len(result) == 4
-        for msg in result[2:]:
-            assert msg.get("role") != "tool"
-            assert "tool_calls" not in msg
 
 
 # ---- CompactHook ----
@@ -167,7 +148,7 @@ class TestCompactHook:
         await hook.before_iteration(ctx)
         assert len(compact_events) == 1
         assert compact_events[0][0] == 4
-        assert compact_events[0][1] == 2
+        assert compact_events[0][1] == 1
 
 
 # ---- CompactTool ----
@@ -195,39 +176,18 @@ class TestCompactTool:
             {"role": "user", "content": "add tests"},
             {"role": "assistant", "content": "added"},
         ]
-        tool = CompactTool(provider, lambda: messages, keep_recent_turns=0)
+        tool = CompactTool(provider, lambda: messages)
         result = await tool.run_async({})
 
         assert "compacted" in result.lower()
-        assert len(messages) == 2
+        assert len(messages) == 1
         assert "[Context Summary]" in messages[0]["content"]
 
 
-# ---- Pure helpers (unchanged) ----
+# ---- Pure helpers ----
 
 
 class TestPureHelpers:
-    def test_find_turn_starts(self):
-        messages = [
-            {"role": "user", "content": "a"},
-            {"role": "assistant", "content": "b"},
-            {"role": "user", "content": "c"},
-            {"role": "assistant", "content": "d"},
-        ]
-        assert find_turn_starts(messages) == [0, 2]
-
-    def test_strip_tool_messages(self):
-        messages = [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "", "tool_calls": [{"id": "1", "type": "function", "function": {"name": "bash", "arguments": "{}"}}]},
-            {"role": "tool", "tool_call_id": "1", "content": "out"},
-            {"role": "assistant", "content": "done"},
-        ]
-        cleaned = strip_tool_messages(messages)
-        assert len(cleaned) == 2
-        assert cleaned[0]["role"] == "user"
-        assert cleaned[1]["content"] == "done"
-
     def test_format_messages_for_summary(self):
         messages = [
             {"role": "user", "content": "hello"},

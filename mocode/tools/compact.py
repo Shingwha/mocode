@@ -22,18 +22,6 @@ logger = logging.getLogger(__name__)
 # ---- Message formatting helpers (pure functions) ----
 
 
-def find_turn_starts(messages: list[dict]) -> list[int]:
-    return [i for i, msg in enumerate(messages) if msg.get("role") == "user"]
-
-
-def strip_tool_messages(messages: list[dict]) -> list[dict]:
-    return [
-        msg for msg in messages
-        if msg.get("role") != "tool"
-        and not (msg.get("role") == "assistant" and msg.get("tool_calls"))
-    ]
-
-
 def format_messages_for_summary(messages: list[dict]) -> str:
     parts = []
     for msg in messages:
@@ -118,39 +106,21 @@ async def _generate_summary(provider, messages_text: str) -> str:
 async def compact_messages(
     provider,
     messages: list[dict],
-    *,
-    keep_recent_turns: int = 0,
 ) -> list[dict]:
-    """Compress messages by generating an LLM summary of older content."""
-    turn_starts = find_turn_starts(messages)
-    keep = keep_recent_turns
-
-    if len(turn_starts) <= keep:
+    """Compress messages by generating an LLM summary."""
+    if len(messages) <= 2:
         return messages
-
-    if keep == 0:
-        recent_messages: list[dict] = []
-    else:
-        split_point = turn_starts[-keep]
-        recent_messages = messages[split_point:]
 
     formatted = format_messages_for_summary(messages)
     summary = await _generate_summary(provider, formatted)
     if not summary:
         summary = build_fallback_summary(messages)
 
-    recent_cleaned = strip_tool_messages(recent_messages)
-
     new_messages = [
         {
             "role": "user",
             "content": f"[Context Summary]\n{summary}\n[End of summary]",
         },
-        {
-            "role": "assistant",
-            "content": "Understood, I will continue based on the summary.",
-        },
-        *recent_cleaned,
     ]
 
     logger.info(
@@ -166,18 +136,13 @@ async def compact_messages(
 def CompactTool(
     provider,
     get_messages: Callable[[], list[dict]],
-    *,
-    keep_recent_turns: int = 0,
 ) -> Tool:
     """Create a tool that lets the LLM trigger context compression."""
     async def _compact(args: dict) -> str:
         messages = get_messages()
         if not messages:
             return "No messages to compact"
-        new_messages = await compact_messages(
-            provider, messages,
-            keep_recent_turns=keep_recent_turns,
-        )
+        new_messages = await compact_messages(provider, messages)
         messages.clear()
         messages.extend(new_messages)
         return f"Context compacted: {len(new_messages)} messages remaining"
