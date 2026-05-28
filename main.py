@@ -12,6 +12,7 @@ from pathlib import Path
 # Windows ANSI support
 if sys.platform == "win32":
     import ctypes
+
     try:
         ctypes.windll.kernel32.SetConsoleMode(
             ctypes.windll.kernel32.GetStdHandle(-11), 7
@@ -33,14 +34,21 @@ from mocode.app import Config
 from mocode.core import Agent, AgentHook, AgentHookContext
 from mocode.core.skill import SkillManager
 from mocode.core.tool import ToolRegistry
+from mocode.hooks import CompactHook, GoalHook
 from mocode.prompts.app import build_system_prompt
 from mocode.providers.openai import OpenAIProvider
 from mocode.tools import (
-    BashTool, ReadTool, EditTool, GlobTool, GrepTool,
-    CompactTool, SubAgentTool, SkillTool,
-    ImageTool, GoalTool,
+    BashTool,
+    CompactTool,
+    EditTool,
+    GlobTool,
+    GoalTool,
+    GrepTool,
+    ImageTool,
+    ReadTool,
+    SkillTool,
+    SubAgentTool,
 )
-from mocode.hooks import CompactHook, GoalHook
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,6 +99,9 @@ class CLIDisplayHook(AgentHook):
         self._total_completion = 0
 
     async def on_response(self, ctx: AgentHookContext) -> None:
+        if ctx.reasoning_content and not (ctx.response and ctx.response.tool_calls):
+            for line in ctx.reasoning_content.splitlines():
+                print(f"{DIM}  ┊ {line}{RST}")
         if ctx.final_content and ctx.response and ctx.response.tool_calls:
             text = ctx.final_content.strip()
             if text:
@@ -117,15 +128,19 @@ class CLIDisplayHook(AgentHook):
             print(f"{RED}  × {ctx.tool_error[:80]}{RST}")
 
     async def on_compact(self, ctx: AgentHookContext) -> None:
-        print(f"{YELLOW}  ─ Compacted: {ctx.compact_old} → {ctx.compact_new} messages{RST}")
+        print(
+            f"{YELLOW}  ─ Compacted: {ctx.compact_old} → {ctx.compact_new} messages{RST}"
+        )
 
 
 def create_agent():
     pc = config.current
 
     provider = OpenAIProvider(
-        api_key=pc.api_key, model=pc.model,
-        base_url=pc.base_url, extra_body=pc.extra_body,
+        api_key=pc.api_key,
+        model=pc.model,
+        base_url=pc.base_url,
+        extra_body=pc.extra_body,
     )
 
     tools = ToolRegistry()
@@ -134,19 +149,28 @@ def create_agent():
 
     ic = config.image
     if ic.enabled:
-        tools.register(ImageTool(
-            base_url=ic.base_url, api_key=ic.api_key, model=ic.model,
-        ))
+        tools.register(
+            ImageTool(
+                base_url=ic.base_url,
+                api_key=ic.api_key,
+                model=ic.model,
+            )
+        )
 
     skill_mgr = SkillManager([HOME / "skills"])
     tools.register(SkillTool(skill_mgr))
 
     prompt = build_system_prompt(
-        tools=tools, skill_manager=skill_mgr, cwd=str(Path.cwd()),
-        soul=_read_memory("SOUL.md"), user=_read_memory("USER.md"),
+        tools=tools,
+        skill_manager=skill_mgr,
+        cwd=str(Path.cwd()),
+        soul=_read_memory("SOUL.md"),
+        user=_read_memory("USER.md"),
         memory=_read_memory("MEMORY.md"),
-        home=str(HOME), config_path=str(HOME / "config.json"),
-        skills_dir=str(HOME / "skills"), sessions_dir=str(HOME / "sessions"),
+        home=str(HOME),
+        config_path=str(HOME / "config.json"),
+        skills_dir=str(HOME / "skills"),
+        sessions_dir=str(HOME / "sessions"),
     )
 
     compact_hook = CompactHook(provider)
@@ -162,7 +186,11 @@ def create_agent():
     )
 
     tools.register(CompactTool(provider, lambda: agent.messages))
-    tools.register(SubAgentTool(lambda: agent.provider, tools, tool_timeout=agent.config.tool_timeout))
+    tools.register(
+        SubAgentTool(
+            lambda: agent.provider, tools, tool_timeout=agent.config.tool_timeout
+        )
+    )
     tools.register(GoalTool(goal_hook))
 
     return agent
@@ -170,21 +198,20 @@ def create_agent():
 
 async def main():
     agent = create_agent()
-    print(f"{BOLD}MoCode{RST} {DIM}0.3{RST}  {GRAY}·{RST}  {CYAN}{config.model}{RST}")
+    print(f"{BOLD}MoCode{RST}{DIM}0.3{RST}{GRAY}·{RST}{CYAN}{config.model}{RST}")
     print(f"{DIM}Type 'exit' to quit{RST}\n")
 
     while True:
         try:
             user_input = input("> ").strip()
         except (EOFError, KeyboardInterrupt):
-            print()
+            print("\n")
             break
 
         if not user_input:
             continue
         if user_input.lower() in ("exit", "quit"):
             break
-
         result = await agent.chat(user_input)
         if result:
             print(f"\n{result}\n")
