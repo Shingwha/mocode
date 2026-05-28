@@ -104,6 +104,8 @@ class AgentLoop:
         while True:
             await self.hooks.before_iteration(ctx)
             self._messages = ctx.messages
+            if ctx.compact_old:
+                await self.hooks.on_compact(ctx)
 
             response: Response = await self.provider.call(
                 self._messages,

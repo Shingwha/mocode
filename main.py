@@ -6,7 +6,28 @@ Usage:
 
 import asyncio
 import logging
+import sys
 from pathlib import Path
+
+# Windows ANSI support
+if sys.platform == "win32":
+    import ctypes
+    try:
+        ctypes.windll.kernel32.SetConsoleMode(
+            ctypes.windll.kernel32.GetStdHandle(-11), 7
+        )
+    except Exception:
+        pass
+
+RST = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+GRAY = "\033[90m"
+RED = "\033[91m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+CYAN = "\033[96m"
+MAGENTA = "\033[95m"
 
 from mocode.app import Config
 from mocode.core import Agent, AgentHook, AgentHookContext
@@ -54,17 +75,49 @@ def _tool_summary(name: str, args: dict) -> str:
     if name == "sub_agent":
         task = args.get("task", "")
         return task[:60] + ("..." if len(task) > 60 else "")
-    return str(args)[:80]
+    if name == "skill":
+        return args.get("name", "")
+    if name == "goal":
+        return args.get("action", "")
+    if name == "image":
+        prompt = args.get("prompt", "")
+        return prompt[:60] + ("..." if len(prompt) > 60 else "")
+    return ""
 
 
 class CLIDisplayHook(AgentHook):
+    def __init__(self):
+        self._total_prompt = 0
+        self._total_completion = 0
+
     async def on_response(self, ctx: AgentHookContext) -> None:
         if ctx.final_content and ctx.response and ctx.response.tool_calls:
-            print(ctx.final_content)
+            text = ctx.final_content.strip()
+            if text:
+                for line in text.splitlines():
+                    print(f"{DIM}  │ {MAGENTA}{line}{RST}")
+        if ctx.usage:
+            self._total_prompt += ctx.usage.prompt_tokens
+            self._total_completion += ctx.usage.completion_tokens
+
+    async def after_iteration(self, ctx: AgentHookContext) -> None:
+        if self._total_prompt or self._total_completion:
+            print(f"{DIM}  ↑ {self._total_prompt:,}↑ {self._total_completion:,}↓{RST}")
+            self._total_prompt = 0
+            self._total_completion = 0
 
     async def on_tool_start(self, ctx: AgentHookContext) -> None:
         summary = _tool_summary(ctx.tool_name, ctx.tool_args)
-        print(f"  {ctx.tool_name}({summary})")
+        print(f"{DIM}  → {CYAN}{ctx.tool_name}{RST}{DIM}({summary}){RST}")
+
+    async def on_tool_complete(self, ctx: AgentHookContext) -> None:
+        if ctx.tool_timeout is not None:
+            print(f"{RED}  × timeout: {ctx.tool_timeout}s{RST}")
+        elif ctx.tool_error:
+            print(f"{RED}  × {ctx.tool_error[:80]}{RST}")
+
+    async def on_compact(self, ctx: AgentHookContext) -> None:
+        print(f"{YELLOW}  ─ Compacted: {ctx.compact_old} → {ctx.compact_new} messages{RST}")
 
 
 def create_agent():
@@ -117,7 +170,8 @@ def create_agent():
 
 async def main():
     agent = create_agent()
-    print("MoCode CLI Agent (type 'exit' to quit)\n")
+    print(f"{BOLD}MoCode{RST} {DIM}0.3{RST}  {GRAY}·{RST}  {CYAN}{config.model}{RST}")
+    print(f"{DIM}Type 'exit' to quit{RST}\n")
 
     while True:
         try:
@@ -132,7 +186,8 @@ async def main():
             break
 
         result = await agent.chat(user_input)
-        print(f"\n{result}\n")
+        if result:
+            print(f"\n{result}\n")
 
 
 if __name__ == "__main__":
