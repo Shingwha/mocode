@@ -5,11 +5,9 @@ Usage:
 """
 
 import asyncio
-import logging
 import sys
 from pathlib import Path
 
-# Windows ANSI support
 if sys.platform == "win32":
     import ctypes
 
@@ -20,15 +18,33 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-RST = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-GRAY = "\033[90m"
-RED = "\033[91m"
-GREEN = "\033[92m"
-YELLOW = "\033[93m"
-CYAN = "\033[96m"
-MAGENTA = "\033[95m"
+RST, BOLD, DIM, GRAY, RED, GREEN, YELLOW, CYAN, MAGENTA = (
+    "\033[0m", "\033[1m", "\033[2m", "\033[90m",
+    "\033[91m", "\033[92m", "\033[93m", "\033[96m", "\033[95m",
+)
+
+
+def _s(text, *codes):
+    return f"{''.join(codes)}{text}{RST}"
+
+
+_TOOL_KEY = {
+    "read": "path", "write": "path", "append": "path", "edit": "path",
+    "bash": "command", "glob": "pat", "grep": "pat",
+    "fetch": "url", "sub_agent": "task", "skill": "name",
+    "goal": "action", "image": "prompt",
+}
+
+
+def _tool_summary(name, args):
+    key = _TOOL_KEY.get(name)
+    if not key:
+        return ""
+    val = str(args.get(key, ""))
+    return val[:60] + ("..." if len(val) > 60 else "")
+
+
+import logging
 
 from mocode.app import Config
 from mocode.core import Agent, AgentHook, AgentHookContext
@@ -64,76 +80,79 @@ if not config:
     raise SystemExit("Config not found. Create ~/.mocode/config.json first.")
 
 
-def _read_memory(name: str) -> str:
+def _read_memory(name):
     p = HOME / "memory" / name
     return p.read_text(encoding="utf-8").strip() if p.exists() else ""
 
 
-def _tool_summary(name: str, args: dict) -> str:
-    """Extract the key param for concise one-line display."""
-    if name in ("read", "write", "append", "edit"):
-        return args.get("path", "")
-    if name == "bash":
-        cmd = args.get("command", "")
-        return cmd[:60] + ("..." if len(cmd) > 60 else "")
-    if name in ("glob", "grep"):
-        return args.get("pat", "")
-    if name == "fetch":
-        return args.get("url", "")
-    if name == "sub_agent":
-        task = args.get("task", "")
-        return task[:60] + ("..." if len(task) > 60 else "")
-    if name == "skill":
-        return args.get("name", "")
-    if name == "goal":
-        return args.get("action", "")
-    if name == "image":
-        prompt = args.get("prompt", "")
-        return prompt[:60] + ("..." if len(prompt) > 60 else "")
-    return ""
+class Display:
+    def banner(self, version, model):
+        print(f"{_s('MoCode', BOLD)}{_s(version, DIM)}·{_s(model, CYAN)}")
+        print(_s("Type 'exit' to quit\n", DIM))
+
+    def tool_start(self, name, summary):
+        print(f"{_s('→', DIM)} {_s(name, CYAN)}{_s(f'({summary})', DIM)}")
+
+    def tool_error(self, msg):
+        print(f"{_s(f'× {msg}', RED)}")
+
+    def tool_timeout(self, seconds):
+        print(f"{_s(f'× timeout: {seconds}s', RED)}")
+
+    def reasoning(self, content):
+        for line in content.splitlines():
+            print(f"{_s(f'┊ {line}', DIM)}")
+
+    def text_response(self, content):
+        for line in content.strip().splitlines():
+            print(f"{_s(f'│ {line}', DIM, MAGENTA)}")
+
+    def usage(self, prompt, completion):
+        print(f"{_s(f'✦ ↑{prompt:,} ↓{completion:,}', DIM)}")
+
+    def compact(self, old, new):
+        print(f"{_s(f'─ Compacted: {old} → {new} msgs', YELLOW)}")
+
+    def response(self, text):
+        print(f"\n{text}\n")
+
+    def prompt(self):
+        return input("> ").strip()
 
 
 class CLIDisplayHook(AgentHook):
-    def __init__(self):
-        self._total_prompt = 0
-        self._total_completion = 0
+    def __init__(self, display):
+        self._d = display
+        self._prompt = self._completion = 0
 
-    async def on_response(self, ctx: AgentHookContext) -> None:
+    async def on_response(self, ctx):
         if ctx.reasoning_content and not (ctx.response and ctx.response.tool_calls):
-            for line in ctx.reasoning_content.splitlines():
-                print(f"{DIM}  ┊ {line}{RST}")
+            self._d.reasoning(ctx.reasoning_content)
         if ctx.final_content and ctx.response and ctx.response.tool_calls:
-            text = ctx.final_content.strip()
-            if text:
-                for line in text.splitlines():
-                    print(f"{DIM}  │ {MAGENTA}{line}{RST}")
+            self._d.text_response(ctx.final_content)
         if ctx.usage:
-            self._total_prompt += ctx.usage.prompt_tokens
-            self._total_completion += ctx.usage.completion_tokens
+            self._prompt += ctx.usage.prompt_tokens
+            self._completion += ctx.usage.completion_tokens
 
-    async def after_iteration(self, ctx: AgentHookContext) -> None:
-        if self._total_prompt or self._total_completion:
-            print(f"{DIM}  ↑ {self._total_prompt:,}↑ {self._total_completion:,}↓{RST}")
-            self._total_prompt = 0
-            self._total_completion = 0
+    async def after_iteration(self, ctx):
+        if self._prompt or self._completion:
+            self._d.usage(self._prompt, self._completion)
+            self._prompt = self._completion = 0
 
-    async def on_tool_start(self, ctx: AgentHookContext) -> None:
-        summary = _tool_summary(ctx.tool_name, ctx.tool_args)
-        print(f"{DIM}  → {CYAN}{ctx.tool_name}{RST}{DIM}({summary}){RST}")
+    async def on_tool_start(self, ctx):
+        self._d.tool_start(ctx.tool_name, _tool_summary(ctx.tool_name, ctx.tool_args))
 
-    async def on_tool_complete(self, ctx: AgentHookContext) -> None:
+    async def on_tool_complete(self, ctx):
         if ctx.tool_timeout is not None:
-            print(f"{RED}  × timeout: {ctx.tool_timeout}s{RST}")
+            self._d.tool_timeout(ctx.tool_timeout)
         elif ctx.tool_error:
-            print(f"{RED}  × {ctx.tool_error[:80]}{RST}")
+            self._d.tool_error(ctx.tool_error[:80])
 
-    async def on_compact(self, ctx: AgentHookContext) -> None:
-        print(
-            f"{YELLOW}  ─ Compacted: {ctx.compact_old} → {ctx.compact_new} messages{RST}"
-        )
+    async def on_compact(self, ctx):
+        self._d.compact(ctx.compact_old, ctx.compact_new)
 
 
-def create_agent():
+def create_agent(display):
     pc = config.current
 
     provider = OpenAIProvider(
@@ -181,7 +200,7 @@ def create_agent():
         .provider(provider)
         .prompt(prompt)
         .tools(tools)
-        .hooks([CLIDisplayHook(), compact_hook, goal_hook])
+        .hooks([CLIDisplayHook(display), compact_hook, goal_hook])
         .build()
     )
 
@@ -197,24 +216,24 @@ def create_agent():
 
 
 async def main():
-    agent = create_agent()
-    print(f"{BOLD}MoCode{RST}{DIM}0.3{RST}{GRAY}·{RST}{CYAN}{config.model}{RST}")
-    print(f"{DIM}Type 'exit' to quit{RST}\n")
+    display = Display()
+    agent = create_agent(display)
+    display.banner("0.3", config.model)
 
     while True:
         try:
-            user_input = input("> ").strip()
+            user_input = display.prompt()
         except (EOFError, KeyboardInterrupt):
-            print("\n")
+            print()
             break
-
         if not user_input:
             continue
         if user_input.lower() in ("exit", "quit"):
             break
+        print()
         result = await agent.chat(user_input)
         if result:
-            print(f"\n{result}\n")
+            display.response(result)
 
 
 if __name__ == "__main__":
