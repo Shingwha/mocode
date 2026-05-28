@@ -121,6 +121,8 @@ class AgentLoop:
             if response.content:
                 final_response = response.content
                 ctx.final_content = response.content
+            if response.reasoning_content:
+                ctx.reasoning_content = response.reasoning_content
 
             ctx.response = response
             ctx.stop_reason = response.finish_reason

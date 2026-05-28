@@ -17,18 +17,18 @@ if TYPE_CHECKING:
 @dataclass
 class AgentHookContext:
     """Carries typed state through a single AgentLoop iteration."""
-    # Iteration state
+    # Response state (set before on_response)
     iteration: int = 0
     messages: list[dict] = field(default_factory=list)
     response: Response | None = None
     usage: Usage | None = None
     final_content: str = ""
+    reasoning_content: str | None = None
     stop_reason: str | None = None
     error: Exception | None = None
-    # Batch tool state
+    # Tool state
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_results: list[dict] = field(default_factory=list)
-    # Per-tool state (set before on_tool_start / on_tool_complete)
     tool_name: str = ""
     tool_args: dict = field(default_factory=dict)
     tool_call_id: str = ""
@@ -37,7 +37,7 @@ class AgentHookContext:
     tool_timeout: int | None = None
     # Loop control
     continue_loop: bool = False
-    # Compact state (set before on_compact)
+    # Compact state
     compact_old: int = 0
     compact_new: int = 0
 
@@ -80,51 +80,30 @@ class HookRunner:
     def add(self, hook: AgentHook) -> None:
         self._hooks.append(hook)
 
-    async def before_iteration(self, ctx: AgentHookContext) -> None:
+    async def _dispatch(self, method: str, ctx: AgentHookContext) -> None:
         for h in self._hooks:
             try:
-                await h.before_iteration(ctx)
+                await getattr(h, method)(ctx)
             except Exception:
                 pass
 
-    async def after_tools(self, ctx: AgentHookContext) -> None:
-        for h in self._hooks:
-            try:
-                await h.after_tools(ctx)
-            except Exception:
-                pass
+    async def before_iteration(self, ctx: AgentHookContext) -> None:
+        await self._dispatch("before_iteration", ctx)
 
     async def on_response(self, ctx: AgentHookContext) -> None:
-        for h in self._hooks:
-            try:
-                await h.on_response(ctx)
-            except Exception:
-                pass
+        await self._dispatch("on_response", ctx)
+
+    async def after_tools(self, ctx: AgentHookContext) -> None:
+        await self._dispatch("after_tools", ctx)
 
     async def after_iteration(self, ctx: AgentHookContext) -> None:
-        for h in self._hooks:
-            try:
-                await h.after_iteration(ctx)
-            except Exception:
-                pass
+        await self._dispatch("after_iteration", ctx)
 
     async def on_tool_start(self, ctx: AgentHookContext) -> None:
-        for h in self._hooks:
-            try:
-                await h.on_tool_start(ctx)
-            except Exception:
-                pass
+        await self._dispatch("on_tool_start", ctx)
 
     async def on_tool_complete(self, ctx: AgentHookContext) -> None:
-        for h in self._hooks:
-            try:
-                await h.on_tool_complete(ctx)
-            except Exception:
-                pass
+        await self._dispatch("on_tool_complete", ctx)
 
     async def on_compact(self, ctx: AgentHookContext) -> None:
-        for h in self._hooks:
-            try:
-                await h.on_compact(ctx)
-            except Exception:
-                pass
+        await self._dispatch("on_compact", ctx)
