@@ -4,9 +4,10 @@ import pytest
 
 from mocode.core import AgentHookContext, Response, Usage
 from mocode.tools.compact import (
-    compact_messages, CompactHook, CompactTool,
+    compact_messages, CompactTool,
     find_turn_starts, strip_tool_messages, format_messages_for_summary,
 )
+from mocode.hooks.compact import CompactHook
 
 
 class MockProvider:

@@ -15,7 +15,7 @@ from .search import GlobTool, GrepTool
 from .bash import BashTool
 from .fetch import FetchTool
 from .skill import SkillTool
-from .compact import CompactHook, CompactTool
+from .compact import CompactTool
 from .subagent import SubAgent, SubAgentConfig, SubAgentResult, SubAgentTool
 from .image import ImageTool
 
@@ -29,7 +29,6 @@ __all__ = [
     "BashTool",
     "FetchTool",
     "SkillTool",
-    "CompactHook",
     "CompactTool",
     "SubAgent",
     "SubAgentConfig",

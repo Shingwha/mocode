@@ -16,9 +16,10 @@ from mocode.prompts.app import build_system_prompt
 from mocode.providers.openai import OpenAIProvider
 from mocode.tools import (
     BashTool, ReadTool, EditTool, GlobTool, GrepTool,
-    CompactHook, CompactTool, SubAgentTool, SkillTool,
+    CompactTool, SubAgentTool, SkillTool,
     ImageTool,
 )
+from mocode.hooks import CompactHook
 
 logging.basicConfig(
     level=logging.INFO,

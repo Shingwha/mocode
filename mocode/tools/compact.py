@@ -3,8 +3,9 @@
 Provides:
 - Pure functions for message formatting and compression
 - compact_messages() — core compression logic
-- CompactHook(AgentHook) — auto-trigger via before_iteration
 - CompactTool — LLM-callable tool for manual trigger
+
+CompactHook lives in mocode/hooks/compact.py.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from ..core.hook import AgentHook, AgentHookContext
 from ..core.tool import Tool
 from ..prompts.compact import summary_system_prompt, COMPACT_USER_TEMPLATE
 
@@ -158,44 +158,6 @@ async def compact_messages(
         f"(compressed {len(messages) - len(new_messages)} messages)"
     )
     return new_messages
-
-
-# ---- CompactHook (AgentHook) ----
-
-
-class CompactHook(AgentHook):
-    """Auto-trigger context compression when token usage exceeds threshold."""
-
-    def __init__(
-        self,
-        provider,
-        threshold: float = 0.80,
-        keep_recent_turns: int = 0,
-        context_window: int = 128_000,
-    ):
-        self._provider = provider
-        self._threshold = threshold
-        self._keep_recent_turns = keep_recent_turns
-        self._context_window = context_window
-        self._last_prompt_tokens: int = 0
-
-    @property
-    def last_prompt_tokens(self) -> int:
-        return self._last_prompt_tokens
-
-    async def before_iteration(self, ctx: AgentHookContext) -> None:
-        if ctx.usage:
-            self._last_prompt_tokens = ctx.usage.prompt_tokens
-        if self._last_prompt_tokens > self._context_window * self._threshold:
-            old_count = len(ctx.messages)
-            ctx.messages[:] = await compact_messages(
-                self._provider, ctx.messages,
-                keep_recent_turns=self._keep_recent_turns,
-            )
-            ctx.compact_old = old_count
-            ctx.compact_new = len(ctx.messages)
-            self._last_prompt_tokens = 0
-            await self.on_compact(ctx)
 
 
 # ---- CompactTool (Tool factory) ----
