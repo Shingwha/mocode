@@ -5,7 +5,6 @@ from __future__ import annotations
 import httpx
 
 from ..core.tool import Tool, ToolError
-from .utils import truncate_result
 
 
 def FetchTool(result_limit: int = 50000) -> Tool:
@@ -15,7 +14,7 @@ def FetchTool(result_limit: int = 50000) -> Tool:
         result_limit: Max characters for fetched content.
     """
 
-    def _fetch(args: dict) -> str:
+    async def _fetch(args: dict) -> str:
         url = args.get("url")
         if not url:
             raise ToolError("Missing required parameter 'url'", "invalid_input")
@@ -29,14 +28,18 @@ def FetchTool(result_limit: int = 50000) -> Tool:
         fetch_url = f"https://markdown.new/{url}"
 
         try:
-            response = httpx.get(
-                fetch_url,
-                timeout=timeout,
-                follow_redirects=True,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; mocode/1.0)"},
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    fetch_url,
+                    timeout=timeout,
+                    follow_redirects=True,
+                    headers={"User-Agent": "Mozilla/5.0 (compatible; mocode/1.0)"},
+                )
             response.raise_for_status()
-            return truncate_result(response.text, limit=result_limit)
+            text = response.text
+            if result_limit > 0 and len(text) > result_limit:
+                text = text[:result_limit] + "\n...[truncated]"
+            return text
         except httpx.TimeoutException:
             raise ToolError(f"Request timed out after {timeout}s", "timeout")
         except httpx.HTTPStatusError as e:

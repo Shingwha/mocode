@@ -34,7 +34,6 @@ class MockProvider:
 class TestSubAgentConfig:
     def test_defaults(self):
         cfg = SubAgentConfig(system_prompt="test")
-        assert cfg.tool_names is None
         assert cfg.max_tool_calls == 50
         assert cfg.max_tokens == 4096
         assert cfg.tool_timeout == 240
@@ -121,13 +120,13 @@ class TestSubAgent:
 
     @pytest.mark.asyncio
     async def test_tool_filtering(self):
+        """SubAgent receives pre-filtered tools — filtering is SubAgentTool's responsibility."""
         t1 = Tool("t1", "T1", {}, lambda a: "r1")
         t2 = Tool("t2", "T2", {}, lambda a: "r2")
         registry = ToolRegistry()
         registry.register(t1)
-        registry.register(t2)
 
-        cfg = SubAgentConfig(system_prompt="test", tool_names=["t1"])
+        cfg = SubAgentConfig(system_prompt="test")
         sub = SubAgent(provider=MockProvider(), tools=registry, config=cfg)
         loop = sub._build_agent_loop()
         schemas = loop._tools.all_schemas()

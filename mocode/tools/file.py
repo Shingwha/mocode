@@ -2,36 +2,9 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 
-from ..core.hook import AgentHook, AgentHookContext
 from ..core.tool import Tool, ToolError
-
-IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
-_EXT_TO_MEDIA = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-}
-
-
-class ImageInjectionHook(AgentHook):
-    """Hook for ReadTool to inject image messages after tool execution."""
-
-    def __init__(self):
-        self._pending: list[dict] = []
-
-    def add_pending(self, msg: dict) -> None:
-        self._pending.append(msg)
-
-    async def after_tools(self, ctx: AgentHookContext) -> None:
-        if self._pending:
-            ctx.messages.extend(list(self._pending))
-            self._pending.clear()
 
 
 def _read_text(p: Path, offset: int, limit: int) -> str:
@@ -87,54 +60,23 @@ _READ_PARAMS = {
 _READ_DESC = (
     "Read a file and return its contents with line numbers. "
     "Supports text files with UTF-8/GBK encoding. "
-    "For image files (png/jpg/jpeg/gif/webp/bmp), attaches the image for visual analysis. "
     "Use offset and limit to read specific line ranges. Line numbers are 1-based. "
     "The output includes file metadata (total lines, size) and truncation info when the file is too long."
 )
 
 
-def ReadTool(image_hook: ImageInjectionHook | None = None) -> Tool:
-    """Create a read tool. Pass image_hook to enable image reading."""
+def ReadTool() -> Tool:
+    """Create a read tool."""
 
-    if image_hook is None:
-        def _read(args: dict) -> str:
-            p = Path(args["path"])
-            if not p.exists():
-                raise ToolError(f"File not found: {p}", "file_not_found")
-            if p.is_dir():
-                raise ToolError(f"Path is a directory: {p}", "invalid_path")
-            offset = max(1, int(args.get("offset", 1)))
-            limit = int(args.get("limit", 0)) or 999999
-            return _read_text(p, offset, limit)
-
-    else:
-        def _read(args: dict) -> str:
-            p = Path(args["path"])
-            if not p.exists():
-                raise ToolError(f"File not found: {p}", "file_not_found")
-            if p.is_dir():
-                raise ToolError(f"Path is a directory: {p}", "invalid_path")
-
-            if p.suffix.lower() in IMAGE_EXTS:
-                try:
-                    b64 = base64.b64encode(p.read_bytes()).decode()
-                except OSError as e:
-                    raise ToolError(f"Failed to read image: {e}", "read_error")
-
-                media_type = _EXT_TO_MEDIA[p.suffix.lower()]
-                image_hook.add_pending({
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{b64}"}},
-                        {"type": "text", "text": f"[Image loaded: {p.name}]"},
-                    ],
-                })
-                size_kb = p.stat().st_size / 1024
-                return f"Image loaded from {p} ({size_kb:.1f} KB, {media_type})"
-
-            offset = max(1, int(args.get("offset", 1)))
-            limit = int(args.get("limit", 0)) or 999999
-            return _read_text(p, offset, limit)
+    def _read(args: dict) -> str:
+        p = Path(args["path"])
+        if not p.exists():
+            raise ToolError(f"File not found: {p}", "file_not_found")
+        if p.is_dir():
+            raise ToolError(f"Path is a directory: {p}", "invalid_path")
+        offset = max(1, int(args.get("offset", 1)))
+        limit = int(args.get("limit", 0)) or 999999
+        return _read_text(p, offset, limit)
 
     return Tool("read", _READ_DESC, _READ_PARAMS, _read)
 

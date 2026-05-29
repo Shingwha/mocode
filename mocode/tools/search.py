@@ -72,6 +72,18 @@ def _get_type_filter(type_str: str) -> set[str] | None:
     return extensions
 
 
+def _walk_text_files(base_path: Path, type_filter: set[str] | None):
+    """Yield text file paths under base_path, respecting IGNORE_DIRS and type filter."""
+    for root, dirs, _files in os.walk(base_path):
+        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+        for filename in _files:
+            if not _is_text_file(filename):
+                continue
+            if type_filter and Path(filename).suffix.lower() not in type_filter:
+                continue
+            yield os.path.join(root, filename)
+
+
 def _glob(args: dict) -> str:
     base = Path(args.get("path", ".")).resolve()
     if not base.is_dir():
@@ -102,7 +114,6 @@ def _glob(args: dict) -> str:
     result = header + "\n" + "\n".join(paths)
 
     if truncated:
-        remaining = len(files) - _GLOB_MAX  # recalc from original won't work since sliced, use flag
         result += f"\n... and more files not shown (showing first {_GLOB_MAX})"
     return result
 
@@ -128,24 +139,17 @@ def _grep(args: dict) -> str:
 
 def _grep_files(pattern: re.Pattern, base_path: Path, type_filter: set[str] | None, max_results: int) -> str:
     found = []
-    for root, dirs, files in os.walk(base_path):
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
-        for filename in files:
-            if not _is_text_file(filename):
-                continue
-            if type_filter and Path(filename).suffix.lower() not in type_filter:
-                continue
-            filepath = os.path.join(root, filename)
-            try:
-                with open(filepath, encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        if pattern.search(line):
-                            found.append(filepath)
-                            break
-            except Exception:
-                pass
-            if len(found) >= max_results:
-                break
+    for filepath in _walk_text_files(base_path, type_filter):
+        try:
+            with open(filepath, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if pattern.search(line):
+                        found.append(filepath)
+                        break
+        except Exception:
+            pass
+        if len(found) >= max_results:
+            break
 
     if not found:
         return f"No files matching '{pattern.pattern}' in {base_path}"
@@ -158,26 +162,19 @@ def _grep_files(pattern: re.Pattern, base_path: Path, type_filter: set[str] | No
 
 def _grep_count(pattern: re.Pattern, base_path: Path, type_filter: set[str] | None, max_results: int) -> str:
     results = []
-    for root, dirs, files in os.walk(base_path):
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
-        for filename in files:
-            if not _is_text_file(filename):
-                continue
-            if type_filter and Path(filename).suffix.lower() not in type_filter:
-                continue
-            filepath = os.path.join(root, filename)
-            try:
-                count = 0
-                with open(filepath, encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        if pattern.search(line):
-                            count += 1
-                if count > 0:
-                    results.append(f"{filepath}:{count}")
-            except Exception:
-                pass
-            if len(results) >= max_results:
-                break
+    for filepath in _walk_text_files(base_path, type_filter):
+        try:
+            count = 0
+            with open(filepath, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if pattern.search(line):
+                        count += 1
+            if count > 0:
+                results.append(f"{filepath}:{count}")
+        except Exception:
+            pass
+        if len(results) >= max_results:
+            break
 
     if not results:
         return f"No matches for '{pattern.pattern}' in {base_path}"
@@ -186,38 +183,30 @@ def _grep_count(pattern: re.Pattern, base_path: Path, type_filter: set[str] | No
 
 def _grep_content(pattern: re.Pattern, base_path: Path, type_filter: set[str] | None, max_results: int, context_lines: int) -> str:
     hits = []
-    for root, dirs, files in os.walk(base_path):
-        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
-        for filename in files:
-            if not _is_text_file(filename):
-                continue
-            if type_filter and Path(filename).suffix.lower() not in type_filter:
-                continue
-            filepath = os.path.join(root, filename)
+    for filepath in _walk_text_files(base_path, type_filter):
+        try:
+            file_lines = Path(filepath).read_text(encoding="utf-8", errors="replace").splitlines()
+        except Exception:
+            continue
 
-            try:
-                file_lines = Path(filepath).read_text(encoding="utf-8", errors="replace").splitlines()
-            except Exception:
-                continue
+        match_indices = [i for i, line in enumerate(file_lines) if pattern.search(line)]
+        if not match_indices:
+            continue
 
-            match_indices = [i for i, line in enumerate(file_lines) if pattern.search(line)]
-            if not match_indices:
-                continue
+        if context_lines > 0:
+            expanded = set()
+            for idx in match_indices:
+                for j in range(max(0, idx - context_lines), min(len(file_lines), idx + context_lines + 1)):
+                    expanded.add(j)
+            display_indices = sorted(expanded)
+        else:
+            display_indices = match_indices
 
-            if context_lines > 0:
-                expanded = set()
-                for idx in match_indices:
-                    for j in range(max(0, idx - context_lines), min(len(file_lines), idx + context_lines + 1)):
-                        expanded.add(j)
-                display_indices = sorted(expanded)
-            else:
-                display_indices = match_indices
-
-            for idx in display_indices:
-                hits.append(f"{filepath}:{idx + 1}:{file_lines[idx]}")
-                if len(hits) >= max_results:
-                    header = f"[Showing {len(hits)} matches for '{pattern.pattern}']"
-                    return header + "\n" + "\n".join(hits)
+        for idx in display_indices:
+            hits.append(f"{filepath}:{idx + 1}:{file_lines[idx]}")
+            if len(hits) >= max_results:
+                header = f"[Showing {len(hits)} matches for '{pattern.pattern}']"
+                return header + "\n" + "\n".join(hits)
 
     if not hits:
         return f"No matches for '{pattern.pattern}' in {base_path}"
