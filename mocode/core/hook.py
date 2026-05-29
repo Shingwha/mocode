@@ -7,6 +7,7 @@ after_tools) can mutate ctx.messages in place.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -44,9 +45,11 @@ class AgentHookContext:
     def reset_response(self) -> None:
         """Clear response-level fields before each iteration."""
         self.final_content = ""
-        self.reasoning_content = ""
+        self.reasoning_content = None
         self.usage = None
         self.stop_reason = None
+        self.tool_calls = []
+        self.tool_results = []
 
     def reset_tool(self) -> None:
         """Clear tool-level fields before each tool call."""
@@ -90,6 +93,11 @@ class AgentHook:
 class HookRunner:
     """Fan-out dispatcher for a list of AgentHooks with error isolation."""
 
+    _METHODS = frozenset({
+        "before_iteration", "on_response", "after_tools",
+        "after_iteration", "on_tool_start", "on_tool_complete", "on_compact",
+    })
+
     def __init__(self, hooks: list[AgentHook] | None = None):
         self._hooks: list[AgentHook] = list(hooks or [])
 
@@ -100,26 +108,12 @@ class HookRunner:
         for h in self._hooks:
             try:
                 await getattr(h, method)(ctx)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(f"Hook {h.__class__.__name__}.{method} failed: {e}")
 
-    async def before_iteration(self, ctx: AgentHookContext) -> None:
-        await self._dispatch("before_iteration", ctx)
-
-    async def on_response(self, ctx: AgentHookContext) -> None:
-        await self._dispatch("on_response", ctx)
-
-    async def after_tools(self, ctx: AgentHookContext) -> None:
-        await self._dispatch("after_tools", ctx)
-
-    async def after_iteration(self, ctx: AgentHookContext) -> None:
-        await self._dispatch("after_iteration", ctx)
-
-    async def on_tool_start(self, ctx: AgentHookContext) -> None:
-        await self._dispatch("on_tool_start", ctx)
-
-    async def on_tool_complete(self, ctx: AgentHookContext) -> None:
-        await self._dispatch("on_tool_complete", ctx)
-
-    async def on_compact(self, ctx: AgentHookContext) -> None:
-        await self._dispatch("on_compact", ctx)
+    def __getattr__(self, name: str):
+        if name in self._METHODS:
+            async def method(ctx: AgentHookContext) -> None:
+                await self._dispatch(name, ctx)
+            return method
+        raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")

@@ -109,6 +109,8 @@ class AgentLoop:
             self._messages = ctx.messages
             if ctx.compact_old:
                 await self.hooks.on_compact(ctx)
+                ctx.compact_old = 0
+                ctx.compact_new = 0
 
             try:
                 response: Response = await self.provider.call(
@@ -125,7 +127,7 @@ class AgentLoop:
             if response.usage:
                 self._last_usage = response.usage
                 ctx.usage = response.usage
-            if response.content:
+            if response.content is not None:
                 final_response = response.content
                 ctx.final_content = response.content
             if response.reasoning_content:
