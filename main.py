@@ -87,10 +87,6 @@ def _read_memory(name):
 
 
 class Display:
-    def banner(self, version, model):
-        print(f"{_s('MoCode', BOLD)}{_s(version, DIM)}·{_s(model, CYAN)}")
-        print(_s("Type 'exit' to quit\n", DIM))
-
     def tool_start(self, name, summary):
         print(f"{_s('→', DIM)} {_s(name, CYAN)}{_s(f'({summary})', DIM)}")
 
@@ -219,7 +215,6 @@ def create_agent(display):
 async def main():
     display = Display()
     agent = create_agent(display)
-    display.banner("0.3", config.model)
 
     while True:
         try:
@@ -253,4 +248,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
