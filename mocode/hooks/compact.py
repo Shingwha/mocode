@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-
 from ..core.hook import AgentHook, AgentHookContext
 from ..tools.compact import compact_messages
-
-logger = logging.getLogger(__name__)
 
 
 class CompactHook(AgentHook):

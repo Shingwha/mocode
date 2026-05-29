@@ -7,7 +7,6 @@ after_tools) can mutate ctx.messages in place.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -108,8 +107,8 @@ class HookRunner:
         for h in self._hooks:
             try:
                 await getattr(h, method)(ctx)
-            except Exception as e:
-                logging.warning(f"Hook {h.__class__.__name__}.{method} failed: {e}")
+            except Exception:
+                pass
 
     def __getattr__(self, name: str):
         if name in self._METHODS:

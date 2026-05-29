@@ -10,13 +10,10 @@ CompactHook lives in mocode/hooks/compact.py.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 
 from ..core.tool import Tool
 from ..prompts.compact import summary_system_prompt, COMPACT_USER_TEMPLATE
-
-logger = logging.getLogger(__name__)
 
 
 # ---- Message formatting helpers (pure functions) ----
@@ -98,8 +95,7 @@ async def _generate_summary(provider, messages_text: str) -> str:
             max_tokens=8000,
         )
         return resp.content or ""
-    except Exception as e:
-        logger.warning(f"Summary generation failed: {e}")
+    except Exception:
         return ""
 
 
@@ -123,10 +119,6 @@ async def compact_messages(
         },
     ]
 
-    logger.info(
-        f"Compacted: {len(messages)} -> {len(new_messages)} messages "
-        f"(compressed {len(messages) - len(new_messages)} messages)"
-    )
     return new_messages
 
 

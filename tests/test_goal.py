@@ -31,11 +31,12 @@ class TestGoalHook:
         await hook.after_iteration(ctx)
 
         assert ctx.continue_loop is True
-        assert len(ctx.messages) == 2
+        assert len(ctx.messages) == 3
+        assert "[Goal]" in ctx.messages[-1]["content"]
 
     @pytest.mark.asyncio
     async def test_max_turns_pauses_goal(self):
-        hook = GoalHook(max_turns=2)
+        hook = GoalHook(max_turns=2, max_idle=10)
         hook.set_goal("impossible goal")
 
         ctx = AgentHookContext(messages=[{"role": "user", "content": "start"}])
@@ -83,6 +84,7 @@ class TestGoalHook:
         await hook.after_iteration(ctx)
         assert ctx.continue_loop is True
         assert hook.turn_count == 1
+        assert "[Goal]" in ctx.messages[-1]["content"]
 
     @pytest.mark.asyncio
     async def test_after_tools_ticks(self):
@@ -93,6 +95,7 @@ class TestGoalHook:
         await hook.after_tools(ctx)
         assert ctx.continue_loop is True
         assert hook.turn_count == 1
+        assert "[Goal]" in ctx.messages[-1]["content"]
 
     def test_set_and_clear_goal(self):
         hook = GoalHook()
@@ -112,6 +115,70 @@ class TestGoalHook:
         hook.set_goal("new")
         assert hook.paused is False
         assert hook.condition == "new"
+
+    @pytest.mark.asyncio
+    async def test_idle_auto_pauses(self):
+        hook = GoalHook(max_idle=3)
+        hook.set_goal("something")
+
+        ctx = AgentHookContext(messages=[{"role": "user", "content": "hi"}])
+
+        # Idle 1
+        await hook.after_iteration(ctx)
+        assert ctx.continue_loop is True
+        assert hook.idle_count == 1
+
+        # Idle 2
+        ctx.continue_loop = False
+        await hook.after_iteration(ctx)
+        assert ctx.continue_loop is True
+        assert hook.idle_count == 2
+
+        # Idle 3 — reaches max_idle, auto-pause
+        ctx.continue_loop = False
+        await hook.after_iteration(ctx)
+        assert ctx.continue_loop is False
+        assert hook.paused is True
+        assert hook.idle_count == 3
+        assert any("No tool calls" in m.get("content", "") for m in ctx.messages)
+
+    @pytest.mark.asyncio
+    async def test_after_tools_resets_idle_count(self):
+        hook = GoalHook(max_idle=3)
+        hook.set_goal("something")
+
+        ctx = AgentHookContext(messages=[{"role": "user", "content": "hi"}])
+
+        # Idle 2 rounds
+        await hook.after_iteration(ctx)
+        await hook.after_iteration(ctx)
+        assert hook.idle_count == 2
+
+        # Tool call resets idle
+        await hook.after_tools(ctx)
+        assert hook.idle_count == 0
+
+        # Idle again — count restarts from 0
+        await hook.after_iteration(ctx)
+        assert hook.idle_count == 1
+
+    def test_idle_count_resets_on_set_resume_clear(self):
+        hook = GoalHook()
+        hook.set_goal("something")
+        hook._idle_count = 2
+
+        hook.set_goal("new")
+        assert hook.idle_count == 0
+
+        hook._idle_count = 2
+        hook.pause_goal()
+        hook.resume_goal()
+        assert hook.idle_count == 0
+
+        hook.set_goal("another")
+        hook._idle_count = 2
+        hook.clear_goal()
+        assert hook.idle_count == 0
 
 
 # ---- GoalTool ----

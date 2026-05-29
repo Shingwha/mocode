@@ -7,7 +7,6 @@ SubAgentTool exposes this as an LLM-callable tool.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -16,18 +15,22 @@ from ..core.agent import AgentConfig, AgentLoop
 from ..core.hook import AgentHook, HookRunner
 from ..core.tool import Tool, ToolRegistry
 from ..prompts.subagent import subagent_system_prompt
-from .utils import resolve_provider_getter
 
 if TYPE_CHECKING:
     from ..core.provider import Provider
 
-logger = logging.getLogger(__name__)
+
+def _resolve_provider(provider):
+    """Normalize Provider or provider-getter into a () -> Provider callable."""
+    if callable(provider) and not hasattr(provider, "call"):
+        return provider
+    _p = provider
+    return lambda: _p
 
 
 @dataclass(frozen=True)
 class SubAgentConfig:
     system_prompt: str
-    tool_names: list[str] | None = None
     max_tool_calls: int = 50
     max_tokens: int = 4096
     tool_timeout: int | None = 240
@@ -52,7 +55,7 @@ class SubAgent:
         config: SubAgentConfig,
         hooks: list[AgentHook] | None = None,
     ):
-        self._provider_getter = resolve_provider_getter(provider)
+        self._provider_getter = _resolve_provider(provider)
         self._tools = tools
         self._config = config
         self._hooks: list[AgentHook] | None = hooks
@@ -60,15 +63,6 @@ class SubAgent:
     def _build_agent_loop(self) -> AgentLoop:
         """Construct an AgentLoop with SubAgent's configuration."""
         provider = self._provider_getter()
-
-        # Build filtered tool registry if tool_names specified
-        filtered_tools = self._tools
-        if self._config.tool_names is not None:
-            filtered_tools = ToolRegistry()
-            for name in self._config.tool_names:
-                tool = self._tools.get(name)
-                if tool:
-                    filtered_tools.register(tool)
 
         agent_config = AgentConfig(
             max_tokens=self._config.max_tokens,
@@ -80,7 +74,7 @@ class SubAgent:
         return AgentLoop(
             provider=provider,
             system_prompt=self._config.system_prompt,
-            tools=filtered_tools,
+            tools=self._tools,
             hooks=HookRunner(self._hooks or []),
             config=agent_config,
         )
@@ -110,23 +104,28 @@ def SubAgentTool(
 ) -> Tool:
     """Create a tool that lets the LLM delegate tasks to a sub-agent."""
 
-    get_provider = resolve_provider_getter(provider)
+    get_provider = _resolve_provider(provider)
 
     async def _sub_agent(args: dict) -> str:
         task = args.get("task", "")
         if not task:
             return "error: missing required parameter 'task'"
 
-        tool_names = None
+        # All filtering happens here: exclude blocked tools first
+        derived_tools = parent_tools.derived(exclude=_BLOCKED_TOOLS)
+
+        # If user specified tool names, further filter to only those
         if args.get("tools"):
             tool_names = [t.strip() for t in args["tools"].split(",") if t.strip()]
-            tool_names = [t for t in tool_names if t not in _BLOCKED_TOOLS]
-
-        derived_tools = parent_tools.derived(exclude=_BLOCKED_TOOLS)
+            filtered = ToolRegistry()
+            for name in tool_names:
+                tool = derived_tools.get(name)
+                if tool:
+                    filtered.register(tool)
+            derived_tools = filtered
 
         sub_config = SubAgentConfig(
             system_prompt=subagent_system_prompt.build(format="xml"),
-            tool_names=tool_names,
             max_tool_calls=args.get("max_tool_calls", 50),
             max_tokens=args.get("max_tokens", 8192),
             tool_timeout=tool_timeout,
