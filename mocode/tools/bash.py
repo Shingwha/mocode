@@ -5,28 +5,63 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
 from ..core.tool import Tool
 
 
-def find_git_bash() -> Optional[Path]:
-    possible_paths = [
-        Path(r"C:\Program Files\Git\bin\bash.exe"),
-        Path(r"C:\Program Files (x86)\Git\bin\bash.exe"),
-        Path(r"C:\Git\bin\bash.exe"),
-        Path.home() / "AppData" / "Local" / "Programs" / "Git" / "bin" / "bash.exe",
-    ]
+def _is_wsl_path(path: Path) -> bool:
+    normalized = str(path).lower().replace("\\", "/")
+    return "system32" in normalized or "windowsapps" in normalized
 
-    git_path = shutil.which("git")
-    if git_path:
-        git_dir = Path(git_path).parent.parent
-        possible_paths.insert(0, git_dir / "bin" / "bash.exe")
+
+def find_bash() -> Optional[Path]:
+    """Locate a bash executable, cross-platform.
+
+    Search order:
+      1. Platform-specific known paths (most reliable)
+      2. shutil.which("bash") — covers non-standard installations
+         (skips WSL bash on Windows)
+      3. shutil.which("sh") — last resort
+    """
+    # Tier 1: known paths per platform
+    if sys.platform == "win32":
+        possible_paths = [
+            Path(r"C:\Program Files\Git\bin\bash.exe"),
+            Path(r"C:\Program Files (x86)\Git\bin\bash.exe"),
+            Path(r"C:\Git\bin\bash.exe"),
+            Path.home() / "AppData" / "Local" / "Programs" / "Git" / "bin" / "bash.exe",
+            Path.home() / "scoop" / "apps" / "git" / "current" / "bin" / "bash.exe",
+            Path(r"C:\msys64\usr\bin\bash.exe"),
+            Path(r"C:\cygwin64\bin\bash.exe"),
+            Path(r"C:\cygwin\bin\bash.exe"),
+        ]
+    else:
+        possible_paths = [
+            Path("/bin/bash"),
+            Path("/usr/bin/bash"),
+            Path("/usr/local/bin/bash"),
+            Path("/opt/homebrew/bin/bash"),
+        ]
 
     for path in possible_paths:
         if path.exists():
             return path
+
+    # Tier 2: PATH lookup (skip WSL on Windows)
+    bash = shutil.which("bash")
+    if bash:
+        p = Path(bash)
+        if sys.platform != "win32" or not _is_wsl_path(p):
+            return p
+
+    # Tier 3: any POSIX shell
+    sh = shutil.which("sh")
+    if sh:
+        return Path(sh)
+
     return None
 
 
@@ -45,9 +80,12 @@ class BashSession:
     """Persistent bash session — maintains cwd and env vars across commands."""
 
     def __init__(self):
-        self.bash_path = find_git_bash()
+        self.bash_path = find_bash()
         if not self.bash_path:
-            raise RuntimeError("Git Bash not found. Please install Git for Windows.")
+            raise RuntimeError(
+                "Bash not found. Please install bash "
+                "(Git for Windows, MSYS2, or a Unix shell)."
+            )
         self._cwd = Path(os.getcwd()).resolve()
         self._env_vars: dict[str, str] = {}
 
@@ -135,7 +173,21 @@ def BashTool(timeout: int = 240) -> Tool:
 
     return Tool(
         "bash",
-        "Run shell command in persistent Git Bash session",
-        {"command": "string?", "restart": "boolean?", "timeout": "number?"},
+        "Run a shell command in a persistent bash session (Unix-style, e.g. ls, grep, find). "
+        "Working directory and environment variables persist across commands. "
+        "Use 'restart' to reset session state (cwd, env vars).",
+        {
+            "command": {"type": "string", "description": "The bash command to execute (Unix-style syntax)"},
+            "restart": {
+                "type": "boolean",
+                "optional": True,
+                "description": "Reset session state (working directory and environment variables)",
+            },
+            "timeout": {
+                "type": "number",
+                "optional": True,
+                "description": "Max execution time in seconds (default: 240)",
+            },
+        },
         _bash,
     )
