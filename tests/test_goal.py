@@ -3,6 +3,7 @@
 import pytest
 
 from mocode.core import AgentHookContext
+from mocode.core.tool import ToolError
 from mocode.tools.goal import GoalTool
 from mocode.hooks.goal import GoalHook
 
@@ -209,8 +210,8 @@ class TestGoalTool:
         hook = GoalHook()
         tool = GoalTool(hook)
 
-        result = await tool.run_async({"action": "set"})
-        assert "Error" in result
+        with pytest.raises(ToolError, match="goal"):
+            await tool.run_async({"action": "set"})
 
     @pytest.mark.asyncio
     async def test_pause_action(self):

@@ -104,12 +104,8 @@ def SubAgentTool(
 ) -> Tool:
     """Create a tool that lets the LLM delegate tasks to a sub-agent."""
 
-    get_provider = _resolve_provider(provider)
-
     async def _sub_agent(args: dict) -> str:
-        task = args.get("task", "")
-        if not task:
-            return "error: missing required parameter 'task'"
+        task = args["task"]
 
         # All filtering happens here: exclude blocked tools first
         derived_tools = parent_tools.derived(exclude=_BLOCKED_TOOLS)
@@ -130,7 +126,7 @@ def SubAgentTool(
             max_tokens=args.get("max_tokens", 8192),
             tool_timeout=tool_timeout,
         )
-        sub = SubAgent(provider=get_provider, tools=derived_tools, config=sub_config)
+        sub = SubAgent(provider=provider, tools=derived_tools, config=sub_config)
         result = await sub.run(task)
         if result.had_error:
             return f"[SubAgent error] {result.content}"

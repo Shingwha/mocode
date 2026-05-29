@@ -15,9 +15,7 @@ from mocode.core import Tool, ToolError, SkillManager
 
 def SkillTool(manager: SkillManager, *, name: str = "skill") -> Tool:
     def _use_skill(args: dict) -> str:
-        skill_name = args.get("name")
-        if not skill_name:
-            raise ToolError("Missing required parameter 'name'", "missing_param")
+        skill_name = args["name"]
 
         skill = manager.get(skill_name)
         if not skill:
@@ -31,6 +29,6 @@ def SkillTool(manager: SkillManager, *, name: str = "skill") -> Tool:
         name,
         "Load a skill by name. Use when the user's request matches a skill's description. "
         "Returns the skill's instructions for you to follow.",
-        {"name": "string"},
+        {"name": {"type": "string", "description": "The skill name to load"}},
         _use_skill,
     )

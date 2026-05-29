@@ -61,18 +61,18 @@ class TestBuilder:
             Agent().provider(MockProvider()).build()
 
     def test_tool_list(self):
-        tool = Tool("echo", "Echo", {"text": "string"}, lambda a: a["text"])
+        tool = Tool("echo", "Echo", {"text": {"type": "string", "description": "text"}}, lambda a: a["text"])
         agent = Agent().provider(MockProvider()).prompt("t").tools([tool]).build()
         assert agent._tools.get("echo") is not None
 
     def test_tool_registry(self):
         reg = ToolRegistry()
-        reg.register(Tool("add", "Add", {"a": "number", "b": "number"}, lambda a: str(int(a["a"]) + int(a["b"]))))
+        reg.register(Tool("add", "Add", {"a": {"type": "number", "description": "a"}, "b": {"type": "number", "description": "b"}}, lambda a: str(int(a["a"]) + int(a["b"]))))
         agent = Agent().provider(MockProvider()).prompt("t").tools(reg).build()
         assert agent._tools.get("add") is not None
 
     def test_prompt_builder(self):
-        prompt = Prompt().add(Section("id", "bot", priority=10)).add(Section("rules", "help", priority=20))
+        prompt = Prompt().register(Section("id", "bot", priority=10)).register(Section("rules", "help", priority=20))
         agent = Agent().provider(MockProvider()).prompt(prompt).build()
         assert "<id>" in agent.system_prompt
         assert "<rules>" in agent.system_prompt
@@ -113,7 +113,7 @@ class TestChat:
 
     @pytest.mark.asyncio
     async def test_tool_execution(self):
-        tool = Tool("add", "Add", {"a": "number", "b": "number"}, lambda a: str(int(a["a"]) + int(a["b"])))
+        tool = Tool("add", "Add", {"a": {"type": "number", "description": "a"}, "b": {"type": "number", "description": "b"}}, lambda a: str(int(a["a"]) + int(a["b"])))
         provider = MockProvider([
             Response(content="", tool_calls=[ToolCall(id="tc1", name="add", arguments='{"a": "3", "b": "5"}')]),
             Response(content="8"),
@@ -192,71 +192,71 @@ class TestChat:
 
 class TestPrompt:
     def test_xml(self):
-        result = Prompt().add(Section("a", "x")).build(format="xml")
+        result = Prompt().register(Section("a", "x")).build(format="xml")
         assert "<system-prompt>" in result
         assert "<a>" in result
 
     def test_text_default(self):
-        result = Prompt().add(Section("a", "x")).build()
+        result = Prompt().register(Section("a", "x")).build()
         assert result == "a: x"
 
     def test_text_attrs(self):
-        result = Prompt().add(Section("tool", "desc", attrs={"name": "bash", "type": "shell"})).build()
+        result = Prompt().register(Section("tool", "desc", attrs={"name": "bash", "type": "shell"})).build()
         assert "tool (name=bash, type=shell): desc" == result
 
     def test_priority(self):
         result = (Prompt()
-            .add(Section("z", "second", priority=20))
-            .add(Section("a", "first", priority=10))
+            .register(Section("z", "second", priority=20))
+            .register(Section("a", "first", priority=10))
             .build(format="text"))
         assert result.index("first") < result.index("second")
 
     def test_disable(self):
-        p = Prompt().add(Section("a", "vis")).add(Section("b", "hid"))
+        p = Prompt().register(Section("a", "vis")).register(Section("b", "hid"))
         p.disable("b")
         assert "hid" not in p.build(format="text")
 
     def test_context(self):
-        p = Prompt().add(Section("g", lambda c: f"hi {c.get('name', 'world')}"))
+        p = Prompt().register(Section("g", lambda c: f"hi {c.get('name', 'world')}"))
         assert "hi MoCode" in p.context(name="MoCode").build(format="text")
 
     def test_find(self):
-        p = Prompt().add(Section("x", "content"))
-        assert p.find("x") is not None
-        assert p.find("x").content == "content"
-        assert p.find("missing") is None
+        p = Prompt().register(Section("x", "content"))
+        assert p.get("x") is not None
+        assert p.get("x").content == "content"
+        assert p.get("missing") is None
 
     def test_all(self):
-        p = Prompt().add(Section("a", "1")).add(Section("b", "2"))
+        p = Prompt().register(Section("a", "1")).register(Section("b", "2"))
         names = {s.name for s in p.all()}
         assert names == {"a", "b"}
 
     def test_remove(self):
-        p = Prompt().add(Section("x", "content"))
-        removed = p.remove("x")
+        p = Prompt().register(Section("x", "content"))
+        removed = p.unregister("x")
         assert removed is not None
         assert removed.name == "x"
-        assert p.find("x") is None
-        assert p.remove("missing") is None
+        assert p.get("x") is None
+        assert p.unregister("missing") is None
 
     def test_add_replaces_duplicate(self):
-        p = Prompt().add(Section("x", "old")).add(Section("x", "new"))
-        assert p.find("x").content == "new"
+        p = Prompt().register(Section("x", "old")).register(Section("x", "new"))
+        assert p.get("x").content == "new"
         assert len(p.all()) == 1
 
     def test_repr(self):
-        p = Prompt().add(Section("a", "1")).add(Section("b", "2"))
+        p = Prompt().register(Section("a", "1")).register(Section("b", "2"))
         p.disable("b")
         r = repr(p)
         assert "a(on)" in r
         assert "b(off)" in r
 
     def test_static_content_no_lambda(self):
-        result = Prompt().add(Section("id", "You are a bot.")).build(format="xml")
+        result = Prompt().register(Section("id", "You are a bot.")).build(format="xml")
         assert "You are a bot." in result
 
     def test_enable(self):
-        p = Prompt().add(Section("a", "vis"))
+        p = Prompt().register(Section("a", "vis"))
         p.disable("a")
         assert "vis" not in p.build(format="text")
         p.enable("a")
@@ -265,14 +265,14 @@ class TestPrompt:
     def test_init_with_sections(self):
         p = Prompt([Section("a", "1"), Section("b", "2")])
         assert len(p.all()) == 2
-        assert p.find("a").content == "1"
+        assert p.get("a").content == "1"
 
     def test_nested_section_xml(self):
         tools = Section("tools", [
             Section("tool", "Run bash", attrs={"name": "bash"}),
             Section("tool", "Read files", attrs={"name": "read"}),
         ])
-        result = Prompt().add(tools).build(format="xml")
+        result = Prompt().register(tools).build(format="xml")
         assert '<tools>' in result
         assert '<tool name="bash">' in result
         assert 'Run bash' in result
@@ -284,7 +284,7 @@ class TestPrompt:
             Section("tool", "Run bash"),
             Section("tool", "Read files"),
         ])
-        result = Prompt().add(tools).build(format="text")
+        result = Prompt().register(tools).build(format="text")
         assert "Run bash" in result
         assert "Read files" in result
         assert "<tools>" not in result
@@ -295,7 +295,7 @@ class TestPrompt:
             Section("tool", "visible"),
             Section("tool", "hidden", enabled=False),
         ])
-        result = Prompt().add(tools).build(format="xml")
+        result = Prompt().register(tools).build(format="xml")
         assert "visible" in result
         assert "hidden" not in result
 
@@ -305,7 +305,7 @@ class TestPrompt:
                 Section("param", "verbose", attrs={"name": "v"}),
             ], attrs={"name": "bash"}),
         ])
-        result = Prompt().add(inner).build(format="xml")
+        result = Prompt().register(inner).build(format="xml")
         assert '<tools>' in result
         assert '<tool name="bash">' in result
         assert '<param name="v">' in result
@@ -317,12 +317,12 @@ class TestPrompt:
 
 class TestTool:
     def test_sync(self):
-        assert Tool("add", "Add", {"a": "string", "b": "string"}, lambda a: str(int(a["a"]) + int(a["b"]))).run({"a": "3", "b": "5"}) == "8"
+        assert Tool("add", "Add", {"a": {"type": "string", "description": "a"}, "b": {"type": "string", "description": "b"}}, lambda a: str(int(a["a"]) + int(a["b"]))).run({"a": "3", "b": "5"}) == "8"
 
     @pytest.mark.asyncio
     async def test_async(self):
         async def f(a): return f"async:{a['x']}"
-        assert await Tool("t", "T", {"x": "string"}, f).run_async({"x": "hi"}) == "async:hi"
+        assert await Tool("t", "T", {"x": {"type": "string", "description": "x"}}, f).run_async({"x": "hi"}) == "async:hi"
 
     def test_error_propagates(self):
         """ToolError propagates — caller handles it."""
@@ -331,7 +331,7 @@ class TestTool:
             Tool("t", "T", {}, f).run({})
 
     def test_schema(self):
-        schema = Tool("t", "T", {"name": "string", "count": "number?"}, lambda a: "ok").to_schema()
+        schema = Tool("t", "T", {"name": {"type": "string", "description": "name"}, "count": {"type": "number", "description": "count", "optional": True}}, lambda a: "ok").to_schema()
         assert "name" in schema["function"]["parameters"]["required"]
         assert "count" not in schema["function"]["parameters"]["required"]
 

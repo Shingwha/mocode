@@ -16,8 +16,6 @@ def FetchTool(result_limit: int = 50000) -> Tool:
 
     async def _fetch(args: dict) -> str:
         url = args.get("url")
-        if not url:
-            raise ToolError("Missing required parameter 'url'", "invalid_input")
         if not url.startswith(("http://", "https://")):
             raise ToolError(
                 f"Invalid URL: {url}. Must start with http:// or https://",
@@ -50,6 +48,13 @@ def FetchTool(result_limit: int = 50000) -> Tool:
     return Tool(
         "fetch",
         "Fetch a webpage and convert to Markdown",
-        {"url": "string", "timeout": "number?"},
+        {
+            "url": {"type": "string", "description": "The URL to fetch"},
+            "timeout": {
+                "type": "number",
+                "description": "Request timeout in seconds (default: 30)",
+                "default": 30,
+            },
+        },
         _fetch,
     )

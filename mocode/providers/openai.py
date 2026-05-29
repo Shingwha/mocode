@@ -5,11 +5,10 @@ Depends on the `openai` package. Install with: uv pip install "mocode[openai]"
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openai import AsyncOpenAI, BadRequestError
+from openai import AsyncOpenAI
 
 from ..core.provider import Provider, Response, ToolCall, Usage
 
@@ -94,19 +93,13 @@ class OpenAIProvider:
         result = []
         for msg in messages:
             if msg.get("role") == "assistant" and "tool_calls" in msg:
-                tcs = msg["tool_calls"]
-                if not tcs:
-                    result.append({k: v for k, v in msg.items() if k != "tool_calls"})
-                    continue
-                valid = [tc for tc in tcs if tc.get("id") in result_ids]
+                valid = [tc for tc in msg["tool_calls"] if tc.get("id") in result_ids]
                 if not valid:
                     result.append({k: v for k, v in msg.items() if k != "tool_calls"})
-                elif len(valid) < len(tcs):
+                else:
                     cleaned = dict(msg)
                     cleaned["tool_calls"] = valid
                     result.append(cleaned)
-                else:
-                    result.append(msg)
             else:
                 result.append(msg)
         return result
@@ -154,13 +147,6 @@ class OpenAIProvider:
     @staticmethod
     def strip_image_content_inplace(messages: list[dict[str, Any]]) -> None:
         """Permanently strip image_url blocks in-place."""
-        for msg in messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for i, block in enumerate(content):
-                    if isinstance(block, dict) and block.get("type") == "image_url":
-                        path = (block.get("_meta") or {}).get("path", "")
-                        content[i] = {
-                            "type": "text",
-                            "text": OpenAIProvider._image_placeholder(path),
-                        }
+        stripped = OpenAIProvider.strip_image_content(messages)
+        if stripped:
+            messages[:] = stripped

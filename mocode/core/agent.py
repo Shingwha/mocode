@@ -53,19 +53,11 @@ class AgentLoop:
         self._tools = tools
         self.hooks = hooks
         self.config = config or AgentConfig()
-        self._messages: list[dict] = []
+        self.messages: list[dict] = []
         self._last_usage: Usage | None = None
         self._call_seq = 0
         self._iteration_count = 0
         self._tool_call_count = 0
-
-    @property
-    def messages(self) -> list[dict]:
-        return self._messages
-
-    @messages.setter
-    def messages(self, value: list[dict]) -> None:
-        self._messages = value
 
     # ---- Chat ----
 
@@ -76,37 +68,37 @@ class AgentLoop:
         else:
             content = user_input
 
-        self._messages.append({"role": "user", "content": content})
+        self.messages.append({"role": "user", "content": content})
 
         return await self._loop()
 
     async def run_with_messages(self, messages: list[dict]) -> LoopResult:
         """Run the loop with a pre-existing message list (shallow-copied)."""
-        self._messages = list(messages)
+        self.messages = list(messages)
         try:
             content = await self._loop()
             return LoopResult(
                 content=content,
                 iterations=self._tool_call_count,
-                messages=self._messages,
+                messages=self.messages,
             )
         except Exception as e:
             return LoopResult(
                 content=str(e),
                 iterations=self._tool_call_count,
-                messages=self._messages,
+                messages=self.messages,
                 had_error=True,
             )
 
     async def _loop(self) -> str:
-        ctx = AgentHookContext(messages=self._messages)
+        ctx = AgentHookContext(messages=self.messages)
         final_response = ""
         self._iteration_count = 0
         self._tool_call_count = 0
 
         while True:
             await self.hooks.before_iteration(ctx)
-            self._messages = ctx.messages
+            self.messages = ctx.messages
             if ctx.compact_old:
                 await self.hooks.on_compact(ctx)
                 ctx.compact_old = 0
@@ -114,13 +106,13 @@ class AgentLoop:
 
             try:
                 response: Response = await self.provider.call(
-                    self._messages,
+                    self.messages,
                     self.system_prompt,
                     self._tools.all_schemas(),
                     self.config.max_tokens,
                 )
             except asyncio.CancelledError:
-                self._messages.append({"role": "assistant", "content": self.INTERRUPT_MSG})
+                self.messages.append({"role": "assistant", "content": self.INTERRUPT_MSG})
                 raise
 
             ctx.reset_response()
@@ -149,26 +141,26 @@ class AgentLoop:
                         {"role": "tool", "tool_call_id": tc.id, "content": self.INTERRUPT_TOOL_MSG}
                         for tc in response.tool_calls
                     ]
-                    self._messages.append(self._assistant_msg(response, all_tc_dicts))
-                    self._messages.extend(tool_results)
+                    self.messages.append(self._assistant_msg(response, all_tc_dicts))
+                    self.messages.extend(tool_results)
                     raise
                 self._tool_call_count += len(response.tool_calls)
-                self._messages.append(self._assistant_msg(response, all_tc_dicts))
-                self._messages.extend(tool_results)
+                self.messages.append(self._assistant_msg(response, all_tc_dicts))
+                self.messages.extend(tool_results)
 
                 ctx.tool_calls = response.tool_calls
                 ctx.tool_results = tool_results
-                ctx.messages = self._messages
+                ctx.messages = self.messages
                 await self.hooks.after_tools(ctx)
-                self._messages = ctx.messages
+                self.messages = ctx.messages
 
                 self._iteration_count += 1
                 if self.config.max_iterations > 0 and self._iteration_count >= self.config.max_iterations:
                     break
             else:
-                self._messages.append(self._assistant_msg(response))
+                self.messages.append(self._assistant_msg(response))
                 await self.hooks.after_iteration(ctx)
-                self._messages = ctx.messages
+                self.messages = ctx.messages
                 if ctx.continue_loop:
                     ctx.continue_loop = False
                     continue
@@ -269,12 +261,6 @@ class AgentLoop:
             tool_args = json.loads(tc.arguments)
             result = await self._run_tool_async(tc.name, tool_args, ctx)
             return {"role": "tool", "tool_call_id": tc.id, "content": result}
-
-        if len(tool_calls) == 1:
-            try:
-                return [await _run_one(tool_calls[0])]
-            except Exception as e:
-                return [{"role": "tool", "tool_call_id": tool_calls[0].id, "content": f"error: {e}"}]
 
         raw_results = await asyncio.gather(
             *[_run_one(tc) for tc in tool_calls],

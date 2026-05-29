@@ -21,7 +21,7 @@ Content = str | list["Section"] | Callable[[dict[str, Any]], str]
 Format = Literal["text", "xml"]
 
 
-@dataclass(slots=True)
+@dataclass
 class Section:
     name: str
     content: Content
@@ -40,27 +40,27 @@ class Prompt:
             for s in sections:
                 self._sections[s.name] = s
 
-    def add(self, section: Section) -> Self:
+    def register(self, section: Section) -> Self:
         self._sections[section.name] = section
         return self
 
-    def remove(self, name: str) -> Section | None:
+    def unregister(self, name: str) -> Section | None:
         return self._sections.pop(name, None)
 
-    def find(self, name: str) -> Section | None:
+    def get(self, name: str) -> Section | None:
         return self._sections.get(name)
 
     def all(self) -> list[Section]:
         return list(self._sections.values())
 
     def enable(self, name: str) -> Self:
-        s = self.find(name)
+        s = self.get(name)
         if s:
             s.enabled = True
         return self
 
     def disable(self, name: str) -> Self:
-        s = self.find(name)
+        s = self.get(name)
         if s:
             s.enabled = False
         return self

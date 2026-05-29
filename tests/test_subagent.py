@@ -5,6 +5,7 @@ import pytest
 from mocode.core import (
     AgentHook, AgentHookContext, Response, ToolCall, Tool, ToolRegistry,
 )
+from mocode.core.tool import ToolError
 from mocode.tools.subagent import (
     SubAgent, SubAgentConfig, SubAgentResult, SubAgentTool,
 )
@@ -72,7 +73,7 @@ class TestSubAgent:
 
     @pytest.mark.asyncio
     async def test_run_with_tool_calls(self):
-        tool = Tool("echo", "Echo", {"text": "string"}, lambda a: f"echoed: {a['text']}")
+        tool = Tool("echo", "Echo", {"text": {"type": "string", "description": "text"}}, lambda a: f"echoed: {a['text']}")
         registry = ToolRegistry()
         registry.register(tool)
 
@@ -258,7 +259,7 @@ class TestSubAgentTool:
 
     @pytest.mark.asyncio
     async def test_returns_content(self):
-        tool = Tool("echo", "Echo", {"text": "string"}, lambda a: a["text"])
+        tool = Tool("echo", "Echo", {"text": {"type": "string", "description": "text"}}, lambda a: a["text"])
         registry = ToolRegistry()
         registry.register(tool)
 
@@ -290,5 +291,5 @@ class TestSubAgentTool:
     async def test_missing_task(self):
         registry = ToolRegistry()
         sub_tool = SubAgentTool(MockProvider(), registry)
-        result = await sub_tool.run_async({})
-        assert "error" in result.lower()
+        with pytest.raises(ToolError, match="task"):
+            await sub_tool.run_async({})

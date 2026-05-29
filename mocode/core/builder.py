@@ -83,7 +83,7 @@ class Agent:
         if isinstance(self._system_prompt, list):
             pb = Prompt()
             for s in self._system_prompt:
-                pb.add(s)
+                pb.register(s)
             ctx = self._prompt_context or {}
             prompt_str = pb.context(**ctx).build(format=self._prompt_format)
         elif isinstance(self._system_prompt, Prompt):

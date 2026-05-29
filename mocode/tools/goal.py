@@ -5,7 +5,7 @@ GoalHook lives in mocode/hooks/goal.py.
 
 from __future__ import annotations
 
-from ..core.tool import Tool
+from ..core.tool import Tool, ToolError
 
 
 def GoalTool(goal_hook) -> Tool:
@@ -17,7 +17,7 @@ def GoalTool(goal_hook) -> Tool:
         if action == "set":
             goal = args.get("goal", "").strip()
             if not goal:
-                return "Error: 'goal' is required for 'set' action"
+                raise ToolError("'goal' is required for 'set' action", "invalid_input")
             goal_hook.set_goal(goal)
             return f"Goal set: {goal}"
 
@@ -64,6 +64,7 @@ def GoalTool(goal_hook) -> Tool:
             "goal": {
                 "type": "string",
                 "description": "The goal condition to set (required for 'set' action)",
+                "optional": True,
             },
         },
         _handle,

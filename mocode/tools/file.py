@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..core.tool import Tool, ToolError
+from ._helpers import read_text, require_file
 
 
 def _read_text(p: Path, offset: int, limit: int) -> str:
@@ -18,10 +19,7 @@ def _read_text(p: Path, offset: int, limit: int) -> str:
         raise ToolError(f"Cannot read file: {e}", "read_error")
 
     # Read with encoding fallback
-    try:
-        all_lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
-    except UnicodeDecodeError:
-        all_lines = p.read_text(encoding="gbk", errors="replace").splitlines(keepends=True)
+    all_lines = read_text(p).splitlines(keepends=True)
 
     total = len(all_lines)
     size_kb = p.stat().st_size / 1024
@@ -69,11 +67,7 @@ def ReadTool() -> Tool:
     """Create a read tool."""
 
     def _read(args: dict) -> str:
-        p = Path(args["path"])
-        if not p.exists():
-            raise ToolError(f"File not found: {p}", "file_not_found")
-        if p.is_dir():
-            raise ToolError(f"Path is a directory: {p}", "invalid_path")
+        p = require_file(Path(args["path"]))
         offset = max(1, int(args.get("offset", 1)))
         limit = int(args.get("limit", 0)) or 999999
         return _read_text(p, offset, limit)
@@ -110,9 +104,7 @@ def _append(args: dict) -> str:
 
 
 def _edit(args: dict) -> str:
-    p = Path(args["path"])
-    if not p.exists():
-        raise ToolError(f"File not found: {p}", "file_not_found")
+    p = require_file(Path(args["path"]))
 
     text = p.read_text(encoding="utf-8")
     old, new = args["old"], args["new"]

@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from ..core.tool import Tool, ToolError
+from ._helpers import require_dir
 
 IGNORE_DIRS = frozenset({
     # VCS
@@ -28,18 +29,6 @@ IGNORE_DIRS = frozenset({
     ".cache", "coverage", ".terraform",
 })
 
-TEXT_EXTENSIONS = frozenset({
-    ".py", ".js", ".ts", ".tsx", ".jsx", ".java", ".go", ".rs", ".c", ".cpp", ".h", ".hpp",
-    ".kt", ".swift", ".rb", ".php", ".cs", ".scala", ".lua", ".r", ".m", ".mm",
-    ".sh", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".fish",
-    ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".env",
-    ".txt", ".md", ".rst", ".adoc", ".tex", ".org",
-    ".html", ".css", ".scss", ".less", ".sass", ".vue", ".svelte",
-    ".sql", ".xml", ".svg", ".csv", ".tsv",
-    ".dockerfile", ".makefile", ".cmake", ".gradle",
-    ".gitignore", ".gitattributes", ".editorconfig",
-})
-
 TYPE_MAP = {
     "py": ".py", "js": ".js", "ts": ".ts", "tsx": ".tsx", "jsx": ".jsx",
     "go": ".go", "rs": ".rs", "java": ".java", "c": ".c", "cpp": ".cpp",
@@ -49,6 +38,17 @@ TYPE_MAP = {
     "json": ".json", "yaml": ".yaml", "yml": ".yml", "toml": ".toml",
     "md": ".md", "txt": ".txt", "sql": ".sql", "xml": ".xml", "sh": ".sh",
 }
+
+TEXT_EXTENSIONS = frozenset(set(TYPE_MAP.values()) | {
+    ".hpp", ".kt", ".m", ".mm",
+    ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".fish",
+    ".ini", ".cfg", ".conf", ".env",
+    ".rst", ".adoc", ".tex", ".org",
+    ".scss", ".less", ".sass",
+    ".svg", ".csv", ".tsv",
+    ".dockerfile", ".makefile", ".cmake",
+    ".gitignore", ".gitattributes", ".editorconfig",
+})
 
 _GLOB_MAX = 200
 
@@ -85,9 +85,7 @@ def _walk_text_files(base_path: Path, type_filter: set[str] | None):
 
 
 def _glob(args: dict) -> str:
-    base = Path(args.get("path", ".")).resolve()
-    if not base.is_dir():
-        raise ToolError(f"Directory not found: {base}", "path_not_found")
+    base = require_dir(Path(args.get("path", ".")).resolve())
     pat = args["pat"]
     files = sorted(
         (p for p in base.glob(pat)
@@ -120,14 +118,11 @@ def _glob(args: dict) -> str:
 
 def _grep(args: dict) -> str:
     pattern = re.compile(args["pat"])
-    base_path = Path(args.get("path", ".")).resolve()
+    base_path = require_dir(Path(args.get("path", ".")).resolve())
     max_results = int(args.get("limit", 100)) or 100
     type_filter = _get_type_filter(args.get("type", ""))
     output_mode = args.get("output_mode", "content")
     context_lines = int(args.get("context", 0))
-
-    if not base_path.is_dir():
-        raise ToolError(f"Directory not found: {base_path}", "path_not_found")
 
     if output_mode == "files":
         return _grep_files(pattern, base_path, type_filter, max_results)

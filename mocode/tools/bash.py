@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..core.tool import Tool
+from ._helpers import decode_bytes
 
 
 def _is_wsl_path(path: Path) -> bool:
@@ -65,17 +66,6 @@ def find_bash() -> Optional[Path]:
     return None
 
 
-def _decode_bytes(data: bytes) -> str:
-    if not data:
-        return ""
-    for encoding in ("utf-8", "gbk", "cp936", "gb2312"):
-        try:
-            return data.decode(encoding)
-        except UnicodeDecodeError:
-            continue
-    return data.decode("utf-8", errors="replace")
-
-
 class BashSession:
     """Persistent bash session — maintains cwd and env vars across commands."""
 
@@ -114,9 +104,9 @@ class BashSession:
                 timeout=timeout,
                 cwd=self._cwd,
             )
-            output = _decode_bytes(result.stdout)
+            output = decode_bytes(result.stdout)
             if result.stderr:
-                stderr = _decode_bytes(result.stderr)
+                stderr = decode_bytes(result.stderr)
                 if output:
                     output += "\n" + stderr
                 else:
@@ -158,18 +148,11 @@ def BashTool(timeout: int = 240) -> Tool:
     session = BashSession()
 
     def _bash(args: dict) -> str:
-        cmd = args.get("command")
-        if not cmd:
-            return "error: missing required parameter 'command'"
+        cmd = args["command"]
         if args.get("restart"):
             session.restart()
             return "Bash session restarted"
-        try:
-            return session.execute(cmd, timeout=args.get("timeout", timeout))
-        except RuntimeError as e:
-            return f"error: {e}"
-        except Exception as e:
-            return f"error: {e}"
+        return session.execute(cmd, timeout=args.get("timeout", timeout))
 
     return Tool(
         "bash",

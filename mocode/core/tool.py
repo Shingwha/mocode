@@ -26,12 +26,23 @@ class Tool:
         self,
         name: str,
         description: str,
-        params: dict,
+        params: dict[str, dict],
         func: Callable[[dict], str],
     ):
         self.name = name
         self.description = description
-        self.params = {k: _normalize_param(v) for k, v in params.items()}
+        self._required = []
+        normalized = {}
+        for k, v in params.items():
+            if not isinstance(v, dict):
+                raise TypeError(
+                    f"Tool '{name}': param '{k}' must be a dict with 'type' and 'description', "
+                    f"got {type(v).__name__}: {v!r}"
+                )
+            normalized[k] = v
+            if "default" not in v and not v.get("optional"):
+                self._required.append(k)
+        self.params = normalized
         self.func = func
         self.is_async = inspect.iscoroutinefunction(func)
 
@@ -48,13 +59,18 @@ class Tool:
     def _validate_args(self, args: dict) -> dict:
         result = dict(args)
         for param_name, param_spec in self.params.items():
-            if param_name not in result and "default" in param_spec:
-                result[param_name] = param_spec["default"]
+            if param_name not in result:
+                if "default" in param_spec:
+                    result[param_name] = param_spec["default"]
+                elif param_name in self._required:
+                    raise ToolError(
+                        f"Missing required parameter '{param_name}'",
+                        "missing_param",
+                    )
         return result
 
     def to_schema(self) -> dict:
         properties = {}
-        required = []
 
         for param_name, param_spec in self.params.items():
             prop = {"type": param_spec.get("type", "string")}
@@ -63,8 +79,6 @@ class Tool:
             if "enum" in param_spec:
                 prop["enum"] = param_spec["enum"]
             properties[param_name] = prop
-            if "default" not in param_spec and not param_spec.get("optional"):
-                required.append(param_name)
 
         return {
             "type": "function",
@@ -74,18 +88,10 @@ class Tool:
                 "parameters": {
                     "type": "object",
                     "properties": properties,
-                    "required": required,
+                    "required": self._required,
                 },
             },
         }
-
-
-def _normalize_param(spec) -> dict:
-    """Convert shorthand param format to dict at construction time."""
-    if isinstance(spec, dict):
-        return spec
-    optional = spec.endswith("?")
-    return {"type": spec.rstrip("?"), "optional": optional}
 
 
 class ToolRegistry:
@@ -109,7 +115,7 @@ class ToolRegistry:
     def all_schemas(self) -> list[dict]:
         return [t.to_schema() for t in self._tools.values()]
 
-    def derived(self, exclude: set[str] | None = None) -> "ToolRegistry":
+    def derived(self, exclude: set[str] | None = None) -> ToolRegistry:
         new = ToolRegistry()
         if exclude:
             new._tools = {k: v for k, v in self._tools.items() if k not in exclude}

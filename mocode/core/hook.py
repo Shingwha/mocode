@@ -7,6 +7,7 @@ after_tools) can mutate ctx.messages in place.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -92,6 +93,7 @@ class AgentHook:
 class HookRunner:
     """Fan-out dispatcher for a list of AgentHooks with error isolation."""
 
+    _log = logging.getLogger(__name__)
     _METHODS = frozenset({
         "before_iteration", "on_response", "after_tools",
         "after_iteration", "on_tool_start", "on_tool_complete", "on_compact",
@@ -108,7 +110,7 @@ class HookRunner:
             try:
                 await getattr(h, method)(ctx)
             except Exception:
-                pass
+                self._log.debug("Hook %s.%s failed", type(h).__name__, method, exc_info=True)
 
     def __getattr__(self, name: str):
         if name in self._METHODS:
