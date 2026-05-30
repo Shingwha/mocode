@@ -157,12 +157,14 @@ class AgentLoop:
                 self._iteration_count += 1
                 if self.config.max_iterations > 0 and self._iteration_count >= self.config.max_iterations:
                     break
+                if ctx.continue_loop is False:
+                    break
             else:
                 self.messages.append(self._assistant_msg(response))
                 await self.hooks.after_iteration(ctx)
                 self.messages = ctx.messages
-                if ctx.continue_loop:
-                    ctx.continue_loop = False
+                if ctx.continue_loop is True:
+                    ctx.continue_loop = None
                     continue
                 break
 
@@ -259,7 +261,9 @@ class AgentLoop:
     async def _run_tool_calls_parallel(self, tool_calls: list, ctx: AgentHookContext) -> list[dict]:
         async def _run_one(tc):
             tool_args = json.loads(tc.arguments)
-            result = await self._run_tool_async(tc.name, tool_args, ctx)
+            # Per-call ctx so concurrent tools don't clobber each other's tool_name/tool_args/tool_error
+            tool_ctx = AgentHookContext(messages=ctx.messages)
+            result = await self._run_tool_async(tc.name, tool_args, tool_ctx)
             return {"role": "tool", "tool_call_id": tc.id, "content": result}
 
         raw_results = await asyncio.gather(

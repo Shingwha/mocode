@@ -62,8 +62,24 @@ class GoalHook(AgentHook):
         self._idle_count = 0
 
     async def after_tools(self, ctx: AgentHookContext) -> None:
+        """After tool calls — agent is active. Track state, no reminder injection."""
         self._idle_count = 0
-        await self._tick(ctx)
+        if not self._condition or self._paused:
+            return
+        self._turn_count += 1
+        if self._turn_count > self._max_turns:
+            self._paused = True
+            ctx.messages.append({
+                "role": "user",
+                "content": (
+                    f"[Goal] Turn limit ({self._max_turns}) reached, goal paused.\n"
+                    f"Goal: {self._condition}\n"
+                    f"Use goal(action=\"resume\") to continue, or goal(action=\"clear\") to stop."
+                ),
+            })
+            ctx.continue_loop = False
+            return
+        ctx.continue_loop = True
 
     async def after_iteration(self, ctx: AgentHookContext) -> None:
         await self._tick_idle(ctx)

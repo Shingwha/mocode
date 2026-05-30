@@ -68,7 +68,7 @@ class TestGoalHook:
 
         ctx = AgentHookContext(messages=[{"role": "user", "content": "hi"}])
         await hook.after_iteration(ctx)
-        assert ctx.continue_loop is False
+        assert ctx.continue_loop is not True  # None → loop will break
         assert hook.turn_count == 0
 
     @pytest.mark.asyncio
@@ -88,7 +88,7 @@ class TestGoalHook:
         assert "[Goal]" in ctx.messages[-1]["content"]
 
     @pytest.mark.asyncio
-    async def test_after_tools_ticks(self):
+    async def test_after_tools_tracks_turns_without_injection(self):
         hook = GoalHook()
         hook.set_goal("something")
 
@@ -96,7 +96,25 @@ class TestGoalHook:
         await hook.after_tools(ctx)
         assert ctx.continue_loop is True
         assert hook.turn_count == 1
-        assert "[Goal]" in ctx.messages[-1]["content"]
+        assert hook.idle_count == 0
+        # No [Goal] reminder injected — loop continues naturally with tool calls
+        assert len(ctx.messages) == 1
+
+    @pytest.mark.asyncio
+    async def test_after_tools_turn_limit_pauses(self):
+        hook = GoalHook(max_turns=1)
+        hook.set_goal("something")
+
+        ctx = AgentHookContext(messages=[{"role": "user", "content": "hi"}])
+        # Turn 1: turn_count=1, 1 > 1 is False → continues
+        await hook.after_tools(ctx)
+        assert ctx.continue_loop is True
+        assert not hook.paused
+        # Turn 2: turn_count=2, 2 > 1 is True → pauses
+        await hook.after_tools(ctx)
+        assert ctx.continue_loop is False
+        assert hook.paused is True
+        assert any("[Goal]" in m.get("content", "") for m in ctx.messages)
 
     def test_set_and_clear_goal(self):
         hook = GoalHook()
