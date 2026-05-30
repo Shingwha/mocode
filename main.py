@@ -229,6 +229,14 @@ async def main():
             continue
         if user_input.lower() in ("exit", "quit"):
             break
+        if user_input.lower() == "/export":
+            from datetime import datetime
+            import json as _json
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = Path.cwd() / f"session_{ts}.json"
+            path.write_text(_json.dumps(agent.messages, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"{_s(f'Exported {len(agent.messages)} messages → {path}', GREEN)}")
+            continue
         print()
 
         def _make_interrupt_handler(task):
