@@ -55,9 +55,11 @@ from mocode.hooks import CompactHook, GoalHook
 from mocode.prompts.app import build_system_prompt
 from mocode.providers.openai import OpenAIProvider
 from mocode.tools import (
+    AppendTool,
     BashTool,
     CompactTool,
     EditTool,
+    FetchTool,
     GlobTool,
     GoalTool,
     GrepTool,
@@ -65,6 +67,7 @@ from mocode.tools import (
     ReadTool,
     SkillTool,
     SubAgentTool,
+    WriteTool,
 )
 
 logging.basicConfig(
@@ -160,7 +163,7 @@ def create_agent(display):
     )
 
     tools = ToolRegistry()
-    for t in [ReadTool(), EditTool(), GlobTool(), GrepTool(), BashTool()]:
+    for t in [ReadTool(), WriteTool(), AppendTool(), EditTool(), GlobTool(), GrepTool(), BashTool(), FetchTool()]:
         tools.register(t)
 
     ic = config.image
