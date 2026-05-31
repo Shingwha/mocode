@@ -178,6 +178,7 @@ def _grep_count(pattern: re.Pattern, base_path: Path, type_filter: set[str] | No
 
 def _grep_content(pattern: re.Pattern, base_path: Path, type_filter: set[str] | None, max_results: int, context_lines: int) -> str:
     hits = []
+    cwd = Path.cwd()
     for filepath in _walk_text_files(base_path, type_filter):
         try:
             file_lines = Path(filepath).read_text(encoding="utf-8", errors="replace").splitlines()
@@ -188,6 +189,8 @@ def _grep_content(pattern: re.Pattern, base_path: Path, type_filter: set[str] | 
         if not match_indices:
             continue
 
+        display_path = str(Path(filepath).relative_to(cwd)) if Path(filepath).is_relative_to(cwd) else filepath
+
         if context_lines > 0:
             expanded = set()
             for idx in match_indices:
@@ -197,8 +200,10 @@ def _grep_content(pattern: re.Pattern, base_path: Path, type_filter: set[str] | 
         else:
             display_indices = match_indices
 
+        match_set = set(match_indices)
         for idx in display_indices:
-            hits.append(f"{filepath}:{idx + 1}:{file_lines[idx]}")
+            sep = ":" if idx in match_set else "-"
+            hits.append(f"{display_path}{sep}{idx + 1}{sep}{file_lines[idx]}")
             if len(hits) >= max_results:
                 header = f"[Showing {len(hits)} matches for '{pattern.pattern}']"
                 return header + "\n" + "\n".join(hits)
