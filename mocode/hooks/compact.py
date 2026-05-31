@@ -13,7 +13,7 @@ class CompactHook(AgentHook):
         self,
         provider,
         threshold: float = 0.80,
-        context_window: int = 128_000,
+        context_window: int = 256_000,
     ):
         self._provider = provider
         self._threshold = threshold

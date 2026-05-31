@@ -1,7 +1,8 @@
-"""MoCode 0.3 — CLI agent tool.
+"""MoCode 0.3 — CLI entry point.
 
 Usage:
-    uv run main.py
+    mocode              Launch interactive CLI
+    mocode -c "prompt"  One-shot mode (TODO)
 """
 
 import asyncio
@@ -47,14 +48,14 @@ def _tool_summary(name, args):
 
 import logging
 
-from mocode.app import Config
-from mocode.core import Agent, AgentHook, AgentHookContext
-from mocode.core.skill import SkillManager
-from mocode.core.tool import ToolRegistry
-from mocode.hooks import CompactHook, GoalHook
-from mocode.prompts.app import build_system_prompt
-from mocode.providers.openai import OpenAIProvider
-from mocode.tools import (
+from .app import Config
+from .core import Agent, AgentHook, AgentHookContext
+from .core.skill import SkillManager
+from .core.tool import ToolRegistry
+from .hooks import CompactHook, GoalHook
+from .prompts.app import build_system_prompt
+from .providers.openai import OpenAIProvider
+from .tools import (
     AppendTool,
     BashTool,
     CompactTool,
@@ -215,7 +216,7 @@ def create_agent(display):
     return agent
 
 
-async def main():
+async def _async_main():
     display = Display()
     agent = create_agent(display)
 
@@ -235,7 +236,7 @@ async def main():
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             path = Path.cwd() / f"session_{ts}.json"
             path.write_text(_json.dumps(agent.messages, ensure_ascii=False, indent=2), encoding="utf-8")
-            print(f"{_s(f'Exported {len(agent.messages)} messages → {path}', GREEN)}")
+            print(f"{_s(f'Exported {len(agent.messages)} msgs → {path}', GREEN)}")
             continue
         print()
 
@@ -258,8 +259,13 @@ async def main():
             display.response(result)
 
 
-if __name__ == "__main__":
+def main():
+    """Sync entry point for `mocode` CLI command."""
     try:
-        asyncio.run(main())
+        asyncio.run(_async_main())
     except KeyboardInterrupt:
         pass
+
+
+if __name__ == "__main__":
+    main()
