@@ -11,22 +11,6 @@ DEFAULT_CONFIG_PATH = Path.home() / ".mocode" / "config.json"
 
 
 @dataclass
-class GatewayConfig:
-    channels: dict[str, dict[str, Any]] = field(default_factory=dict)
-
-    def is_enabled(self, channel_name: str) -> bool:
-        ch = self.channels.get(channel_name)
-        return ch is not None and ch.get("enabled", False)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"channels": self.channels}
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> GatewayConfig:
-        return cls(channels=data.get("channels", {}))
-
-
-@dataclass
 class ImageConfig:
     enabled: bool = False
     base_url: str = "https://api.openai.com"
@@ -66,12 +50,9 @@ class Config:
     max_tokens: int = 8192
     tool_result_limit: int = 25000
     tool_timeout: int = 240
-    gateway: GatewayConfig = field(default_factory=GatewayConfig)
     image: ImageConfig = field(default_factory=ImageConfig)
 
     def __post_init__(self):
-        if isinstance(self.gateway, dict):
-            self.gateway = GatewayConfig.from_dict(self.gateway)
         if isinstance(self.image, dict):
             self.image = ImageConfig.from_dict(self.image)
 
@@ -96,7 +77,6 @@ class Config:
             "max_tokens": self.max_tokens,
             "tool_result_limit": self.tool_result_limit,
             "tool_timeout": self.tool_timeout,
-            "gateway": self.gateway.to_dict(),
             "image": self.image.to_dict(),
         }
 
@@ -115,8 +95,6 @@ class Config:
         for key in ("max_tokens", "tool_result_limit", "tool_timeout"):
             if key in data and key in known:
                 kwargs[key] = data[key]
-        if "gateway" in data:
-            kwargs["gateway"] = GatewayConfig.from_dict(data["gateway"])
         if "image" in data:
             kwargs["image"] = ImageConfig.from_dict(data["image"])
 

@@ -61,12 +61,6 @@ class CLIApp:
         except Exception:
             pass
 
-    # ── Memory ─────────────────────────────────────────────
-
-    def _read_memory(self, name: str) -> str:
-        p = self.HOME / "memory" / name
-        return p.read_text(encoding="utf-8").strip() if p.exists() else ""
-
     # ── Agent construction ─────────────────────────────────
 
     def _build_agent(self):
@@ -92,10 +86,20 @@ class CLIApp:
         skill_mgr = SkillManager([self.HOME / "skills"])
         tools.register(SkillTool(skill_mgr))
 
+        # Read AGENTS.md: global (~/.mocode/AGENTS.md) + project (./AGENTS.md)
+        # AGENTS.md holds agent-specific context that doesn't belong in README:
+        # build steps, test commands, code conventions, security notes, etc.
+        agents_parts = []
+        for p in (self.HOME / "AGENTS.md", Path.cwd() / "AGENTS.md"):
+            if p.exists():
+                content = p.read_text(encoding="utf-8").strip()
+                if content:
+                    agents_parts.append(content)
+
         prompt = build_system_prompt(
             tools=tools, skill_manager=skill_mgr, cwd=str(Path.cwd()),
-            soul=self._read_memory("SOUL.md"), user=self._read_memory("USER.md"),
-            memory=self._read_memory("MEMORY.md"), home=str(self.HOME),
+            agents="\n\n".join(agents_parts) if agents_parts else "",
+            home=str(self.HOME),
             config_path=str(self.HOME / "config.json"),
             skills_dir=str(self.HOME / "skills"),
             sessions_dir=str(self.HOME / "sessions"),

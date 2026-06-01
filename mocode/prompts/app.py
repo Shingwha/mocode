@@ -1,7 +1,16 @@
-"""App system prompt — main agent identity, guidelines, environment, tools, skills.
+"""App system prompt — agents, guidelines, environment, tools, skills.
 
-Aligned with 0.2's system_prompt() sections: soul, user, memory, environment, tools, skills.
-Content for soul/user/memory is passed in at runtime (no filesystem assumptions in core).
+AGENTS.md
+---------
+AGENTS.md gives agents the extra, detailed context they need that doesn't
+belong in a README: build steps, test commands, code conventions, security
+gotchas — anything you'd tell a new teammate.
+
+Two locations are read and merged (global first, then project):
+  - ~/.mocode/AGENTS.md   — user-level instructions (applies to all projects)
+  - ./AGENTS.md           — project-level instructions (in the working directory)
+
+Both are optional. If neither exists, the <agents> section is simply omitted.
 
 Usage:
     from mocode.prompts.app import build_system_prompt
@@ -10,9 +19,6 @@ Usage:
         tools=registry,
         skill_manager=mgr,
         cwd="/path",
-        soul="You are MoCode, a concise coding assistant.",
-        user="User profile content here.",
-        memory="Long-term memory content here.",
     )
 """
 
@@ -25,9 +31,7 @@ def build_system_prompt(
     tools: Any = None,
     skill_manager: Any = None,
     cwd: str = "",
-    soul: str = "",
-    user: str = "",
-    memory: str = "",
+    agents: str = "",
     home: str = "",
     config_path: str = "",
     skills_dir: str = "",
@@ -40,24 +44,21 @@ def build_system_prompt(
         tools: ToolRegistry — tool name/description pairs are listed in the prompt.
         skill_manager: SkillManager — skill metadata is listed in the prompt.
         cwd: Current working directory shown to the LLM.
-        soul: Soul content (identity, behavioral guidelines).
-        user: User profile content.
-        memory: Long-term memory content.
+        agents: Content from AGENTS.md files (global + project merged).
         home: MoCode home directory path.
         config_path: Config file path.
         skills_dir: Skills directory path.
         sessions_dir: Sessions directory path.
         **ctx: Extra context variables passed to lambda sections.
     """
-    sections = [
-        Section("identity", _render_soul(soul), priority=10),
-        Section("user", _render_user(user), priority=11),
-        Section("memory", _render_memory(memory), priority=12),
-        Section("guidelines", _render_guidelines, priority=20),
-        Section("environment", _render_environment(
-            cwd, home, config_path, skills_dir, sessions_dir,
-        ), priority=30),
-    ]
+    sections = []
+
+    # Order: stable → dynamic (maximizes prefix cache hit rate)
+    sections.append(Section("guidelines", _render_guidelines, priority=10))
+    sections.append(Section("agents", _render_agents(agents, home, cwd), priority=20))
+    sections.append(Section("environment", _render_environment(
+        cwd, home, config_path, skills_dir, sessions_dir,
+    ), priority=30))
 
     if tools is not None:
         sections.append(Section("tools", _render_tools(tools), priority=40))
@@ -68,40 +69,27 @@ def build_system_prompt(
     return Prompt(sections).context(**ctx).build(format="xml")
 
 
-DEFAULT_SOUL = (
-    "# Identity\n"
-    "You are MoCode, a concise coding assistant.\n"
-    "\n"
-    "# Guidelines\n"
-    "- Be concise and direct\n"
-    "- Prefer `edit` over `write` for existing files\n"
-    "- Verify changes before claiming success\n"
-    "- Handle errors gracefully\n"
-    "- Respond in the same language the user uses\n"
-)
-
-DEFAULT_USER = (
-    "# User Profile\n"
-    "(Information about the user will be stored here. Edit this file to customize.)\n"
-)
-
-DEFAULT_MEMORY = (
-    "# Long-term Memory\n"
-    "(Important facts, decisions, and context will be stored here. "
-    "Edit this file to add persistent knowledge.)\n"
-)
-
-
-def _render_soul(content: str) -> str:
-    return content or DEFAULT_SOUL
-
-
-def _render_user(content: str) -> str:
-    return content or DEFAULT_USER
-
-
-def _render_memory(content: str) -> str:
-    return content or DEFAULT_MEMORY
+def _render_agents(content: str, home: str, cwd: str) -> str:
+    sources = []
+    if home:
+        sources.append(f"  - {home}/AGENTS.md  (global, applies to all projects)")
+    if cwd:
+        sources.append(f"  - {cwd}/AGENTS.md  (project, specific to this project)")
+    header = (
+        "The following instructions are loaded from AGENTS.md files — a place for "
+        "project-specific and user-specific guidance that helps you work effectively. "
+        "Treat them as rules from the project owner: follow build steps, respect code "
+        "conventions, and heed any warnings listed below."
+    )
+    if sources:
+        header += "\n\nSources (edit these files to customize):\n" + "\n".join(sources)
+    if not content:
+        header += (
+            "\n\nNo AGENTS.md files found yet. You can create them to provide persistent "
+            "instructions. Common sections: project overview, build/test commands, code style, "
+            "testing instructions, security considerations."
+        )
+    return f"{header}\n\n{content}" if content else header
 
 
 def _render_guidelines(_ctx: dict[str, Any]) -> str:

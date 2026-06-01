@@ -1,13 +1,10 @@
-"""mocode.app — shared application layer: Config, Session, Gateway."""
+"""mocode.app — shared application layer: Config, Session."""
 
-from .config import Config, GatewayConfig, ProviderConfig
-from .gateway import Gateway
+from .config import Config, ProviderConfig
 from .session import FileSessionStore, Session, SessionManager, SessionStore
 
 __all__ = [
-    "Gateway",
     "Config",
-    "GatewayConfig",
     "ProviderConfig",
     "Session",
     "SessionManager",
