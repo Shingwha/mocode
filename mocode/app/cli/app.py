@@ -157,12 +157,33 @@ class CLIApp:
         self.display.info("Session saved and cleared.")
 
     def _resume(self, arg: str):
-        """Resume a session by ID or numeric index."""
+        """Resume a session by ID, numeric index, or file path."""
         sessions = self._session_mgr.list()
 
         if not arg:
             self.display.session_list(sessions, active_id=self._session_mgr.active_id)
-            self.display.info("Usage: /resume <id-or-number>")
+            self.display.info("Usage: /resume <id-or-number-or-path>")
+            return
+
+        # Try file path first
+        path = Path(arg.strip('"').strip("'")).expanduser()
+        if path.suffix == ".json" and path.exists():
+            try:
+                messages = json.loads(path.read_text(encoding="utf-8"))
+            except Exception as e:
+                self.display.error(f"Failed to read JSON: {e}")
+                return
+            if not isinstance(messages, list):
+                self.display.error("Invalid format: expected a JSON array of messages")
+                return
+            self._save_session()
+            self.agent.messages.clear()
+            self.agent.messages.extend(messages)
+            self.agent.system_prompt = self._build_prompt()
+            self.display.clear_screen()
+            self.display.render_messages(messages)
+            user_count = sum(1 for m in messages if m.get("role") == "user")
+            self.display.info(f"Resumed {len(messages)} msgs ({user_count} user turns) from {path.name}")
             return
 
         # Resolve target: numeric index (1-based) or session ID
