@@ -12,7 +12,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
 from .theme import (
-    RST, BOLD, DIM, CYAN, MAGENTA, Spinner, Theme, COMMANDS, _PRESETS, _s,
+    RST, BOLD, DIM, CYAN, MAGENTA, BG_USER, Spinner, Theme, COMMANDS, _PRESETS, _s,
 )
 
 # Paste marker thresholds
@@ -157,8 +157,9 @@ class Display:
     async def prompt(self) -> str:
         self._paste_store.clear()
         self._paste_counter = 0
-        text = await self._session.prompt_async(f"{self.theme.icon_input} ")
-        return self._resolve_paste_markers(text).strip()
+        raw = await self._session.prompt_async(f"{self.theme.icon_input} ")
+        self._clear_input_lines(raw)
+        return self._resolve_paste_markers(raw).strip()
 
     # ── Spinner ───────────────────────────────────────────
 
@@ -214,6 +215,20 @@ class Display:
 
     def _clear_spinner(self):
         print(f"\r{' ' * self._spinner_len}\r", end="", flush=True)
+
+    # ── Output: user message ──────────────────────────────
+
+    def user_message(self, content: str):
+        """Render a user message with dark background."""
+        t = self.theme
+        self._print(_s(f"{t.icon_input} {content.strip()}", BG_USER, *t.color_user_fg))
+        self._print()
+
+    def _clear_input_lines(self, raw_text: str):
+        """Clear the prompt_toolkit input lines from the terminal."""
+        lines = raw_text.count('\n') + 1
+        for _ in range(lines):
+            print("\033[A\033[2K", end="", flush=True)
 
     # ── Output: tool lifecycle ────────────────────────────
 
@@ -275,9 +290,7 @@ class Display:
                     content = " ".join(
                         p.get("text", "[image]") for p in content if isinstance(p, dict)
                     )
-                for line in content.strip().splitlines():
-                    self._print(f"{_s(f'> {line}', BOLD)}")
-                self._print()
+                self.user_message(content)
             elif role == "assistant":
                 if msg.get("reasoning_content"):
                     self.reasoning(msg["reasoning_content"])

@@ -13,6 +13,7 @@ GREEN = "\033[92m"
 YELLOW = "\033[93m"
 CYAN = "\033[96m"
 MAGENTA = "\033[95m"
+BG_USER = "\033[100m"
 
 COMMANDS = ["/export", "/resume", "/sessions", "/clear", "/quit", "/exit"]
 
@@ -60,7 +61,7 @@ class Theme:
     icon_reasoning: str = "┊"
     icon_text: str = "│"
     icon_compact: str = "─"
-    icon_input: str = ">"
+    icon_input: str = "❯"
     color_tool: str = CYAN
     color_error: str = RED
     color_reasoning: str = DIM
@@ -69,6 +70,7 @@ class Theme:
     color_compact: str = YELLOW
     color_info: str = GREEN
     color_warn: str = YELLOW
+    color_user_fg: list[str] = field(default_factory=lambda: [BOLD])
 
 
 # ── Helpers ─────────────────────────────────────────────

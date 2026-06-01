@@ -264,7 +264,8 @@ class CLIApp:
                     break
                 if cmd == "handled":
                     continue
-                print()
+
+                self.display.user_message(user_input)
 
                 task = asyncio.ensure_future(self.agent.chat(user_input))
 
