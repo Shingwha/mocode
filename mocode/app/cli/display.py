@@ -3,15 +3,22 @@
 import asyncio
 import json
 import random
+import re
 from contextlib import asynccontextmanager
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 
 from .theme import (
     RST, BOLD, DIM, CYAN, MAGENTA, Spinner, Theme, COMMANDS, _PRESETS, _s,
 )
+
+# Paste marker thresholds
+_PASTE_LINE_THRESHOLD = 3
+_PASTE_CHAR_THRESHOLD = 100
+_PASTE_MARKER_RE = re.compile(r"\[Pasted text #(\d+) \+\d+ (?:lines|chars)\]")
 
 
 # ── Tool display helpers ────────────────────────────────
@@ -48,7 +55,7 @@ def _parse_tool_call(tc: dict) -> tuple[str, dict]:
 # ── Prompt-toolkit wiring ───────────────────────────────
 
 
-def _build_bindings():
+def _build_bindings(paste_handler=None):
     """Enter accepts completion if menu is open, otherwise submits."""
     bindings = KeyBindings()
 
@@ -67,6 +74,11 @@ def _build_bindings():
     @bindings.add("c-j")
     def _(event):
         event.current_buffer.insert_text("\n")
+
+    if paste_handler:
+        @bindings.add(Keys.BracketedPaste)
+        def _(event):
+            paste_handler(event)
 
     return bindings
 
@@ -97,10 +109,12 @@ class Display:
         self._spinner_active = False
         self._spinner_text = ""
         self._spinner_len = 0
+        self._paste_store: dict[int, str] = {}
+        self._paste_counter: int = 0
         self._session = PromptSession(
             completer=_SlashCompleter(COMMANDS),
             complete_while_typing=True,
-            key_bindings=_build_bindings(),
+            key_bindings=_build_bindings(self._handle_paste),
         )
 
     # ── Output core ───────────────────────────────────────
@@ -117,8 +131,34 @@ class Display:
 
     # ── Input ─────────────────────────────────────────────
 
+    def _handle_paste(self, event):
+        data = event.data.replace("\r\n", "\n").replace("\r", "\n")
+        n_lines = data.count("\n") + 1
+        n_chars = len(data)
+
+        if n_lines < _PASTE_LINE_THRESHOLD and n_chars < _PASTE_CHAR_THRESHOLD:
+            event.current_buffer.insert_text(data)
+            return
+
+        self._paste_counter += 1
+        pid = self._paste_counter
+        self._paste_store[pid] = data
+        unit = "lines" if n_lines > 1 else "chars"
+        count = n_lines if n_lines > 1 else n_chars
+        marker = f"[Pasted text #{pid} +{count} {unit}]"
+        event.current_buffer.insert_text(marker)
+
+    def _resolve_paste_markers(self, text: str) -> str:
+        def _replace(m):
+            pid = int(m.group(1))
+            return self._paste_store.get(pid, m.group(0))
+        return _PASTE_MARKER_RE.sub(_replace, text)
+
     async def prompt(self) -> str:
-        return (await self._session.prompt_async(f"{self.theme.icon_input} ")).strip()
+        self._paste_store.clear()
+        self._paste_counter = 0
+        text = await self._session.prompt_async(f"{self.theme.icon_input} ")
+        return self._resolve_paste_markers(text).strip()
 
     # ── Spinner ───────────────────────────────────────────
 
