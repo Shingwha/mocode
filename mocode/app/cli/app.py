@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..config import Config
+from ..session import FileSessionStore, SessionManager
 from ...core import Agent
 from ...core.skill import SkillManager
 from ...core.tool import ToolRegistry
@@ -45,6 +46,11 @@ class CLIApp:
             raise SystemExit("Config not found. Create ~/.mocode/config.json first.")
         self.display = display or Display()
         self.agent = self._build_agent()
+        self._session_mgr = SessionManager(
+            workdir=str(Path.cwd()),
+            store=FileSessionStore(),
+        )
+        self._session_mgr.create()
 
     # ── Console setup ─────────────────────────────────────
 
@@ -72,38 +78,21 @@ class CLIApp:
             base_url=pc.base_url, extra_body=pc.extra_body,
         )
 
-        tools = ToolRegistry()
+        self._tools = ToolRegistry()
         for t in [
             ReadTool(), WriteTool(), AppendTool(), EditTool(),
             GlobTool(), GrepTool(), BashTool(), FetchTool(),
         ]:
-            tools.register(t)
+            self._tools.register(t)
 
         ic = self.config.image
         if ic.enabled:
-            tools.register(ImageTool(base_url=ic.base_url, api_key=ic.api_key, model=ic.model))
+            self._tools.register(ImageTool(base_url=ic.base_url, api_key=ic.api_key, model=ic.model))
 
-        skill_mgr = SkillManager([self.HOME / "skills"])
-        tools.register(SkillTool(skill_mgr))
+        self._skill_mgr = SkillManager([self.HOME / "skills"])
+        self._tools.register(SkillTool(self._skill_mgr))
 
-        # Read AGENTS.md: global (~/.mocode/AGENTS.md) + project (./AGENTS.md)
-        # AGENTS.md holds agent-specific context that doesn't belong in README:
-        # build steps, test commands, code conventions, security notes, etc.
-        agents_parts = []
-        for p in (self.HOME / "AGENTS.md", Path.cwd() / "AGENTS.md"):
-            if p.exists():
-                content = p.read_text(encoding="utf-8").strip()
-                if content:
-                    agents_parts.append(content)
-
-        prompt = build_system_prompt(
-            tools=tools, skill_manager=skill_mgr, cwd=str(Path.cwd()),
-            agents="\n\n".join(agents_parts) if agents_parts else "",
-            home=str(self.HOME),
-            config_path=str(self.HOME / "config.json"),
-            skills_dir=str(self.HOME / "skills"),
-            sessions_dir=str(self.HOME / "sessions"),
-        )
+        prompt = self._build_prompt()
 
         compact_hook = CompactHook(provider)
         goal_hook = GoalHook()
@@ -112,20 +101,41 @@ class CLIApp:
             Agent()
             .provider(provider)
             .prompt(prompt)
-            .tools(tools)
+            .tools(self._tools)
             .hooks([CLIDisplayHook(self.display), compact_hook, goal_hook])
             .build()
         )
 
-        tools.register(CompactTool(provider, lambda: agent.messages))
-        tools.register(
-            SubAgentTool(lambda: agent.provider, tools, tool_timeout=agent.config.tool_timeout)
+        self._tools.register(CompactTool(provider, lambda: agent.messages))
+        self._tools.register(
+            SubAgentTool(lambda: agent.provider, self._tools, tool_timeout=agent.config.tool_timeout)
         )
-        tools.register(GoalTool(goal_hook))
+        self._tools.register(GoalTool(goal_hook))
 
         return agent
 
+    def _build_prompt(self) -> str:
+        """Build system prompt — re-reads AGENTS.md each time."""
+        return build_system_prompt(
+            tools=self._tools, skill_manager=self._skill_mgr, cwd=str(Path.cwd()),
+            home=str(self.HOME),
+            config_path=str(self.HOME / "config.json"),
+            skills_dir=str(self.HOME / "skills"),
+            sessions_dir=str(self.HOME / "sessions"),
+        )
+
     # ── Slash commands ─────────────────────────────────────
+
+    def _save_session(self):
+        """Persist current messages to session store. Skips empty sessions."""
+        if not self.agent.messages:
+            return
+        pc = self.config.current
+        self._session_mgr.save(
+            self.agent.messages,
+            model=pc.model if pc else "",
+            provider=self.config.provider,
+        )
 
     def _export(self):
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -136,26 +146,60 @@ class CLIApp:
         )
         self.display.info(f"Exported {len(self.agent.messages)} msgs → {path}")
 
-    def _resume(self, arg: str):
-        arg = arg.strip('"').strip("'")
-        path = Path(arg).expanduser()
-        if not path.exists():
-            self.display.error(f"File not found: {path}")
-            return
-        try:
-            messages = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as e:
-            self.display.error(f"Failed to read JSON: {e}")
-            return
-        if not isinstance(messages, list):
-            self.display.error("Invalid format: expected a JSON array of messages")
-            return
+    def _clear(self):
+        """Save current session, clear messages, start fresh."""
+        self._save_session()
         self.agent.messages.clear()
-        self.agent.messages.extend(messages)
+        self._session_mgr.clear()
+        self._session_mgr.create()
+        self.agent.system_prompt = self._build_prompt()
         self.display.clear_screen()
-        self.display.render_messages(messages)
-        user_count = sum(1 for m in messages if m.get("role") == "user")
-        self.display.info(f"Resumed {len(messages)} messages ({user_count} user turns) from {path.name}")
+        self.display.info("Session saved and cleared.")
+
+    def _resume(self, arg: str):
+        """Resume a session by ID or numeric index."""
+        sessions = self._session_mgr.list()
+
+        if not arg:
+            self.display.session_list(sessions, active_id=self._session_mgr.active_id)
+            self.display.info("Usage: /resume <id-or-number>")
+            return
+
+        # Resolve target: numeric index (1-based) or session ID
+        target_id = None
+        if arg.isdigit():
+            idx = int(arg) - 1
+            if 0 <= idx < len(sessions):
+                target_id = sessions[idx].id
+            else:
+                self.display.error(f"Invalid index: {arg}. Use 1-{len(sessions)}.")
+                return
+        else:
+            target_id = arg
+
+        # Save current before switching
+        self._save_session()
+
+        # Resume target
+        session = self._session_mgr.resume(target_id)
+        if session is None:
+            self.display.error(f"Session not found: {target_id}")
+            return
+
+        self.agent.messages.clear()
+        self.agent.messages.extend(session.messages)
+        self.agent.system_prompt = self._build_prompt()
+        self.display.clear_screen()
+        self.display.render_messages(session.messages)
+        user_count = sum(1 for m in session.messages if m.get("role") == "user")
+        self.display.info(
+            f"Resumed {session.id} ({len(session.messages)} msgs, {user_count} user turns)"
+        )
+
+    def _sessions(self):
+        """List sessions for current working directory."""
+        sessions = self._session_mgr.list()
+        self.display.session_list(sessions, active_id=self._session_mgr.active_id)
 
     def _dispatch(self, text: str):
         """Route slash commands. Returns "quit", "handled", or None."""
@@ -165,12 +209,15 @@ class CLIApp:
         if low == "/export":
             self._export()
             return "handled"
+        if low == "/clear":
+            self._clear()
+            return "handled"
+        if low == "/sessions":
+            self._sessions()
+            return "handled"
         if low.startswith("/resume"):
             arg = text[len("/resume"):].strip()
-            if not arg:
-                self.display.warn("Usage: /resume <path-to-session.json>")
-            else:
-                self._resume(arg)
+            self._resume(arg)
             return "handled"
         if low.startswith("/"):
             self.display.warn(f"Unknown command: {text.split()[0]}")
@@ -180,41 +227,46 @@ class CLIApp:
     # ── REPL ───────────────────────────────────────────────
 
     async def _repl(self):
-        while True:
-            try:
-                user_input = await self.display.prompt()
-            except (EOFError, KeyboardInterrupt):
+        try:
+            while True:
+                try:
+                    user_input = await self.display.prompt()
+                except (EOFError, KeyboardInterrupt):
+                    print()
+                    break
+
+                if not user_input:
+                    continue
+
+                cmd = self._dispatch(user_input)
+                if cmd == "quit":
+                    break
+                if cmd == "handled":
+                    continue
                 print()
-                break
 
-            if not user_input:
-                continue
+                task = asyncio.ensure_future(self.agent.chat(user_input))
 
-            cmd = self._dispatch(user_input)
-            if cmd == "quit":
-                break
-            if cmd == "handled":
-                continue
-            print()
+                def _on_sigint(signum, frame):
+                    if not task.done():
+                        task.cancel()
 
-            task = asyncio.ensure_future(self.agent.chat(user_input))
+                original_handler = signal.signal(signal.SIGINT, _on_sigint)
+                try:
+                    async with self.display.spinner("Thinking"):
+                        result = await task
+                except asyncio.CancelledError:
+                    self.display.warn("\nResponse interrupted.\n")
+                    continue
+                finally:
+                    signal.signal(signal.SIGINT, original_handler)
 
-            def _on_sigint(signum, frame):
-                if not task.done():
-                    task.cancel()
+                if result:
+                    self.display.response(result)
 
-            original_handler = signal.signal(signal.SIGINT, _on_sigint)
-            try:
-                async with self.display.spinner("Thinking"):
-                    result = await task
-            except asyncio.CancelledError:
-                self.display.warn("\nResponse interrupted.\n")
-                continue
-            finally:
-                signal.signal(signal.SIGINT, original_handler)
-
-            if result:
-                self.display.response(result)
+                self._session_mgr.mark_dirty()
+        finally:
+            self._save_session()
 
     # ── Entry point ────────────────────────────────────────
 
@@ -223,4 +275,8 @@ class CLIApp:
         try:
             asyncio.run(self._repl())
         except KeyboardInterrupt:
-            pass
+            self._session_mgr.save_if_dirty(
+                self.agent.messages,
+                model=self.config.model,
+                provider=self.config.provider,
+            )

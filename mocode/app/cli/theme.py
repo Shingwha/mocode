@@ -14,7 +14,7 @@ YELLOW = "\033[93m"
 CYAN = "\033[96m"
 MAGENTA = "\033[95m"
 
-COMMANDS = ["/export", "/resume", "/quit", "/exit"]
+COMMANDS = ["/export", "/resume", "/sessions", "/clear", "/quit", "/exit"]
 
 
 # ── Spinner ─────────────────────────────────────────────

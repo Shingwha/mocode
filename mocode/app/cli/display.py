@@ -10,7 +10,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.key_binding import KeyBindings
 
 from .theme import (
-    RST, BOLD, DIM, MAGENTA, Spinner, Theme, COMMANDS, _PRESETS, _s,
+    RST, BOLD, DIM, CYAN, MAGENTA, Spinner, Theme, COMMANDS, _PRESETS, _s,
 )
 
 
@@ -222,7 +222,8 @@ class Display:
     # ── Resume rendering ──────────────────────────────────
 
     def clear_screen(self):
-        print("\033[2J\033[H", end="", flush=True)
+        import os
+        os.system('cls' if os.name == 'nt' else 'clear')
 
     def render_messages(self, messages: list[dict]):
         """Re-render a message history as if it were live output."""
@@ -251,3 +252,20 @@ class Display:
                 content = msg.get("content", "")
                 if content.startswith("error:") or content.startswith("timeout:"):
                     self.tool_error(content[:80])
+
+    def session_list(self, sessions: list, active_id: str | None = None):
+        """Render a numbered session list for the current directory."""
+        if not sessions:
+            self.info("No sessions found for this directory.")
+            return
+        self.info("Sessions for this directory:")
+        for i, s in enumerate(sessions, 1):
+            title = (s.title or "Untitled")[:40]
+            date = s.updated_at[:10]
+            n_msgs = len(s.messages)
+            marker = " *" if s.id == active_id else ""
+            self._print(
+                f"  {_s(f'{i}.', DIM)} {_s(s.id, CYAN)} "
+                f"{_s(date, DIM)} {_s(title, '')} "
+                f"{_s(f'({n_msgs} msgs)', DIM)}{marker}"
+            )

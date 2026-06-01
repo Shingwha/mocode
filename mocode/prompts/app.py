@@ -22,6 +22,7 @@ Usage:
     )
 """
 
+from pathlib import Path
 from typing import Any
 
 from ..core.prompt import Prompt, Section
@@ -31,7 +32,6 @@ def build_system_prompt(
     tools: Any = None,
     skill_manager: Any = None,
     cwd: str = "",
-    agents: str = "",
     home: str = "",
     config_path: str = "",
     skills_dir: str = "",
@@ -44,7 +44,6 @@ def build_system_prompt(
         tools: ToolRegistry — tool name/description pairs are listed in the prompt.
         skill_manager: SkillManager — skill metadata is listed in the prompt.
         cwd: Current working directory shown to the LLM.
-        agents: Content from AGENTS.md files (global + project merged).
         home: MoCode home directory path.
         config_path: Config file path.
         skills_dir: Skills directory path.
@@ -55,7 +54,7 @@ def build_system_prompt(
 
     # Order: stable → dynamic (maximizes prefix cache hit rate)
     sections.append(Section("guidelines", _render_guidelines, priority=10))
-    sections.append(Section("agents", _render_agents(agents, home, cwd), priority=20))
+    sections.append(Section("agents", _render_agents(home, cwd), priority=20))
     sections.append(Section("environment", _render_environment(
         cwd, home, config_path, skills_dir, sessions_dir,
     ), priority=30))
@@ -69,7 +68,17 @@ def build_system_prompt(
     return Prompt(sections).context(**ctx).build(format="xml")
 
 
-def _render_agents(content: str, home: str, cwd: str) -> str:
+def _render_agents(home: str, cwd: str) -> str:
+    """Read AGENTS.md files and render the agents section."""
+    parts = []
+    for p in (Path(home) / "AGENTS.md" if home else None,
+              Path(cwd) / "AGENTS.md" if cwd else None):
+        if p is not None and p.exists():
+            content = p.read_text(encoding="utf-8").strip()
+            if content:
+                parts.append(content)
+    content = "\n\n".join(parts)
+
     sources = []
     if home:
         sources.append(f"  - {home}/AGENTS.md  (global, applies to all projects)")
