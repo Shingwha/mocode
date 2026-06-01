@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 import random
 import re
 from contextlib import asynccontextmanager
@@ -50,6 +51,18 @@ def _parse_tool_call(tc: dict) -> tuple[str, dict]:
         except Exception:
             args = {}
     return fn.get("name", "?"), args
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Format elapsed seconds as '1h 3m', '5m 2s', or '47s'."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    m, s = divmod(s, 60)
+    if m < 60:
+        return f"{m}m {s}s"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m"
 
 
 # ── Prompt-toolkit wiring ───────────────────────────────
@@ -109,6 +122,8 @@ class Display:
         self._spinner_active = False
         self._spinner_text = ""
         self._spinner_len = 0
+        self._spinner_start: float = 0.0
+        self._spinner_detail: str = ""
         self._paste_store: dict[int, str] = {}
         self._paste_counter: int = 0
         self._session = PromptSession(
@@ -159,7 +174,9 @@ class Display:
         self._paste_counter = 0
         raw = await self._session.prompt_async(f"{self.theme.icon_input} ")
         self._clear_input_lines(raw)
-        return self._resolve_paste_markers(raw).strip()
+        text = self._resolve_paste_markers(raw).strip()
+        # Sanitize surrogates from prompt_toolkit on Windows
+        return text.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="replace")
 
     # ── Spinner ───────────────────────────────────────────
 
@@ -177,19 +194,30 @@ class Display:
         """Dynamically update spinner text while it's running."""
         self._spinner_text = text
 
+    def set_spinner_detail(self, detail: str):
+        """Set extensible detail shown after elapsed timer in parentheses."""
+        self._spinner_detail = detail
+
     @asynccontextmanager
     async def spinner(self, text: str = "Thinking", style: str | Spinner | None = None):
         """Shows a spinner while waiting."""
         spinner = self.resolve_spinner(style)
         self._spinner_active = True
         self._spinner_text = text
+        self._spinner_start = time.monotonic()
+        self._spinner_detail = ""
         stop = asyncio.Event()
         idx = 0
 
         def _get_suffix():
-            return f" {self._spinner_text}..." if spinner.show_text else ""
+            if not spinner.show_text:
+                return ""
+            elapsed = _format_elapsed(time.monotonic() - self._spinner_start)
+            if self._spinner_detail:
+                return f" {self._spinner_text}... ({elapsed} · {self._spinner_detail})"
+            return f" {self._spinner_text}... ({elapsed})"
 
-        self._spinner_len = max(len(f) for f in spinner.frames) + len(text) + 5
+        self._spinner_len = max(len(f) for f in spinner.frames) + len(text) + 30
 
         async def _spin():
             nonlocal idx
@@ -197,6 +225,7 @@ class Display:
                 frame = spinner.frames[idx % len(spinner.frames)]
                 suffix = _get_suffix()
                 print(f"\r{DIM}{frame}{suffix}{RST}", end="", flush=True)
+                self._spinner_len = max(self._spinner_len, len(frame) + len(suffix) + 10)
                 idx += 1
                 await asyncio.sleep(spinner.speed)
 
