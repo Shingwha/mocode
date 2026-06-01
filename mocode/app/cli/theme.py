@@ -46,6 +46,24 @@ _PRESETS: dict[str, Spinner] = {
     "chase":   Spinner.from_list([' '.join('●' if j == i else '○' for j in range(5)) for i in range(5)], 0.12),
     "snake":   Spinner.from_list(_ping_pong([f"{'━'*i}○{' '*(9-i)}" for i in range(10)]), 0.08),
     "pulse":   Spinner.from_list(_ping_pong([f"[{'  '*i}{'○◎◉●'[min(i,3)]}{'  '*(4-i)} ]" for i in range(5)]), 0.15),
+
+    # --- Fun additions ---
+
+    "orbit":    Spinner(frames=('○', '◔', '◑', '◕', '●', '◕', '◑', '◔'), speed=0.08),
+    "triangle": Spinner(frames=('△', '▷', '▽', '◁'), speed=0.12),
+    "trigram":  Spinner(frames=('☰', '☱', '☲', '☳', '☴', '☵', '☶', '☷'), speed=0.15),
+    "wave":     Spinner(frames=('▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▇', '▆', '▅', '▄', '▃', '▂'), speed=0.06),
+    "dither":   Spinner(frames=('▖', '▗', '▘', '▝', '▚', '▞'), speed=0.08),
+    "curtain":  Spinner.from_list(_ping_pong(['▐▌', '▐ ▌', '▐  ▌', '▐   ▌']), 0.12),
+    "fill":     Spinner(frames=('░', '▒', '▓', '█', '▓', '▒'), speed=0.1),
+    "music":    Spinner(frames=('♩', '♪', '♫', '♬'), speed=0.2),
+    "chess":    Spinner(frames=('♔', '♕', '♖', '♗', '♘', '♙'), speed=0.15),
+    "math":     Spinner(frames=('∑', '∏', '∫', '∂', '∇', '√'), speed=0.18),
+    "fuse":     Spinner.from_list(_ping_pong(['───●', '──● ', '─●  ', '●   ']), 0.1),
+    "bars":     Spinner(frames=('▮▯▮▯', '▯▮▯▮'), speed=0.2),
+    "dots":     Spinner(frames=('⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'), speed=0.06),
+    "kaomoji":  Spinner(frames=('(◕‿◕)', '(・_・)', '(◉ᴥ◉)', '(◠‿◠)', '(⊙_⊙)'), speed=0.3),
+    "pacman":   Spinner.from_list(_ping_pong(['ᗧ·····', ' ᗧ····', '  ᗧ···', '   ᗧ··', '    ᗧ·', '     ᗧ']), 0.1),
 }
 
 
