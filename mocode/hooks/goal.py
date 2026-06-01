@@ -61,11 +61,8 @@ class GoalHook(AgentHook):
         self._turn_count = 0
         self._idle_count = 0
 
-    async def after_tools(self, ctx: AgentHookContext) -> None:
-        """After tool calls — agent is active. Track state, no reminder injection."""
-        self._idle_count = 0
-        if not self._condition or self._paused:
-            return
+    def _check_turn_limit(self, ctx: AgentHookContext) -> bool:
+        """Check turn limit, pause goal if exceeded. Returns True if paused."""
         self._turn_count += 1
         if self._turn_count > self._max_turns:
             self._paused = True
@@ -78,6 +75,15 @@ class GoalHook(AgentHook):
                 ),
             })
             ctx.continue_loop = False
+            return True
+        return False
+
+    async def after_tools(self, ctx: AgentHookContext) -> None:
+        """After tool calls — agent is active. Track state, no reminder injection."""
+        self._idle_count = 0
+        if not self._condition or self._paused:
+            return
+        if self._check_turn_limit(ctx):
             return
         ctx.continue_loop = True
 
@@ -85,21 +91,10 @@ class GoalHook(AgentHook):
         await self._tick_idle(ctx)
 
     async def _tick(self, ctx: AgentHookContext) -> None:
+        """Called when agent used tools — continue the goal."""
         if not self._condition or self._paused:
             return
-
-        self._turn_count += 1
-        if self._turn_count > self._max_turns:
-            self._paused = True
-            ctx.messages.append({
-                "role": "user",
-                "content": (
-                    f"[Goal] Turn limit ({self._max_turns}) reached, goal paused.\n"
-                    f"Goal: {self._condition}\n"
-                    f"Use goal(action=\"resume\") to continue, or goal(action=\"clear\") to stop."
-                ),
-            })
-            ctx.continue_loop = False
+        if self._check_turn_limit(ctx):
             return
 
         ctx.continue_loop = True
