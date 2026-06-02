@@ -44,6 +44,65 @@ def _parse_tool_call(tc: dict) -> tuple[str, dict]:
     return fn.get("name", "?"), args
 
 
+# ── Tool call batching helpers ─────────────────────────
+
+
+_MERGE_TOOLS = frozenset({"read", "write", "append", "edit", "glob", "grep"})
+_MERGE_LIMIT = 100
+
+
+def _group_tool_calls(tool_calls) -> list[tuple[str, list[str]]]:
+    """Group ToolCall objects. Mergeable tools are grouped; others stay individual."""
+    merged: dict[str, list[str]] = {}
+    singles: list[tuple[str, list[str]]] = []
+    for tc in tool_calls:
+        args = json.loads(tc.arguments) if isinstance(tc.arguments, str) else (tc.arguments or {})
+        summary = _tool_summary(tc.name, args)
+        if tc.name in _MERGE_TOOLS:
+            merged.setdefault(tc.name, []).append(summary)
+        else:
+            singles.append((tc.name, [summary]))
+    return list(merged.items()) + singles
+
+
+def _group_tool_call_dicts(tcs: list[dict]) -> list[tuple[str, list[str]]]:
+    """Group raw tool_call dicts. Mergeable tools are grouped; others stay individual."""
+    merged: dict[str, list[str]] = {}
+    singles: list[tuple[str, list[str]]] = []
+    for tc in tcs:
+        name, args = _parse_tool_call(tc)
+        summary = _tool_summary(name, args)
+        if name in _MERGE_TOOLS:
+            merged.setdefault(name, []).append(summary)
+        else:
+            singles.append((name, [summary]))
+    return list(merged.items()) + singles
+
+
+def _merge_summaries(summaries: list[str]) -> str:
+    """Join summaries with ', ', truncate at _MERGE_LIMIT with '… +N' suffix."""
+    if not summaries:
+        return ""
+    joined = ", ".join(summaries)
+    if len(joined) <= _MERGE_LIMIT:
+        return joined
+    # Fit as many as possible, reserve space for suffix
+    total = 0
+    count = 0
+    for s in summaries:
+        add = len(s) + (2 if count > 0 else 0)
+        if total + add > _MERGE_LIMIT - 10:
+            break
+        total += add
+        count += 1
+    if count == 0:
+        count = 1
+    shown = ", ".join(summaries[:count])
+    remaining = len(summaries) - count
+    return shown + f"… +{remaining}" if remaining else shown
+
+
+
 # ── Display ─────────────────────────────────────────────
 
 
@@ -100,6 +159,13 @@ class Display:
     def tool_start(self, name: str, summary: str):
         t = self.theme
         self._print(f"{_s(t.icon_tool, DIM)} {_s(name, t.color_tool)}{_s(f'({summary})', DIM)}")
+
+    def tool_start_batched(self, groups: list[tuple[str, list[str]]]):
+        """Print merged tool call lines — one per tool type."""
+        t = self.theme
+        for name, summaries in groups:
+            merged = _merge_summaries(summaries)
+            self._print(f"{_s(t.icon_tool, DIM)} {_s(name, t.color_tool)}{_s(f'({merged})', DIM)}")
 
     def tool_error(self, msg: str):
         self._styled(self.theme.icon_error, msg, self.theme.color_error)
@@ -165,9 +231,10 @@ class Display:
                     self.response(msg["content"])
                 elif msg.get("content") and msg.get("tool_calls"):
                     self.text_response(msg["content"])
-                for tc in msg.get("tool_calls", []):
-                    name, args = _parse_tool_call(tc)
-                    self.tool_start(name, _tool_summary(name, args))
+                tcs = msg.get("tool_calls", [])
+                if tcs:
+                    groups = _group_tool_call_dicts(tcs)
+                    self.tool_start_batched(groups)
             elif role == "tool":
                 content = msg.get("content", "")
                 if content.startswith("error:") or content.startswith("timeout:"):

@@ -1,7 +1,7 @@
 """CLIDisplayHook — bridges AgentHook lifecycle to CLI Display."""
 
 from ...core.hook import AgentHook
-from .display import _tool_summary
+from .display import _group_tool_calls
 
 
 class CLIDisplayHook(AgentHook):
@@ -19,6 +19,10 @@ class CLIDisplayHook(AgentHook):
         if ctx.usage:
             self._prompt += ctx.usage.prompt_tokens
             self._completion += ctx.usage.completion_tokens
+        # Batched tool call display
+        if ctx.response and ctx.response.tool_calls:
+            groups = _group_tool_calls(ctx.response.tool_calls)
+            self._d.tool_start_batched(groups)
 
     async def after_iteration(self, ctx):
         if self._prompt or self._completion:
@@ -26,7 +30,7 @@ class CLIDisplayHook(AgentHook):
             self._prompt = self._completion = 0
 
     async def on_tool_start(self, ctx):
-        self._d.tool_start(ctx.tool_name, _tool_summary(ctx.tool_name, ctx.tool_args))
+        pass  # Already printed batched summaries in on_response
 
     async def on_tool_complete(self, ctx):
         if ctx.tool_timeout is not None:
