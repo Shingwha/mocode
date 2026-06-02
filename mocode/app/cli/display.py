@@ -69,16 +69,24 @@ def _format_elapsed(seconds: float) -> str:
 
 
 def _build_bindings(paste_handler=None):
-    """Enter accepts completion if menu is open, otherwise submits."""
+    """Tab accepts completion, Enter always submits."""
     bindings = KeyBindings()
+
+    @bindings.add("tab")
+    def _(event):
+        buf = event.current_buffer
+        if buf.complete_state:
+            completion = buf.complete_state.current_completion or buf.complete_state.completions[0]
+            buf.apply_completion(completion)
+        else:
+            buf.start_completion(select_first=True)
 
     @bindings.add("enter")
     def _(event):
         buf = event.current_buffer
-        if buf.complete_state and buf.complete_state.current_completion is not None:
-            buf.apply_completion(buf.complete_state.current_completion)
-        else:
-            buf.validate_and_handle()
+        if buf.complete_state:
+            buf.cancel_completion()
+        buf.validate_and_handle()
 
     @bindings.add("escape", "enter")
     def _(event):
