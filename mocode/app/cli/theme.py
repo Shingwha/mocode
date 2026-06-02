@@ -18,9 +18,10 @@ BG_USER = "\033[100m"
 
 COMMANDS = {
     "/export": "Export conversation to a file",
-    "/resume": "Resume a previous conversation",
-    "/sessions": "List conversation history",
+    "/resume": "Browse and resume sessions",
     "/clear": "Clear the current conversation",
+    "/model": "Switch provider and model",
+    "/connect": "Manage providers (add, edit, delete)",
     "/quit": "Exit the application",
 }
 
@@ -116,3 +117,21 @@ class Theme:
 
 def _s(text, *codes):
     return f"{''.join(codes)}{text}{RST}"
+
+
+def questionary_style(theme: Theme | None = None):
+    """Build a questionary Style matching the CLI theme."""
+    from questionary import Style as _QStyle
+
+    return _QStyle([
+        ("qmark",       "fg:ansicyan bold"),
+        ("question",    "bold"),
+        ("answer",      "fg:ansigreen bold"),
+        ("pointer",     "fg:ansicyan bold"),
+        ("highlighted", "fg:ansicyan bold"),
+        ("selected",    "fg:ansigreen"),
+        ("separator",   "fg:ansibrightblack"),
+        ("instruction", "fg:ansibrightblack"),
+        ("text",        ""),
+        ("disabled",    "fg:ansibrightblack italic"),
+    ])
