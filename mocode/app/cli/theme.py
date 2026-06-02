@@ -16,15 +16,6 @@ CYAN = "\033[96m"
 MAGENTA = "\033[95m"
 BG_USER = "\033[100m"
 
-COMMANDS = {
-    "/export": "Export conversation to a file",
-    "/resume": "Browse and resume sessions",
-    "/clear": "Clear the current conversation",
-    "/model": "Switch provider and model",
-    "/connect": "Manage providers (add, edit, delete)",
-    "/quit": "Exit the application",
-}
-
 
 # ── Spinner ─────────────────────────────────────────────
 
