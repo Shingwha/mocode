@@ -1,4 +1,4 @@
-"""Tests for CLIApp rebuild_agent() and replace_messages()."""
+"""Tests for CLIApp replace_messages()."""
 
 from unittest.mock import MagicMock, patch
 
@@ -33,48 +33,9 @@ def _make_app() -> CLIApp:
     app._session_mgr = mock_session_mgr
     # Reset call counts — __init__ already called create()
     mock_session_mgr.reset_mock()
-    # Keep _build_prompt mocked on the instance for rebuild/replace calls
+    # Keep _build_prompt mocked on the instance for replace calls
     app._build_prompt = MagicMock(return_value="test-prompt")
     return app
-
-
-class TestRebuildAgent:
-    def test_preserves_messages(self):
-        app = _make_app()
-        app.agent.messages = [{"role": "user", "content": "hello"}]
-
-        # Mock _build_agent to return a new mock with empty messages
-        new_agent = MagicMock(messages=[], system_prompt="")
-        with patch.object(app, "_build_agent", return_value=new_agent):
-            app.rebuild_agent()
-
-        assert new_agent.messages == [{"role": "user", "content": "hello"}]
-
-    def test_calls_config_save(self):
-        app = _make_app()
-        new_agent = MagicMock(messages=[], system_prompt="")
-        with patch.object(app, "_build_agent", return_value=new_agent):
-            app.rebuild_agent()
-
-        app.config.save.assert_called_once()
-
-    def test_calls_save_session_first(self):
-        app = _make_app()
-        app.agent.messages = [{"role": "user", "content": "test"}]
-
-        new_agent = MagicMock(messages=[], system_prompt="")
-        with patch.object(app, "_build_agent", return_value=new_agent):
-            app.rebuild_agent()
-
-        app._session_mgr.save.assert_called_once()
-
-    def test_displays_info(self):
-        app = _make_app()
-        new_agent = MagicMock(messages=[], system_prompt="")
-        with patch.object(app, "_build_agent", return_value=new_agent):
-            app.rebuild_agent()
-
-        app.display.info.assert_called_once_with("Config saved.")
 
 
 class TestReplaceMessages:

@@ -11,11 +11,11 @@ class CompactHook(AgentHook):
 
     def __init__(
         self,
-        provider,
+        agent,
         threshold: float = 0.80,
         context_window: int = 256_000,
     ):
-        self._provider = provider
+        self._agent = agent
         self._threshold = threshold
         self._context_window = context_window
         self._last_prompt_tokens: int = 0
@@ -30,7 +30,7 @@ class CompactHook(AgentHook):
         if self._last_prompt_tokens > self._context_window * self._threshold:
             old_count = len(ctx.messages)
             ctx.messages[:] = await compact_messages(
-                self._provider, ctx.messages,
+                self._agent.provider, ctx.messages,
             )
             ctx.compact_old = old_count
             ctx.compact_new = len(ctx.messages)

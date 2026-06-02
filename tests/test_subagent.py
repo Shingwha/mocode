@@ -29,6 +29,12 @@ class MockProvider:
         return Response(content="done")
 
 
+class MockAgent:
+    """Minimal agent-like object with a .provider attribute."""
+    def __init__(self, provider):
+        self.provider = provider
+
+
 # ---- SubAgentConfig ----
 
 
@@ -66,7 +72,7 @@ class TestSubAgent:
     async def test_run_returns_content(self):
         provider = MockProvider(responses=[Response(content="Hello from sub")])
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(provider=provider, tools=ToolRegistry(), config=cfg)
+        sub = SubAgent(agent=MockAgent(provider), tools=ToolRegistry(), config=cfg)
         result = await sub.run("do something")
         assert result.content == "Hello from sub"
         assert result.had_error is False
@@ -82,7 +88,7 @@ class TestSubAgent:
             Response(content="Got echo result"),
         ])
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(provider=provider, tools=registry, config=cfg)
+        sub = SubAgent(agent=MockAgent(provider), tools=registry, config=cfg)
         result = await sub.run("run echo")
 
         assert result.content == "Got echo result"
@@ -99,7 +105,7 @@ class TestSubAgent:
         always_call = Response(content="", tool_calls=[ToolCall(id="1", name="noop", arguments='{}')])
         provider = MockProvider(responses=[always_call] * 10)
         cfg = SubAgentConfig(system_prompt="test", max_tool_calls=3)
-        sub = SubAgent(provider=provider, tools=registry, config=cfg)
+        sub = SubAgent(agent=MockAgent(provider), tools=registry, config=cfg)
         result = await sub.run("loop forever")
 
         assert result.tool_calls_made <= 3
@@ -115,7 +121,7 @@ class TestSubAgent:
                 raise RuntimeError("LLM is down")
 
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(provider=FailingProvider(), tools=ToolRegistry(), config=cfg)
+        sub = SubAgent(agent=MockAgent(FailingProvider()), tools=ToolRegistry(), config=cfg)
         result = await sub.run("test")
         assert result.had_error is True
 
@@ -128,7 +134,7 @@ class TestSubAgent:
         registry.register(t1)
 
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(provider=MockProvider(), tools=registry, config=cfg)
+        sub = SubAgent(agent=MockAgent(MockProvider()), tools=registry, config=cfg)
         loop = sub._build_agent_loop()
         schemas = loop._tools.all_schemas()
         assert len(schemas) == 1
@@ -143,34 +149,24 @@ class TestSubAgent:
         registry.register(t2)
 
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(provider=MockProvider(), tools=registry, config=cfg)
+        sub = SubAgent(agent=MockAgent(MockProvider()), tools=registry, config=cfg)
         loop = sub._build_agent_loop()
         schemas = loop._tools.all_schemas()
         assert len(schemas) == 2
 
     @pytest.mark.asyncio
-    async def test_provider_getter_pattern(self):
-        providers = [
-            MockProvider(responses=[Response(content="v1")]),
-            MockProvider(responses=[Response(content="v2")]),
-        ]
-        call_count = [0]
-
-        def get_provider():
-            p = providers[min(call_count[0], len(providers) - 1)]
-            call_count[0] += 1
-            return p
-
+    async def test_uses_agent_provider(self):
+        provider = MockProvider(responses=[Response(content="from agent provider")])
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(provider=get_provider, tools=ToolRegistry(), config=cfg)
+        sub = SubAgent(agent=MockAgent(provider), tools=ToolRegistry(), config=cfg)
         result = await sub.run("test")
-        assert result.content in ("v1", "v2")
+        assert result.content == "from agent provider"
 
     @pytest.mark.asyncio
     async def test_isolated_messages(self):
         provider = MockProvider(responses=[Response(content="response")])
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(provider=provider, tools=ToolRegistry(), config=cfg)
+        sub = SubAgent(agent=MockAgent(provider), tools=ToolRegistry(), config=cfg)
 
         original = [{"role": "user", "content": "original"}]
         result = await sub.run_messages(original)
@@ -200,7 +196,7 @@ class TestSubAgent:
             Response(content="done"),
         ])
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(provider=provider, tools=registry, config=cfg, hooks=[TestHook()])
+        sub = SubAgent(agent=MockAgent(provider), tools=registry, config=cfg, hooks=[TestHook()])
         await sub.run("ping")
 
         assert ("start", "ping") in events
@@ -222,7 +218,7 @@ class TestSubAgent:
             Response(content="both done"),
         ])
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(provider=provider, tools=registry, config=cfg)
+        sub = SubAgent(agent=MockAgent(provider), tools=registry, config=cfg)
         result = await sub.run("run both")
 
         assert result.tool_calls_made == 2
@@ -235,7 +231,7 @@ class TestSubAgent:
 class TestSubAgentTool:
     def test_schema_params(self):
         registry = ToolRegistry()
-        tool = SubAgentTool(MockProvider(), registry)
+        tool = SubAgentTool(MockAgent(MockProvider()), registry)
         schema = tool.to_schema()
         params = schema["function"]["parameters"]
         assert "task" in params["required"]
@@ -254,7 +250,7 @@ class TestSubAgentTool:
         registry.register(sub_tool)
         registry.register(compact_tool)
 
-        tool = SubAgentTool(MockProvider(), registry)
+        tool = SubAgentTool(MockAgent(MockProvider()), registry)
         assert tool is not None
 
     @pytest.mark.asyncio
@@ -268,7 +264,7 @@ class TestSubAgentTool:
             Response(content="result from sub"),
         ])
 
-        sub_tool = SubAgentTool(provider, registry)
+        sub_tool = SubAgentTool(MockAgent(provider), registry)
         result = await sub_tool.run_async({"task": "say hi"})
         assert result == "result from sub"
 
@@ -283,13 +279,13 @@ class TestSubAgentTool:
                 raise RuntimeError("boom")
 
         registry = ToolRegistry()
-        sub_tool = SubAgentTool(FailProvider(), registry)
+        sub_tool = SubAgentTool(MockAgent(FailProvider()), registry)
         result = await sub_tool.run_async({"task": "test"})
         assert "[SubAgent error]" in result
 
     @pytest.mark.asyncio
     async def test_missing_task(self):
         registry = ToolRegistry()
-        sub_tool = SubAgentTool(MockProvider(), registry)
+        sub_tool = SubAgentTool(MockAgent(MockProvider()), registry)
         with pytest.raises(ToolError, match="task"):
             await sub_tool.run_async({})

@@ -28,6 +28,12 @@ class MockProvider:
         return Response(content="default response")
 
 
+class MockAgent:
+    """Minimal agent-like object with a .provider attribute."""
+    def __init__(self, provider):
+        self.provider = provider
+
+
 # ---- compact_messages (pure function) ----
 
 
@@ -78,16 +84,16 @@ class TestCompactMessages:
 
 class TestCompactHook:
     def test_default_context_window(self):
-        hook = CompactHook(MockProvider())
+        hook = CompactHook(MockAgent(MockProvider()))
         assert hook._context_window == 256_000
 
     def test_custom_context_window(self):
-        hook = CompactHook(MockProvider(), context_window=200_000)
+        hook = CompactHook(MockAgent(MockProvider()), context_window=200_000)
         assert hook._context_window == 200_000
 
     @pytest.mark.asyncio
     async def test_before_iteration_reads_usage(self):
-        hook = CompactHook(MockProvider(), threshold=0.80, context_window=128_000)
+        hook = CompactHook(MockAgent(MockProvider()), threshold=0.80, context_window=128_000)
         assert hook._last_prompt_tokens == 0
 
         ctx = AgentHookContext(usage=Usage(prompt_tokens=50000, completion_tokens=100))
@@ -97,7 +103,7 @@ class TestCompactHook:
     @pytest.mark.asyncio
     async def test_before_iteration_compacts_when_over_threshold(self):
         provider = MockProvider(responses=[Response(content="summary")])
-        hook = CompactHook(provider, threshold=0.80, context_window=128_000)
+        hook = CompactHook(MockAgent(provider), threshold=0.80, context_window=128_000)
         hook._last_prompt_tokens = 110_000
 
         messages = [
@@ -115,7 +121,7 @@ class TestCompactHook:
 
     @pytest.mark.asyncio
     async def test_before_iteration_skips_when_under_threshold(self):
-        hook = CompactHook(MockProvider(), threshold=0.80, context_window=128_000)
+        hook = CompactHook(MockAgent(MockProvider()), threshold=0.80, context_window=128_000)
         hook._last_prompt_tokens = 10_000
 
         messages = [
@@ -135,7 +141,7 @@ class TestCompactHook:
             async def on_compact(self, ctx):
                 compact_events.append((ctx.compact_old, ctx.compact_new))
 
-        hook = TrackingHook(provider, threshold=0.80, context_window=128_000)
+        hook = TrackingHook(MockAgent(provider), threshold=0.80, context_window=128_000)
         hook._last_prompt_tokens = 110_000
 
         messages = [
@@ -156,14 +162,14 @@ class TestCompactHook:
 
 class TestCompactTool:
     def test_no_params_schema(self):
-        tool = CompactTool(MockProvider(), lambda: [])
+        tool = CompactTool(MockAgent(MockProvider()), lambda: [])
         schema = tool.to_schema()
         assert schema["function"]["parameters"]["properties"] == {}
         assert schema["function"]["parameters"]["required"] == []
 
     @pytest.mark.asyncio
     async def test_empty_messages(self):
-        tool = CompactTool(MockProvider(), lambda: [])
+        tool = CompactTool(MockAgent(MockProvider()), lambda: [])
         result = await tool.run_async({})
         assert result == "No messages to compact"
 
@@ -176,7 +182,7 @@ class TestCompactTool:
             {"role": "user", "content": "add tests"},
             {"role": "assistant", "content": "added"},
         ]
-        tool = CompactTool(provider, lambda: messages)
+        tool = CompactTool(MockAgent(provider), lambda: messages)
         result = await tool.run_async({})
 
         assert "compacted" in result.lower()

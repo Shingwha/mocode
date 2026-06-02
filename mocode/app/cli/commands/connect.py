@@ -70,7 +70,10 @@ class ConnectCommand:
             chosen = await select(f"Provider [{key}]:", choices)
             if chosen is None or chosen == "back":
                 if dirty:
-                    ctx.app.rebuild_agent()
+                    ctx.app.config.save()
+                    if key == ctx.app.config.active_provider:
+                        ctx.app.switch_to(key, ctx.app.config.active_model)
+                    ctx.display.info("Config saved.")
                 return
 
             if chosen == "name":
@@ -224,5 +227,5 @@ class ConnectCommand:
             base_url=base_url.strip() or None,
             models=[ModelEntry(name=m) for m in model_names],
         )
-        ctx.app.rebuild_agent()
+        ctx.app.config.save()
         ctx.display.info(f"Provider '{key}' added.")

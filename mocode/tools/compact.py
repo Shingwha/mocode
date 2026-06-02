@@ -126,7 +126,7 @@ async def compact_messages(
 
 
 def CompactTool(
-    provider,
+    agent,
     get_messages: Callable[[], list[dict]],
 ) -> Tool:
     """Create a tool that lets the LLM trigger context compression."""
@@ -134,7 +134,7 @@ def CompactTool(
         messages = get_messages()
         if not messages:
             return "No messages to compact"
-        new_messages = await compact_messages(provider, messages)
+        new_messages = await compact_messages(agent.provider, messages)
         messages.clear()
         messages.extend(new_messages)
         return f"Context compacted: {len(new_messages)} messages remaining"

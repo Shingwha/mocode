@@ -47,7 +47,6 @@ def _make_app() -> CLIApp:
     ):
         app = CLIApp(config=config, display=mock_display)
     app._session_mgr = mock_session_mgr
-    app.rebuild_agent = MagicMock()
     return app
 
 
@@ -95,7 +94,7 @@ class TestConnectTopLevel:
         assert app.config.providers["newprov"].api_key == "sk-newkey1234"
         assert app.config.providers["newprov"].name == "NewProv"
         assert app.config.providers["newprov"].model_names() == ["model-a", "model-b"]
-        app.rebuild_agent.assert_called_once()
+        app.config.save.assert_called()
 
     @pytest.mark.asyncio
     async def test_edit_dispatches_to_connect_edit(self):
@@ -122,7 +121,7 @@ class TestConnectEdit:
             await cmd._edit(_make_ctx(app), "deepseek")
 
         assert app.config.providers["deepseek"].name == "DeepSeek Renamed"
-        app.rebuild_agent.assert_called_once()
+        app.config.save.assert_called()
 
     @pytest.mark.asyncio
     async def test_rename_cancel_preserves(self):
@@ -137,7 +136,7 @@ class TestConnectEdit:
             await cmd._edit(_make_ctx(app), "deepseek")
 
         assert app.config.providers["deepseek"].name == "DeepSeek"
-        app.rebuild_agent.assert_not_called()
+        app.config.save.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_active_provider_refused(self):
@@ -246,7 +245,7 @@ class TestConnectAdd:
         assert entry.base_url == "https://api.openai.com"
         assert entry.name == "OpenAI"
         assert entry.model_names() == ["gpt-4.1", "o3"]
-        app.rebuild_agent.assert_called_once()
+        app.config.save.assert_called()
 
     @pytest.mark.asyncio
     async def test_cancel_at_key_aborts(self):
@@ -352,24 +351,6 @@ class TestConnectExtraBody:
             await cmd._extra_body(_make_ctx(app), entry)
 
         assert entry.get_extra_body("deepseek-chat") is None
-
-
-class TestRebuildAgent:
-    def test_dirty_triggers_save_and_rebuild(self):
-        app = _make_app()
-        app.rebuild_agent = MagicMock()
-        cmd = ConnectCommand()
-
-        # Simulate a dirty edit session by calling _edit with a change then back
-        # We'll just test rebuild_agent is called
-        app.rebuild_agent(True)
-        app.rebuild_agent.assert_called_once_with(True)
-
-    def test_not_dirty_is_noop(self):
-        app = _make_app()
-        app.rebuild_agent = MagicMock()
-        # rebuild_agent only called when dirty
-        app.rebuild_agent.assert_not_called()
 
 
 class TestMaskKey:

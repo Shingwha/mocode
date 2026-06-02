@@ -121,7 +121,6 @@ class CLIApp:
 
         prompt = self._build_prompt()
 
-        compact_hook = CompactHook(provider)
         goal_hook = GoalHook()
 
         agent = (
@@ -129,17 +128,16 @@ class CLIApp:
             .provider(provider)
             .prompt(prompt)
             .tools(self._tools)
-            .hooks([CLIDisplayHook(self.display), compact_hook, goal_hook])
+            .hooks([CLIDisplayHook(self.display), goal_hook])
             .config(agent_config)
             .build()
         )
 
-        self._tools.register(CompactTool(provider, lambda: agent.messages))
+        # agent exists now — attach hooks/tools that need agent reference
+        agent.hooks.append(CompactHook(agent))
+        self._tools.register(CompactTool(agent, lambda: agent.messages))
         self._tools.register(
-            SubAgentTool(
-                lambda: agent.provider, self._tools,
-                tool_timeout=agent.config.tool_timeout,
-            )
+            SubAgentTool(agent, self._tools, tool_timeout=agent.config.tool_timeout)
         )
         self._tools.register(GoalTool(goal_hook))
 
@@ -169,16 +167,6 @@ class CLIApp:
             provider=self.config.active_provider,
         )
 
-    def rebuild_agent(self):
-        """Save session, rebuild agent, restore messages. Single path for all rebuilds."""
-        self._save_session()
-        old_messages = self.agent.messages[:]
-        self.config.save()
-        self.agent = self._build_agent()
-        self.agent.messages.extend(old_messages)
-        self.agent.system_prompt = self._build_prompt()
-        self.display.info("Config saved.")
-
     def replace_messages(self, messages: list[dict]):
         """Swap agent messages — used by /clear and /resume."""
         self._save_session()
@@ -192,20 +180,21 @@ class CLIApp:
             self.display.render_messages(messages)
 
     def switch_to(self, key: str, model: str):
-        """Apply provider/model switch."""
+        """Apply provider/model switch — swap provider in-place."""
         self._save_session()
-        old_messages = self.agent.messages[:]
-
         self.config.active_provider = key
         self.config.active_model = model
-
         self.config.save()
-        self.agent = self._build_agent()
-        self.agent.messages.extend(old_messages)
-        self.agent.system_prompt = self._build_prompt()
 
-        entry = self.config.providers[key]
-        label = entry.name or key
+        entry = self.config.current
+        self.agent.provider = OpenAIProvider(
+            api_key=entry.api_key,
+            model=self.config.active_model,
+            base_url=entry.base_url,
+            extra_body=self.config.extra_body,
+        )
+
+        label = self.config.current.name or key
         self.display.info(f"Switched to {label} / {model}")
 
     # ── Dispatch ───────────────────────────────────────────

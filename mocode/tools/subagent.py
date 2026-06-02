@@ -16,17 +16,6 @@ from ..core.hook import AgentHook, HookRunner
 from ..core.tool import Tool, ToolRegistry
 from ..prompts.subagent import subagent_system_prompt
 
-if TYPE_CHECKING:
-    from ..core.provider import Provider
-
-
-def _resolve_provider(provider):
-    """Normalize Provider or provider-getter into a () -> Provider callable."""
-    if callable(provider) and not hasattr(provider, "call"):
-        return provider
-    _p = provider
-    return lambda: _p
-
 
 @dataclass(frozen=True)
 class SubAgentConfig:
@@ -50,19 +39,18 @@ class SubAgent:
 
     def __init__(
         self,
-        provider: Provider | Callable[[], Provider],
+        agent,
         tools: ToolRegistry,
         config: SubAgentConfig,
         hooks: list[AgentHook] | None = None,
     ):
-        self._provider_getter = _resolve_provider(provider)
+        self._agent = agent
         self._tools = tools
         self._config = config
         self._hooks: list[AgentHook] | None = hooks
 
     def _build_agent_loop(self) -> AgentLoop:
         """Construct an AgentLoop with SubAgent's configuration."""
-        provider = self._provider_getter()
 
         agent_config = AgentConfig(
             max_tokens=self._config.max_tokens,
@@ -72,7 +60,7 @@ class SubAgent:
         )
 
         return AgentLoop(
-            provider=provider,
+            provider=self._agent.provider,
             system_prompt=self._config.system_prompt,
             tools=self._tools,
             hooks=HookRunner(self._hooks or []),
@@ -98,7 +86,7 @@ _BLOCKED_TOOLS = {"sub_agent", "compact"}
 
 
 def SubAgentTool(
-    provider: Provider | Callable[[], Provider],
+    agent,
     parent_tools: ToolRegistry,
     tool_timeout: int = 240,
 ) -> Tool:
@@ -126,7 +114,7 @@ def SubAgentTool(
             max_tokens=args.get("max_tokens", 8192),
             tool_timeout=tool_timeout,
         )
-        sub = SubAgent(provider=provider, tools=derived_tools, config=sub_config)
+        sub = SubAgent(agent=agent, tools=derived_tools, config=sub_config)
         result = await sub.run(task)
         if result.had_error:
             return f"[SubAgent error] {result.content}"
