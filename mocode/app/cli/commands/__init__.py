@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -11,9 +10,21 @@ if TYPE_CHECKING:
     from ..display import Display
 
 
-class CommandResult(Enum):
-    CONTINUE = "continue"   # command handled, keep REPL running
-    EXIT = "exit"           # break out of REPL
+@dataclass(frozen=True)
+class CommandResult:
+    """Result of running a command. Carries kind + optional prompt text."""
+
+    kind: str           # "continue" | "exit" | "prompt"
+    prompt: str | None  # populated only when kind == "prompt"
+
+    @classmethod
+    def text(cls, text: str) -> CommandResult:
+        """Create a PROMPT result that sends text to the agent silently."""
+        return cls(kind="prompt", prompt=text)
+
+
+CommandResult.CONTINUE = CommandResult(kind="continue", prompt=None)
+CommandResult.EXIT = CommandResult(kind="exit", prompt=None)
 
 
 @dataclass

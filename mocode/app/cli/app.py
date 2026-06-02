@@ -36,6 +36,7 @@ from .commands.clear import ClearCommand
 from .commands.model import ModelCommand
 from .commands.resume import ResumeCommand
 from .commands.connect import ConnectCommand
+from .commands.prompts import register_prompt_commands
 from .display import Display
 from .hook import CLIDisplayHook
 
@@ -87,6 +88,7 @@ class CLIApp:
             ConnectCommand(),
         ]:
             self.commands.register(cmd)
+        register_prompt_commands(self.commands)
 
     # ── Agent construction ─────────────────────────────────
 
@@ -226,6 +228,31 @@ class CLIApp:
 
         return CommandResult.CONTINUE  # not a command — fall through to chat
 
+    # ── Chat helper ────────────────────────────────────────
+
+    async def _run_chat(self, prompt: str):
+        """Send prompt to agent with spinner, cancellation, and response display."""
+        task = asyncio.ensure_future(self.agent.chat(prompt))
+
+        def _on_sigint(signum, frame):
+            if not task.done():
+                task.cancel()
+
+        original_handler = signal.signal(signal.SIGINT, _on_sigint)
+        try:
+            async with self.display.spinner("Thinking"):
+                result = await task
+        except asyncio.CancelledError:
+            self.display.warn("\nResponse interrupted.\n")
+            return
+        finally:
+            signal.signal(signal.SIGINT, original_handler)
+
+        if result:
+            self.display.response(result)
+
+        self._session_mgr.mark_dirty()
+
     # ── REPL ───────────────────────────────────────────────
 
     async def _repl(self):
@@ -243,6 +270,13 @@ class CLIApp:
                 result = await self._dispatch(user_input)
                 if result == CommandResult.EXIT:
                     break
+
+                # Prompt command — show command name, send prompt silently
+                if result.kind == "prompt":
+                    self.display.user_message(user_input)
+                    await self._run_chat(result.prompt)
+                    continue
+
                 # If dispatch handled it (CONTINUE) but text started with /,
                 # skip chat. If not a command, fall through.
                 low = user_input.lower()
@@ -251,27 +285,7 @@ class CLIApp:
                     continue
 
                 self.display.user_message(user_input)
-
-                task = asyncio.ensure_future(self.agent.chat(user_input))
-
-                def _on_sigint(signum, frame):
-                    if not task.done():
-                        task.cancel()
-
-                original_handler = signal.signal(signal.SIGINT, _on_sigint)
-                try:
-                    async with self.display.spinner("Thinking"):
-                        result = await task
-                except asyncio.CancelledError:
-                    self.display.warn("\nResponse interrupted.\n")
-                    continue
-                finally:
-                    signal.signal(signal.SIGINT, original_handler)
-
-                if result:
-                    self.display.response(result)
-
-                self._session_mgr.mark_dirty()
+                await self._run_chat(user_input)
         finally:
             self._save_session()
 
