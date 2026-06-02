@@ -29,16 +29,57 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "Analyze project and create/update AGENTS.md",
     ),
     "/fix": (
-        "Fix the following issue: {args}",
+        "Fix the following issue: {args}\n\n"
+        "## Process\n\n"
+        "1. **Understand the Issue** — restate the problem in your own words. Identify expected vs actual behavior.\n"
+        "2. **Locate the Root Cause**:\n"
+        "   - Use `glob` and `grep` to find relevant code.\n"
+        "   - Use `read` to examine the affected files in detail.\n"
+        "   - Trace the code path from symptom to root cause.\n"
+        "3. **Design the Fix**:\n"
+        "   - Prefer the minimal change that resolves the issue.\n"
+        "   - Follow existing patterns and conventions in the codebase.\n"
+        "   - Consider side effects — will this break anything else?\n"
+        "4. **Implement and Verify**:\n"
+        "   - Make the change.\n"
+        "   - Verify: does it fix the issue? Do existing tests still pass?\n"
+        "   - If no test covers the bug, consider adding one.\n\n"
+        "## Rules\n\n"
+        "- Do not refactor unrelated code.\n"
+        "- Do not add features beyond what was asked.\n"
+        "- If the fix is ambiguous, explain the options before proceeding.",
         "Fix a bug or issue",
     ),
-    "/review": (
-        "Review the following code or file for issues and improvements: {args}",
-        "Review code for issues",
-    ),
-    "/explain": (
-        "Explain the following in detail: {args}",
-        "Explain something in detail",
+    "/plan": (
+        "Create an implementation plan for: {args}\n\n"
+        "=== READ-ONLY PLANNING MODE ===\n"
+        "Do NOT create, modify, or delete any files. Do NOT run state-changing commands.\n"
+        "Your role is to explore the codebase and design an implementation plan.\n\n"
+        "## Process\n\n"
+        "1. **Understand** — restate the goal in your own words.\n"
+        "2. **Explore**:\n"
+        "   - Use `glob` to find relevant files and understand project structure.\n"
+        "   - Use `grep` to locate patterns, conventions, and similar features.\n"
+        "   - Use `read` to examine key files in detail.\n"
+        "   - Use `bash` for read-only commands only (ls, git log, git diff).\n"
+        "   - Understand the architecture and identify reference implementations.\n"
+        "3. **Design** — consider trade-offs. Follow existing patterns where appropriate.\n"
+        "4. **Plan**:\n"
+        "   - Break into concrete, ordered steps.\n"
+        "   - Each step: what to do, which files, how to verify.\n"
+        "   - Identify dependencies and sequencing.\n\n"
+        "## Output Format\n\n"
+        "### Goal\n"
+        "1-2 sentences.\n\n"
+        "### Affected Files\n"
+        "Files to create or modify.\n\n"
+        "### Steps\n"
+        "Numbered steps, each with: what, which files, how to verify.\n\n"
+        "### Risks / Open Questions\n"
+        "Potential issues or decisions needed.\n\n"
+        "### Critical Files\n"
+        "3-5 files most critical for implementation.",
+        "Create an implementation plan",
     ),
 }
 
