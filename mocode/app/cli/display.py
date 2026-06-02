@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 _TOOL_KEY = {
     "read": "path", "write": "path", "append": "path", "edit": "path",
-    "bash": "command", "glob": "pat", "grep": "pat",
+    "bash": "command", "glob": "pattern", "grep": "pattern",
     "fetch": "url", "sub_agent": "task", "skill": "name",
     "goal": "action", "image": "prompt",
 }

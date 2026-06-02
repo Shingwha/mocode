@@ -86,9 +86,9 @@ def _walk_text_files(base_path: Path, type_filter: set[str] | None):
 
 def _glob(args: dict) -> str:
     base = require_dir(Path(args.get("path", ".")).resolve())
-    pat = args["pat"]
+    pattern = args["pattern"]
     files = sorted(
-        (p for p in base.glob(pat)
+        (p for p in base.glob(pattern)
          if p.is_file()
          and not any(part in IGNORE_DIRS for part in p.relative_to(base).parts)),
         key=lambda f: os.path.getmtime(f),
@@ -96,7 +96,7 @@ def _glob(args: dict) -> str:
     )
 
     if not files:
-        return f"No files matching '{pat}' in {base}"
+        return f"No files matching '{pattern}' in {base}"
 
     truncated = len(files) > _GLOB_MAX
     files = files[:_GLOB_MAX]
@@ -108,7 +108,7 @@ def _glob(args: dict) -> str:
     else:
         paths = [str(p) for p in files]
 
-    header = f"[Found {len(files)}{'+' if truncated else ''} files matching '{pat}']"
+    header = f"[Found {len(files)}{'+' if truncated else ''} files matching '{pattern}']"
     result = header + "\n" + "\n".join(paths)
 
     if truncated:
@@ -117,7 +117,7 @@ def _glob(args: dict) -> str:
 
 
 def _grep(args: dict) -> str:
-    pattern = re.compile(args["pat"])
+    pattern = re.compile(args["pattern"])
     base_path = require_dir(Path(args.get("path", ".")).resolve())
     max_results = int(args.get("limit", 100)) or 100
     type_filter = _get_type_filter(args.get("type", ""))
@@ -221,7 +221,7 @@ def GlobTool() -> Tool:
         "Find files matching a glob pattern, sorted by modification time (newest first). "
         "Automatically excludes .git, node_modules, __pycache__, and other common non-project directories.",
         {
-            "pat": {"type": "string", "description": "Glob pattern (e.g. '**/*.py', 'src/**/*.ts')"},
+            "pattern": {"type": "string", "description": "Glob pattern (e.g. '**/*.py', 'src/**/*.ts')"},
             "path": {"type": "string", "description": "Base directory to search in (defaults to current directory)", "default": "."},
         },
         _glob,
@@ -237,7 +237,7 @@ def GrepTool() -> Tool:
         "Use 'type' to filter by file extension (e.g. 'py' for Python files). "
         "Use 'context' to show surrounding lines. Use 'output_mode' to control output format.",
         {
-            "pat": {"type": "string", "description": "Regex pattern to search for"},
+            "pattern": {"type": "string", "description": "Regex pattern to search for"},
             "path": {"type": "string", "description": "Directory to search in (defaults to current directory)", "default": "."},
             "type": {"type": "string", "description": "File extension filter, e.g. 'py', 'js', 'go' (comma-separated for multiple)", "default": ""},
             "output_mode": {"type": "string", "description": "Output format: 'content' shows lines, 'files' shows file paths, 'count' shows match counts", "enum": ["content", "files", "count"], "default": "content"},
