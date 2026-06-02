@@ -8,6 +8,7 @@ from mocode.app.cli.app import CLIApp
 from mocode.app.cli.commands import CommandContext, CommandResult
 from mocode.app.cli.commands.connect import ConnectCommand, mask_key
 from mocode.app.config import Config, ProviderEntry, ModelEntry
+from mocode.app.session import SessionManager
 
 
 def _make_app() -> CLIApp:
@@ -38,12 +39,14 @@ def _make_app() -> CLIApp:
     config.save = MagicMock()
 
     mock_display = MagicMock()
+    mock_session_mgr = MagicMock(spec=SessionManager)
     with (
         patch.object(CLIApp, "_build_agent", return_value=MagicMock(messages=[], system_prompt="")),
         patch.object(CLIApp, "_build_prompt", return_value="test-prompt"),
+        patch("mocode.app.cli.app.SessionManager", return_value=mock_session_mgr),
     ):
         app = CLIApp(config=config, display=mock_display)
-    app._session_mgr = MagicMock()
+    app._session_mgr = mock_session_mgr
     app.rebuild_agent = MagicMock()
     return app
 

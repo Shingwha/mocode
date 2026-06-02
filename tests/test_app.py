@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from mocode.app.cli.app import CLIApp
 from mocode.app.config import Config, ProviderEntry, ModelEntry
+from mocode.app.session import SessionManager
 
 
 def _make_app() -> CLIApp:
@@ -22,12 +23,16 @@ def _make_app() -> CLIApp:
     config.save = MagicMock()
 
     mock_display = MagicMock()
+    mock_session_mgr = MagicMock(spec=SessionManager)
     with (
         patch.object(CLIApp, "_build_agent", return_value=MagicMock(messages=[], system_prompt="")),
         patch.object(CLIApp, "_build_prompt", return_value="test-prompt"),
+        patch("mocode.app.cli.app.SessionManager", return_value=mock_session_mgr),
     ):
         app = CLIApp(config=config, display=mock_display)
-    app._session_mgr = MagicMock()
+    app._session_mgr = mock_session_mgr
+    # Reset call counts — __init__ already called create()
+    mock_session_mgr.reset_mock()
     # Keep _build_prompt mocked on the instance for rebuild/replace calls
     app._build_prompt = MagicMock(return_value="test-prompt")
     return app
