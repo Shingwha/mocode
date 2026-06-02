@@ -1,6 +1,7 @@
 """CLI visual configuration — ANSI styles, Spinner presets, Theme."""
 
 from dataclasses import dataclass, field
+from wcwidth import wcswidth
 
 # ── ANSI constants ───────────────────────────────────────
 
@@ -33,6 +34,11 @@ class Spinner:
     speed: float = 0.08
     show_text: bool = True
 
+    def __post_init__(self):
+        max_w = max(max(wcswidth(f), 0) for f in self.frames)
+        padded = tuple(f + " " * (max_w - max(wcswidth(f), 0)) for f in self.frames)
+        object.__setattr__(self, "frames", padded)
+
     @staticmethod
     def from_list(frames: list[str], speed: float = 0.08, show_text: bool = True) -> "Spinner":
         return Spinner(frames=tuple(frames), speed=speed, show_text=show_text)
@@ -40,30 +46,38 @@ class Spinner:
 
 # Built-in presets
 _PRESETS: dict[str, Spinner] = {
-    "braille": Spinner.from_list(list("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"), 0.08),
-    "sweep":   Spinner.from_list(_ping_pong([f"[{'░'*i}█{'░'*(9-i)}]" for i in range(10)]), 0.06),
-    "bounce":  Spinner.from_list(_ping_pong([f"( {' '*i}●{' '*(11-i)} )" for i in range(12)]), 0.06),
-    "chase":   Spinner.from_list([' '.join('●' if j == i else '○' for j in range(5)) for i in range(5)], 0.12),
-    "snake":   Spinner.from_list(_ping_pong([f"{'━'*i}○{' '*(9-i)}" for i in range(10)]), 0.08),
-    "pulse":   Spinner.from_list(_ping_pong([f"[{'  '*i}{'○◎◉●'[min(i,3)]}{'  '*(4-i)} ]" for i in range(5)]), 0.15),
+    "braille": Spinner.from_list(list("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"), 0.12),
+    "sweep":   Spinner.from_list(_ping_pong([f"{'░'*i}█{'░'*(9-i)}" for i in range(10)]), 0.10),
+    "chase":   Spinner.from_list([' '.join('●' if j == i else '○' for j in range(5)) for i in range(5)], 0.18),
 
     # --- Fun additions ---
 
-    "orbit":    Spinner(frames=('○', '◔', '◑', '◕', '●', '◕', '◑', '◔'), speed=0.08),
-    "triangle": Spinner(frames=('△', '▷', '▽', '◁'), speed=0.12),
-    "trigram":  Spinner(frames=('☰', '☱', '☲', '☳', '☴', '☵', '☶', '☷'), speed=0.15),
-    "wave":     Spinner(frames=('▁', '▂', '▃', '▄', '▅', '▆', '▇', '█', '▇', '▆', '▅', '▄', '▃', '▂'), speed=0.06),
-    "dither":   Spinner(frames=('▖', '▗', '▘', '▝', '▚', '▞'), speed=0.08),
-    "curtain":  Spinner.from_list(_ping_pong(['▐▌', '▐ ▌', '▐  ▌', '▐   ▌']), 0.12),
-    "fill":     Spinner(frames=('░', '▒', '▓', '█', '▓', '▒'), speed=0.1),
-    "music":    Spinner(frames=('♩', '♪', '♫', '♬'), speed=0.2),
-    "chess":    Spinner(frames=('♔', '♕', '♖', '♗', '♘', '♙'), speed=0.15),
-    "math":     Spinner(frames=('∑', '∏', '∫', '∂', '∇', '√'), speed=0.18),
-    "fuse":     Spinner.from_list(_ping_pong(['───●', '──● ', '─●  ', '●   ']), 0.1),
-    "bars":     Spinner(frames=('▮▯▮▯', '▯▮▯▮'), speed=0.2),
-    "dots":     Spinner(frames=('⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'), speed=0.06),
-    "kaomoji":  Spinner(frames=('(◕‿◕)', '(・_・)', '(◉ᴥ◉)', '(◠‿◠)', '(⊙_⊙)'), speed=0.3),
-    "pacman":   Spinner.from_list(_ping_pong(['ᗧ·····', ' ᗧ····', '  ᗧ···', '   ᗧ··', '    ᗧ·', '     ᗧ']), 0.1),
+    "triangle": Spinner(frames=('△', '▷', '▽', '◁'), speed=0.18),
+    "wave":     Spinner.from_list([
+        ''.join('▁▂▃▄▅▆▇█▇▆▅▄▃▂'[(i + j) % 14] for j in range(10))
+        for i in range(14)
+    ], 0.10),
+    "fill":     Spinner(frames=('░', '▒', '▓', '█', '▓', '▒'), speed=0.15),
+    "music":    Spinner(frames=('♩', '♪', '♫', '♬'), speed=0.30),
+    "chess":    Spinner(frames=('♔', '♕', '♖', '♗', '♘', '♙'), speed=0.25),
+    "math":     Spinner(frames=('∑', '∏', '∫', '∂', '∇', '√'), speed=0.28),
+    "bounce":   Spinner.from_list(_ping_pong(['●····', '·●···', '··●··', '···●·', '····●']), 0.15),
+    "signal":   Spinner(frames=('○○○○', '●○○○', '●●○○', '●●●○', '●●●●'), speed=0.25),
+    "equalizer": Spinner(frames=(
+        '▃▅▇', '▅▇▅', '▇▅▃', '▅▃▁', '▃▁▃', '▁▃▅',
+    ), speed=0.12),
+    "ripple":   Spinner(frames=('···', '·∘·', '∘○∘', '○◌○', '◌·◌'), speed=0.2),
+    "rain":     Spinner(frames=('│···', '·│··', '··│·', '···│'), speed=0.15),
+    "scroll":   Spinner(frames=(
+        '░▒▓█▓▒░', '▒▓█▓▒░░', '▓█▓▒░░░', '█▓▒░░░░',
+        '▓▒░░░░░', '▒░░░░░░', '░░░░░░░', '░░░░░░▒',
+        '░░░░░▒▓', '░░░░▒▓█', '░░░▒▓█▓', '░░▒▓█▓▒', '░▒▓█▓▒░',
+    ), speed=0.06),
+
+    # --- Single-emoji spinners (one emoji per frame, width-stable) ---
+
+    "globe":     Spinner(frames=('🌍', '🌎', '🌏'), speed=0.45),
+    "clock":     Spinner(frames=('🕐', '🕑', '🕒', '🕓', '🕔', '🕕', '🕖', '🕗', '🕘', '🕙', '🕚', '🕛'), speed=0.15),
 }
 
 
