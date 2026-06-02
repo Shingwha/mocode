@@ -84,9 +84,12 @@ def _build_bindings(paste_handler=None):
     @bindings.add("enter")
     def _(event):
         buf = event.current_buffer
-        if buf.complete_state:
-            buf.cancel_completion()
-        buf.validate_and_handle()
+        if buf.complete_state and buf.complete_state.current_completion is not None:
+            buf.apply_completion(buf.complete_state.current_completion)
+        else:
+            if buf.complete_state:
+                buf.cancel_completion()
+            buf.validate_and_handle()
 
     @bindings.add("escape", "enter")
     def _(event):
@@ -107,16 +110,16 @@ def _build_bindings(paste_handler=None):
 class _SlashCompleter(Completer):
     """Prefix-match /commands only on the first word."""
 
-    def __init__(self, commands):
+    def __init__(self, commands: dict[str, str]):
         self._commands = commands
 
     def get_completions(self, document, complete_event):
         text = document.text
         if not text.startswith("/") or " " in text:
             return
-        for cmd in self._commands:
+        for cmd, desc in self._commands.items():
             if cmd.startswith(text):
-                yield Completion(cmd, start_position=-len(text))
+                yield Completion(cmd, start_position=-len(text), display_meta=desc)
 
 
 # ── Display ─────────────────────────────────────────────
