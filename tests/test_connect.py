@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mocode.app.cli.app import CLIApp
-from mocode.app.config import Config, ProviderConfig, ProviderInfo
+from mocode.app.config import Config, ProviderEntry, ModelEntry
 
 
 def _make_app() -> CLIApp:
@@ -15,26 +15,25 @@ def _make_app() -> CLIApp:
     the real ~/.mocode/config.json.
     """
     config = Config(
-        provider="deepseek",
+        active_provider="deepseek",
+        active_model="deepseek-chat",
         providers={
-            "deepseek": ProviderConfig(
-                api_key="sk-test1234abcd",
-                model="deepseek-chat",
-                base_url="https://api.deepseek.com",
-            ),
-            "zhipu": ProviderConfig(
-                api_key="sk-zhipu5678efgh",
-                model="glm-5",
-            ),
-        },
-        provider_info={
-            "deepseek": ProviderInfo(
+            "deepseek": ProviderEntry(
                 name="DeepSeek",
-                models=["deepseek-chat", "deepseek-reasoner"],
+                api_key="sk-test1234abcd",
+                base_url="https://api.deepseek.com",
+                models=[
+                    ModelEntry(name="deepseek-chat"),
+                    ModelEntry(name="deepseek-reasoner"),
+                ],
             ),
-            "zhipu": ProviderInfo(
+            "zhipu": ProviderEntry(
                 name="智谱",
-                models=["glm-5", "glm-5.1"],
+                api_key="sk-zhipu5678efgh",
+                models=[
+                    ModelEntry(name="glm-5"),
+                    ModelEntry(name="glm-5.1"),
+                ],
             ),
         },
     )
@@ -87,8 +86,8 @@ class TestConnectTopLevel:
 
         assert "newprov" in app.config.providers
         assert app.config.providers["newprov"].api_key == "sk-newkey1234"
-        assert app.config.provider_info["newprov"].name == "NewProv"
-        assert app.config.provider_info["newprov"].models == ["model-a", "model-b"]
+        assert app.config.providers["newprov"].name == "NewProv"
+        assert app.config.providers["newprov"].model_names() == ["model-a", "model-b"]
 
     @pytest.mark.asyncio
     async def test_edit_dispatches_to_connect_edit(self):
@@ -115,7 +114,7 @@ class TestConnectEdit:
         ):
             await app._connect_edit("deepseek")
 
-        assert app.config.provider_info["deepseek"].name == "DeepSeek Renamed"
+        assert app.config.providers["deepseek"].name == "DeepSeek Renamed"
 
     @pytest.mark.asyncio
     async def test_rename_cancel_preserves(self):
@@ -129,7 +128,7 @@ class TestConnectEdit:
         ):
             await app._connect_edit("deepseek")
 
-        assert app.config.provider_info["deepseek"].name == "DeepSeek"
+        assert app.config.providers["deepseek"].name == "DeepSeek"
 
     @pytest.mark.asyncio
     async def test_delete_active_provider_refused(self):
@@ -155,14 +154,11 @@ class TestConnectEdit:
             await app._connect_edit("zhipu")
 
         assert "zhipu" not in app.config.providers
-        assert "zhipu" not in app.config.provider_info
 
     @pytest.mark.asyncio
     async def test_models_prune_resets_active_model(self):
         app = _make_app()
-        pc = app.config.providers["deepseek"]
-        info = app.config.provider_info["deepseek"]
-        assert pc.model == "deepseek-chat"
+        assert app.config.active_model == "deepseek-chat"
 
         with (
             patch("mocode.app.cli.app.select", new_callable=AsyncMock,
@@ -174,8 +170,8 @@ class TestConnectEdit:
             await app._connect_edit("deepseek")
 
         # Active model was removed, should reset to first remaining
-        assert pc.model == "deepseek-reasoner"
-        assert info.models == ["deepseek-reasoner"]
+        assert app.config.active_model == "deepseek-reasoner"
+        assert app.config.providers["deepseek"].model_names() == ["deepseek-reasoner"]
 
     @pytest.mark.asyncio
     async def test_edit_api_key(self):
@@ -237,11 +233,11 @@ class TestConnectAdd:
             await app._connect_add()
 
         assert "openai" in app.config.providers
-        assert app.config.providers["openai"].api_key == "sk-openai1234"
-        assert app.config.providers["openai"].model == "gpt-4.1"
-        assert app.config.providers["openai"].base_url == "https://api.openai.com"
-        assert app.config.provider_info["openai"].name == "OpenAI"
-        assert app.config.provider_info["openai"].models == ["gpt-4.1", "o3"]
+        entry = app.config.providers["openai"]
+        assert entry.api_key == "sk-openai1234"
+        assert entry.base_url == "https://api.openai.com"
+        assert entry.name == "OpenAI"
+        assert entry.model_names() == ["gpt-4.1", "o3"]
         mock_apply.assert_called_once_with(True)
 
     @pytest.mark.asyncio
@@ -302,7 +298,7 @@ class TestConnectExtraBody:
     @pytest.mark.asyncio
     async def test_set_extra_body_for_model(self):
         app = _make_app()
-        info = app.config.provider_info["deepseek"]
+        entry = app.config.providers["deepseek"]
 
         with (
             patch("mocode.app.cli.app.select", new_callable=AsyncMock,
@@ -310,16 +306,16 @@ class TestConnectExtraBody:
             patch("mocode.app.cli.app.text_input", new_callable=AsyncMock,
                   return_value='{"thinking": {"type": "enabled"}}'),
         ):
-            await app._connect_extra_body("deepseek", info)
+            await app._connect_extra_body("deepseek", entry)
 
-        assert info.extra_body_map is not None
-        assert info.extra_body_map["deepseek-chat"] == {"thinking": {"type": "enabled"}}
+        assert entry.get_extra_body("deepseek-chat") == {"thinking": {"type": "enabled"}}
 
     @pytest.mark.asyncio
     async def test_clear_extra_body(self):
         app = _make_app()
-        info = app.config.provider_info["deepseek"]
-        info.extra_body_map = {"deepseek-chat": {"a": 1}}
+        entry = app.config.providers["deepseek"]
+        # Set up an extra_body first
+        entry.models[0].extra_body = {"a": 1}
 
         with (
             patch("mocode.app.cli.app.select", new_callable=AsyncMock,
@@ -327,15 +323,15 @@ class TestConnectExtraBody:
             patch("mocode.app.cli.app.text_input", new_callable=AsyncMock,
                   return_value=""),
         ):
-            await app._connect_extra_body("deepseek", info)
+            await app._connect_extra_body("deepseek", entry)
 
-        assert "deepseek-chat" not in (info.extra_body_map or {})
+        assert entry.get_extra_body("deepseek-chat") is None
 
     @pytest.mark.asyncio
     async def test_invalid_json_rejected(self):
         app = _make_app()
-        info = app.config.provider_info["deepseek"]
-        original_map = info.extra_body_map
+        entry = app.config.providers["deepseek"]
+        original = entry.get_extra_body("deepseek-chat")
 
         with (
             patch("mocode.app.cli.app.select", new_callable=AsyncMock,
@@ -343,22 +339,22 @@ class TestConnectExtraBody:
             patch("mocode.app.cli.app.text_input", new_callable=AsyncMock,
                   return_value="{invalid}"),
         ):
-            await app._connect_extra_body("deepseek", info)
+            await app._connect_extra_body("deepseek", entry)
 
         # Should not have been modified
-        assert info.extra_body_map == original_map
+        assert entry.get_extra_body("deepseek-chat") == original
 
     @pytest.mark.asyncio
     async def test_back_from_model_picker(self):
         app = _make_app()
-        info = app.config.provider_info["deepseek"]
+        entry = app.config.providers["deepseek"]
 
         with patch("mocode.app.cli.app.select", new_callable=AsyncMock,
                    return_value="__back__"):
-            await app._connect_extra_body("deepseek", info)
+            await app._connect_extra_body("deepseek", entry)
 
         # No changes
-        assert info.extra_body_map is None
+        assert entry.get_extra_body("deepseek-chat") is None
 
 
 class TestConnectApply:

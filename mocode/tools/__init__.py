@@ -17,7 +17,6 @@ from .fetch import FetchTool
 from .skill import SkillTool
 from .compact import CompactTool
 from .subagent import SubAgent, SubAgentConfig, SubAgentResult, SubAgentTool
-from .image import ImageTool
 from .goal import GoalTool
 
 __all__ = [
@@ -35,6 +34,5 @@ __all__ = [
     "SubAgentConfig",
     "SubAgentResult",
     "SubAgentTool",
-    "ImageTool",
     "GoalTool",
 ]

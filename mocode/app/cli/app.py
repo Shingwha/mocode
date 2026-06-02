@@ -7,9 +7,10 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from ..config import Config, ProviderConfig, ProviderInfo
+from ..config import Config, ProviderEntry, ModelEntry
 from ..session import FileSessionStore, SessionManager
 from ...core import Agent
+from ...core.agent import AgentConfig
 from ...core.skill import SkillManager
 from ...core.tool import ToolRegistry
 from ...hooks import CompactHook, GoalHook
@@ -24,7 +25,6 @@ from ...tools import (
     GlobTool,
     GoalTool,
     GrepTool,
-    ImageTool,
     ReadTool,
     SkillTool,
     SubAgentTool,
@@ -72,11 +72,17 @@ class CLIApp:
 
     def _build_agent(self):
         """Build the AgentLoop with tools, hooks, and prompt. Override to customize."""
-        pc = self.config.current
+        entry = self.config.current
 
         provider = OpenAIProvider(
-            api_key=pc.api_key, model=pc.model,
-            base_url=pc.base_url, extra_body=pc.extra_body,
+            api_key=entry.api_key, model=self.config.active_model,
+            base_url=entry.base_url, extra_body=self.config.extra_body,
+        )
+
+        agent_config = AgentConfig(
+            max_tokens=self.config.max_tokens,
+            tool_result_limit=self.config.tool_result_limit,
+            tool_timeout=self.config.tool_timeout,
         )
 
         self._tools = ToolRegistry()
@@ -85,10 +91,6 @@ class CLIApp:
             GlobTool(), GrepTool(), BashTool(), FetchTool(),
         ]:
             self._tools.register(t)
-
-        ic = self.config.image
-        if ic.enabled:
-            self._tools.register(ImageTool(base_url=ic.base_url, api_key=ic.api_key, model=ic.model))
 
         self._skill_mgr = SkillManager([self.HOME / "skills"])
         self._tools.register(SkillTool(self._skill_mgr))
@@ -104,6 +106,7 @@ class CLIApp:
             .prompt(prompt)
             .tools(self._tools)
             .hooks([CLIDisplayHook(self.display), compact_hook, goal_hook])
+            .config(agent_config)
             .build()
         )
 
@@ -131,11 +134,11 @@ class CLIApp:
         """Persist current messages to session store. Skips empty sessions."""
         if not self.agent.messages:
             return
-        pc = self.config.current
+        entry = self.config.current
         self._session_mgr.save(
             self.agent.messages,
-            model=pc.model if pc else "",
-            provider=self.config.provider,
+            model=self.config.active_model,
+            provider=self.config.active_provider,
         )
 
     def _export(self):
@@ -257,13 +260,11 @@ class CLIApp:
 
     async def _model(self):
         """Interactive provider + model picker."""
-        info_map = self.config.provider_info
-        # Build provider choices — include all providers from config.
+        # Build provider choices
         provider_choices = []
-        for key, pc in self.config.providers.items():
-            info = info_map.get(key)
-            title = info.name if info and info.name else key
-            preview = ", ".join(info.models) if info and info.models else pc.model
+        for key, entry in self.config.providers.items():
+            title = entry.name or key
+            preview = ", ".join(entry.model_names()) or self.config.active_model
             provider_choices.append(
                 Choice(title=title, value=key, description=preview)
             )
@@ -275,27 +276,26 @@ class CLIApp:
         chosen_key = await select(
             "Select a provider:",
             provider_choices,
-            default=self.config.provider,
+            default=self.config.active_provider,
         )
         if chosen_key is None:
             return
 
-        info = info_map.get(chosen_key)
-        models = info.models if info and info.models else []
+        entry = self.config.providers[chosen_key]
+        models = entry.model_names()
         # Skip model picker if there's only one (or zero) models.
         if len(models) <= 1:
-            self._switch_to(chosen_key, models[0] if models else self.config.providers[chosen_key].model)
+            self._switch_to(chosen_key, models[0] if models else self.config.active_model)
             return
 
-        pc = self.config.providers[chosen_key]
         model_choices = [
-            Choice(title=m, value=m, description=f"current: {pc.model}" if m == pc.model else None)
+            Choice(title=m, value=m, description=f"current" if m == self.config.active_model else None)
             for m in models
         ]
         chosen_model = await select(
-            f"Select a model for {info.name if info and info.name else chosen_key}:",
+            f"Select a model for {entry.name or chosen_key}:",
             model_choices,
-            default=pc.model if pc.model in models else models[0],
+            default=self.config.active_model if self.config.active_model in models else models[0],
         )
         if chosen_model is None:
             return
@@ -307,21 +307,17 @@ class CLIApp:
         self._save_session()
         old_messages = self.agent.messages[:]
 
-        self.config.provider = key
-        pc = self.config.providers[key]
-        pc.model = model
-        # Resolve extra_body from the catalog map for the chosen model.
-        info = self.config.provider_info.get(key)
-        if info and info.extra_body_map:
-            pc.extra_body = info.extra_body_map.get(model) or None
+        self.config.active_provider = key
+        self.config.active_model = model
 
         self.config.save()
         self.agent = self._build_agent()
         self.agent.messages.extend(old_messages)
         self.agent.system_prompt = self._build_prompt()
 
-        label = info.name if info and info.name else key
-        self.display.info(f"Switched to {label} / {pc.model}")
+        entry = self.config.providers[key]
+        label = entry.name or key
+        self.display.info(f"Switched to {label} / {model}")
 
     # ── /connect — provider management ────────────────────
 
@@ -333,18 +329,16 @@ class CLIApp:
 
     async def _connect(self):
         """Top-level /connect menu — pick a provider to edit, or add new."""
-        info_map = self.config.provider_info
         choices = []
-        for key, pc in self.config.providers.items():
-            info = info_map.get(key)
-            title = info.name if info and info.name else key
-            preview = ", ".join(info.models) if info and info.models else pc.model
+        for key, entry in self.config.providers.items():
+            title = entry.name or key
+            preview = ", ".join(entry.model_names()) or self.config.active_model
             choices.append(Choice(title=title, value=key, description=preview))
 
         choices.append(Choice(title="+ Add new provider", value="__add__"))
         choices.append(Choice(title="Back", value="__back__"))
 
-        chosen = await select("Manage providers:", choices, default=self.config.provider)
+        chosen = await select("Manage providers:", choices, default=self.config.active_provider)
         if chosen is None or chosen == "__back__":
             return
         if chosen == "__add__":
@@ -354,23 +348,21 @@ class CLIApp:
 
     async def _connect_edit(self, key: str):
         """Edit submenu for one provider — loop until Back."""
-        pc = self.config.providers[key]
-        info = self.config.provider_info.get(key) or ProviderInfo()
-        # Ensure info exists in config
-        if key not in self.config.provider_info:
-            self.config.provider_info[key] = info
+        entry = self.config.providers.get(key)
+        if entry is None:
+            return
 
         dirty = False
 
         while True:
-            name_display = info.name or key
-            models_display = ", ".join(info.models) if info.models else pc.model
-            key_masked = self._mask_key(pc.api_key)
+            name_display = entry.name or key
+            models_display = ", ".join(entry.model_names())
+            key_masked = self._mask_key(entry.api_key)
 
             choices = [
                 Choice(title=f"Edit display name:  {name_display}", value="name"),
                 Choice(title=f"Edit API key:       {key_masked}", value="apikey"),
-                Choice(title=f"Edit base URL:      {pc.base_url or ''}", value="baseurl"),
+                Choice(title=f"Edit base URL:      {entry.base_url or ''}", value="baseurl"),
                 Choice(title=f"Edit models:        {models_display}", value="models"),
                 Choice(title="Edit per-model extra_body", value="extra_body"),
                 Choice(title="Delete provider", value="delete"),
@@ -383,47 +375,52 @@ class CLIApp:
                 return
 
             if chosen == "name":
-                result = await text_input("Display name:", default=info.name)
+                result = await text_input("Display name:", default=entry.name)
                 if result is not None:
-                    info.name = result
+                    entry.name = result
                     dirty = True
 
             elif chosen == "apikey":
-                result = await text_input("API key:", default=pc.api_key)
+                result = await text_input("API key:", default=entry.api_key)
                 if result is not None:
-                    pc.api_key = result
+                    entry.api_key = result
                     dirty = True
 
             elif chosen == "baseurl":
-                result = await text_input("Base URL:", default=pc.base_url or "")
+                result = await text_input("Base URL:", default=entry.base_url or "")
                 if result is not None:
-                    pc.base_url = result or None
+                    entry.base_url = result or None
                     dirty = True
 
             elif chosen == "models":
-                default_str = ", ".join(info.models) if info.models else pc.model
+                default_str = ", ".join(entry.model_names())
                 result = await text_input("Models (comma-separated):", default=default_str)
                 if result is not None:
-                    new_models = [m.strip() for m in result.split(",") if m.strip()]
-                    if new_models:
-                        old_active = pc.model
-                        info.models = new_models
+                    new_names = [m.strip() for m in result.split(",") if m.strip()]
+                    if new_names:
+                        old_names = set(entry.model_names())
+                        # Preserve extra_body for models that still exist
+                        old_extra = {m.name: m.extra_body for m in entry.models}
+                        entry.models = [
+                            ModelEntry(name=n, extra_body=old_extra.get(n))
+                            for n in new_names
+                        ]
                         # If active model disappeared, reset to first
-                        if old_active not in new_models:
-                            pc.model = new_models[0]
+                        if self.config.active_model not in new_names and key == self.config.active_provider:
+                            self.config.active_model = new_names[0]
                             self.display.warn(
-                                f"Active model '{old_active}' removed, reset to '{new_models[0]}'"
+                                f"Active model '{self.config.active_model}' removed, reset to '{new_names[0]}'"
                             )
                         dirty = True
                     else:
                         self.display.warn("Models list cannot be empty.")
 
             elif chosen == "extra_body":
-                await self._connect_extra_body(key, info)
+                await self._connect_extra_body(key, entry)
                 dirty = True
 
             elif chosen == "delete":
-                if key == self.config.provider:
+                if key == self.config.active_provider:
                     self.display.warn(
                         f"Cannot delete active provider '{key}'. "
                         "Use /model to switch first."
@@ -431,29 +428,34 @@ class CLIApp:
                     continue
                 if await confirm(f"Delete provider '{key}'?"):
                     del self.config.providers[key]
-                    if key in self.config.provider_info:
-                        del self.config.provider_info[key]
                     self.config.save()
                     self.display.info(f"Provider '{key}' deleted.")
                     return
 
-    async def _connect_extra_body(self, key: str, info: ProviderInfo):
+    async def _connect_extra_body(self, key: str, entry: ProviderEntry):
         """Sub-menu: pick a model, then edit its extra_body JSON."""
-        if not info.models:
+        if not entry.models:
             self.display.warn("No models configured for this provider.")
             return
 
         # Pick which model to edit
-        model_choices = [Choice(title=m, value=m) for m in info.models]
+        model_choices = [Choice(title=m.name, value=m.name) for m in entry.models]
         model_choices.append(Choice(title="Back", value="__back__"))
         chosen_model = await select("Select model to edit extra_body:", model_choices)
         if chosen_model is None or chosen_model == "__back__":
             return
 
+        # Find the ModelEntry
+        model_entry = None
+        for m in entry.models:
+            if m.name == chosen_model:
+                model_entry = m
+                break
+        if model_entry is None:
+            return
+
         # Show current value
-        current_map = info.extra_body_map or {}
-        current_val = current_map.get(chosen_model)
-        default_str = json.dumps(current_val, ensure_ascii=False) if current_val else ""
+        default_str = json.dumps(model_entry.extra_body, ensure_ascii=False) if model_entry.extra_body else ""
 
         result = await text_input(
             f"extra_body for {chosen_model} (JSON or blank to clear):",
@@ -464,11 +466,7 @@ class CLIApp:
 
         result = result.strip()
         if not result:
-            # Clear this model's entry
-            if info.extra_body_map and chosen_model in info.extra_body_map:
-                del info.extra_body_map[chosen_model]
-                if not info.extra_body_map:
-                    info.extra_body_map = None
+            model_entry.extra_body = None
             return
 
         # Validate JSON
@@ -478,9 +476,7 @@ class CLIApp:
             self.display.error(f"Invalid JSON: {e}")
             return
 
-        if info.extra_body_map is None:
-            info.extra_body_map = {}
-        info.extra_body_map[chosen_model] = parsed
+        model_entry.extra_body = parsed
 
     async def _connect_add(self):
         """Add a new provider — sequential prompts, abort on any cancel."""
@@ -524,17 +520,14 @@ class CLIApp:
         models_str = await text_input("Models (comma-separated):", validate=_validate_models)
         if models_str is None:
             return
-        models = [m.strip() for m in models_str.split(",") if m.strip()]
+        model_names = [m.strip() for m in models_str.split(",") if m.strip()]
 
         # Insert into config
-        self.config.providers[key] = ProviderConfig(
-            api_key=api_key.strip(),
-            model=models[0],
-            base_url=base_url.strip() or None,
-        )
-        self.config.provider_info[key] = ProviderInfo(
+        self.config.providers[key] = ProviderEntry(
             name=name.strip() if name else "",
-            models=models,
+            api_key=api_key.strip(),
+            base_url=base_url.strip() or None,
+            models=[ModelEntry(name=m) for m in model_names],
         )
         self._connect_apply(True)
         self.display.info(f"Provider '{key}' added.")
@@ -631,6 +624,6 @@ class CLIApp:
         except KeyboardInterrupt:
             self._session_mgr.save_if_dirty(
                 self.agent.messages,
-                model=self.config.model,
-                provider=self.config.provider,
+                model=self.config.active_model,
+                provider=self.config.active_provider,
             )

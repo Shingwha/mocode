@@ -79,7 +79,7 @@ class TestCompactMessages:
 class TestCompactHook:
     def test_default_context_window(self):
         hook = CompactHook(MockProvider())
-        assert hook._context_window == 128_000
+        assert hook._context_window == 256_000
 
     def test_custom_context_window(self):
         hook = CompactHook(MockProvider(), context_window=200_000)

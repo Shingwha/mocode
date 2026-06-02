@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, fields, asdict
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -11,92 +11,118 @@ DEFAULT_CONFIG_PATH = Path.home() / ".mocode" / "config.json"
 
 
 @dataclass
-class ImageConfig:
-    enabled: bool = False
-    base_url: str = "https://api.openai.com"
-    api_key: str = ""
-    model: str = "gpt-image-2"
+class ModelEntry:
+    """A model and its optional extra_body."""
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "enabled": self.enabled,
-            "base_url": self.base_url,
-            "api_key": self.api_key,
-            "model": self.model,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ImageConfig:
-        return cls(
-            enabled=data.get("enabled", False),
-            base_url=data.get("base_url", "https://api.openai.com"),
-            api_key=data.get("api_key", ""),
-            model=data.get("model", "gpt-image-2"),
-        )
-
-
-@dataclass
-class ProviderConfig:
-    api_key: str
-    model: str
-    base_url: str | None = None
+    name: str
     extra_body: dict[str, Any] | None = None
 
 
 @dataclass
+class ProviderEntry:
+    """Complete configuration for a single provider."""
+
+    name: str = ""
+    api_key: str = ""
+    base_url: str | None = None
+    models: list[ModelEntry] = field(default_factory=list)
+
+    def model_names(self) -> list[str]:
+        return [m.name for m in self.models]
+
+    def get_extra_body(self, model_name: str) -> dict[str, Any] | None:
+        for m in self.models:
+            if m.name == model_name:
+                return m.extra_body
+        return None
+
+
+@dataclass
 class Config:
-    provider: str
-    providers: dict[str, ProviderConfig] = field(default_factory=dict)
+    active_provider: str
+    active_model: str
+    providers: dict[str, ProviderEntry] = field(default_factory=dict)
     max_tokens: int = 8192
     tool_result_limit: int = 25000
     tool_timeout: int = 240
-    image: ImageConfig = field(default_factory=ImageConfig)
-
-    def __post_init__(self):
-        if isinstance(self.image, dict):
-            self.image = ImageConfig.from_dict(self.image)
 
     @property
-    def current(self) -> ProviderConfig | None:
-        return self.providers.get(self.provider)
+    def current(self) -> ProviderEntry | None:
+        return self.providers.get(self.active_provider)
 
     @property
     def model(self) -> str:
-        c = self.current
-        return c.model if c else ""
+        return self.active_model
 
     @property
     def api_key(self) -> str:
-        c = self.current
-        return c.api_key if c else ""
+        entry = self.current
+        return entry.api_key if entry else ""
+
+    @property
+    def extra_body(self) -> dict[str, Any] | None:
+        entry = self.current
+        return entry.get_extra_body(self.active_model) if entry else None
 
     def to_dict(self) -> dict[str, Any]:
+        providers_out: dict[str, dict[str, Any]] = {}
+        for key, entry in self.providers.items():
+            models_out = []
+            for m in entry.models:
+                md: dict[str, Any] = {"name": m.name}
+                if m.extra_body is not None:
+                    md["extra_body"] = m.extra_body
+                models_out.append(md)
+            d: dict[str, Any] = {
+                "name": entry.name,
+                "api_key": entry.api_key,
+                "models": models_out,
+            }
+            if entry.base_url is not None:
+                d["base_url"] = entry.base_url
+            providers_out[key] = d
+
         return {
-            "provider": self.provider,
-            "providers": {k: asdict(v) for k, v in self.providers.items()},
+            "active_provider": self.active_provider,
+            "active_model": self.active_model,
+            "providers": providers_out,
             "max_tokens": self.max_tokens,
             "tool_result_limit": self.tool_result_limit,
             "tool_timeout": self.tool_timeout,
-            "image": self.image.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Config:
-        """Parse config from dict. Handles both 0.2 nested format and 0.3 flat format."""
-        current = data.get("current", {})
-        provider_name = current.get("provider") or data.get("provider", "")
-        active_model = current.get("model", "")
+        active_provider = data.get("active_provider", "")
+        active_model = data.get("active_model", "")
 
-        providers = _parse_providers(data.get("providers", {}), provider_name, active_model)
+        providers: dict[str, ProviderEntry] = {}
+        for key, pdata in data.get("providers", {}).items():
+            models = []
+            for raw_m in pdata.get("models", []):
+                if isinstance(raw_m, str):
+                    models.append(ModelEntry(name=raw_m))
+                elif isinstance(raw_m, dict):
+                    models.append(ModelEntry(
+                        name=raw_m.get("name", ""),
+                        extra_body=raw_m.get("extra_body"),
+                    ))
+            providers[key] = ProviderEntry(
+                name=pdata.get("name", ""),
+                api_key=pdata.get("api_key", ""),
+                base_url=pdata.get("base_url"),
+                models=models,
+            )
 
-        # Extract known scalar fields, ignore unknown (forward-compatible)
         known = {f.name for f in fields(cls)}
-        kwargs: dict[str, Any] = {"provider": provider_name, "providers": providers}
+        kwargs: dict[str, Any] = {
+            "active_provider": active_provider,
+            "active_model": active_model,
+            "providers": providers,
+        }
         for key in ("max_tokens", "tool_result_limit", "tool_timeout"):
             if key in data and key in known:
                 kwargs[key] = data[key]
-        if "image" in data:
-            kwargs["image"] = ImageConfig.from_dict(data["image"])
 
         return cls(**kwargs)
 
@@ -125,38 +151,3 @@ class Config:
 
     def copy(self) -> Config:
         return Config.from_dict(self.to_dict())
-
-
-def _parse_providers(
-    raw: dict[str, Any],
-    active_name: str,
-    active_model: str,
-) -> dict[str, ProviderConfig]:
-    """Parse provider configs from raw dict. Handles 0.2 (models list, keyed extra_body) and 0.3 formats."""
-    providers = {}
-    for key, pdata in raw.items():
-        # Resolve model: active > flat > first in list
-        flat_model = pdata.get("model", "")
-        models = pdata.get("models", [])
-        if key == active_name and active_model:
-            model = active_model
-        elif flat_model:
-            model = flat_model
-        elif models:
-            model = models[0]
-        else:
-            model = ""
-
-        # Resolve extra_body: 0.2 keys by model name, 0.3 is flat
-        raw_extra = pdata.get("extra_body")
-        extra_body = None
-        if isinstance(raw_extra, dict):
-            extra_body = raw_extra.get(model) if model in raw_extra else (raw_extra or None)
-
-        providers[key] = ProviderConfig(
-            api_key=pdata.get("api_key", ""),
-            model=model,
-            base_url=pdata.get("base_url"),
-            extra_body=extra_body,
-        )
-    return providers
