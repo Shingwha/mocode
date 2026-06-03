@@ -11,6 +11,7 @@ from ...core import Agent
 from ...core.agent import AgentConfig
 from ...core.skill import SkillManager
 from ...core.tool import ToolRegistry
+from ..workflow import WorkflowRegistry
 from ...hooks import CompactHook, GoalHook
 from ...prompts.app import build_system_prompt
 from ...providers.openai import OpenAIProvider
@@ -37,6 +38,7 @@ from .commands.model import ModelCommand
 from .commands.resume import ResumeCommand
 from .commands.connect import ConnectCommand
 from .commands.prompts import register_prompt_commands
+from .commands.workflow import WorkflowCommand
 from .display import Display
 from .hook import CLIDisplayHook
 
@@ -67,9 +69,15 @@ class CLIApp:
             for cmd in [
                 QuitCommand(), HelpCommand(), ExportCommand(),
                 ClearCommand(), ModelCommand(), ResumeCommand(), ConnectCommand(),
+                WorkflowCommand(),
             ]:
                 self.commands.register(cmd)
             self.display.set_commands(self.commands.all())
+
+        self._workflow_registry = WorkflowRegistry([
+            self.home / "workflows",
+            Path.cwd() / ".mocode" / "workflows",
+        ])
 
         self.agent = self._build_agent()
 
@@ -88,6 +96,10 @@ class CLIApp:
         if self._session_mgr is None:
             raise RuntimeError("session_mgr not available in non-interactive mode")
         return self._session_mgr
+
+    @property
+    def workflow_registry(self) -> WorkflowRegistry:
+        return self._workflow_registry
 
     # ── Agent construction ─────────────────────────────────
 
