@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ...workflow import Workflow, WorkflowRegistry
+from ...workflow._template import WORKFLOW_CREATE_PROMPT
 from ...workflow.runner import DAGRunner
 from ..prompts import Choice, select, text_input
 from . import CommandContext, CommandResult
@@ -104,9 +105,8 @@ class WorkflowCommand:
             ctx.display.warn(f"Workflow '{name}' not found.")
             return CommandResult.CONTINUE
 
-        # Reset state for re-run
-        wf.status = "idle"
-        wf.results.clear()
+        # Use a fresh copy to avoid mutating the registry object
+        wf = wf.fresh_copy()
 
         ctx.display.workflow_start(wf)
 
@@ -138,75 +138,5 @@ class WorkflowCommand:
             if not description:
                 return CommandResult.CONTINUE
 
-        prompt = (
-            f"Create a MoCode workflow YAML file based on this description: {description}\n\n"
-            "The workflow YAML format:\n"
-            "```yaml\n"
-            "name: my-workflow\n"
-            "description: description text\n"
-            "max_iterations: 100          # optional, default 100\n"
-            "\n"
-            "nodes:\n"
-            "  # Task node (default type)\n"
-            "  - id: overview\n"
-            "    description: Analyze project structure\n"
-            "    task: Analyze project structure in {args.path}\n"
-            "\n"
-            "  # Parallel nodes that depend on overview\n"
-            "  - id: check_security\n"
-            "    description: Review security issues\n"
-            "    task: Review security issues in {nodes.overview.output}\n"
-            "    depends: [overview]\n"
-            "\n"
-            "  - id: check_style\n"
-            "    description: Review style issues\n"
-            "    task: Review style issues in {nodes.overview.output}\n"
-            "    depends: [overview]\n"
-            "\n"
-            "  # Node that waits for both parallel nodes\n"
-            "  - id: summary\n"
-            "    description: Generate final summary\n"
-            "    task: |\n"
-            "      Security: {nodes.check_security.output}\n"
-            "      Style: {nodes.check_style.output}\n"
-            "    depends: [check_security, check_style]\n"
-            "\n"
-            "  # Router node (conditional branching)\n"
-            "  - id: decide\n"
-            "    type: router\n"
-            "    depends: [summary]\n"
-            "    routes:\n"
-            "      - match: \"critical\"     # regex match on dependency outputs\n"
-            "        to: [fix]             # activate fix node\n"
-            "      - match: null            # fallback (no match pattern)\n"
-            "        to: [done]\n"
-            "\n"
-            "  - id: fix\n"
-            "    description: Fix critical issues\n"
-            "    task: Fix critical issues from {nodes.summary.output}\n"
-            "    depends: [decide]\n"
-            "\n"
-            "  # Router with loop (back-edge)\n"
-            "  - id: verify_router\n"
-            "    type: router\n"
-            "    depends: [fix]\n"
-            "    routes:\n"
-            "      - match: \"FAIL\"\n"
-            "        to: [fix]             # back-edge → loop\n"
-            "        max: 3                # max 3 retries\n"
-            "      - match: null\n"
-            "        to: [done]\n"
-            "\n"
-            "  - id: done\n"
-            "    description: Generate final report\n"
-            "    task: Generate final report\n"
-            "    depends: [decide, verify_router]  # convergence point\n"
-            "```\n\n"
-            "Template variables: {args.key}, {nodes.id.output}, {nodes.id.exit_code}, "
-            "{nodes.id.error}, {nodes.id.duration}, {previous}, {env.VAR}\n\n"
-            "Each node should have a 'description' field — a brief one-line label shown in the UI "
-            "instead of the full task text.\n\n"
-            "Save the file to .mocode/workflows/<name>.yaml in the current project directory. "
-            "Create the .mocode/workflows/ directory if it does not exist."
-        )
+        prompt = WORKFLOW_CREATE_PROMPT.format(description=description.strip())
         return CommandResult.text(prompt)

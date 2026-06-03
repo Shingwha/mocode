@@ -310,8 +310,9 @@ class Display:
         )
 
     def workflow_condition(self, node_id: str, condition_met: bool, branch: str) -> None:
-        """Record router condition evaluation. Branch name is used in next wave header."""
-        self._current_branch = branch if condition_met else ""
+        """Record router condition evaluation."""
+        # Branch info available for future wave header display
+        pass
 
     def workflow_summary(self, wf: Workflow) -> None:
         """Print final output and summary."""
@@ -404,13 +405,6 @@ class Display:
             _render_tree(root.id, "", ri == len(roots) - 1)
 
         return "\n".join(lines)
-
-    def _format_step_tree(self, step, prefix: str) -> str:
-        # Kept for potential external use but no longer called by workflow_show
-        s = f"{prefix} {step.task[:60]}"
-        if hasattr(step, 'id') and step.id:
-            s += f" {_s(f'[{step.id}]', DIM)}"
-        return s
 
     def workflow_list(self, workflows: list[Workflow]) -> str:
         """Generate a compact workflow list — name + brief description."""

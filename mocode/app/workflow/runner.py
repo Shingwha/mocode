@@ -14,9 +14,9 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from . import Node, NodeResult, Workflow
+    from .models import Node, NodeResult, Workflow
 
-from . import NodeResult, fill_template
+from .models import NodeResult, fill_template
 
 
 class DAGRunner:
@@ -27,6 +27,7 @@ class DAGRunner:
         workflow: Workflow,
         mocode_cmd: str = "mocode",
         timeout: int = 300,
+        node_context: bool = True,
         on_wave_start: Callable[[int, int, list[str]], None] | None = None,
         on_node_start: Callable[[str, str], None] | None = None,
         on_node_done: Callable[[str, NodeResult, int], None] | None = None,
@@ -38,6 +39,7 @@ class DAGRunner:
         self.workflow = workflow
         self.mocode_cmd = mocode_cmd
         self.timeout = timeout
+        self.node_context = node_context
         self._on_wave_start = on_wave_start
         self._on_node_start = on_node_start
         self._on_node_done = on_node_done
@@ -45,187 +47,194 @@ class DAGRunner:
         self._on_loop_iter = on_loop_iter
         self._on_condition = on_condition
         self._on_progress = on_progress
-        self._context: dict = {}
 
     def _progress(self, msg: str) -> None:
         if self._on_progress:
             self._on_progress(msg)
 
-    async def run(self, args: dict | None = None) -> list[NodeResult]:
-        """Execute the full workflow DAG. Returns all NodeResults."""
-        from . import compute_waves
+    def _build_node_context_header(self, node: Node) -> str:
+        """Build a context header with graph structure info for a node."""
+        wf = self.workflow
+
+        lines = [
+            f'You are node "{node.id}" in workflow "{wf.name}".',
+        ]
+
+        if node.description:
+            lines.append(f"Description: {node.description}")
+
+        if node.depends:
+            lines.append("Input from:")
+            for dep_id in node.depends:
+                dep_node = wf.node_map.get(dep_id)
+                dep_desc = dep_node.description if dep_node else ""
+                if dep_desc:
+                    lines.append(f"  - {dep_id}: {dep_desc}")
+                else:
+                    lines.append(f"  - {dep_id}")
+
+        dependent_ids = wf.dependents.get(node.id, [])
+        if dependent_ids:
+            lines.append("Output to:")
+            for dep_id in dependent_ids:
+                dep_node = wf.node_map.get(dep_id)
+                dep_desc = dep_node.description if dep_node else ""
+                if dep_desc:
+                    lines.append(f"  - {dep_id}: {dep_desc}")
+                else:
+                    lines.append(f"  - {dep_id}")
+
+        return "\n".join(lines)
+
+    # ── Per-run state initialization ──────────────────────────
+
+    def _init_run(self, args: dict | None = None) -> None:
+        """Initialize per-run state as instance variables."""
+        from .graph import compute_waves
 
         wf = self.workflow
-        wf.status = "running"
-        wf.results.clear()
 
-        self._context = {
+        self._context: dict = {
             "args": args or {},
             "env": dict(os.environ),
             "nodes": {},
             "previous": "",
         }
 
-        node_map = wf.node_map
-
-        # Compute waves for display
         waves = compute_waves(wf)
-        total_waves = len(waves)
-        node_wave: dict[str, int] = {}
+        self._waves = waves
+        self._total_waves = len(waves)
+        self._node_wave: dict[str, int] = {}
         for idx, wave in enumerate(waves):
             for n in wave:
-                node_wave[n.id] = idx
+                self._node_wave[n.id] = idx
 
-        # Execution state
-        pending_deps: dict[str, int] = {n.id: len(n.depends) for n in wf.nodes}
-        activated: set[str] = set()  # nodes activated by some path
-        completed: set[str] = set()
-        skipped: set[str] = set()
-        route_counter: dict[str, int] = {}  # "router_id:route_idx" → count
-        iteration: dict[str, int] = {n.id: 0 for n in wf.nodes}
-        running: dict[str, asyncio.Task] = {}
-        task_to_nid: dict[asyncio.Task, str] = {}  # reverse lookup: task → node_id
-        announced_waves: set[int] = set()
-        completed_waves: set[int] = set()
+        self._pending_deps: dict[str, int] = {n.id: len(n.depends) for n in wf.nodes}
+        self._activated: set[str] = set()
+        self._completed: set[str] = set()
+        self._skipped: set[str] = set()
+        self._route_counter: dict[str, int] = {}
+        self._iteration: dict[str, int] = {n.id: 0 for n in wf.nodes}
+        self._running: dict[str, asyncio.Task] = {}
+        self._task_to_nid: dict[asyncio.Task, str] = {}
+        self._announced_waves: set[int] = set()
+        self._completed_waves: set[int] = set()
+        self._ready_queue: list[str] = []
+        self._total_executions = 0
+        self._max_total = wf.max_iterations * len(wf.nodes)
 
-        def _try_announce_waves() -> None:
-            """Announce waves in order, only when all prior waves announced."""
-            for w in range(total_waves):
-                if w in announced_waves:
-                    continue
-                # All prior waves must be announced (header already printed)
-                if any(pw not in announced_waves for pw in range(w)):
-                    break
-                # All nodes in this wave must have all depends satisfied
-                all_deps_met = all(
-                    all(dep in completed for dep in n.depends)
-                    for n in waves[w]
-                )
-                if not all_deps_met:
-                    break
-                # Announce this wave (flushes buffer before header)
-                announced_waves.add(w)
-                if self._on_wave_start:
-                    wave_nids = [n.id for n in waves[w]]
-                    self._on_wave_start(w, total_waves, wave_nids)
+    # ── Main execution loop ───────────────────────────────────
+
+    async def run(self, args: dict | None = None) -> list[NodeResult]:
+        """Execute the full workflow DAG. Returns all NodeResults."""
+        wf = self.workflow
+        wf.status = "running"
+        wf.results.clear()
+
+        self._init_run(args)
 
         # Activate root nodes
-        ready_queue: list[str] = []
         for n in wf.root_nodes:
-            activated.add(n.id)
-            ready_queue.append(n.id)
-
-        # Circuit breaker: total executions across all nodes
-        total_executions = 0
-        max_total = wf.max_iterations * len(wf.nodes)
-
-        def _set_previous(node_id: str, output: str) -> None:
-            self._context["previous"] = output
-
-        def _store_node_result(node_id: str, nr: NodeResult) -> None:
-            self._context["nodes"][node_id] = {
-                "output": nr.output,
-                "exit_code": nr.exit_code,
-                "duration": nr.duration,
-                "error": nr.error or "",
-            }
+            self._activated.add(n.id)
+            self._ready_queue.append(n.id)
 
         try:
-            while ready_queue or running:
-                _try_announce_waves()
+            while self._ready_queue or self._running:
+                self._try_announce_waves()
 
                 # Launch all ready nodes
-                for nid in list(ready_queue):
-                    if nid in running:
+                for nid in list(self._ready_queue):
+                    if nid in self._running:
                         continue
-                    node = node_map[nid]
-                    iteration[nid] += 1
+                    node = wf.node_map[nid]
+                    self._iteration[nid] += 1
 
                     if node.type == "router":
-                        # Router: evaluate synchronously, don't spawn subprocess
-                        self._evaluate_router(
-                            node, node_map, completed, activated,
-                            pending_deps, ready_queue, iteration,
-                            route_counter, skipped, completed_waves,
-                            node_wave,
-                            announce_wave=_try_announce_waves,
-                        )
+                        self._evaluate_router(node)
                     else:
-                        # Task: spawn subprocess
                         task_text = fill_template(node.task, self._context)
                         if self._on_node_start:
                             self._on_node_start(nid, node.description)
-                        task = asyncio.create_task(self._exec_node(nid, task_text))
-                        running[nid] = task
-                        task_to_nid[task] = nid
-                    ready_queue.remove(nid)
+                        context_header = (
+                            self._build_node_context_header(node)
+                            if self.node_context else None
+                        )
+                        task = asyncio.create_task(
+                            self._exec_node(nid, task_text, context_header)
+                        )
+                        self._running[nid] = task
+                        self._task_to_nid[task] = nid
+                    self._ready_queue.remove(nid)
 
-                if not running:
-                    if not ready_queue:
+                if not self._running:
+                    if not self._ready_queue:
                         break
-                    continue  # loop back to launch ready_queue items
+                    continue
 
                 # Wait for any task to complete
                 done_tasks, _ = await asyncio.wait(
-                    running.values(),
+                    self._running.values(),
                     return_when=asyncio.FIRST_COMPLETED,
                 )
 
                 # Process completed tasks
                 for task in done_tasks:
-                    # Find node_id via reverse lookup
-                    nid = task_to_nid.pop(task, None)
+                    nid = self._task_to_nid.pop(task, None)
                     if nid is None:
                         continue
 
-                    del running[nid]
+                    del self._running[nid]
                     nr = task.result()
-                    total_executions += 1
+                    self._total_executions += 1
 
                     # Store result
                     wf.results.append(nr)
-                    _store_node_result(nid, nr)
-                    _set_previous(nid, nr.output)
-                    completed.add(nid)
+                    self._context["nodes"][nid] = {
+                        "output": nr.output,
+                        "exit_code": nr.exit_code,
+                        "duration": nr.duration,
+                        "error": nr.error or "",
+                    }
+                    self._context["previous"] = nr.output
+                    self._completed.add(nid)
 
                     # Callback
-                    wave_idx = node_wave.get(nid, 0)
+                    wave_idx = self._node_wave.get(nid, 0)
                     if self._on_node_done:
                         self._on_node_done(nid, nr, wave_idx)
 
                     # Track wave completion
-                    wave_node_ids = [n.id for n in waves[wave_idx]]
-                    if all(nid_c in completed for nid_c in wave_node_ids):
-                        completed_waves.add(wave_idx)
+                    wave_node_ids = [n.id for n in self._waves[wave_idx]]
+                    if all(nid_c in self._completed for nid_c in wave_node_ids):
+                        self._completed_waves.add(wave_idx)
 
                     self._progress(f"Node '{nid}' done ({nr.duration:.1f}s)")
 
                     # Activate downstream dependents
                     for dep_id in wf.dependents.get(nid, []):
-                        if dep_id in skipped:
+                        if dep_id in self._skipped:
                             continue
-                        pending_deps[dep_id] -= 1
-                        if pending_deps[dep_id] <= 0:
-                            if dep_id not in running and dep_id not in ready_queue:
-                                ready_queue.append(dep_id)
+                        self._pending_deps[dep_id] -= 1
+                        if self._pending_deps[dep_id] <= 0:
+                            if dep_id not in self._running and dep_id not in self._ready_queue:
+                                self._ready_queue.append(dep_id)
 
-                    _try_announce_waves()
+                    self._try_announce_waves()
 
                 # Circuit breaker
-                if total_executions >= max_total:
+                if self._total_executions >= self._max_total:
                     wf.status = "loop_limit"
                     self._progress(
-                        f"Workflow execution limit reached ({max_total} total executions)"
+                        f"Workflow execution limit reached ({self._max_total} total executions)"
                     )
-                    # Cancel remaining tasks
-                    for t in running.values():
+                    for t in self._running.values():
                         t.cancel()
                     break
 
             # Propagate skips for unactivated nodes
             for n in wf.nodes:
-                if n.id not in completed and n.id not in skipped:
-                    skipped.add(n.id)
+                if n.id not in self._completed and n.id not in self._skipped:
+                    self._skipped.add(n.id)
                     if self._on_node_skip:
                         self._on_node_skip(n.id, "not activated")
 
@@ -237,22 +246,32 @@ class DAGRunner:
             wf.status = "error"
             raise
 
-    def _evaluate_router(
-        self,
-        node: Node,
-        node_map: dict,
-        completed: set,
-        activated: set,
-        pending_deps: dict,
-        ready_queue: list,
-        iteration: dict,
-        route_counter: dict,
-        skipped: set,
-        completed_waves: set | None = None,
-        node_wave: dict | None = None,
-        announce_wave=None,
-    ) -> None:
+    # ── Wave announcement ─────────────────────────────────────
+
+    def _try_announce_waves(self) -> None:
+        """Announce waves in order, only when all prior waves announced."""
+        for w in range(self._total_waves):
+            if w in self._announced_waves:
+                continue
+            if any(pw not in self._announced_waves for pw in range(w)):
+                break
+            all_deps_met = all(
+                all(dep in self._completed for dep in n.depends)
+                for n in self._waves[w]
+            )
+            if not all_deps_met:
+                break
+            self._announced_waves.add(w)
+            if self._on_wave_start:
+                wave_nids = [n.id for n in self._waves[w]]
+                self._on_wave_start(w, self._total_waves, wave_nids)
+
+    # ── Router evaluation ─────────────────────────────────────
+
+    def _evaluate_router(self, node: Node) -> None:
         """Evaluate a router node's routes and activate targets."""
+        wf = self.workflow
+
         # Concatenate outputs of all dependency nodes
         dep_outputs = []
         for dep in node.depends:
@@ -265,49 +284,41 @@ class DAGRunner:
         all_targets: set[str] = set()
         for ri, route in enumerate(node.routes):
             route_key = f"{node.id}:{ri}"
-            current_count = route_counter.get(route_key, 0)
+            current_count = self._route_counter.get(route_key, 0)
 
-            # Check max limit
             if route.max > 0 and current_count >= route.max:
                 continue
 
-            # Check match
             if route.match is not None:
                 if not re.search(route.match, combined):
                     continue
 
             # Matched!
-            route_counter[route_key] = current_count + 1
+            self._route_counter[route_key] = current_count + 1
             matched = True
 
             if self._on_condition:
-                branch_name = f"route {ri}"
-                self._on_condition(node.id, True, branch_name)
+                self._on_condition(node.id, True, f"route {ri}")
 
-            # Activate targets
             for target_id in route.to:
                 all_targets.add(target_id)
-                target_node = node_map.get(target_id)
+                target_node = wf.node_map.get(target_id)
 
-                if target_id in completed and target_node:
+                if target_id in self._completed and target_node:
                     # Back-edge — loop back
-                    iteration[target_id] += 1
-                    completed.discard(target_id)
+                    self._iteration[target_id] += 1
+                    self._completed.discard(target_id)
                     # Allow the target's wave to be re-announced
-                    if completed_waves is not None and node_wave is not None:
-                        target_wave_idx = node_wave.get(target_id)
-                        if target_wave_idx is not None:
-                            completed_waves.discard(target_wave_idx)
-                    # Reset downstream chain (includes router if in completed)
-                    self._reset_downstream(target_id, node_map, completed, pending_deps, activated, skipped)
+                    target_wave_idx = self._node_wave.get(target_id)
+                    if target_wave_idx is not None:
+                        self._completed_waves.discard(target_wave_idx)
+                    self._reset_downstream(target_id)
                     # Router must re-evaluate after back-edge target re-runs
-                    completed.discard(node.id)
-                    pending_deps[node.id] = len(node.depends) - 1  # -1: target re-satisfies
-                    # Reset the target's own deps, then activate normally
-                    pending_deps[target_id] = len(target_node.depends)
-                    self._activate_target(target_id, ready_queue, activated, skipped, pending_deps, announce_wave)
+                    self._completed.discard(node.id)
+                    self._pending_deps[node.id] = len(node.depends) - 1
+                    self._pending_deps[target_id] = len(target_node.depends)
+                    self._activate_target(target_id)
 
-                    # Loop iter callback
                     max_iter = route.max if route.max > 0 else 0
                     iter_result = NodeResult(
                         node_id=target_id,
@@ -315,13 +326,12 @@ class DAGRunner:
                         output="",
                         exit_code=0,
                         duration=0,
-                        iteration=iteration[target_id],
+                        iteration=self._iteration[target_id],
                     )
                     if self._on_loop_iter:
-                        self._on_loop_iter(target_id, iteration[target_id], max_iter, iter_result)
+                        self._on_loop_iter(target_id, self._iteration[target_id], max_iter, iter_result)
                 else:
-                    # Forward edge
-                    self._activate_target(target_id, ready_queue, activated, skipped, pending_deps, announce_wave)
+                    self._activate_target(target_id)
             break  # first-match-wins
 
         if not matched:
@@ -329,77 +339,66 @@ class DAGRunner:
                 self._on_condition(node.id, False, "no match")
 
         # Mark router as completed
-        completed.add(node.id)
+        self._completed.add(node.id)
 
         # Mark all downstream nodes not activated by any route as skipped
-        for dep_id in self.workflow.dependents.get(node.id, []):
-            if dep_id not in all_targets and dep_id not in activated:
-                skipped.add(dep_id)
+        for dep_id in wf.dependents.get(node.id, []):
+            if dep_id not in all_targets and dep_id not in self._activated:
+                self._skipped.add(dep_id)
                 if self._on_node_skip:
                     self._on_node_skip(dep_id, "not activated by router")
-                self._propagate_skip(dep_id, node_map, activated, skipped)
+                self._propagate_skip(dep_id)
 
-    def _activate_target(
-        self,
-        target_id: str,
-        ready_queue: list[str],
-        activated: set[str],
-        skipped: set[str],
-        pending_deps: dict[str, int],
-        announce_wave: Callable | None = None,
-    ) -> None:
-        """Common activation: mark activated, decrement deps, enqueue if ready."""
-        activated.add(target_id)
-        skipped.discard(target_id)
-        pending_deps[target_id] -= 1
-        if pending_deps[target_id] <= 0 and target_id not in ready_queue:
-            ready_queue.append(target_id)
-            if announce_wave:
-                announce_wave()
+    # ── Node state helpers ────────────────────────────────────
 
-    def _reset_downstream(
-        self,
-        node_id: str,
-        node_map: dict,
-        completed: set,
-        pending_deps: dict,
-        activated: set,
-        skipped: set,
-    ) -> None:
+    def _activate_target(self, target_id: str) -> None:
+        """Mark activated, decrement deps, enqueue if ready."""
+        self._activated.add(target_id)
+        self._skipped.discard(target_id)
+        self._pending_deps[target_id] -= 1
+        if self._pending_deps[target_id] <= 0 and target_id not in self._ready_queue:
+            self._ready_queue.append(target_id)
+            self._try_announce_waves()
+
+    def _reset_downstream(self, node_id: str) -> None:
         """Reset all downstream nodes of a back-edge target."""
-        for child_id in self.workflow.dependents.get(node_id, []):
-            if child_id in completed:
-                completed.discard(child_id)
-                child_node = node_map.get(child_id)
+        wf = self.workflow
+        for child_id in wf.dependents.get(node_id, []):
+            if child_id in self._completed:
+                self._completed.discard(child_id)
+                child_node = wf.node_map.get(child_id)
                 if child_node:
-                    pending_deps[child_id] = len(child_node.depends)
-                activated.discard(child_id)
-                skipped.discard(child_id)
-                self._reset_downstream(child_id, node_map, completed, pending_deps, activated, skipped)
+                    self._pending_deps[child_id] = len(child_node.depends)
+                self._activated.discard(child_id)
+                self._skipped.discard(child_id)
+                self._reset_downstream(child_id)
 
-    def _propagate_skip(
-        self,
-        node_id: str,
-        node_map: dict,
-        activated: set,
-        skipped: set,
-    ) -> None:
+    def _propagate_skip(self, node_id: str) -> None:
         """Mark a node and all its downstream as skipped."""
         for child_id in self.workflow.dependents.get(node_id, []):
-            if child_id not in activated and child_id not in skipped:
-                skipped.add(child_id)
+            if child_id not in self._activated and child_id not in self._skipped:
+                self._skipped.add(child_id)
                 if self._on_node_skip:
                     self._on_node_skip(child_id, "dependency skipped")
-                self._propagate_skip(child_id, node_map, activated, skipped)
+                self._propagate_skip(child_id)
 
-    async def _exec_node(self, node_id: str, task: str) -> NodeResult:
+    # ── Subprocess execution ──────────────────────────────────
+
+    async def _exec_node(
+        self, node_id: str, task: str, context_header: str | None = None,
+    ) -> NodeResult:
         """Spawn mocode -p with the filled task template."""
+        if context_header:
+            prompt = f"{context_header}\n\n---\nTask: {task}"
+        else:
+            prompt = task
+
         start = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
                 self.mocode_cmd,
                 "-p",
-                task,
+                prompt,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
