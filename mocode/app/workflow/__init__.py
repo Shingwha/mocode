@@ -18,34 +18,86 @@ from pathlib import Path
 
 
 @dataclass
+class GotoRule:
+    """A single goto rule: if match (regex) hits, jump to target.
+
+    Target address syntax:
+        "next"          → next step (step context) / next phase (phase context)
+        "end"           → end current lane/phase
+        "__end__"       → terminate entire workflow
+        "step_id"       → jump to step within same lane
+        "phase.xxx"     → jump to phase with id "xxx"
+    """
+
+    match: str | None = None  # regex, None = default/fallback
+    to: str = "next"  # target address
+    max: int = 0  # max hits for this path, 0 = unlimited
+
+    @classmethod
+    def from_dict(cls, data: dict) -> GotoRule:
+        return cls(
+            match=data.get("match"),
+            to=data.get("to", "next"),
+            max=data.get("max", 0),
+        )
+
+
+@dataclass
 class Step:
     id: str = ""
     task: str = ""
+    goto: list[GotoRule] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> Step:
-        return cls(id=data.get("id", ""), task=data.get("task", ""))
+        return cls(
+            id=data.get("id", ""),
+            task=data.get("task", ""),
+            goto=[GotoRule.from_dict(g) for g in data.get("goto", [])],
+        )
+
+
+@dataclass
+class Lane:
+    id: str = ""
+    name: str = ""
+    steps: list[Step] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Lane:
+        return cls(
+            id=data.get("id", ""),
+            name=data.get("name", ""),
+            steps=[Step.from_dict(s) for s in data.get("steps", [])],
+        )
 
 
 @dataclass
 class Phase:
     id: str = ""
     name: str = ""
-    steps: list[Step] = field(default_factory=list)
-    parallel: bool = False
-    max_attempts: int = 1
-    halt_if: str | None = None
+    steps: list[Step] = field(default_factory=list)  # sequential mode
+    lanes: list[Lane] = field(default_factory=list)  # parallel mode, mutually exclusive with steps
+    max_iterations: int = 0  # 0 = inherit from workflow
+    goto: list[GotoRule] = field(default_factory=list)  # evaluated after all steps/lanes done
 
     @classmethod
     def from_dict(cls, data: dict) -> Phase:
-        steps = [Step.from_dict(s) for s in data.get("steps", [])]
+        lanes_data = data.get("lanes")
+        if lanes_data:
+            lanes = [Lane.from_dict(l) for l in lanes_data]
+            steps = []
+        else:
+            lanes = []
+            steps = [Step.from_dict(s) for s in data.get("steps", [])]
+
         return cls(
             id=data.get("id", ""),
             name=data.get("name", ""),
             steps=steps,
-            parallel=data.get("parallel", False),
-            max_attempts=data.get("max_attempts", 1),
-            halt_if=data.get("halt_if"),
+            lanes=lanes,
+            max_iterations=data.get("max_iterations", 0),
+            goto=[GotoRule.from_dict(g) for g in data.get("goto", [])],
         )
 
 
@@ -58,6 +110,7 @@ class StepResult:
     exit_code: int
     duration: float
     error: str | None = None
+    lane: str | None = None
 
 
 # ── Template filling ─────────────────────────────────────────
@@ -66,7 +119,18 @@ _RE_PLACEHOLDER = re.compile(r"\{(\w+(?:\.\w+)*)\}")
 
 
 def fill_template(template: str, context: dict) -> str:
-    """Replace {a.b.c} placeholders by dot-path lookup in context dict."""
+    """Replace {a.b.c} placeholders by dot-path lookup in context dict.
+
+    Supports: {args.key}, {env.VAR}, {previous}, {steps.id.output},
+    {lane.id.output}, {phase.id.output}.
+    """
+
+    # Singular → plural mappings for template aliases
+    _BUCKET_ALIASES = {
+        "lane": "lanes",
+        "phase": "phases",
+        "step": "steps",
+    }
 
     def _replace(m: re.Match) -> str:
         path = m.group(1)
@@ -76,7 +140,8 @@ def fill_template(template: str, context: dict) -> str:
         parts = path.split(".", 1)
         if len(parts) == 2:
             bucket, rest = parts
-            obj = context.get(bucket)
+            # Try exact bucket name first, then alias
+            obj = context.get(bucket) or context.get(_BUCKET_ALIASES.get(bucket, ""))
             if isinstance(obj, dict):
                 return _dot_lookup(obj, rest, m.group(0))
         return m.group(0)
@@ -100,12 +165,13 @@ def _dot_lookup(obj: dict, path: str, default: str) -> str:
 @dataclass
 class Workflow:
     name: str
-    description: str
-    phases: list[Phase]
+    description: str = ""
+    phases: list[Phase] = field(default_factory=list)
     path: Path | None = None
+    max_iterations: int = 100  # global phase entry count limit
 
-    # Runtime state
-    status: str = "idle"  # idle | running | done | error
+    # Runtime state (written by runner)
+    status: str = "idle"  # idle | running | done | error | loop_limit
     phase_index: int = 0
     step_index: int = 0
     results: list[StepResult] = field(default_factory=list)
@@ -123,6 +189,7 @@ class Workflow:
             description=data.get("description", ""),
             phases=phases,
             path=path,
+            max_iterations=data.get("max_iterations", 100),
         )
 
     # ── Query methods ────────────────────────────────────────
@@ -145,7 +212,13 @@ class Workflow:
         return len(self.phases)
 
     def total_steps(self) -> int:
-        return sum(len(p.steps) for p in self.phases)
+        count = 0
+        for p in self.phases:
+            if p.lanes:
+                count += sum(len(l.steps) for l in p.lanes)
+            else:
+                count += len(p.steps)
+        return count
 
     def completed_steps(self) -> int:
         return len(self.results)
@@ -153,20 +226,14 @@ class Workflow:
     def progress_bar(self) -> str:
         pi = self.phase_index + 1
         tp = self.total_phases
-        phase = self.current_phase
-        if phase:
-            si = self.step_index + 1
-            ts = len(phase.steps)
-            return f"Phase {pi}/{tp} · Step {si}/{ts}"
         return f"Phase {pi}/{tp}"
 
     def summary(self) -> str:
         lines = [f"Workflow: {self.name}", f"Status: {self.status}"]
         for r in self.results:
             phase = self.phases[r.phase_index]
-            step = phase.steps[r.step_index]
             status = "OK" if r.exit_code == 0 else "FAIL"
-            task_preview = step.task[:40] if step.task else "(empty)"
+            task_preview = r.task[:40] if r.task else "(empty)"
             lines.append(
                 f"  [{status}] Phase '{phase.name}' · {task_preview}: {r.duration:.1f}s"
             )
@@ -176,9 +243,8 @@ class Workflow:
         lines = [f"Workflow: {self.name}", f"Status: {self.status}"]
         for r in self.results:
             phase = self.phases[r.phase_index]
-            step = phase.steps[r.step_index]
             status = "OK" if r.exit_code == 0 else "FAIL"
-            task_preview = step.task[:60] if step.task else "(empty)"
+            task_preview = r.task[:60] if r.task else "(empty)"
             lines.append(
                 f"  [{status}] Phase '{phase.name}' · {task_preview} ({r.duration:.1f}s)"
             )
