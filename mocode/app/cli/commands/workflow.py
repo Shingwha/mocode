@@ -131,9 +131,13 @@ class WorkflowCommand:
         wf.step_index = 0
         wf.results.clear()
 
-        ctx.display.info(f"Running workflow '{wf.name}' ({wf.total_steps()} steps)...")
+        ctx.display.workflow_start(wf)
 
-        runner = WorkflowRunner(wf, on_progress=ctx.display.set_spinner_detail)
+        runner = WorkflowRunner(
+            wf,
+            on_progress=ctx.display.set_spinner_detail,
+            on_step_done=ctx.display.workflow_step_done,
+        )
         try:
             async with ctx.display.spinner(f"Workflow: {wf.name}"):
                 results = await runner.run(args=user_args)
@@ -141,13 +145,7 @@ class WorkflowCommand:
             ctx.display.error(f"Workflow failed: {e}")
             return CommandResult.CONTINUE
 
-        ctx.display.info(wf.detailed_summary())
-        ok = sum(1 for r in results if r.exit_code == 0)
-        fail = sum(1 for r in results if r.exit_code != 0)
-        if fail == 0:
-            ctx.display.info(f"All {ok} step(s) completed successfully.")
-        else:
-            ctx.display.warn(f"{ok} succeeded, {fail} failed.")
+        ctx.display.workflow_summary(wf)
         return CommandResult.CONTINUE
 
     async def _create(self, ctx: CommandContext, description: str) -> CommandResult:

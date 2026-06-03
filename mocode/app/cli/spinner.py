@@ -7,7 +7,7 @@ import random
 import time
 from contextlib import asynccontextmanager
 
-from .theme import DIM, RST, Spinner, _PRESETS
+from .theme import DIM, RST, SOFT_CYAN, Spinner, _PRESETS
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -67,9 +67,10 @@ class SpinnerRunner:
             if not spinner.show_text:
                 return ""
             elapsed = _format_elapsed(time.monotonic() - self._start)
+            elapsed_str = f"{SOFT_CYAN}{elapsed}{RST}"
             if self._detail:
-                return f" {self._text}... ({elapsed} · {self._detail})"
-            return f" {self._text}... ({elapsed})"
+                return f" {self._text} ({elapsed_str}{DIM} · {SOFT_CYAN}{self._detail}{RST})"
+            return f" {self._text} ({elapsed_str}{RST})"
 
         async def _spin():
             nonlocal idx

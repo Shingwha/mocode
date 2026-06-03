@@ -5,11 +5,26 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from .theme import RST, DIM, MAGENTA, BG_USER, Theme, _s
 from .input import Input
 from .spinner import SpinnerRunner
+from .theme import (
+    BG_USER,
+    BOLD,
+    CYAN,
+    DIM,
+    GRAY,
+    GREEN,
+    MAGENTA,
+    RED,
+    RST,
+    SOFT_CYAN,
+    YELLOW,
+    Theme,
+    _s,
+)
 
 if TYPE_CHECKING:
+    from ...workflow import Workflow
     from .commands import Command
 
 
@@ -17,10 +32,18 @@ if TYPE_CHECKING:
 
 
 _TOOL_KEY = {
-    "read": "path", "write": "path", "append": "path", "edit": "path",
-    "bash": "command", "glob": "pattern", "grep": "pattern",
-    "fetch": "url", "sub_agent": "task", "skill": "name",
-    "goal": "action", "image": "prompt",
+    "read": "path",
+    "write": "path",
+    "append": "path",
+    "edit": "path",
+    "bash": "command",
+    "glob": "pattern",
+    "grep": "pattern",
+    "fetch": "url",
+    "sub_agent": "task",
+    "skill": "name",
+    "goal": "action",
+    "image": "prompt",
 }
 
 
@@ -56,7 +79,11 @@ def _group_tool_calls(tool_calls) -> list[tuple[str, list[str]]]:
     merged: dict[str, list[str]] = {}
     singles: list[tuple[str, list[str]]] = []
     for tc in tool_calls:
-        args = json.loads(tc.arguments) if isinstance(tc.arguments, str) else (tc.arguments or {})
+        args = (
+            json.loads(tc.arguments)
+            if isinstance(tc.arguments, str)
+            else (tc.arguments or {})
+        )
         summary = _tool_summary(tc.name, args)
         if tc.name in _MERGE_TOOLS:
             merged.setdefault(tc.name, []).append(summary)
@@ -100,7 +127,6 @@ def _merge_summaries(summaries: list[str]) -> str:
     shown = ", ".join(summaries[:count])
     remaining = len(summaries) - count
     return shown + f"… +{remaining}" if remaining else shown
-
 
 
 # ── Display ─────────────────────────────────────────────
@@ -158,20 +184,26 @@ class Display:
 
     def tool_start(self, name: str, summary: str):
         t = self.theme
-        self._print(f"{_s(t.icon_tool, DIM)} {_s(name, t.color_tool)}{_s(f'({summary})', DIM)}")
+        self._print(
+            f"{_s(t.icon_tool, DIM)} {_s(name, t.color_tool)}{_s(f'({summary})', DIM)}"
+        )
 
     def tool_start_batched(self, groups: list[tuple[str, list[str]]]):
         """Print merged tool call lines — one per tool type."""
         t = self.theme
         for name, summaries in groups:
             merged = _merge_summaries(summaries)
-            self._print(f"{_s(t.icon_tool, DIM)} {_s(name, t.color_tool)}{_s(f'({merged})', DIM)}")
+            self._print(
+                f"{_s(t.icon_tool, DIM)} {_s(name, t.color_tool)}{_s(f'({merged})', DIM)}"
+            )
 
     def tool_error(self, msg: str):
         self._styled(self.theme.icon_error, msg, self.theme.color_error)
 
     def tool_timeout(self, seconds: int):
-        self._styled(self.theme.icon_error, f"timeout: {seconds}s", self.theme.color_error)
+        self._styled(
+            self.theme.icon_error, f"timeout: {seconds}s", self.theme.color_error
+        )
 
     # ── Output: model response ────────────────────────────
 
@@ -191,10 +223,18 @@ class Display:
     # ── Output: status ────────────────────────────────────
 
     def usage(self, prompt_tokens: int, completion_tokens: int):
-        self._styled(self.theme.icon_usage, f"↑{prompt_tokens:,} ↓{completion_tokens:,}", self.theme.color_usage)
+        self._styled(
+            self.theme.icon_usage,
+            f"↑{prompt_tokens:,} ↓{completion_tokens:,}",
+            self.theme.color_usage,
+        )
 
     def compact(self, old: int, new: int):
-        self._styled(self.theme.icon_compact, f"Compacted: {old} → {new} msgs", self.theme.color_compact)
+        self._styled(
+            self.theme.icon_compact,
+            f"Compacted: {old} → {new} msgs",
+            self.theme.color_compact,
+        )
 
     def info(self, text: str):
         self._styled("", text, self.theme.color_info)
@@ -205,11 +245,70 @@ class Display:
     def error(self, text: str):
         self._styled("", text, self.theme.color_error)
 
+    # ── Output: workflow ──────────────────────────────────
+
+    def workflow_start(self, wf: Workflow) -> None:
+        """Print workflow header before execution."""
+        step_count = wf.total_steps()
+        phase_count = wf.total_phases
+        self._print(
+            f"{_s('●', YELLOW)} {_s(wf.name, BOLD)}"
+            f"  {_s(f'{phase_count} phases · {step_count} steps', DIM)}"
+        )
+        self._print()
+
+    def workflow_step_done(
+        self, phase_name: str, exit_code: int, duration: float
+    ) -> None:
+        """Print a completed step result in real-time."""
+        dur = f"{duration:.1f}s"
+        if exit_code == 0:
+            self._print(f"  {_s('✓', YELLOW)} {phase_name}  {_s(dur, DIM)}")
+        else:
+            self._print(f"  {_s('✗', RED)} {phase_name}  {_s(dur, DIM)}")
+
+    def workflow_summary(self, wf: Workflow) -> None:
+        """Print final output and summary after all steps completed."""
+        results = wf.results
+        if not results:
+            return
+
+        ok = sum(1 for r in results if r.exit_code == 0)
+        fail = len(results) - ok
+        total_time = sum(r.duration for r in results)
+
+        # Final output
+        last = results[-1]
+        if last.output or last.error:
+            self._print()
+            if last.output:
+                for ol in last.output.splitlines():
+                    self._print(ol)
+            if last.error:
+                self._print(_s(f"Error: {last.error}", RED))
+
+        # Summary
+        self._print()
+        time_str = _s(f"{total_time:.1f}s", DIM)
+        if fail == 0:
+            self._print(
+                f"{_s('■', YELLOW)} {_s(wf.name, BOLD)}"
+                f"  {_s(f'{ok} steps', DIM)}  {time_str}"
+            )
+        else:
+            self._print(
+                f"  {_s('■', RED)} {_s(wf.name, BOLD)}"
+                f"  {_s(f'{ok} passed', DIM)}"
+                f" {_s('·', DIM)} {_s(f'{fail} failed', RED)}"
+                f"  {time_str}"
+            )
+
     # ── Screen ────────────────────────────────────────────
 
     def clear_screen(self):
         import os
-        os.system('cls' if os.name == 'nt' else 'clear')
+
+        os.system("cls" if os.name == "nt" else "clear")
 
     # ── Resume rendering ──────────────────────────────────
 
@@ -239,5 +338,3 @@ class Display:
                 content = msg.get("content", "")
                 if content.startswith("error:") or content.startswith("timeout:"):
                     self.tool_error(content[:80])
-
-

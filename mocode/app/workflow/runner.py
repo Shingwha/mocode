@@ -27,16 +27,22 @@ class WorkflowRunner:
         mocode_cmd: str = "mocode",
         timeout: int = 300,
         on_progress: Callable[[str], None] | None = None,
+        on_step_done: Callable[[str, int, float], None] | None = None,
     ):
         self.workflow = workflow
         self.mocode_cmd = mocode_cmd
         self.timeout = timeout
         self._on_progress = on_progress
+        self._on_step_done = on_step_done
         self._context: dict = {}
 
     def _progress(self, msg: str) -> None:
         if self._on_progress:
             self._on_progress(msg)
+
+    def _step_done(self, phase_name: str, exit_code: int, duration: float) -> None:
+        if self._on_step_done:
+            self._on_step_done(phase_name, exit_code, duration)
 
     async def run(self, args: dict | None = None) -> list[StepResult]:
         """Execute the full workflow. Returns all StepResults."""
@@ -56,7 +62,7 @@ class WorkflowRunner:
             for pi, phase in enumerate(wf.phases):
                 wf.phase_index = pi
                 wf.step_index = 0
-                self._progress(f"Phase {pi + 1}/{wf.total_phases}: {phase.name}")
+                self._progress(phase.name)
 
                 if phase.parallel:
                     results = await self._run_parallel(phase, pi)
@@ -91,14 +97,14 @@ class WorkflowRunner:
         total = len(phase.steps)
         for si, step in enumerate(phase.steps):
             self.workflow.step_index = si
-            task_preview = step.task[:40] if step.task else "(empty)"
-            self._progress(f"Phase {pi + 1} · Step {si + 1}/{total}: {task_preview}")
+            self._progress(f"Phase {pi + 1} · Step {si + 1}/{total}: {phase.name}")
             sr = await self._exec_step(step, pi, si)
             self.workflow.results.append(sr)
             results.append(sr)
             self._store_step(step, sr)
             self._context["previous"] = sr.output
             self._progress(f"Phase {pi + 1} · Step {si + 1}/{total} ✓ ({sr.duration:.1f}s)")
+            self._step_done(phase.name, sr.exit_code, sr.duration)
             if sr.exit_code != 0:
                 break
         return results
@@ -128,8 +134,7 @@ class WorkflowRunner:
             self.workflow.results.append(sr)
             results.append(sr)
             self._store_step(step, sr)
-
-        if results:
+            self._step_done(phase.name, sr.exit_code, sr.duration)
             self._context["previous"] = results[-1].output
         ok = sum(1 for r in results if r.exit_code == 0)
         self._progress(f"Phase {pi + 1} · Parallel done: {ok}/{len(results)} ok")
@@ -145,14 +150,14 @@ class WorkflowRunner:
             attempt_results = []
             for si, step in enumerate(phase.steps):
                 self.workflow.step_index = si
-                task_preview = step.task[:40] if step.task else "(empty)"
-                self._progress(f"Phase {pi + 1} · Step {si + 1}/{total}: {task_preview}")
+                self._progress(f"Phase {pi + 1} · Step {si + 1}/{total}: {phase.name}")
                 sr = await self._exec_step(step, pi, si)
                 self.workflow.results.append(sr)
                 attempt_results.append(sr)
                 self._store_step(step, sr)
                 self._context["previous"] = sr.output
                 self._progress(f"Phase {pi + 1} · Step {si + 1}/{total} ✓ ({sr.duration:.1f}s)")
+                self._step_done(phase.name, sr.exit_code, sr.duration)
 
             results = attempt_results
 

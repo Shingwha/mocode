@@ -14,6 +14,7 @@ GREEN = "\033[92m"
 YELLOW = "\033[93m"
 CYAN = "\033[96m"
 MAGENTA = "\033[95m"
+SOFT_CYAN = "\033[36m"
 BG_USER = "\033[100m"
 
 
@@ -98,7 +99,7 @@ class Theme:
     color_text: list[str] = field(default_factory=lambda: [DIM, MAGENTA])
     color_usage: str = DIM
     color_compact: str = YELLOW
-    color_info: str = GREEN
+    color_info: str = SOFT_CYAN
     color_warn: str = YELLOW
     color_user_fg: list[str] = field(default_factory=lambda: [BOLD])
 
