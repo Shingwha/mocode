@@ -53,6 +53,7 @@ class Node:
 
     id: str = ""
     type: str = "task"  # "task" | "router"
+    description: str = ""  # brief human-readable label
     task: str = ""  # template string (empty for router)
     depends: list[str] = field(default_factory=list)
     routes: list[Route] = field(default_factory=list)
@@ -63,6 +64,7 @@ class Node:
         return cls(
             id=data.get("id", ""),
             type=data.get("type", "task"),
+            description=data.get("description", ""),
             task=data.get("task", ""),
             depends=list(data.get("depends", [])),
             routes=[Route.from_dict(r) for r in routes_raw],

@@ -150,7 +150,7 @@ class Display:
         self.theme = theme or Theme()
         self._input = Input(ps1=self.theme.icon_input)
         self._spinner = SpinnerRunner()
-        self._workflow_buffer: list[str] = []
+        self._workflow_node_map: dict = {}
 
     def set_commands(self, commands: list[Command]):
         """Set commands for autocomplete."""
@@ -259,54 +259,54 @@ class Display:
 
     # ── Output: workflow ──────────────────────────────────
 
-    def _flush_workflow_buffer(self) -> None:
-        """Print all buffered workflow lines at once."""
-        if not self._workflow_buffer:
-            return
-        self._print("\n".join(self._workflow_buffer))
-        self._workflow_buffer.clear()
-
     def workflow_wave_start(self, wave_idx: int, total_waves: int, node_ids: list[str], branch: str = "") -> None:
-        """Print wave header, flushing any buffered node output first."""
-        self._flush_workflow_buffer()
-        self._print()
+        """Print wave header."""
+        if wave_idx > 0:
+            self._print()
         branch_suffix = f"  {_s(f'[{branch}]', SOFT_CYAN)}" if branch else ""
         self._print(
-            f"{_s('◇', YELLOW)} Wave {wave_idx}/{total_waves}{branch_suffix}"
+            f"{_s('◇', YELLOW)} Wave {wave_idx + 1}/{total_waves}{branch_suffix}"
         )
 
     def workflow_start(self, wf: Workflow) -> None:
         """Print workflow header before execution."""
         node_count = wf.total_nodes()
+        self._workflow_node_map = dict(wf.node_map)
         self._print(
             f"{_s('●', YELLOW)} {_s(wf.name, BOLD)}"
             f"  {_s(f'{node_count} nodes', DIM)}"
         )
         self._print()
 
+    def workflow_node_start(self, node_id: str, description: str) -> None:
+        """Update spinner detail to show the currently running node."""
+        self.set_spinner_detail(f"running: {node_id}")
+
     def workflow_node_done(self, node_id: str, result: NodeResult, wave_idx: int) -> None:
-        """Buffer a completed node result line."""
+        """Print a completed node result line immediately."""
         dur = f"{result.duration:.1f}s"
         icon = _s('✓', YELLOW) if result.exit_code == 0 else _s('✗', RED)
-        task_preview = result.task[:40] if result.task else ""
-        iter_suffix = f" ({result.iteration}/{result.iteration})" if result.iteration > 1 else ""
-        self._workflow_buffer.append(
-            f"  └─ {icon} {_s(node_id, BOLD)} · {task_preview}{iter_suffix}  {_s(dur, DIM)}"
+        node = self._workflow_node_map.get(node_id)
+        desc = node.description if node and node.description else (result.task[:40] if result.task else "")
+        iter_suffix = f" (iter {result.iteration})" if result.iteration > 1 else ""
+        self._print(
+            f"  └─ {icon} {_s(node_id, BOLD)} · {desc}{iter_suffix}  {_s(dur, DIM)}"
         )
 
     def workflow_node_skip(self, node_id: str, reason: str) -> None:
-        """Buffer a skipped node line."""
-        self._workflow_buffer.append(
+        """Print a skipped node line immediately."""
+        self._print(
             f"  │  {_s('✗', GRAY)} {_s(node_id, GRAY)}  {_s(f'skip ({reason})', DIM)}"
         )
 
     def workflow_loop_iter(self, node_id: str, iteration: int, max_iter: int, result: NodeResult) -> None:
-        """Buffer a loop iteration line."""
+        """Print a loop iteration line immediately."""
         dur = f"{result.duration:.1f}s"
-        task_preview = result.task[:40] if result.task else ""
+        node = self._workflow_node_map.get(node_id)
+        desc = node.description if node and node.description else (result.task[:40] if result.task else "")
         max_str = str(max_iter) if max_iter > 0 else "∞"
-        self._workflow_buffer.append(
-            f"  └─ {_s('↻', YELLOW)} {_s(node_id, BOLD)} ({iteration}/{max_str}) {task_preview}  {_s(dur, DIM)}"
+        self._print(
+            f"  └─ {_s('↻', YELLOW)} {_s(node_id, BOLD)} ({iteration}/{max_str}) {desc}  {_s(dur, DIM)}"
         )
 
     def workflow_condition(self, node_id: str, condition_met: bool, branch: str) -> None:
@@ -314,9 +314,7 @@ class Display:
         self._current_branch = branch if condition_met else ""
 
     def workflow_summary(self, wf: Workflow) -> None:
-        """Flush buffer, then print final output and summary."""
-        self._flush_workflow_buffer()
-
+        """Print final output and summary."""
         results = wf.results
         if not results:
             return
@@ -326,15 +324,23 @@ class Display:
         skipped_count = sum(1 for r in results if r.status == "skipped")
         total_time = sum(r.duration for r in results)
 
-        # Final output
-        last = results[-1]
-        if last.output or last.error:
-            self._print()
-            if last.output:
-                for ol in last.output.splitlines():
-                    self._print(ol)
-            if last.error:
-                self._print(_s(f"Error: {last.error}", RED))
+        # Final output — find the last result with meaningful content
+        last_output_result = None
+        for r in reversed(results):
+            if r.output and r.status == "done":
+                last_output_result = r
+                break
+        if last_output_result:
+            self._print(_s('─' * 48, YELLOW))
+            for ol in last_output_result.output.splitlines():
+                self._print(ol)
+        # Show errors from any failed result
+        for r in results:
+            if r.error and r.exit_code != 0:
+                if not last_output_result:
+                    self._print(_s('─' * 48, YELLOW))
+                    last_output_result = r  # just to avoid double separator
+                self._print(_s(f"Error: {r.error}", RED))
 
         # Summary
         self._print()
@@ -349,7 +355,7 @@ class Display:
         stat_str = " · ".join(parts)
 
         self._print(
-            f"{_s(wf.name, BOLD)}  {stat_str}  {time_str}"
+            f"{_s('■', YELLOW)} {_s(wf.name, BOLD)}  {stat_str}  {time_str}"
         )
 
     # ── Output: workflow show / list ──────────────────────
@@ -375,7 +381,7 @@ class Display:
             rendered.add(node_id)
             node = node_map[node_id]
             connector = "└─" if is_last else "├─"
-            task_preview = node.task[:50] if node.task else ""
+            preview = node.description if node.description else (node.task[:50] if node.task else "")
 
             if node.type == "router":
                 route_strs = [_format_route(r) for r in node.routes]
@@ -384,7 +390,7 @@ class Display:
                 )
             else:
                 lines.append(
-                    f"{prefix}{connector} {_s(node_id, BOLD)} · {task_preview}"
+                    f"{prefix}{connector} {_s(node_id, BOLD)} · {preview}"
                 )
 
             children = dependents.get(node_id, [])

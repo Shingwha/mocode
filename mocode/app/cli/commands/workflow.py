@@ -114,6 +114,7 @@ class WorkflowCommand:
             wf,
             on_progress=ctx.display.set_spinner_detail,
             on_wave_start=ctx.display.workflow_wave_start,
+            on_node_start=ctx.display.workflow_node_start,
             on_node_done=ctx.display.workflow_node_done,
             on_node_skip=ctx.display.workflow_node_skip,
             on_loop_iter=ctx.display.workflow_loop_iter,
@@ -148,19 +149,23 @@ class WorkflowCommand:
             "nodes:\n"
             "  # Task node (default type)\n"
             "  - id: overview\n"
+            "    description: Analyze project structure\n"
             "    task: Analyze project structure in {args.path}\n"
             "\n"
             "  # Parallel nodes that depend on overview\n"
             "  - id: check_security\n"
+            "    description: Review security issues\n"
             "    task: Review security issues in {nodes.overview.output}\n"
             "    depends: [overview]\n"
             "\n"
             "  - id: check_style\n"
+            "    description: Review style issues\n"
             "    task: Review style issues in {nodes.overview.output}\n"
             "    depends: [overview]\n"
             "\n"
             "  # Node that waits for both parallel nodes\n"
             "  - id: summary\n"
+            "    description: Generate final summary\n"
             "    task: |\n"
             "      Security: {nodes.check_security.output}\n"
             "      Style: {nodes.check_style.output}\n"
@@ -177,6 +182,7 @@ class WorkflowCommand:
             "        to: [done]\n"
             "\n"
             "  - id: fix\n"
+            "    description: Fix critical issues\n"
             "    task: Fix critical issues from {nodes.summary.output}\n"
             "    depends: [decide]\n"
             "\n"
@@ -192,11 +198,14 @@ class WorkflowCommand:
             "        to: [done]\n"
             "\n"
             "  - id: done\n"
+            "    description: Generate final report\n"
             "    task: Generate final report\n"
             "    depends: [decide, verify_router]  # convergence point\n"
             "```\n\n"
             "Template variables: {args.key}, {nodes.id.output}, {nodes.id.exit_code}, "
             "{nodes.id.error}, {nodes.id.duration}, {previous}, {env.VAR}\n\n"
+            "Each node should have a 'description' field — a brief one-line label shown in the UI "
+            "instead of the full task text.\n\n"
             "Save the file to .mocode/workflows/<name>.yaml in the current project directory. "
             "Create the .mocode/workflows/ directory if it does not exist."
         )

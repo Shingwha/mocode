@@ -28,6 +28,7 @@ class DAGRunner:
         mocode_cmd: str = "mocode",
         timeout: int = 300,
         on_wave_start: Callable[[int, int, list[str]], None] | None = None,
+        on_node_start: Callable[[str, str], None] | None = None,
         on_node_done: Callable[[str, NodeResult, int], None] | None = None,
         on_node_skip: Callable[[str, str], None] | None = None,
         on_loop_iter: Callable[[str, int, int, NodeResult], None] | None = None,
@@ -38,6 +39,7 @@ class DAGRunner:
         self.mocode_cmd = mocode_cmd
         self.timeout = timeout
         self._on_wave_start = on_wave_start
+        self._on_node_start = on_node_start
         self._on_node_done = on_node_done
         self._on_node_skip = on_node_skip
         self._on_loop_iter = on_loop_iter
@@ -82,21 +84,36 @@ class DAGRunner:
         route_counter: dict[str, int] = {}  # "router_id:route_idx" → count
         iteration: dict[str, int] = {n.id: 0 for n in wf.nodes}
         running: dict[str, asyncio.Task] = {}
+        task_to_nid: dict[asyncio.Task, str] = {}  # reverse lookup: task → node_id
         announced_waves: set[int] = set()
+        completed_waves: set[int] = set()
 
-        def _announce_wave(nid: str) -> None:
-            w = node_wave.get(nid, 0)
-            if w not in announced_waves and self._on_wave_start:
+        def _try_announce_waves() -> None:
+            """Announce waves in order, only when all prior waves announced."""
+            for w in range(total_waves):
+                if w in announced_waves:
+                    continue
+                # All prior waves must be announced (header already printed)
+                if any(pw not in announced_waves for pw in range(w)):
+                    break
+                # All nodes in this wave must have all depends satisfied
+                all_deps_met = all(
+                    all(dep in completed for dep in n.depends)
+                    for n in waves[w]
+                )
+                if not all_deps_met:
+                    break
+                # Announce this wave (flushes buffer before header)
                 announced_waves.add(w)
-                wave_nids = [n.id for n in waves[w]]
-                self._on_wave_start(w, total_waves, wave_nids)
+                if self._on_wave_start:
+                    wave_nids = [n.id for n in waves[w]]
+                    self._on_wave_start(w, total_waves, wave_nids)
 
         # Activate root nodes
         ready_queue: list[str] = []
         for n in wf.root_nodes:
             activated.add(n.id)
             ready_queue.append(n.id)
-            _announce_wave(n.id)
 
         # Circuit breaker: total executions across all nodes
         total_executions = 0
@@ -115,6 +132,8 @@ class DAGRunner:
 
         try:
             while ready_queue or running:
+                _try_announce_waves()
+
                 # Launch all ready nodes
                 for nid in list(ready_queue):
                     if nid in running:
@@ -127,15 +146,18 @@ class DAGRunner:
                         self._evaluate_router(
                             node, node_map, completed, activated,
                             pending_deps, ready_queue, iteration,
-                            route_counter, skipped,
-                            announce_wave=_announce_wave,
+                            route_counter, skipped, completed_waves,
+                            node_wave,
+                            announce_wave=_try_announce_waves,
                         )
                     else:
                         # Task: spawn subprocess
                         task_text = fill_template(node.task, self._context)
-                        running[nid] = asyncio.create_task(
-                            self._exec_node(nid, task_text)
-                        )
+                        if self._on_node_start:
+                            self._on_node_start(nid, node.description)
+                        task = asyncio.create_task(self._exec_node(nid, task_text))
+                        running[nid] = task
+                        task_to_nid[task] = nid
                     ready_queue.remove(nid)
 
                 if not running:
@@ -151,12 +173,8 @@ class DAGRunner:
 
                 # Process completed tasks
                 for task in done_tasks:
-                    # Find node_id for this task
-                    nid = None
-                    for k, v in running.items():
-                        if v is task:
-                            nid = k
-                            break
+                    # Find node_id via reverse lookup
+                    nid = task_to_nid.pop(task, None)
                     if nid is None:
                         continue
 
@@ -175,6 +193,11 @@ class DAGRunner:
                     if self._on_node_done:
                         self._on_node_done(nid, nr, wave_idx)
 
+                    # Track wave completion
+                    wave_node_ids = [n.id for n in waves[wave_idx]]
+                    if all(nid_c in completed for nid_c in wave_node_ids):
+                        completed_waves.add(wave_idx)
+
                     self._progress(f"Node '{nid}' done ({nr.duration:.1f}s)")
 
                     # Activate downstream dependents
@@ -185,7 +208,8 @@ class DAGRunner:
                         if pending_deps[dep_id] <= 0:
                             if dep_id not in running and dep_id not in ready_queue:
                                 ready_queue.append(dep_id)
-                                _announce_wave(dep_id)
+
+                    _try_announce_waves()
 
                 # Circuit breaker
                 if total_executions >= max_total:
@@ -224,6 +248,8 @@ class DAGRunner:
         iteration: dict,
         route_counter: dict,
         skipped: set,
+        completed_waves: set | None = None,
+        node_wave: dict | None = None,
         announce_wave=None,
     ) -> None:
         """Evaluate a router node's routes and activate targets."""
@@ -267,21 +293,19 @@ class DAGRunner:
                     # Back-edge — loop back
                     iteration[target_id] += 1
                     completed.discard(target_id)
+                    # Allow the target's wave to be re-announced
+                    if completed_waves is not None and node_wave is not None:
+                        target_wave_idx = node_wave.get(target_id)
+                        if target_wave_idx is not None:
+                            completed_waves.discard(target_wave_idx)
                     # Reset downstream chain (includes router if in completed)
                     self._reset_downstream(target_id, node_map, completed, pending_deps, activated, skipped)
                     # Router must re-evaluate after back-edge target re-runs
                     completed.discard(node.id)
                     pending_deps[node.id] = len(node.depends) - 1  # -1: target re-satisfies
-                    # Reset the target's own deps
+                    # Reset the target's own deps, then activate normally
                     pending_deps[target_id] = len(target_node.depends)
-                    activated.add(target_id)
-                    skipped.discard(target_id)
-                    pending_deps[target_id] -= 1  # router satisfies one dep
-                    if pending_deps[target_id] <= 0:
-                        if target_id not in ready_queue:
-                            ready_queue.append(target_id)
-                            if announce_wave:
-                                announce_wave(target_id)
+                    self._activate_target(target_id, ready_queue, activated, skipped, pending_deps, announce_wave)
 
                     # Loop iter callback
                     max_iter = route.max if route.max > 0 else 0
@@ -297,13 +321,7 @@ class DAGRunner:
                         self._on_loop_iter(target_id, iteration[target_id], max_iter, iter_result)
                 else:
                     # Forward edge
-                    activated.add(target_id)
-                    skipped.discard(target_id)
-                    pending_deps[target_id] -= 1
-                    if pending_deps[target_id] <= 0 and target_id not in ready_queue:
-                        ready_queue.append(target_id)
-                        if announce_wave:
-                            announce_wave(target_id)
+                    self._activate_target(target_id, ready_queue, activated, skipped, pending_deps, announce_wave)
             break  # first-match-wins
 
         if not matched:
@@ -320,6 +338,24 @@ class DAGRunner:
                 if self._on_node_skip:
                     self._on_node_skip(dep_id, "not activated by router")
                 self._propagate_skip(dep_id, node_map, activated, skipped)
+
+    def _activate_target(
+        self,
+        target_id: str,
+        ready_queue: list[str],
+        activated: set[str],
+        skipped: set[str],
+        pending_deps: dict[str, int],
+        announce_wave: Callable | None = None,
+    ) -> None:
+        """Common activation: mark activated, decrement deps, enqueue if ready."""
+        activated.add(target_id)
+        skipped.discard(target_id)
+        pending_deps[target_id] -= 1
+        if pending_deps[target_id] <= 0 and target_id not in ready_queue:
+            ready_queue.append(target_id)
+            if announce_wave:
+                announce_wave()
 
     def _reset_downstream(
         self,
