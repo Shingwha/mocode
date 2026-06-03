@@ -21,6 +21,8 @@ from mocode.app.workflow import (
     WorkflowEvent,
     compute_waves,
     fill_template,
+    summarize,
+    detailed_summarize,
 )
 from mocode.app.workflow.events import (
     ProgressEvent,
@@ -268,8 +270,6 @@ class TestWorkflowModel:
         assert wf.description == "desc"
         assert wf.nodes == []
         assert wf.max_iterations == 100
-        assert wf.status == "idle"
-        assert wf.results == []
 
     def test_node_map(self):
         wf = Workflow(
@@ -312,53 +312,53 @@ class TestWorkflowModel:
 
     def test_summary(self):
         wf = Workflow(name="test")
-        wf.results.append(
+        results = [
             NodeResult(node_id="a", task="Do thing", output="ok", exit_code=0, duration=1.5)
-        )
-        s = wf.summary()
+        ]
+        s = summarize(wf, results)
         assert "test" in s
         assert "[OK]" in s
         assert "Do thing" in s
 
     def test_summary_failed(self):
         wf = Workflow(name="test")
-        wf.results.append(
+        results = [
             NodeResult(node_id="a", task="Fail", output="", exit_code=1, duration=0.5, error="boom")
-        )
-        s = wf.summary()
+        ]
+        s = summarize(wf, results)
         assert "[FAIL]" in s
 
     def test_detailed_summary_includes_output(self):
         wf = Workflow(name="test")
-        wf.results.append(
+        results = [
             NodeResult(node_id="a", task="T", output="Hello world", exit_code=0, duration=1.0)
-        )
-        s = wf.detailed_summary()
+        ]
+        s = detailed_summarize(wf, results)
         assert "Hello world" in s
 
     def test_detailed_summary_truncates_long_output(self):
         wf = Workflow(name="test")
         long_output = "\n".join(f"line {i}" for i in range(50))
-        wf.results.append(
+        results = [
             NodeResult(node_id="a", task="T", output=long_output, exit_code=0, duration=1.0)
-        )
-        s = wf.detailed_summary()
+        ]
+        s = detailed_summarize(wf, results)
         assert "more lines" in s
 
     def test_detailed_summary_shows_error(self):
         wf = Workflow(name="test")
-        wf.results.append(
+        results = [
             NodeResult(node_id="a", task="T", output="", exit_code=1, duration=0.5, error="kaboom")
-        )
-        s = wf.detailed_summary()
+        ]
+        s = detailed_summarize(wf, results)
         assert "kaboom" in s
 
     def test_summary_with_iteration(self):
         wf = Workflow(name="test")
-        wf.results.append(
+        results = [
             NodeResult(node_id="fix", task="Fix", output="ok", exit_code=0, duration=2.0, iteration=3)
-        )
-        s = wf.summary()
+        ]
+        s = summarize(wf, results)
         assert "iter 3" in s
 
 
@@ -842,7 +842,7 @@ class TestRunnerLinearChain:
         assert len(results) == 1
         assert results[0].node_id == "a"
         assert results[0].output == "hello"
-        assert wf.status == "done"
+
 
     @pytest.mark.asyncio
     async def test_linear_chain_abc(self):
@@ -860,7 +860,7 @@ class TestRunnerLinearChain:
         assert results[0].output == "out-a"
         assert results[1].output == "out-b"
         assert results[2].output == "out-c"
-        assert wf.status == "done"
+
 
     @pytest.mark.asyncio
     async def test_template_filling_in_chain(self):
@@ -933,7 +933,7 @@ class TestRunnerParallel:
         assert len(results) == 4
         ids = {r.node_id for r in results}
         assert ids == {"root", "a", "b", "merge"}
-        assert wf.status == "done"
+
 
     @pytest.mark.asyncio
     async def test_parallel_nodes_use_dependency_output(self):
@@ -979,7 +979,7 @@ class TestRunnerParallel:
             results = await runner.run()
 
         assert len(results) == 3
-        assert wf.status == "done"
+
 
     @pytest.mark.asyncio
     async def test_merge_waits_for_both(self):
@@ -1140,7 +1140,7 @@ class TestRunnerRouter:
         do_count = node_ids.count("do")
         assert do_count == 2  # initial + 1 back-edge re-run
         assert "done" in node_ids
-        assert wf.status == "done"
+
 
     @pytest.mark.asyncio
     async def test_router_no_routes_matched(self):
@@ -1204,7 +1204,7 @@ class TestRunnerBackEdge:
         do_results = [r for r in results if r.node_id == "do"]
         assert len(do_results) == 3  # initial + 2 retries
         assert "done" in {r.node_id for r in results}
-        assert wf.status == "done"
+
 
     @pytest.mark.asyncio
     async def test_circuit_breaker(self):
@@ -1229,8 +1229,8 @@ class TestRunnerBackEdge:
             mock_exec.return_value = _make_subprocess_mock(b"RETRY")
             results = await runner.run()
 
-        assert wf.status == "loop_limit"
-
+        # Circuit breaker cut execution short — results limited by max_iterations
+        assert len(results) < 10  # would be infinite without breaker
     @pytest.mark.asyncio
     async def test_back_edge_resets_downstream(self):
         """When a back-edge fires, downstream nodes are reset and re-run."""
@@ -1264,7 +1264,7 @@ class TestRunnerBackEdge:
         process_results = [r for r in results if r.node_id == "process"]
         assert len(do_results) == 2
         assert len(process_results) == 2
-        assert wf.status == "done"
+
 
     @pytest.mark.asyncio
     async def test_multi_router_shared_downstream(self):
@@ -1302,7 +1302,7 @@ class TestRunnerBackEdge:
             results = await runner.run()
 
         assert any(r.node_id == "done" for r in results), "done node should have executed"
-        assert wf.status == "done"
+
 
     @pytest.mark.asyncio
     async def test_loop_iter_counter_uses_retry_count(self):
@@ -1456,7 +1456,7 @@ class TestRunnerAutoInference:
         out_count = sum(1 for r in results if r.node_id == "o")
         assert proc_count == 1, f"process ran {proc_count}x (expect 1)"
         assert out_count == 1, f"output ran {out_count}x (expect 1)"
-        assert wf.status == "done"
+
 
     @pytest.mark.asyncio
     async def test_explicit_depends_router_gate_only(self):
@@ -1481,7 +1481,7 @@ class TestRunnerAutoInference:
 
         b_results = [r for r in results if r.node_id == "b"]
         assert len(b_results) == 1
-        assert wf.status == "done"
+
 
 
 # ===========================================================================
@@ -1502,7 +1502,7 @@ class TestRunnerErrorHandling:
 
         assert results[0].exit_code == 1
         assert "timed out" in results[0].error
-        assert wf.status == "done"
+
 
     @pytest.mark.asyncio
     async def test_subprocess_exception(self):
@@ -1728,7 +1728,7 @@ class TestRunnerCallbacks:
             results = await runner.run()
 
         assert len(results) == 1
-        assert wf.status == "done"
+
 
 
 # ===========================================================================

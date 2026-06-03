@@ -13,7 +13,7 @@ from .events import (
     WorkflowEvent,
 )
 from .graph import compute_waves
-from .models import Node, NodeResult, Route, Workflow, fill_template
+from .models import Node, NodeResult, Route, Workflow, fill_template, summarize, detailed_summarize
 from .registry import WorkflowRegistry
 
 __all__ = [
@@ -24,6 +24,8 @@ __all__ = [
     "WorkflowRegistry",
     "compute_waves",
     "fill_template",
+    "summarize",
+    "detailed_summarize",
     "WorkflowEvent",
     "WaveReadyEvent",
     "RouterConditionEvent",

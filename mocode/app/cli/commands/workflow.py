@@ -105,9 +105,6 @@ class WorkflowCommand:
             ctx.display.warn(f"Workflow '{name}' not found.")
             return CommandResult.CONTINUE
 
-        # Use a fresh copy to avoid mutating the registry object
-        wf = wf.fresh_copy()
-
         ctx.display.workflow_start(wf)
 
         runner = DAGRunner(
@@ -121,7 +118,7 @@ class WorkflowCommand:
             ctx.display.error(f"Workflow failed: {e}")
             return CommandResult.CONTINUE
 
-        ctx.display.workflow_summary(wf)
+        ctx.display.workflow_summary(wf, results)
         return CommandResult.CONTINUE
 
     async def _create(self, ctx: CommandContext, description: str) -> CommandResult:

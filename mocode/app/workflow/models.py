@@ -1,4 +1,4 @@
-"""Workflow data models and template engine."""
+"""Workflow data models — pure definitions, no runtime state."""
 
 from __future__ import annotations
 
@@ -107,6 +107,10 @@ def infer_depends_from_task(task: str) -> list[str]:
 
 _RE_PLACEHOLDER = re.compile(r"\{(\w+(?:\.\w+)*)\}")
 
+_BUCKET_ALIASES = {
+    "node": "nodes",
+}
+
 
 def fill_template(template: str, context: dict) -> str:
     """Replace {a.b.c} placeholders by dot-path lookup in context dict.
@@ -115,10 +119,6 @@ def fill_template(template: str, context: dict) -> str:
     {nodes.id.exit_code}, {nodes.id.error}, {nodes.id.duration}.
     Also accepts {node.id.*} as alias for {nodes.id.*}.
     """
-
-    _BUCKET_ALIASES = {
-        "node": "nodes",
-    }
 
     def _replace(m: re.Match) -> str:
         path = m.group(1)
@@ -151,15 +151,13 @@ def _dot_lookup(obj: dict, path: str, default: str) -> str:
 
 @dataclass
 class Workflow:
+    """A workflow DAG definition — naming + topology, no runtime state."""
+
     name: str
     description: str = ""
     nodes: list[Node] = field(default_factory=list)
     path: Path | None = None
     max_iterations: int = 100
-
-    # Runtime state
-    status: str = "idle"  # idle | running | done | error | loop_limit
-    results: list[NodeResult] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # Pre-compute and cache graph lookups (nodes list is immutable after construction)
@@ -170,7 +168,6 @@ class Workflow:
         dep_map: dict[str, list[str]] = {n.id: [] for n in self.nodes}
         for n in self.nodes:
             for dep in n.depends:
-                # Skip unknown deps — validation will catch them
                 if dep in dep_map:
                     dep_map[dep].append(n.id)
         return dep_map
@@ -180,12 +177,11 @@ class Workflow:
         """Parse a workflow YAML file."""
         import yaml
 
-        from .graph import _validate_workflow
+        from .graph import validate_workflow
 
         text = path.read_text(encoding="utf-8")
         data = yaml.safe_load(text) or {}
 
-        # Reject old format
         if "phases" in data:
             raise ValueError(
                 "Old 'phases' format detected. "
@@ -204,8 +200,7 @@ class Workflow:
             max_iterations=data.get("max_iterations", 100),
         )
 
-        # Validate graph
-        _validate_workflow(nodes, wf._node_map)
+        validate_workflow(nodes, wf._node_map)
         return wf
 
     # ── Graph query methods ──────────────────────────────────
@@ -227,41 +222,39 @@ class Workflow:
     def total_nodes(self) -> int:
         return len(self.nodes)
 
-    def fresh_copy(self) -> Workflow:
-        """Return a copy with reset runtime state, safe for execution."""
-        import copy
 
-        wf = copy.copy(self)
-        wf.status = "idle"
-        wf.results = []
-        return wf
+# ── Summary helpers (standalone, operate on results lists) ──
 
-    def summary(self) -> str:
-        lines = [f"Workflow: {self.name}", f"Status: {self.status}"]
-        for r in self.results:
-            status = "OK" if r.exit_code == 0 else "FAIL"
-            task_preview = r.task[:40] if r.task else "(empty)"
-            iter_suffix = f" (iter {r.iteration})" if r.iteration > 1 else ""
-            lines.append(
-                f"  [{status}] {r.node_id}{iter_suffix} · {task_preview}: {r.duration:.1f}s"
-            )
-        return "\n".join(lines)
 
-    def detailed_summary(self, max_lines: int = 10) -> str:
-        lines = [f"Workflow: {self.name}", f"Status: {self.status}"]
-        for r in self.results:
-            status = "OK" if r.exit_code == 0 else "FAIL"
-            task_preview = r.task[:60] if r.task else "(empty)"
-            iter_suffix = f" (iter {r.iteration})" if r.iteration > 1 else ""
-            lines.append(
-                f"  [{status}] {r.node_id}{iter_suffix} · {task_preview} ({r.duration:.1f}s)"
-            )
-            if r.output:
-                output_lines = r.output.splitlines()
-                for ol in output_lines[:max_lines]:
-                    lines.append(f"      {ol}")
-                if len(output_lines) > max_lines:
-                    lines.append(f"      ... ({len(output_lines) - max_lines} more lines)")
-            if r.error:
-                lines.append(f"      Error: {r.error[:100]}")
-        return "\n".join(lines)
+def summarize(workflow: Workflow, results: list[NodeResult]) -> str:
+    """Compact one-line-per-result summary."""
+    lines = [f"Workflow: {workflow.name}"]
+    for r in results:
+        status = "OK" if r.exit_code == 0 else "FAIL"
+        task_preview = r.task[:40] if r.task else "(empty)"
+        iter_suffix = f" (iter {r.iteration})" if r.iteration > 1 else ""
+        lines.append(
+            f"  [{status}] {r.node_id}{iter_suffix} · {task_preview}: {r.duration:.1f}s"
+        )
+    return "\n".join(lines)
+
+
+def detailed_summarize(workflow: Workflow, results: list[NodeResult], max_lines: int = 10) -> str:
+    """Multi-line summary with output and error excerpts."""
+    lines = [f"Workflow: {workflow.name}"]
+    for r in results:
+        status = "OK" if r.exit_code == 0 else "FAIL"
+        task_preview = r.task[:60] if r.task else "(empty)"
+        iter_suffix = f" (iter {r.iteration})" if r.iteration > 1 else ""
+        lines.append(
+            f"  [{status}] {r.node_id}{iter_suffix} · {task_preview} ({r.duration:.1f}s)"
+        )
+        if r.output:
+            output_lines = r.output.splitlines()
+            for ol in output_lines[:max_lines]:
+                lines.append(f"      {ol}")
+            if len(output_lines) > max_lines:
+                lines.append(f"      ... ({len(output_lines) - max_lines} more lines)")
+        if r.error:
+            lines.append(f"      Error: {r.error[:100]}")
+    return "\n".join(lines)

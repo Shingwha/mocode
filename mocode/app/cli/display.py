@@ -369,11 +369,9 @@ class Display:
         )
         self._print()
 
-    def workflow_summary(self, wf: Workflow) -> None:
+    def workflow_summary(self, wf: Workflow, results: list | None = None) -> None:
         """Print final output and summary."""
-        results = wf.results
-        if not results:
-            return
+        results = results or []
 
         passed = sum(1 for r in results if r.exit_code == 0 and r.status == "done")
         failed = sum(1 for r in results if r.exit_code != 0)

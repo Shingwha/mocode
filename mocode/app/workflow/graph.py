@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 # ── Graph validation ─────────────────────────────────────────
 
 
-def _validate_workflow(nodes: list[Node], node_map: dict[str, Node]) -> None:
+def validate_workflow(nodes: list[Node], node_map: dict[str, Node]) -> None:
     """Raise ValueError on invalid graph structure."""
 
     # IDs must be unique and non-empty
@@ -58,18 +58,13 @@ def _validate_workflow(nodes: list[Node], node_map: dict[str, Node]) -> None:
 
 
 def _check_cycles(nodes: list[Node], node_map: dict[str, Node]) -> None:
-    """Detect cycles. Only back-edges from router route.to are allowed,
-    and each cycle containing a back-edge must have at least one max > 0."""
+    """Detect cycles. Only back-edges from router route.to with max > 0 are allowed."""
 
-    # Build adjacency list for the full graph
     adj: dict[str, list[str]] = {n.id: [] for n in nodes}
-
-    # Edges from depends: dependency → dependent
     for n in nodes:
         for dep in n.depends:
             adj[dep].append(n.id)
 
-    # Edges from router routes: router → target
     back_edges: set[tuple[str, str]] = set()
     for n in nodes:
         if n.type == "router":
@@ -78,7 +73,6 @@ def _check_cycles(nodes: list[Node], node_map: dict[str, Node]) -> None:
                     adj[n.id].append(target)
                     back_edges.add((n.id, target))
 
-    # DFS to detect all cycles and verify back-edge constraints
     WHITE, GRAY, BLACK = 0, 1, 2
     color = {n.id: WHITE for n in nodes}
 
@@ -87,23 +81,19 @@ def _check_cycles(nodes: list[Node], node_map: dict[str, Node]) -> None:
         path.append(u)
         for v in adj[u]:
             if color[v] == GRAY:
-                # Found a cycle — collect nodes in cycle
                 cycle_start = path.index(v)
                 cycle_nodes = path[cycle_start:]
-
-                # Check: every cycle must involve at least one back-edge
-                # from a router route with max > 0
-                has_valid_back_edge = False
-                for i, cn in enumerate(cycle_nodes):
-                    nn = cycle_nodes[(i + 1) % len(cycle_nodes)]
-                    if (cn, nn) in back_edges:
-                        router = node_map.get(cn)
-                        if router and router.type == "router":
-                            for route in router.routes:
-                                if nn in route.to and route.max > 0:
-                                    has_valid_back_edge = True
-                                    break
-                if not has_valid_back_edge:
+                has_valid = any(
+                    (cn, nn) in back_edges
+                    and node_map.get(cn)
+                    and node_map[cn].type == "router"
+                    and any(nn in r.to and r.max > 0 for r in node_map[cn].routes)
+                    for i, (cn, nn) in enumerate(
+                        ((cycle_nodes[i], cycle_nodes[(i + 1) % len(cycle_nodes)])
+                         for i in range(len(cycle_nodes)))
+                    )
+                )
+                if not has_valid:
                     raise ValueError(
                         f"Cycle detected: {' → '.join(cycle_nodes)} → {v}. "
                         f"Only router back-edges with max > 0 are allowed."
@@ -129,28 +119,23 @@ def compute_waves(workflow: Workflow) -> list[list[Node]]:
     """
     node_map = workflow.node_map
 
-    # Identify back-edge targets: a route.to that appears in the depends
-    # chain upstream of the router.
     router_back_targets: set[tuple[str, str]] = set()
     for n in workflow.nodes:
         if n.type == "router":
-            ancestors = _collect_ancestors(n.id, node_map)
+            ancestors = collect_ancestors(n.id, node_map)
             for route in n.routes:
                 for target in route.to:
                     if target in ancestors:
                         router_back_targets.add((n.id, target))
 
-    # Build in-degree map excluding back-edges
     in_degree: dict[str, int] = {n.id: 0 for n in workflow.nodes}
     children: dict[str, list[str]] = {n.id: [] for n in workflow.nodes}
 
-    # Regular depends edges: dep → node
     for n in workflow.nodes:
         for dep in n.depends:
             children[dep].append(n.id)
             in_degree[n.id] += 1
 
-    # Router route edges: router → target (excluding back-edges)
     for n in workflow.nodes:
         if n.type == "router":
             for route in n.routes:
@@ -159,16 +144,12 @@ def compute_waves(workflow: Workflow) -> list[list[Node]]:
                         children[n.id].append(target)
                         in_degree[target] += 1
 
-    # Kahn's BFS with level tracking
     waves: list[list[Node]] = []
     queue: list[str] = [nid for nid, deg in in_degree.items() if deg == 0]
-    processed = 0
 
     while queue:
         wave = [node_map[nid] for nid in queue]
         waves.append(wave)
-        processed += len(queue)
-
         next_queue: list[str] = []
         for nid in queue:
             for child in children[nid]:
@@ -177,16 +158,10 @@ def compute_waves(workflow: Workflow) -> list[list[Node]]:
                     next_queue.append(child)
         queue = next_queue
 
-    # If not all nodes processed, there's a cycle (should have been caught
-    # by validation, but handle gracefully)
-    if processed < len(workflow.nodes):
-        remaining = [node_map[nid] for nid, deg in in_degree.items() if deg > 0]
-        waves.append(remaining)
-
     return waves
 
 
-def _collect_ancestors(node_id: str, node_map: dict[str, Node]) -> set[str]:
+def collect_ancestors(node_id: str, node_map: dict[str, Node]) -> set[str]:
     """Collect all ancestor node IDs via depends edges."""
     visited: set[str] = set()
     stack = list(node_map[node_id].depends)
