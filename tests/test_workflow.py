@@ -1,4 +1,4 @@
-"""Tests for workflow engine — models, fill_template, registry, runner, command."""
+"""Tests for workflow engine — models, fill_template, registry, waves, runner, command."""
 
 from __future__ import annotations
 
@@ -9,16 +9,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mocode.app.workflow import (
-    GotoRule,
-    Lane,
-    Phase,
-    Step,
-    StepResult,
+    Node,
+    NodeResult,
+    Route,
     Workflow,
     WorkflowRegistry,
+    compute_waves,
     fill_template,
 )
-from mocode.app.workflow.runner import WorkflowRunner
+from mocode.app.workflow.runner import DAGRunner
 
 
 # ---------------------------------------------------------------------------
@@ -45,238 +44,506 @@ def _make_ctx(app=None, display=None, args=""):
     )
 
 
-# ---------------------------------------------------------------------------
-# 7.1 Model tests
-# ---------------------------------------------------------------------------
+def _make_subprocess_mock(stdout: bytes = b"output", returncode: int = 0):
+    """Create a mock for asyncio.create_subprocess_exec return value."""
+    proc = MagicMock()
+    proc.returncode = returncode
+    proc.communicate = AsyncMock(return_value=(stdout, b""))
+    return proc
 
 
-class TestGotoRule:
+def _simple_linear_wf(n: int = 3) -> Workflow:
+    """Build a linear chain: n0 -> n1 -> ... -> n{n-1}."""
+    nodes = [
+        Node(id=f"n{i}", task=f"Task {i}", depends=[f"n{i-1}"] if i > 0 else [])
+        for i in range(n)
+    ]
+    return Workflow(name="linear", nodes=nodes)
+
+
+def _simple_parallel_wf() -> Workflow:
+    """Build a fan-out/fan-in diamond: root -> (a, b) -> merge."""
+    return Workflow(
+        name="diamond",
+        nodes=[
+            Node(id="root", task="Root"),
+            Node(id="a", task="A", depends=["root"]),
+            Node(id="b", task="B", depends=["root"]),
+            Node(id="merge", task="Merge", depends=["a", "b"]),
+        ],
+    )
+
+
+# ===========================================================================
+# 1. Model tests — Route, Node, NodeResult, Workflow
+# ===========================================================================
+
+
+class TestRouteModel:
     def test_from_dict_full(self):
-        rule = GotoRule.from_dict({"match": "error", "to": "phase.retry", "max": 3})
-        assert rule.match == "error"
-        assert rule.to == "phase.retry"
-        assert rule.max == 3
-
-    def test_from_dict_default(self):
-        rule = GotoRule.from_dict({"to": "next"})
-        assert rule.match is None
-        assert rule.to == "next"
-        assert rule.max == 0
-
-    def test_from_dict_empty(self):
-        rule = GotoRule.from_dict({})
-        assert rule.match is None
-        assert rule.to == "next"
-        assert rule.max == 0
-
-    def test_default_fallback(self):
-        rule = GotoRule()
-        assert rule.match is None
-        assert rule.to == "next"
-        assert rule.max == 0
-
-
-class TestStepWithGoto:
-    def test_from_dict_basic(self):
-        step = Step.from_dict({"id": "web", "task": "Search the web"})
-        assert step.id == "web"
-        assert step.task == "Search the web"
-        assert step.goto == []
-
-    def test_from_dict_with_goto(self):
-        step = Step.from_dict({
-            "id": "check",
-            "task": "Check status",
-            "goto": [
-                {"match": "error", "to": "phase.retry", "max": 3},
-                {"to": "next"},
-            ],
-        })
-        assert step.id == "check"
-        assert len(step.goto) == 2
-        assert step.goto[0].match == "error"
-        assert step.goto[0].to == "phase.retry"
-        assert step.goto[1].to == "next"
+        r = Route.from_dict({"match": "error", "to": ["fix"], "max": 3})
+        assert r.match == "error"
+        assert r.to == ["fix"]
+        assert r.max == 3
 
     def test_from_dict_defaults(self):
-        step = Step.from_dict({})
-        assert step.id == ""
-        assert step.task == ""
-        assert step.goto == []
+        r = Route.from_dict({})
+        assert r.match is None
+        assert r.to == []
+        assert r.max == 0
+
+    def test_from_dict_to_as_string(self):
+        r = Route.from_dict({"to": "single"})
+        assert r.to == ["single"]
+
+    def test_from_dict_to_as_list(self):
+        r = Route.from_dict({"to": ["a", "b"]})
+        assert r.to == ["a", "b"]
+
+    def test_from_dict_null_match(self):
+        r = Route.from_dict({"match": None, "to": ["done"]})
+        assert r.match is None
+
+    def test_default_constructor(self):
+        r = Route()
+        assert r.match is None
+        assert r.to == []
+        assert r.max == 0
 
 
-class TestLane:
-    def test_from_dict_basic(self):
-        lane = Lane.from_dict({
-            "id": "web",
-            "name": "Web Search",
-            "steps": [{"id": "s1", "task": "Search"}],
-        })
-        assert lane.id == "web"
-        assert lane.name == "Web Search"
-        assert len(lane.steps) == 1
-        assert lane.steps[0].id == "s1"
+class TestNodeModel:
+    def test_from_dict_task(self):
+        n = Node.from_dict({"id": "scan", "task": "Scan code"})
+        assert n.id == "scan"
+        assert n.type == "task"
+        assert n.task == "Scan code"
+        assert n.depends == []
+        assert n.routes == []
 
-    def test_from_dict_defaults(self):
-        lane = Lane.from_dict({})
-        assert lane.id == ""
-        assert lane.name == ""
-        assert lane.steps == []
-
-
-class TestPhaseModel:
-    def test_phase_with_steps(self):
-        phase = Phase.from_dict({
-            "id": "research",
-            "name": "Research",
-            "steps": [{"id": "web", "task": "Search"}],
-        })
-        assert phase.id == "research"
-        assert phase.name == "Research"
-        assert len(phase.steps) == 1
-        assert phase.lanes == []
-        assert phase.max_iterations == 0
-        assert phase.goto == []
-
-    def test_phase_with_lanes(self):
-        phase = Phase.from_dict({
-            "id": "review",
-            "name": "Review",
-            "lanes": [
-                {
-                    "id": "correctness",
-                    "steps": [{"id": "check", "task": "Check correctness"}],
-                },
+    def test_from_dict_router(self):
+        n = Node.from_dict({
+            "id": "decide",
+            "type": "router",
+            "depends": ["summary"],
+            "routes": [
+                {"match": "critical", "to": ["fix"]},
+                {"match": None, "to": ["done"]},
             ],
         })
-        assert len(phase.lanes) == 1
-        assert phase.steps == []  # mutually exclusive
-        assert phase.lanes[0].id == "correctness"
-
-    def test_phase_steps_lanes_mutually_exclusive(self):
-        """lanes wins when both are present."""
-        phase = Phase.from_dict({
-            "name": "Test",
-            "steps": [{"task": "step1"}],
-            "lanes": [{"id": "l1", "steps": [{"task": "lane task"}]}],
-        })
-        assert len(phase.lanes) == 1
-        assert len(phase.steps) == 0
-
-    def test_phase_with_goto(self):
-        phase = Phase.from_dict({
-            "name": "P1",
-            "steps": [{"task": "Do it"}],
-            "goto": [
-                {"match": "done", "to": "phase.next"},
-                {"to": "end"},
-            ],
-        })
-        assert len(phase.goto) == 2
-        assert phase.goto[0].match == "done"
-        assert phase.goto[1].to == "end"
-
-    def test_phase_max_iterations(self):
-        phase = Phase.from_dict({
-            "name": "Loop",
-            "steps": [{"task": "Retry"}],
-            "max_iterations": 5,
-        })
-        assert phase.max_iterations == 5
+        assert n.id == "decide"
+        assert n.type == "router"
+        assert n.task == ""
+        assert n.depends == ["summary"]
+        assert len(n.routes) == 2
+        assert n.routes[0].match == "critical"
+        assert n.routes[1].match is None
 
     def test_from_dict_defaults(self):
-        phase = Phase.from_dict({"name": "Test"})
-        assert phase.id == ""
-        assert phase.steps == []
-        assert phase.lanes == []
-        assert phase.max_iterations == 0
-        assert phase.goto == []
+        n = Node.from_dict({})
+        assert n.id == ""
+        assert n.type == "task"
+        assert n.task == ""
+        assert n.depends == []
+        assert n.routes == []
+
+    def test_from_dict_with_depends(self):
+        n = Node.from_dict({"id": "x", "task": "X", "depends": ["a", "b"]})
+        assert n.depends == ["a", "b"]
+
+    def test_default_constructor(self):
+        n = Node()
+        assert n.id == ""
+        assert n.type == "task"
+
+
+class TestNodeResultModel:
+    def test_basic(self):
+        nr = NodeResult(
+            node_id="scan", task="Scan", output="found 3 issues",
+            exit_code=0, duration=5.2,
+        )
+        assert nr.node_id == "scan"
+        assert nr.output == "found 3 issues"
+        assert nr.exit_code == 0
+        assert nr.duration == 5.2
+        assert nr.error is None
+        assert nr.status == "done"
+        assert nr.iteration == 1
+
+    def test_with_error(self):
+        nr = NodeResult(
+            node_id="x", task="", output="", exit_code=1,
+            duration=0.5, error="timed out",
+        )
+        assert nr.error == "timed out"
+        assert nr.exit_code == 1
+
+    def test_skipped_status(self):
+        nr = NodeResult(
+            node_id="x", task="", output="", exit_code=0,
+            duration=0, status="skipped",
+        )
+        assert nr.status == "skipped"
+
+    def test_iteration(self):
+        nr = NodeResult(
+            node_id="fix", task="Fix", output="fixed",
+            exit_code=0, duration=3.0, iteration=3,
+        )
+        assert nr.iteration == 3
 
 
 class TestWorkflowModel:
-    def test_workflow_max_iterations(self, tmp_path: Path):
-        path = _write_yaml(
-            tmp_path / "test.yaml",
-            {
-                "name": "my-wf",
-                "description": "test",
-                "max_iterations": 50,
-                "phases": [],
-            },
+    def test_basic_construction(self):
+        wf = Workflow(name="test", description="desc")
+        assert wf.name == "test"
+        assert wf.description == "desc"
+        assert wf.nodes == []
+        assert wf.max_iterations == 100
+        assert wf.status == "idle"
+        assert wf.results == []
+
+    def test_node_map(self):
+        wf = Workflow(
+            name="test",
+            nodes=[Node(id="a", task="A"), Node(id="b", task="B")],
         )
+        nm = wf.node_map
+        assert set(nm.keys()) == {"a", "b"}
+        assert nm["a"].task == "A"
+
+    def test_root_nodes(self):
+        wf = Workflow(
+            name="test",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(id="b", task="B", depends=["a"]),
+            ],
+        )
+        roots = wf.root_nodes
+        assert len(roots) == 1
+        assert roots[0].id == "a"
+
+    def test_dependents(self):
+        wf = Workflow(
+            name="test",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(id="b", task="B", depends=["a"]),
+                Node(id="c", task="C", depends=["a"]),
+            ],
+        )
+        dep = wf.dependents
+        assert set(dep["a"]) == {"b", "c"}
+        assert dep["b"] == []
+        assert dep["c"] == []
+
+    def test_total_nodes(self):
+        wf = Workflow(name="test", nodes=[Node(id="a"), Node(id="b")])
+        assert wf.total_nodes() == 2
+
+    def test_completed_nodes(self):
+        wf = Workflow(name="test", nodes=[Node(id="a")])
+        wf.results.append(NodeResult(node_id="a", task="", output="", exit_code=0, duration=0))
+        assert wf.completed_nodes() == 1
+
+    def test_summary(self):
+        wf = Workflow(name="test")
+        wf.results.append(
+            NodeResult(node_id="a", task="Do thing", output="ok", exit_code=0, duration=1.5)
+        )
+        s = wf.summary()
+        assert "test" in s
+        assert "[OK]" in s
+        assert "Do thing" in s
+
+    def test_summary_failed(self):
+        wf = Workflow(name="test")
+        wf.results.append(
+            NodeResult(node_id="a", task="Fail", output="", exit_code=1, duration=0.5, error="boom")
+        )
+        s = wf.summary()
+        assert "[FAIL]" in s
+
+    def test_detailed_summary_includes_output(self):
+        wf = Workflow(name="test")
+        wf.results.append(
+            NodeResult(node_id="a", task="T", output="Hello world", exit_code=0, duration=1.0)
+        )
+        s = wf.detailed_summary()
+        assert "Hello world" in s
+
+    def test_detailed_summary_truncates_long_output(self):
+        wf = Workflow(name="test")
+        long_output = "\n".join(f"line {i}" for i in range(50))
+        wf.results.append(
+            NodeResult(node_id="a", task="T", output=long_output, exit_code=0, duration=1.0)
+        )
+        s = wf.detailed_summary()
+        assert "more lines" in s
+
+    def test_detailed_summary_shows_error(self):
+        wf = Workflow(name="test")
+        wf.results.append(
+            NodeResult(node_id="a", task="T", output="", exit_code=1, duration=0.5, error="kaboom")
+        )
+        s = wf.detailed_summary()
+        assert "kaboom" in s
+
+    def test_summary_with_iteration(self):
+        wf = Workflow(name="test")
+        wf.results.append(
+            NodeResult(node_id="fix", task="Fix", output="ok", exit_code=0, duration=2.0, iteration=3)
+        )
+        s = wf.summary()
+        assert "iter 3" in s
+
+
+# ===========================================================================
+# 2. Validation tests
+# ===========================================================================
+
+
+class TestWorkflowValidation:
+    def test_duplicate_id_via_yaml(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "dup.yaml", {
+            "name": "dup",
+            "nodes": [
+                {"id": "a", "task": "A"},
+                {"id": "a", "task": "A2"},
+            ],
+        })
+        with pytest.raises(ValueError, match="Duplicate"):
+            Workflow.from_yaml(path)
+
+    def test_empty_id_rejected(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "empty_id.yaml", {
+            "name": "test",
+            "nodes": [{"id": "", "task": "A"}],
+        })
+        with pytest.raises(ValueError, match="non-empty"):
+            Workflow.from_yaml(path)
+
+    def test_unknown_dep_rejected(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "bad_dep.yaml", {
+            "name": "test",
+            "nodes": [
+                {"id": "a", "task": "A", "depends": ["nonexistent"]},
+            ],
+        })
+        with pytest.raises(ValueError, match="unknown node"):
+            Workflow.from_yaml(path)
+
+    def test_unknown_route_target_rejected(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "bad_route.yaml", {
+            "name": "test",
+            "nodes": [
+                {"id": "a", "task": "A"},
+                {
+                    "id": "r",
+                    "type": "router",
+                    "depends": ["a"],
+                    "routes": [{"match": None, "to": ["ghost"]}],
+                },
+            ],
+        })
+        with pytest.raises(ValueError, match="unknown node"):
+            Workflow.from_yaml(path)
+
+    def test_router_must_have_routes(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "no_routes.yaml", {
+            "name": "test",
+            "nodes": [
+                {"id": "a", "task": "A"},
+                {"id": "r", "type": "router", "depends": ["a"]},
+            ],
+        })
+        with pytest.raises(ValueError, match="must have 'routes'"):
+            Workflow.from_yaml(path)
+
+    def test_router_must_not_have_task(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "router_task.yaml", {
+            "name": "test",
+            "nodes": [
+                {"id": "a", "task": "A"},
+                {
+                    "id": "r", "type": "router", "depends": ["a"],
+                    "task": "Should not be here",
+                    "routes": [{"match": None, "to": ["a"]}],
+                },
+            ],
+        })
+        with pytest.raises(ValueError, match="must not have 'task'"):
+            Workflow.from_yaml(path)
+
+    def test_task_node_must_have_task(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "no_task.yaml", {
+            "name": "test",
+            "nodes": [{"id": "a"}],
+        })
+        with pytest.raises(ValueError, match="must have 'task'"):
+            Workflow.from_yaml(path)
+
+    def test_self_dependency_rejected(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "self_dep.yaml", {
+            "name": "test",
+            "nodes": [
+                {"id": "a", "task": "A", "depends": ["a"]},
+            ],
+        })
+        with pytest.raises(ValueError, match="depend on itself"):
+            Workflow.from_yaml(path)
+
+    def test_old_phases_format_rejected(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "old.yaml", {
+            "name": "old",
+            "phases": [{"name": "P1", "steps": [{"task": "T"}]}],
+        })
+        with pytest.raises(ValueError, match="Old 'phases' format"):
+            Workflow.from_yaml(path)
+
+    def test_cycle_without_router_back_edge_rejected(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "cycle.yaml", {
+            "name": "test",
+            "nodes": [
+                {"id": "a", "task": "A", "depends": ["b"]},
+                {"id": "b", "task": "B", "depends": ["a"]},
+            ],
+        })
+        with pytest.raises(ValueError, match="Cycle"):
+            Workflow.from_yaml(path)
+
+    def test_valid_router_back_edge_accepted(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "loop.yaml", {
+            "name": "test",
+            "nodes": [
+                {"id": "do", "task": "Do work"},
+                {
+                    "id": "check",
+                    "type": "router",
+                    "depends": ["do"],
+                    "routes": [
+                        {"match": "FAIL", "to": ["do"], "max": 3},
+                        {"match": None, "to": ["done"]},
+                    ],
+                },
+                {"id": "done", "task": "Done", "depends": ["check"]},
+            ],
+        })
+        wf = Workflow.from_yaml(path)
+        assert wf.name == "test"
+        assert len(wf.nodes) == 3
+
+    def test_router_back_edge_without_max_rejected(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "inf_loop.yaml", {
+            "name": "test",
+            "nodes": [
+                {"id": "do", "task": "Do work"},
+                {
+                    "id": "check",
+                    "type": "router",
+                    "depends": ["do"],
+                    "routes": [
+                        {"match": "FAIL", "to": ["do"]},
+                        {"match": None, "to": ["done"]},
+                    ],
+                },
+                {"id": "done", "task": "Done", "depends": ["check"]},
+            ],
+        })
+        with pytest.raises(ValueError, match="Cycle"):
+            Workflow.from_yaml(path)
+
+
+# ===========================================================================
+# 3. from_yaml parsing tests
+# ===========================================================================
+
+
+class TestWorkflowFromYaml:
+    def test_basic_parse(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "basic.yaml", {
+            "name": "basic",
+            "description": "A test",
+            "nodes": [
+                {"id": "a", "task": "Hello"},
+                {"id": "b", "task": "World", "depends": ["a"]},
+            ],
+        })
+        wf = Workflow.from_yaml(path)
+        assert wf.name == "basic"
+        assert wf.description == "A test"
+        assert len(wf.nodes) == 2
+        assert wf.nodes[1].depends == ["a"]
+
+    def test_missing_name_uses_stem(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "my-workflow.yaml", {
+            "nodes": [{"id": "a", "task": "A"}],
+        })
+        wf = Workflow.from_yaml(path)
+        assert wf.name == "my-workflow"
+
+    def test_max_iterations(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "mi.yaml", {
+            "name": "mi",
+            "max_iterations": 50,
+            "nodes": [{"id": "a", "task": "A"}],
+        })
         wf = Workflow.from_yaml(path)
         assert wf.max_iterations == 50
 
-    def test_workflow_default_max_iterations(self, tmp_path: Path):
-        path = _write_yaml(
-            tmp_path / "test.yaml",
-            {"name": "wf", "phases": []},
-        )
+    def test_default_max_iterations(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "def.yaml", {
+            "name": "def",
+            "nodes": [{"id": "a", "task": "A"}],
+        })
         wf = Workflow.from_yaml(path)
         assert wf.max_iterations == 100
 
-    def test_total_steps_with_lanes(self):
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(
-                    name="P1",
-                    lanes=[
-                        Lane(id="a", steps=[Step(task="A1"), Step(task="A2")]),
-                        Lane(id="b", steps=[Step(task="B1")]),
+    def test_path_stored(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "p.yaml", {
+            "name": "p",
+            "nodes": [{"id": "a", "task": "A"}],
+        })
+        wf = Workflow.from_yaml(path)
+        assert wf.path == path
+
+    def test_router_node_parsed(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "router.yaml", {
+            "name": "r",
+            "nodes": [
+                {"id": "a", "task": "A"},
+                {
+                    "id": "r1", "type": "router", "depends": ["a"],
+                    "routes": [
+                        {"match": "ok", "to": ["done"]},
+                        {"match": None, "to": ["done"]},
                     ],
-                ),
+                },
+                {"id": "done", "task": "Done", "depends": ["r1"]},
             ],
-        )
-        assert wf.total_steps() == 3
-
-    def test_total_steps_mixed(self):
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[Step(task="S1"), Step(task="S2")]),
-                Phase(
-                    name="P2",
-                    lanes=[Lane(id="l1", steps=[Step(task="L1")])],
-                ),
-            ],
-        )
-        assert wf.total_steps() == 3
+        })
+        wf = Workflow.from_yaml(path)
+        router = wf.node_map["r1"]
+        assert router.type == "router"
+        assert len(router.routes) == 2
 
 
-# ---------------------------------------------------------------------------
-# 7.2 Template variable tests
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 4. Template variable tests
+# ===========================================================================
 
 
-class TestFillTemplateLanePhase:
-    def test_lane_output_placeholder(self):
-        ctx = {"lanes": {"correctness": {"output": "All good"}}}
-        assert fill_template("{lane.correctness.output}", ctx) == "All good"
-
-    def test_phase_output_placeholder(self):
-        ctx = {"phases": {"scan": {"output": "Scanned"}}}
-        assert fill_template("{phase.scan.output}", ctx) == "Scanned"
-
+class TestFillTemplate:
     def test_args_placeholder(self):
         ctx = {"args": {"topic": "AI"}}
         assert fill_template("Research {args.topic}", ctx) == "Research AI"
 
-    def test_steps_dot_path(self):
-        ctx = {"steps": {"web": {"output": "found it"}}}
-        assert fill_template("{steps.web.output}", ctx) == "found it"
-
-    def test_steps_exit_code(self):
-        ctx = {"steps": {"web": {"output": "ok", "exit_code": 0}}}
-        assert fill_template("{steps.web.exit_code}", ctx) == "0"
-
-    def test_env_var(self):
+    def test_env_placeholder(self):
         ctx = {"env": {"HOME": "/home/user"}}
         assert fill_template("{env.HOME}", ctx) == "/home/user"
 
-    def test_previous(self):
+    def test_previous_placeholder(self):
         ctx = {"previous": "last output"}
         assert fill_template("{previous}", ctx) == "last output"
 
@@ -284,303 +551,62 @@ class TestFillTemplateLanePhase:
         ctx = {"previous": None}
         assert fill_template("{previous}", ctx) == "{previous}"
 
+    def test_nodes_output(self):
+        ctx = {"nodes": {"scan": {"output": "found 5 files"}}}
+        assert fill_template("{nodes.scan.output}", ctx) == "found 5 files"
+
+    def test_nodes_exit_code(self):
+        ctx = {"nodes": {"scan": {"output": "ok", "exit_code": 0}}}
+        assert fill_template("{nodes.scan.exit_code}", ctx) == "0"
+
+    def test_nodes_error(self):
+        ctx = {"nodes": {"scan": {"output": "", "error": "timeout"}}}
+        assert fill_template("{nodes.scan.error}", ctx) == "timeout"
+
+    def test_nodes_duration(self):
+        ctx = {"nodes": {"scan": {"output": "", "duration": 5.2}}}
+        assert fill_template("{nodes.scan.duration}", ctx) == "5.2"
+
+    def test_node_alias(self):
+        ctx = {"nodes": {"a": {"output": "hello"}}}
+        assert fill_template("{node.a.output}", ctx) == "hello"
+
     def test_unknown_placeholder_kept(self):
         assert fill_template("{unknown.thing}", {}) == "{unknown.thing}"
 
-    def test_mixed(self):
+    def test_mixed_placeholders(self):
         ctx = {
             "args": {"q": "test"},
-            "steps": {"s1": {"output": "result"}},
+            "nodes": {"s1": {"output": "result"}},
             "previous": "prev",
         }
-        result = fill_template("{args.q} + {steps.s1.output} + {previous}", ctx)
+        result = fill_template("{args.q} + {nodes.s1.output} + {previous}", ctx)
         assert result == "test + result + prev"
 
-
-# ---------------------------------------------------------------------------
-# Workflow from_yaml
-# ---------------------------------------------------------------------------
-
-
-class TestWorkflowFromYaml:
-    def test_valid_yaml(self, tmp_path: Path):
-        path = _write_yaml(
-            tmp_path / "test.yaml",
-            {
-                "name": "my-wf",
-                "description": "A test workflow",
-                "phases": [
-                    {
-                        "name": "Step 1",
-                        "steps": [{"task": "Hello"}],
-                    }
-                ],
-            },
-        )
-        wf = Workflow.from_yaml(path)
-        assert wf.name == "my-wf"
-        assert wf.description == "A test workflow"
-        assert len(wf.phases) == 1
-        assert wf.phases[0].steps[0].task == "Hello"
-
-    def test_missing_name_uses_stem(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "my-workflow.yaml", {"phases": []})
-        wf = Workflow.from_yaml(path)
-        assert wf.name == "my-workflow"
-
-    def test_empty_phases(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "empty.yaml", {"name": "empty"})
-        wf = Workflow.from_yaml(path)
-        assert wf.phases == []
+    def test_nested_dot_path_missing(self):
+        ctx = {"nodes": {}}
+        assert fill_template("{nodes.missing.output}", ctx) == "{nodes.missing.output}"
 
 
-class TestWorkflowState:
-    def _make_wf(self) -> Workflow:
-        return Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="Phase A", steps=[Step(task="A1"), Step(task="A2")]),
-                Phase(name="Phase B", steps=[Step(task="B1")]),
-            ],
-        )
-
-    def test_total_phases(self):
-        assert self._make_wf().total_phases == 2
-
-    def test_total_steps(self):
-        assert self._make_wf().total_steps() == 3
-
-    def test_progress_bar(self):
-        wf = self._make_wf()
-        wf.phase_index = 0
-        assert wf.progress_bar() == "Phase 1/2"
-
-    def test_progress_bar_no_phase(self):
-        wf = self._make_wf()
-        wf.phase_index = 5
-        assert wf.progress_bar() == "Phase 6/2"
-
-    def test_current_phase(self):
-        wf = self._make_wf()
-        wf.phase_index = 1
-        assert wf.current_phase is not None
-        assert wf.current_phase.name == "Phase B"
-
-    def test_current_phase_out_of_range(self):
-        wf = self._make_wf()
-        wf.phase_index = 99
-        assert wf.current_phase is None
-
-    def test_current_step(self):
-        wf = self._make_wf()
-        wf.phase_index = 0
-        wf.step_index = 0
-        assert wf.current_step is not None
-        assert wf.current_step.task == "A1"
-
-    def test_summary(self):
-        wf = self._make_wf()
-        wf.results.append(
-            StepResult(
-                phase_index=0, step_index=0, task="A1",
-                output="ok", exit_code=0, duration=1.5,
-            )
-        )
-        s = wf.summary()
-        assert "test" in s
-        assert "[OK]" in s
-
-    def test_detailed_summary_includes_output(self):
-        wf = self._make_wf()
-        wf.results.append(
-            StepResult(
-                phase_index=0, step_index=0, task="A1",
-                output="Hello world", exit_code=0, duration=1.5,
-            )
-        )
-        s = wf.detailed_summary()
-        assert "Hello world" in s
-        assert "[OK]" in s
-
-    def test_detailed_summary_truncates_long_output(self):
-        wf = self._make_wf()
-        long_output = "\n".join(f"line {i}" for i in range(50))
-        wf.results.append(
-            StepResult(
-                phase_index=0, step_index=0, task="A1",
-                output=long_output, exit_code=0, duration=1.5,
-            )
-        )
-        s = wf.detailed_summary()
-        assert "more lines" in s
-
-    def test_detailed_summary_shows_error(self):
-        wf = self._make_wf()
-        wf.results.append(
-            StepResult(
-                phase_index=0, step_index=0, task="A1",
-                output="", exit_code=1, duration=0.5, error="boom",
-            )
-        )
-        s = wf.detailed_summary()
-        assert "[FAIL]" in s
-        assert "boom" in s
-
-
-class TestStepResult:
-    def test_with_lane(self):
-        """StepResult supports optional lane field."""
-        sr = StepResult(
-            phase_index=0, step_index=0, task="test",
-            output="ok", exit_code=0, duration=1.0,
-            lane="correctness",
-        )
-        assert sr.lane == "correctness"
-
-    def test_lane_defaults_to_none(self):
-        """StepResult.lane defaults to None for backward compat."""
-        sr = StepResult(
-            phase_index=0, step_index=0, task="test",
-            output="ok", exit_code=0, duration=1.0,
-        )
-        assert sr.lane is None
-
-    def test_without_lane_works(self):
-        """Old-style StepResult without lane still works."""
-        sr = StepResult(
-            phase_index=0, step_index=0, task="test",
-            output="ok", exit_code=0, duration=1.0,
-        )
-        assert sr.lane is None
-        assert sr.exit_code == 0
-        assert sr.output == "ok"
-
-
-class TestRunnerStepDone:
-    """Verify _step_done is called and passes correct info."""
-
-    @pytest.mark.asyncio
-    async def test_step_done_called_sequential(self):
-        """_step_done is called after each step in sequential mode."""
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[
-                    Step(id="s1", task="A"),
-                    Step(id="s2", task="B"),
-                ]),
-            ],
-        )
-        calls = []
-        runner = WorkflowRunner(wf, on_step_done=lambda *a: calls.append(a))
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"a"),
-                _make_subprocess_mock(b"b"),
-            ]
-            await runner.run()
-
-        assert len(calls) == 2
-        # Each call: (sr, phase_name, lane_name)
-        sr0, pname0, lane0 = calls[0]
-        assert isinstance(sr0, StepResult)
-        assert pname0 == "P1"
-        assert lane0 is None  # sequential
-        assert sr0.output == "a"
-
-        sr1, pname1, lane1 = calls[1]
-        assert sr1.output == "b"
-
-    @pytest.mark.asyncio
-    async def test_step_done_called_lanes(self):
-        """_step_done is called with lane info in parallel mode."""
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(
-                    name="P1",
-                    lanes=[
-                        Lane(id="a", name="Lane A", steps=[Step(id="a1", task="A1")]),
-                        Lane(id="b", name="Lane B", steps=[Step(id="b1", task="B1")]),
-                    ],
-                ),
-            ],
-        )
-        calls = []
-        runner = WorkflowRunner(wf, on_step_done=lambda *a: calls.append(a))
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"a-output"),
-                _make_subprocess_mock(b"b-output"),
-            ]
-            await runner.run()
-
-        assert len(calls) == 2
-        lane_calls = {(c[2], c[0].output) for c in calls}
-        assert ("Lane A", "a-output") in lane_calls
-        assert ("Lane B", "b-output") in lane_calls
-
-        # Verify sr.lane is set
-        for sr, _, lane_name in calls:
-            assert sr.lane is not None  # lane id, not name
-            assert sr.lane in ("a", "b")
-
-    @pytest.mark.asyncio
-    async def test_step_done_with_lane_display(self):
-        """Display.workflow_step_done receives lane info correctly."""
-        from mocode.app.cli.display import Display
-
-        display = Display()
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(
-                    name="P1",
-                    lanes=[
-                        Lane(id="x", name="Checker", steps=[Step(task="Check")]),
-                    ],
-                ),
-            ],
-        )
-        calls = []
-        original = display.workflow_step_done
-        display.workflow_step_done = lambda *a: calls.append(a)
-
-        runner = WorkflowRunner(wf, on_step_done=display.workflow_step_done)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_subprocess_mock(b"ok")
-            await runner.run()
-
-        assert len(calls) == 1
-        sr, phase_name, lane_name = calls[0]
-        assert phase_name == "P1"
-        assert lane_name == "Checker"
-        assert sr.lane == "x"
-
-
-# ---------------------------------------------------------------------------
-# WorkflowRegistry
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 5. Registry tests
+# ===========================================================================
 
 
 class TestWorkflowRegistry:
     def test_discovers_yaml(self, tmp_path: Path):
-        _write_yaml(
-            tmp_path / "wf1.yaml",
-            {"name": "wf1", "phases": [{"name": "p1", "steps": [{"task": "t"}]}]},
-        )
+        _write_yaml(tmp_path / "wf1.yaml", {
+            "name": "wf1",
+            "nodes": [{"id": "a", "task": "A"}],
+        })
         reg = WorkflowRegistry([tmp_path])
         assert reg.names() == ["wf1"]
 
     def test_discovers_yml_too(self, tmp_path: Path):
-        _write_yaml(
-            tmp_path / "wf2.yml",
-            {"name": "wf2", "phases": []},
-        )
+        _write_yaml(tmp_path / "wf2.yml", {
+            "name": "wf2",
+            "nodes": [{"id": "a", "task": "A"}],
+        })
         reg = WorkflowRegistry([tmp_path])
         assert "wf2" in reg.names()
 
@@ -590,14 +616,17 @@ class TestWorkflowRegistry:
         assert reg.names() == []
 
     def test_get(self, tmp_path: Path):
-        _write_yaml(tmp_path / "wf.yaml", {"name": "my-wf", "phases": []})
+        _write_yaml(tmp_path / "wf.yaml", {
+            "name": "my-wf",
+            "nodes": [{"id": "a", "task": "A"}],
+        })
         reg = WorkflowRegistry([tmp_path])
         assert reg.get("my-wf") is not None
         assert reg.get("nope") is None
 
     def test_list(self, tmp_path: Path):
-        _write_yaml(tmp_path / "a.yaml", {"name": "a", "phases": []})
-        _write_yaml(tmp_path / "b.yaml", {"name": "b", "phases": []})
+        _write_yaml(tmp_path / "a.yaml", {"name": "a", "nodes": [{"id": "x", "task": "X"}]})
+        _write_yaml(tmp_path / "b.yaml", {"name": "b", "nodes": [{"id": "y", "task": "Y"}]})
         reg = WorkflowRegistry([tmp_path])
         assert len(reg.list()) == 2
 
@@ -611,57 +640,175 @@ class TestWorkflowRegistry:
 
     def test_invalid_yaml_skipped(self, tmp_path: Path):
         (tmp_path / "bad.yaml").write_text(":::invalid:::\n  [", encoding="utf-8")
-        _write_yaml(tmp_path / "good.yaml", {"name": "good", "phases": []})
+        _write_yaml(tmp_path / "good.yaml", {
+            "name": "good",
+            "nodes": [{"id": "a", "task": "A"}],
+        })
         reg = WorkflowRegistry([tmp_path])
         assert reg.names() == ["good"]
 
     def test_multiple_dirs(self, tmp_path: Path):
         d1, d2 = tmp_path / "a", tmp_path / "b"
-        _write_yaml(d1 / "w1.yaml", {"name": "w1", "phases": []})
-        _write_yaml(d2 / "w2.yaml", {"name": "w2", "phases": []})
+        _write_yaml(d1 / "w1.yaml", {"name": "w1", "nodes": [{"id": "x", "task": "X"}]})
+        _write_yaml(d2 / "w2.yaml", {"name": "w2", "nodes": [{"id": "y", "task": "Y"}]})
         reg = WorkflowRegistry([d1, d2])
         assert set(reg.names()) == {"w1", "w2"}
 
     def test_later_dir_overwrites_same_name(self, tmp_path: Path):
         d1, d2 = tmp_path / "a", tmp_path / "b"
-        _write_yaml(d1 / "shared.yaml", {"name": "shared", "description": "v1", "phases": []})
-        _write_yaml(d2 / "shared.yaml", {"name": "shared", "description": "v2", "phases": []})
+        _write_yaml(d1 / "shared.yaml", {
+            "name": "shared", "description": "v1",
+            "nodes": [{"id": "x", "task": "X"}],
+        })
+        _write_yaml(d2 / "shared.yaml", {
+            "name": "shared", "description": "v2",
+            "nodes": [{"id": "y", "task": "Y"}],
+        })
         reg = WorkflowRegistry([d1, d2])
         assert reg.get("shared").description == "v2"
 
-
-# ---------------------------------------------------------------------------
-# Runner helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_subprocess_mock(stdout: bytes = b"output", returncode: int = 0):
-    """Create a mock for asyncio.create_subprocess_exec return value."""
-    proc = MagicMock()
-    proc.returncode = returncode
-    proc.communicate = AsyncMock(return_value=(stdout, b""))
-    return proc
-
-
-# ---------------------------------------------------------------------------
-# 7.3 Runner — Sequential steps
-# ---------------------------------------------------------------------------
+    def test_invalid_workflow_skipped(self, tmp_path: Path):
+        _write_yaml(tmp_path / "bad.yaml", {
+            "name": "bad",
+            "nodes": [
+                {"id": "a", "task": "A"},
+                {"id": "a", "task": "A2"},
+            ],
+        })
+        _write_yaml(tmp_path / "ok.yaml", {
+            "name": "ok",
+            "nodes": [{"id": "b", "task": "B"}],
+        })
+        reg = WorkflowRegistry([tmp_path])
+        assert reg.names() == ["ok"]
 
 
-class TestRunnerSequential:
-    @pytest.mark.asyncio
-    async def test_steps_sequential(self):
+# ===========================================================================
+# 6. Wave computation tests
+# ===========================================================================
+
+
+class TestComputeWaves:
+    def test_single_node(self):
+        wf = Workflow(name="t", nodes=[Node(id="a", task="A")])
+        waves = compute_waves(wf)
+        assert len(waves) == 1
+        assert [n.id for n in waves[0]] == ["a"]
+
+    def test_linear_chain(self):
+        wf = _simple_linear_wf(3)
+        waves = compute_waves(wf)
+        assert len(waves) == 3
+        assert [n.id for n in waves[0]] == ["n0"]
+        assert [n.id for n in waves[1]] == ["n1"]
+        assert [n.id for n in waves[2]] == ["n2"]
+
+    def test_parallel_fan_out(self):
         wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[
-                    Step(id="s1", task="Step 1"),
-                    Step(id="s2", task="Result: {steps.s1.output}"),
-                ]),
+            name="t",
+            nodes=[
+                Node(id="root", task="R"),
+                Node(id="a", task="A", depends=["root"]),
+                Node(id="b", task="B", depends=["root"]),
+                Node(id="c", task="C", depends=["root"]),
             ],
         )
-        runner = WorkflowRunner(wf)
+        waves = compute_waves(wf)
+        assert len(waves) == 2
+        assert [n.id for n in waves[0]] == ["root"]
+        assert set(n.id for n in waves[1]) == {"a", "b", "c"}
+
+    def test_diamond(self):
+        wf = _simple_parallel_wf()
+        waves = compute_waves(wf)
+        assert len(waves) == 3
+        assert [n.id for n in waves[0]] == ["root"]
+        assert set(n.id for n in waves[1]) == {"a", "b"}
+        assert [n.id for n in waves[2]] == ["merge"]
+
+    def test_with_router_back_edge(self):
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="do", task="Do work"),
+                Node(
+                    id="check", type="router", depends=["do"],
+                    routes=[
+                        Route(match="FAIL", to=["do"], max=3),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="done", task="Done", depends=["check"]),
+            ],
+        )
+        waves = compute_waves(wf)
+        assert len(waves) == 3
+        assert [n.id for n in waves[0]] == ["do"]
+        assert [n.id for n in waves[1]] == ["check"]
+        assert [n.id for n in waves[2]] == ["done"]
+
+    def test_multi_root(self):
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(id="b", task="B"),
+                Node(id="c", task="C", depends=["a", "b"]),
+            ],
+        )
+        waves = compute_waves(wf)
+        assert len(waves) == 2
+        assert set(n.id for n in waves[0]) == {"a", "b"}
+        assert [n.id for n in waves[1]] == ["c"]
+
+
+# ===========================================================================
+# 7. Runner — Linear chain
+# ===========================================================================
+
+
+class TestRunnerLinearChain:
+    @pytest.mark.asyncio
+    async def test_single_node(self):
+        wf = Workflow(name="t", nodes=[Node(id="a", task="Say hello")])
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(b"hello")
+            results = await runner.run()
+
+        assert len(results) == 1
+        assert results[0].node_id == "a"
+        assert results[0].output == "hello"
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_linear_chain_abc(self):
+        wf = _simple_linear_wf(3)
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"out-a"),
+                _make_subprocess_mock(b"out-b"),
+                _make_subprocess_mock(b"out-c"),
+            ]
+            results = await runner.run()
+
+        assert len(results) == 3
+        assert results[0].output == "out-a"
+        assert results[1].output == "out-b"
+        assert results[2].output == "out-c"
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_template_filling_in_chain(self):
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="n0", task="First"),
+                Node(id="n1", task="Result: {nodes.n0.output}", depends=["n0"]),
+            ],
+        )
+        runner = DAGRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"hello"),
@@ -669,238 +816,102 @@ class TestRunnerSequential:
             ]
             results = await runner.run()
 
-        assert len(results) == 2
-        assert results[0].output == "hello"
         assert results[1].task == "Result: hello"
-        assert results[1].output == "world"
-        assert wf.status == "done"
 
     @pytest.mark.asyncio
-    async def test_steps_goto_next(self):
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[
-                    Step(id="s1", task="First", goto=[GotoRule(to="next")]),
-                    Step(id="s2", task="Second"),
-                ]),
-            ],
-        )
-        runner = WorkflowRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"first"),
-                _make_subprocess_mock(b"second"),
-            ]
-            results = await runner.run()
-
-        assert len(results) == 2
-        assert wf.status == "done"
-
-    @pytest.mark.asyncio
-    async def test_steps_goto_end(self):
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[
-                    Step(id="s1", task="First", goto=[GotoRule(to="end")]),
-                    Step(id="s2", task="Second"),
-                ]),
-            ],
-        )
-        runner = WorkflowRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_subprocess_mock(b"done")
-            results = await runner.run()
-
-        assert len(results) == 1  # second step never ran
-        assert wf.status == "done"
-
-    @pytest.mark.asyncio
-    async def test_steps_goto_step_id(self):
-        """Jump to a specific step within same phase."""
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[
-                    Step(id="start", task="Start", goto=[
-                        GotoRule(match="retry", to="retry_step"),
-                    ]),
-                    Step(id="middle", task="Middle"),
-                    Step(id="retry_step", task="Retry", goto=[GotoRule(to="next")]),
-                    Step(id="end", task="End"),
-                ]),
-            ],
-        )
-        runner = WorkflowRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            # start outputs "retry" → triggers jump to retry_step
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"retry"),
-                _make_subprocess_mock(b"middle"),
-                _make_subprocess_mock(b"retry done"),
-                _make_subprocess_mock(b"final"),
-            ]
-            results = await runner.run()
-
-        # start → retry_step → end (middle is never visited)
-        assert len(results) == 3
-        assert wf.status == "done"
-
-    @pytest.mark.asyncio
-    async def test_steps_goto_phase_cross_phase(self):
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(
-                    id="phase_a",
-                    name="A",
-                    steps=[
-                        Step(id="s1", task="In A", goto=[
-                            GotoRule(to="phase.phase_c"),
-                        ]),
-                    ],
-                ),
-                Phase(id="phase_b", name="B", steps=[Step(task="In B")]),
-                Phase(id="phase_c", name="C", steps=[Step(task="In C")]),
-            ],
-        )
-        runner = WorkflowRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"jump"),
-                _make_subprocess_mock(b"done"),
-            ]
-            results = await runner.run()
-
-        assert len(results) == 2  # A.s1 → C.s1 (phase_b skipped)
-        assert wf.status == "done"
-
-    @pytest.mark.asyncio
-    async def test_steps_goto_end_workflow(self):
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[
-                    Step(id="s1", task="First", goto=[
-                        GotoRule(to="__end__"),
-                    ]),
-                ]),
-                Phase(name="P2", steps=[Step(task="Second")]),
-            ],
-        )
-        runner = WorkflowRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_subprocess_mock(b"end all")
-            results = await runner.run()
-
-        assert len(results) == 1
-        assert wf.status == "done"
-
-    @pytest.mark.asyncio
-    async def test_steps_template_filled(self):
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[
-                    Step(id="s1", task="Hello {args.name}"),
-                ]),
-            ],
-        )
-        runner = WorkflowRunner(wf)
+    async def test_args_passed_to_template(self):
+        wf = Workflow(name="t", nodes=[Node(id="a", task="Hello {args.name}")])
+        runner = DAGRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_subprocess_mock(b"hi")
             results = await runner.run(args={"name": "World"})
 
         assert results[0].task == "Hello World"
-        assert wf.status == "done"
 
-
-# ---------------------------------------------------------------------------
-# 7.4 Runner — Lanes (parallel)
-# ---------------------------------------------------------------------------
-
-
-class TestRunnerLanes:
     @pytest.mark.asyncio
-    async def test_lanes_execute_all(self):
+    async def test_previous_in_chain(self):
         wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(
-                    name="P1",
-                    lanes=[
-                        Lane(id="a", steps=[Step(id="a1", task="Task A")]),
-                        Lane(id="b", steps=[Step(id="b1", task="Task B")]),
-                    ],
-                    goto=[GotoRule(to="next")],
-                ),
+            name="t",
+            nodes=[
+                Node(id="a", task="First"),
+                Node(id="b", task="Continue: {previous}", depends=["a"]),
             ],
         )
-        runner = WorkflowRunner(wf)
+        runner = DAGRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
-                _make_subprocess_mock(b"result-a"),
-                _make_subprocess_mock(b"result-b"),
+                _make_subprocess_mock(b"step-a"),
+                _make_subprocess_mock(b"step-b"),
             ]
             results = await runner.run()
 
-        assert len(results) == 2
+        assert "step-a" in results[1].task
+
+
+# ===========================================================================
+# 8. Runner — Parallel execution
+# ===========================================================================
+
+
+class TestRunnerParallel:
+    @pytest.mark.asyncio
+    async def test_diamond_all_nodes_run(self):
+        wf = _simple_parallel_wf()
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"root-out"),
+                _make_subprocess_mock(b"a-out"),
+                _make_subprocess_mock(b"b-out"),
+                _make_subprocess_mock(b"merge-out"),
+            ]
+            results = await runner.run()
+
+        assert len(results) == 4
+        ids = {r.node_id for r in results}
+        assert ids == {"root", "a", "b", "merge"}
         assert wf.status == "done"
 
     @pytest.mark.asyncio
-    async def test_lanes_output_in_context(self):
+    async def test_parallel_nodes_use_dependency_output(self):
         wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(
-                    name="P1",
-                    lanes=[
-                        Lane(id="correctness", steps=[Step(task="Check")]),
-                    ],
-                    goto=[GotoRule(to="next")],
-                ),
+            name="t",
+            nodes=[
+                Node(id="root", task="Root"),
+                Node(id="a", task="From root: {nodes.root.output}", depends=["root"]),
+                Node(id="b", task="From root: {nodes.root.output}", depends=["root"]),
             ],
         )
-        runner = WorkflowRunner(wf)
+        runner = DAGRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_subprocess_mock(b"all good")
-            await runner.run()
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"root-data"),
+                _make_subprocess_mock(b"a-done"),
+                _make_subprocess_mock(b"b-done"),
+            ]
+            results = await runner.run()
 
-        assert runner._context["lanes"]["correctness"]["output"] == "all good"
+        a_result = next(r for r in results if r.node_id == "a")
+        b_result = next(r for r in results if r.node_id == "b")
+        assert "root-data" in a_result.task
+        assert "root-data" in b_result.task
 
     @pytest.mark.asyncio
-    async def test_lanes_phase_goto_after_all_done(self):
+    async def test_independent_nodes_all_run(self):
         wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(
-                    id="p1",
-                    name="P1",
-                    lanes=[
-                        Lane(id="a", steps=[Step(task="A")]),
-                        Lane(id="b", steps=[Step(task="B")]),
-                    ],
-                    goto=[GotoRule(to="phase.p2")],
-                ),
-                Phase(id="p2", name="P2", steps=[Step(task="Final")]),
+            name="t",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(id="b", task="B"),
+                Node(id="c", task="C"),
             ],
         )
-        runner = WorkflowRunner(wf)
+        runner = DAGRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"a"),
                 _make_subprocess_mock(b"b"),
-                _make_subprocess_mock(b"final"),
+                _make_subprocess_mock(b"c"),
             ]
             results = await runner.run()
 
@@ -908,172 +919,301 @@ class TestRunnerLanes:
         assert wf.status == "done"
 
     @pytest.mark.asyncio
-    async def test_lanes_multi_step_lane(self):
-        """Each lane can have multiple sequential steps."""
+    async def test_merge_waits_for_both(self):
+        wf = _simple_parallel_wf()
+        runner = DAGRunner(wf)
+        call_order = []
+
+        async def tracking_exec(*args, **kwargs):
+            task_text = args[2] if len(args) > 2 else ""
+            proc = MagicMock()
+            proc.returncode = 0
+            if "Root" in task_text:
+                proc.communicate = AsyncMock(return_value=(b"root", b""))
+                call_order.append("root")
+            elif task_text == "A":
+                proc.communicate = AsyncMock(return_value=(b"a", b""))
+                call_order.append("a")
+            elif task_text == "B":
+                proc.communicate = AsyncMock(return_value=(b"b", b""))
+                call_order.append("b")
+            else:
+                proc.communicate = AsyncMock(return_value=(b"merge", b""))
+                call_order.append("merge")
+            return proc
+
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec", side_effect=tracking_exec):
+            results = await runner.run()
+
+        assert len(results) == 4
+        merge_idx = call_order.index("merge")
+        a_idx = call_order.index("a")
+        b_idx = call_order.index("b")
+        assert merge_idx > a_idx
+        assert merge_idx > b_idx
+
+
+# ===========================================================================
+# 9. Runner — Router
+# ===========================================================================
+
+
+class TestRunnerRouter:
+    @pytest.mark.asyncio
+    async def test_router_matches_first_route(self):
+        """Router picks first matching route; non-targets are skipped."""
         wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(
-                    name="P1",
-                    lanes=[
-                        Lane(id="a", steps=[
-                            Step(id="a1", task="First A"),
-                            Step(id="a2", task="Second A"),
-                        ]),
-                        Lane(id="b", steps=[Step(id="b1", task="Only B")]),
+            name="t",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(
+                    id="r", type="router", depends=["a"],
+                    routes=[
+                        Route(match="yes", to=["b"]),
+                        Route(match=None, to=["c"]),
                     ],
                 ),
+                Node(id="b", task="B", depends=["r"]),
+                Node(id="c", task="C", depends=["r"]),
             ],
         )
-        runner = WorkflowRunner(wf)
+        runner = DAGRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
-                _make_subprocess_mock(b"a1"),
-                _make_subprocess_mock(b"b1"),
-                _make_subprocess_mock(b"a2"),
+                _make_subprocess_mock(b"yes please"),  # a
+                _make_subprocess_mock(b"b done"),       # b (activated by route 0)
             ]
             results = await runner.run()
 
-        assert len(results) == 3
+        completed_ids = [r.node_id for r in results]
+        assert "b" in completed_ids
+        # c was not activated by the matched route, so it's skipped
+        assert "c" not in completed_ids
+
+    @pytest.mark.asyncio
+    async def test_router_falls_through_to_fallback(self):
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(
+                    id="r", type="router", depends=["a"],
+                    routes=[
+                        Route(match="critical", to=["fix"]),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="fix", task="Fix it", depends=["r"]),
+                Node(id="done", task="Report", depends=["r"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"no issues"),      # a
+                _make_subprocess_mock(b"report generated"), # done
+            ]
+            results = await runner.run()
+
+        ids = [r.node_id for r in results]
+        assert "done" in ids
+        assert "fix" not in ids
+
+    @pytest.mark.asyncio
+    async def test_router_skips_unmatched_targets(self):
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(
+                    id="r", type="router", depends=["a"],
+                    routes=[
+                        Route(match=None, to=["b"]),
+                    ],
+                ),
+                Node(id="b", task="B", depends=["r"]),
+                Node(id="c", task="C", depends=["r"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"something"),  # a
+                _make_subprocess_mock(b"b done"),     # b
+            ]
+            results = await runner.run()
+
+        completed_ids = {r.node_id for r in results}
+        assert "b" in completed_ids
+        assert "c" not in completed_ids
+
+    @pytest.mark.asyncio
+    async def test_router_max_limit_with_back_edge(self):
+        """Route with max=1 fires once via back-edge, then falls through on re-evaluation."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="do", task="Do work"),
+                Node(
+                    id="r", type="router", depends=["do"],
+                    routes=[
+                        Route(match="critical", to=["do"], max=1),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="done", task="Done", depends=["r"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"critical error"),  # do (1st run)
+                _make_subprocess_mock(b"fixed"),            # do (back-edge re-run)
+                _make_subprocess_mock(b"done output"),      # done (fallback on re-eval)
+            ]
+            results = await runner.run()
+
+        node_ids = [r.node_id for r in results]
+        do_count = node_ids.count("do")
+        assert do_count == 2  # initial + 1 back-edge re-run
+        assert "done" in node_ids
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_router_no_routes_matched(self):
+        """When no route matches and there's no fallback, targets are skipped."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(
+                    id="r", type="router", depends=["a"],
+                    routes=[
+                        Route(match="specific_pattern", to=["b"]),
+                    ],
+                ),
+                Node(id="b", task="B", depends=["r"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(b"no match here")
+            results = await runner.run()
+
+        completed_ids = {r.node_id for r in results}
+        assert "a" in completed_ids
+        assert "b" not in completed_ids
+
+
+# ===========================================================================
+# 10. Runner — Back-edge / loop
+# ===========================================================================
+
+
+class TestRunnerBackEdge:
+    @pytest.mark.asyncio
+    async def test_back_edge_retries(self):
+        """Router back-edge causes target to re-execute, then fallback."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="do", task="Do work"),
+                Node(
+                    id="check", type="router", depends=["do"],
+                    routes=[
+                        Route(match="RETRY", to=["do"], max=2),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="done", task="Done", depends=["check"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"RETRY"),     # do (1st)
+                _make_subprocess_mock(b"RETRY"),     # do (2nd, back-edge)
+                _make_subprocess_mock(b"OK"),        # do (3rd, back-edge)
+                _make_subprocess_mock(b"finished"),  # done
+            ]
+            results = await runner.run()
+
+        do_results = [r for r in results if r.node_id == "do"]
+        assert len(do_results) == 3  # initial + 2 retries
+        assert "done" in {r.node_id for r in results}
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_circuit_breaker(self):
+        """max_iterations limit stops execution."""
+        wf = Workflow(
+            name="t",
+            max_iterations=2,
+            nodes=[
+                Node(id="do", task="Do"),
+                Node(
+                    id="check", type="router", depends=["do"],
+                    routes=[
+                        Route(match="RETRY", to=["do"], max=10),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="done", task="Done", depends=["check"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(b"RETRY")
+            results = await runner.run()
+
+        assert wf.status == "loop_limit"
+
+    @pytest.mark.asyncio
+    async def test_back_edge_resets_downstream(self):
+        """When a back-edge fires, downstream nodes are reset and re-run."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="do", task="Do"),
+                Node(id="process", task="Process: {nodes.do.output}", depends=["do"]),
+                Node(
+                    id="check", type="router", depends=["process"],
+                    routes=[
+                        Route(match="FAIL", to=["do"], max=2),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="done", task="Done", depends=["check"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"attempt1"),  # do
+                _make_subprocess_mock(b"FAIL"),       # process
+                _make_subprocess_mock(b"attempt2"),  # do (back-edge)
+                _make_subprocess_mock(b"OK"),         # process (re-run)
+                _make_subprocess_mock(b"done"),       # done
+            ]
+            results = await runner.run()
+
+        do_results = [r for r in results if r.node_id == "do"]
+        process_results = [r for r in results if r.node_id == "process"]
+        assert len(do_results) == 2
+        assert len(process_results) == 2
         assert wf.status == "done"
 
 
-# ---------------------------------------------------------------------------
-# 7.5 Runner — Goto resolution
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 11. Runner — Error handling
+# ===========================================================================
 
 
-class TestGotoResolution:
-    def test_resolve_goto_match(self):
-        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
-        rules = [GotoRule(match="error.*", to="phase.retry")]
-        assert runner._resolve_goto(rules, "critical error occurred", "step_p1_s1") == "phase.retry"
-
-    def test_resolve_goto_default(self):
-        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
-        rules = [GotoRule(to="end")]
-        assert runner._resolve_goto(rules, "anything", "step_p1_s1") == "end"
-
-    def test_resolve_goto_first_match_wins(self):
-        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
-        rules = [
-            GotoRule(match="error", to="phase.retry"),
-            GotoRule(to="next"),
-        ]
-        assert runner._resolve_goto(rules, "all good", "step_p1_s1") == "next"
-        assert runner._resolve_goto(rules, "found an error", "step_p1_s1") == "phase.retry"
-
-    def test_resolve_goto_no_match_returns_next(self):
-        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
-        rules = [GotoRule(match="specific", to="end")]
-        assert runner._resolve_goto(rules, "something else", "step_p1_s1") == "next"
-
-    def test_resolve_goto_max_limit(self):
-        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
-        rules = [GotoRule(match="error", to="phase.retry", max=2)]
-
-        # First two hits go to retry
-        assert runner._resolve_goto(rules, "error", "step_p1_s1") == "phase.retry"
-        assert runner._resolve_goto(rules, "error", "step_p1_s1") == "phase.retry"
-        # Third hit exceeds max → falls through to next
-        assert runner._resolve_goto(rules, "error", "step_p1_s1") == "next"
-
-    def test_resolve_goto_max_zero_unlimited(self):
-        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
-        rules = [GotoRule(match="error", to="phase.retry", max=0)]
-
-        for _ in range(10):
-            assert runner._resolve_goto(rules, "error", "step_p1_s1") == "phase.retry"
-
-    def test_resolve_goto_empty_rules(self):
-        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
-        assert runner._resolve_goto([], "anything", "step_p1_s1") == "next"
-
-    def test_resolve_goto_multiple_rules_with_max(self):
-        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
-        rules = [
-            GotoRule(match="error", to="phase.retry", max=1),
-            GotoRule(to="end"),
-        ]
-        assert runner._resolve_goto(rules, "error", "step_p1_s1") == "phase.retry"
-        # max hit → falls through to default
-        assert runner._resolve_goto(rules, "error again", "step_p1_s1") == "end"
-
-
-# ---------------------------------------------------------------------------
-# 7.6 Runner — Circuit breaker
-# ---------------------------------------------------------------------------
-
-
-class TestCircuitBreaker:
-    @pytest.mark.asyncio
-    async def test_workflow_max_iterations_loop_limit(self):
-        """Global phase entry limit triggers loop_limit status."""
-        wf = Workflow(
-            name="test",
-            description="",
-            max_iterations=3,
-            phases=[
-                Phase(
-                    id="loop",
-                    name="Loop",
-                    steps=[Step(id="s1", task="Do it", goto=[
-                        GotoRule(to="phase.loop"),
-                    ])],
-                ),
-            ],
-        )
-        runner = WorkflowRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_subprocess_mock(b"again")
-            await runner.run()
-
-        # 3 entries max → enters 3rd time, hits limit, stops
-        assert wf.status == "loop_limit"
-
-    @pytest.mark.asyncio
-    async def test_phase_max_iterations_loop_limit(self):
-        """Phase-level max_iterations overrides lower than workflow default."""
-        wf = Workflow(
-            name="test",
-            description="",
-            max_iterations=100,
-            phases=[
-                Phase(
-                    id="loop",
-                    name="Loop",
-                    max_iterations=2,
-                    steps=[Step(id="s1", task="Do it", goto=[
-                        GotoRule(to="phase.loop"),
-                    ])],
-                ),
-            ],
-        )
-        runner = WorkflowRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_subprocess_mock(b"again")
-            await runner.run()
-
-        assert wf.status == "loop_limit"
-
-
-# ---------------------------------------------------------------------------
-# Runner — Timeout / error handling
-# ---------------------------------------------------------------------------
-
-
-class TestRunnerTimeout:
+class TestRunnerErrorHandling:
     @pytest.mark.asyncio
     async def test_timeout(self):
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[Step(task="Slow")]),
-            ],
-        )
-        runner = WorkflowRunner(wf, timeout=1)
+        wf = Workflow(name="t", nodes=[Node(id="a", task="Slow task")])
+        runner = DAGRunner(wf, timeout=1)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             proc = MagicMock()
             proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
@@ -1082,67 +1222,226 @@ class TestRunnerTimeout:
 
         assert results[0].exit_code == 1
         assert "timed out" in results[0].error
-        # In the new design, step errors are handled via goto rules;
-        # the workflow completes normally unless a circuit breaker trips.
         assert wf.status == "done"
 
-
-class TestRunnerProgress:
     @pytest.mark.asyncio
-    async def test_progress_callback_called(self):
+    async def test_subprocess_exception(self):
+        wf = Workflow(name="t", nodes=[Node(id="a", task="Fail")])
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = RuntimeError("spawn failed")
+            results = await runner.run()
+
+        assert results[0].exit_code == 1
+        assert "spawn failed" in results[0].error
+
+    @pytest.mark.asyncio
+    async def test_parallel_branch_failure_independent(self):
         wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[Step(task="Step A"), Step(task="Step B")]),
+            name="t",
+            nodes=[
+                Node(id="root", task="Root"),
+                Node(id="a", task="A ok", depends=["root"]),
+                Node(id="b", task="B fail", depends=["root"]),
             ],
         )
-        progress_calls = []
-        runner = WorkflowRunner(wf, on_progress=progress_calls.append)
+        runner = DAGRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
-                _make_subprocess_mock(b"out-a"),
-                _make_subprocess_mock(b"out-b"),
+                _make_subprocess_mock(b"root"),
+                _make_subprocess_mock(b"a ok"),
+                _make_subprocess_mock(b"b error", returncode=1),
+            ]
+            results = await runner.run()
+
+        a_result = next(r for r in results if r.node_id == "a")
+        b_result = next(r for r in results if r.node_id == "b")
+        assert a_result.exit_code == 0
+        assert b_result.exit_code == 1
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_code_stored(self):
+        wf = Workflow(name="t", nodes=[Node(id="a", task="Fail")])
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(b"error output", returncode=2)
+            results = await runner.run()
+
+        assert results[0].exit_code == 2
+        assert results[0].output == "error output"
+
+
+# ===========================================================================
+# 12. Runner — Callbacks
+# ===========================================================================
+
+
+class TestRunnerCallbacks:
+    @pytest.mark.asyncio
+    async def test_on_node_done_callback(self):
+        wf = _simple_linear_wf(2)
+        calls = []
+        runner = DAGRunner(
+            wf,
+            on_node_done=lambda nid, res, wave: calls.append((nid, res.node_id, wave)),
+        )
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"a"),
+                _make_subprocess_mock(b"b"),
             ]
             await runner.run()
 
-        assert any("Step 1" in msg for msg in progress_calls)
-        assert any("Step 2" in msg for msg in progress_calls)
+        assert len(calls) == 2
+        assert calls[0][0] == "n0"
+        assert calls[1][0] == "n1"
 
     @pytest.mark.asyncio
-    async def test_progress_callback_none_is_safe(self):
+    async def test_on_node_skip_callback(self):
         wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(name="P1", steps=[Step(task="A")]),
+            name="t",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(
+                    id="r", type="router", depends=["a"],
+                    routes=[Route(match=None, to=["b"])],
+                ),
+                Node(id="b", task="B", depends=["r"]),
+                Node(id="c", task="C", depends=["r"]),
             ],
         )
-        runner = WorkflowRunner(wf)  # no on_progress
+        skip_calls = []
+        runner = DAGRunner(
+            wf,
+            on_node_skip=lambda nid, reason: skip_calls.append((nid, reason)),
+        )
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"a"),
+                _make_subprocess_mock(b"b"),
+            ]
+            await runner.run()
+
+        skipped_ids = [nid for nid, _ in skip_calls]
+        assert "c" in skipped_ids
+
+    @pytest.mark.asyncio
+    async def test_on_wave_start_callback(self):
+        wf = _simple_linear_wf(2)
+        wave_calls = []
+        runner = DAGRunner(
+            wf,
+            on_wave_start=lambda idx, total, nids: wave_calls.append((idx, total, nids)),
+        )
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"a"),
+                _make_subprocess_mock(b"b"),
+            ]
+            await runner.run()
+
+        assert len(wave_calls) >= 1
+
+    @pytest.mark.asyncio
+    async def test_on_condition_callback(self):
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(
+                    id="r", type="router", depends=["a"],
+                    routes=[
+                        Route(match="yes", to=["b"]),
+                        Route(match=None, to=["b"]),
+                    ],
+                ),
+                Node(id="b", task="B", depends=["r"]),
+            ],
+        )
+        cond_calls = []
+        runner = DAGRunner(
+            wf,
+            on_condition=lambda nid, met, branch: cond_calls.append((nid, met, branch)),
+        )
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"yes please"),
+                _make_subprocess_mock(b"b"),
+            ]
+            await runner.run()
+
+        assert len(cond_calls) >= 1
+        assert cond_calls[0][0] == "r"
+        assert cond_calls[0][1] is True
+
+    @pytest.mark.asyncio
+    async def test_on_loop_iter_callback(self):
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="do", task="Do"),
+                Node(
+                    id="check", type="router", depends=["do"],
+                    routes=[
+                        Route(match="RETRY", to=["do"], max=2),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="done", task="Done", depends=["check"]),
+            ],
+        )
+        loop_calls = []
+        runner = DAGRunner(
+            wf,
+            on_loop_iter=lambda nid, it, mx, res: loop_calls.append((nid, it, mx)),
+        )
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"RETRY"),  # do (1st)
+                _make_subprocess_mock(b"OK"),     # do (2nd, back-edge)
+                _make_subprocess_mock(b"done"),   # done
+            ]
+            await runner.run()
+
+        assert len(loop_calls) >= 1
+        assert loop_calls[0][0] == "do"
+
+    @pytest.mark.asyncio
+    async def test_on_progress_callback(self):
+        wf = Workflow(name="t", nodes=[Node(id="a", task="A")])
+        progress_msgs = []
+        runner = DAGRunner(wf, on_progress=progress_msgs.append)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(b"ok")
+            await runner.run()
+
+        assert len(progress_msgs) >= 1
+
+    @pytest.mark.asyncio
+    async def test_callbacks_none_are_safe(self):
+        wf = Workflow(name="t", nodes=[Node(id="a", task="A")])
+        runner = DAGRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_subprocess_mock(b"ok")
             results = await runner.run()
-        assert results[0].exit_code == 0
+
+        assert len(results) == 1
+        assert wf.status == "done"
 
 
-# ---------------------------------------------------------------------------
-# 7.7 CLI command tests
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# 13. CLI command tests
+# ===========================================================================
 
 
 class TestWorkflowCommand:
     @pytest.fixture
     def _setup_registry(self, tmp_path: Path):
-        _write_yaml(
-            tmp_path / "demo.yaml",
-            {
-                "name": "demo",
-                "description": "Demo workflow",
-                "phases": [
-                    {"name": "P1", "steps": [{"task": "Hello"}]},
-                ],
-            },
-        )
+        _write_yaml(tmp_path / "demo.yaml", {
+            "name": "demo",
+            "description": "Demo workflow",
+            "nodes": [{"id": "a", "task": "Hello"}],
+        })
         return tmp_path
 
     @pytest.mark.asyncio
@@ -1153,12 +1452,13 @@ class TestWorkflowCommand:
         app = MagicMock()
         app.workflow_registry = reg
         display = MagicMock()
+        display.workflow_list.return_value = "  demo                 Demo workflow"
 
         cmd = WorkflowCommand()
         result = await cmd.run(_make_ctx(app=app, display=display, args="list"))
         assert result.kind == "continue"
+        display.workflow_list.assert_called_once()
         display.info.assert_called_once()
-        assert "demo" in display.info.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_show_subcommand(self, _setup_registry, tmp_path: Path):
@@ -1168,12 +1468,13 @@ class TestWorkflowCommand:
         app = MagicMock()
         app.workflow_registry = reg
         display = MagicMock()
+        display.workflow_show.return_value = "demo\n  1 nodes"
 
         cmd = WorkflowCommand()
         result = await cmd.run(_make_ctx(app=app, display=display, args="show demo"))
         assert result.kind == "continue"
+        display.workflow_show.assert_called_once()
         display.info.assert_called_once()
-        assert "P1" in display.info.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_show_not_found(self, _setup_registry, tmp_path: Path):
@@ -1197,6 +1498,7 @@ class TestWorkflowCommand:
         result = await cmd.run(_make_ctx(args="create a research workflow"))
         assert result.kind == "prompt"
         assert "workflow" in result.prompt.lower()
+        assert "nodes" in result.prompt
 
     @pytest.mark.asyncio
     async def test_run_missing_args(self):
@@ -1221,3 +1523,38 @@ class TestWorkflowCommand:
         result = await cmd.run(_make_ctx(app=app, display=display, args="run nope"))
         assert result.kind == "continue"
         display.warn.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_parses_key_value_args(self, _setup_registry, tmp_path: Path):
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        reg = WorkflowRegistry([tmp_path])
+        app = MagicMock()
+        app.workflow_registry = reg
+        display = MagicMock()
+
+        cmd = WorkflowCommand()
+        with patch("mocode.app.cli.commands.workflow.DAGRunner") as MockRunner:
+            mock_runner = AsyncMock()
+            mock_runner.run = AsyncMock(return_value=[])
+            MockRunner.return_value = mock_runner
+
+            result = await cmd.run(_make_ctx(
+                app=app, display=display,
+                args="run demo path=/src verbose=true",
+            ))
+
+            mock_runner.run.assert_called_once_with(args={"path": "/src", "verbose": "true"})
+
+    @pytest.mark.asyncio
+    async def test_list_empty(self):
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        app = MagicMock()
+        app.workflow_registry = WorkflowRegistry([])
+        display = MagicMock()
+
+        cmd = WorkflowCommand()
+        result = await cmd.run(_make_ctx(app=app, display=display, args="list"))
+        assert result.kind == "continue"
+        display.info.assert_called_once()

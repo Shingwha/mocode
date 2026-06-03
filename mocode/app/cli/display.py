@@ -24,7 +24,7 @@ from .theme import (
 )
 
 if TYPE_CHECKING:
-    from ...workflow import StepResult, Workflow
+    from ...workflow import NodeResult, Workflow
     from .commands import Command
 
 
@@ -129,6 +129,17 @@ def _merge_summaries(summaries: list[str]) -> str:
     return shown + f"… +{remaining}" if remaining else shown
 
 
+def _format_route(route) -> str:
+    """Format a Route as a compact string for show view."""
+    parts = []
+    if route.match:
+        parts.append(f"/{route.match}/")
+    parts.append(", ".join(route.to))
+    if route.max:
+        parts.append(f"(max {route.max})")
+    return " ".join(parts)
+
+
 # ── Display ─────────────────────────────────────────────
 
 
@@ -139,6 +150,7 @@ class Display:
         self.theme = theme or Theme()
         self._input = Input(ps1=self.theme.icon_input)
         self._spinner = SpinnerRunner()
+        self._workflow_buffer: list[str] = []
 
     def set_commands(self, commands: list[Command]):
         """Set commands for autocomplete."""
@@ -247,43 +259,71 @@ class Display:
 
     # ── Output: workflow ──────────────────────────────────
 
+    def _flush_workflow_buffer(self) -> None:
+        """Print all buffered workflow lines at once."""
+        if not self._workflow_buffer:
+            return
+        self._print("\n".join(self._workflow_buffer))
+        self._workflow_buffer.clear()
+
+    def workflow_wave_start(self, wave_idx: int, total_waves: int, node_ids: list[str], branch: str = "") -> None:
+        """Print wave header, flushing any buffered node output first."""
+        self._flush_workflow_buffer()
+        self._print()
+        branch_suffix = f"  {_s(f'[{branch}]', SOFT_CYAN)}" if branch else ""
+        self._print(
+            f"{_s('◇', YELLOW)} Wave {wave_idx}/{total_waves}{branch_suffix}"
+        )
+
     def workflow_start(self, wf: Workflow) -> None:
         """Print workflow header before execution."""
-        step_count = wf.total_steps()
-        phase_count = wf.total_phases
-        lane_count = sum(len(p.lanes) for p in wf.phases if p.lanes)
-        lane_suffix = f" ({lane_count} parallel lanes)" if lane_count else ""
+        node_count = wf.total_nodes()
         self._print(
             f"{_s('●', YELLOW)} {_s(wf.name, BOLD)}"
-            f"  {_s(f'{phase_count} phases · {step_count} steps{ lane_suffix}', DIM)}"
+            f"  {_s(f'{node_count} nodes', DIM)}"
         )
         self._print()
 
-    def workflow_step_done(
-        self, sr: StepResult, phase_name: str, lane_name: str | None = None
-    ) -> None:
-        """Print a completed step result in real-time."""
-        dur = f"{sr.duration:.1f}s"
-        icon = _s('✓', YELLOW) if sr.exit_code == 0 else _s('✗', RED)
-        task_preview = sr.task[:40] if sr.task else ""
+    def workflow_node_done(self, node_id: str, result: NodeResult, wave_idx: int) -> None:
+        """Buffer a completed node result line."""
+        dur = f"{result.duration:.1f}s"
+        icon = _s('✓', YELLOW) if result.exit_code == 0 else _s('✗', RED)
+        task_preview = result.task[:40] if result.task else ""
+        iter_suffix = f" ({result.iteration}/{result.iteration})" if result.iteration > 1 else ""
+        self._workflow_buffer.append(
+            f"  └─ {icon} {_s(node_id, BOLD)} · {task_preview}{iter_suffix}  {_s(dur, DIM)}"
+        )
 
-        if lane_name:
-            # Lane mode: indented with lane prefix
-            self._print(
-                f"    {_s('│', DIM)} {_s(lane_name, SOFT_CYAN)} · {icon} {task_preview}  {_s(dur, DIM)}"
-            )
-        else:
-            # Sequential mode
-            self._print(f"  {icon} {phase_name} · {task_preview}  {_s(dur, DIM)}")
+    def workflow_node_skip(self, node_id: str, reason: str) -> None:
+        """Buffer a skipped node line."""
+        self._workflow_buffer.append(
+            f"  │  {_s('✗', GRAY)} {_s(node_id, GRAY)}  {_s(f'skip ({reason})', DIM)}"
+        )
+
+    def workflow_loop_iter(self, node_id: str, iteration: int, max_iter: int, result: NodeResult) -> None:
+        """Buffer a loop iteration line."""
+        dur = f"{result.duration:.1f}s"
+        task_preview = result.task[:40] if result.task else ""
+        max_str = str(max_iter) if max_iter > 0 else "∞"
+        self._workflow_buffer.append(
+            f"  └─ {_s('↻', YELLOW)} {_s(node_id, BOLD)} ({iteration}/{max_str}) {task_preview}  {_s(dur, DIM)}"
+        )
+
+    def workflow_condition(self, node_id: str, condition_met: bool, branch: str) -> None:
+        """Record router condition evaluation. Branch name is used in next wave header."""
+        self._current_branch = branch if condition_met else ""
 
     def workflow_summary(self, wf: Workflow) -> None:
-        """Print final output and summary after all steps completed."""
+        """Flush buffer, then print final output and summary."""
+        self._flush_workflow_buffer()
+
         results = wf.results
         if not results:
             return
 
-        ok = sum(1 for r in results if r.exit_code == 0)
-        fail = len(results) - ok
+        passed = sum(1 for r in results if r.exit_code == 0 and r.status == "done")
+        failed = sum(1 for r in results if r.exit_code != 0)
+        skipped_count = sum(1 for r in results if r.status == "skipped")
         total_time = sum(r.duration for r in results)
 
         # Final output
@@ -299,18 +339,80 @@ class Display:
         # Summary
         self._print()
         time_str = _s(f"{total_time:.1f}s", DIM)
-        if fail == 0:
-            self._print(
-                f"{_s('■', YELLOW)} {_s(wf.name, BOLD)}"
-                f"  {_s(f'{ok} steps', DIM)}  {time_str}"
-            )
-        else:
-            self._print(
-                f"  {_s('■', RED)} {_s(wf.name, BOLD)}"
-                f"  {_s(f'{ok} passed', DIM)}"
-                f" {_s('·', DIM)} {_s(f'{fail} failed', RED)}"
-                f"  {time_str}"
-            )
+        parts = []
+        if passed:
+            parts.append(_s(f"{passed} passed", DIM))
+        if failed:
+            parts.append(_s(f"{failed} failed", RED))
+        if skipped_count:
+            parts.append(_s(f"{skipped_count} skipped", DIM))
+        stat_str = " · ".join(parts)
+
+        self._print(
+            f"{_s(wf.name, BOLD)}  {stat_str}  {time_str}"
+        )
+
+    # ── Output: workflow show / list ──────────────────────
+
+    def workflow_show(self, wf: Workflow) -> str:
+        """Generate a DAG tree-style structural view of the workflow."""
+        lines = [
+            f"{_s(wf.name, BOLD)}",
+            f"  {wf.description}" if wf.description else "",
+            f"  {_s(f'{wf.total_nodes()} nodes', DIM)}",
+            "",
+        ]
+        node_map = wf.node_map
+        dependents = wf.dependents
+
+        # Track which nodes have been rendered
+        rendered: set[str] = set()
+
+        def _render_tree(node_id: str, prefix: str, is_last: bool) -> None:
+            if node_id in rendered:
+                lines.append(f"{prefix}└─ (→ {node_id})")
+                return
+            rendered.add(node_id)
+            node = node_map[node_id]
+            connector = "└─" if is_last else "├─"
+            task_preview = node.task[:50] if node.task else ""
+
+            if node.type == "router":
+                route_strs = [_format_route(r) for r in node.routes]
+                lines.append(
+                    f"{prefix}{connector} {_s(node_id, SOFT_CYAN)} · router  {_s('→', YELLOW)} {' | '.join(route_strs)}"
+                )
+            else:
+                lines.append(
+                    f"{prefix}{connector} {_s(node_id, BOLD)} · {task_preview}"
+                )
+
+            children = dependents.get(node_id, [])
+            child_prefix = prefix + ("   " if is_last else "│  ")
+            for ci, child_id in enumerate(children):
+                _render_tree(child_id, child_prefix, ci == len(children) - 1)
+
+        # Start from root nodes
+        roots = wf.root_nodes
+        for ri, root in enumerate(roots):
+            _render_tree(root.id, "", ri == len(roots) - 1)
+
+        return "\n".join(lines)
+
+    def _format_step_tree(self, step, prefix: str) -> str:
+        # Kept for potential external use but no longer called by workflow_show
+        s = f"{prefix} {step.task[:60]}"
+        if hasattr(step, 'id') and step.id:
+            s += f" {_s(f'[{step.id}]', DIM)}"
+        return s
+
+    def workflow_list(self, workflows: list[Workflow]) -> str:
+        """Generate a compact workflow list — name + brief description."""
+        lines = []
+        for wf in workflows:
+            desc = wf.description[:50] if wf.description else "(no description)"
+            lines.append(f"  {_s(wf.name, BOLD):<20} {_s(desc, DIM)}")
+        return "\n".join(lines)
 
     # ── Screen ────────────────────────────────────────────
 

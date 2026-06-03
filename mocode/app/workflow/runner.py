@@ -1,7 +1,8 @@
-"""WorkflowRunner — async execution engine for Workflow with goto-based control flow.
+"""DAGRunner — async event-driven execution engine for Workflow DAG.
 
-Each step spawns a ``mocode -p`` subprocess. Supports sequential (steps),
-parallel lanes, and goto-based routing at both step and phase level.
+Each task node spawns a ``mocode -p`` subprocess. Router nodes evaluate
+conditions. Back-edges from routers enable loops. The engine auto-schedules
+parallel execution based on dependency satisfaction.
 """
 
 from __future__ import annotations
@@ -13,117 +14,196 @@ import time
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
-    from . import Lane, Phase, Step, Workflow
+    from . import Node, NodeResult, Workflow
 
-from . import GotoRule, StepResult, fill_template
+from . import NodeResult, fill_template
 
 
-class WorkflowRunner:
-    """Executes a Workflow by spawning mocode -p for each step."""
+class DAGRunner:
+    """Executes a Workflow DAG by spawning mocode -p for each task node."""
 
     def __init__(
         self,
         workflow: Workflow,
         mocode_cmd: str = "mocode",
         timeout: int = 300,
+        on_wave_start: Callable[[int, int, list[str]], None] | None = None,
+        on_node_done: Callable[[str, NodeResult, int], None] | None = None,
+        on_node_skip: Callable[[str, str], None] | None = None,
+        on_loop_iter: Callable[[str, int, int, NodeResult], None] | None = None,
+        on_condition: Callable[[str, bool, str], None] | None = None,
         on_progress: Callable[[str], None] | None = None,
-        on_step_done: Callable[..., None] | None = None,
     ):
         self.workflow = workflow
         self.mocode_cmd = mocode_cmd
         self.timeout = timeout
+        self._on_wave_start = on_wave_start
+        self._on_node_done = on_node_done
+        self._on_node_skip = on_node_skip
+        self._on_loop_iter = on_loop_iter
+        self._on_condition = on_condition
         self._on_progress = on_progress
-        self._on_step_done = on_step_done
         self._context: dict = {}
-
-        # Runtime counters
-        self._phase_counter: dict[str, int] = {}
-        self._wf_phase_entry_count: int = 0
-        self._goto_counter: dict[str, int] = {}
 
     def _progress(self, msg: str) -> None:
         if self._on_progress:
             self._on_progress(msg)
 
-    def _step_done(self, sr: StepResult, phase_name: str, lane_name: str | None = None) -> None:
-        if self._on_step_done:
-            self._on_step_done(sr, phase_name, lane_name)
+    async def run(self, args: dict | None = None) -> list[NodeResult]:
+        """Execute the full workflow DAG. Returns all NodeResults."""
+        from . import compute_waves
 
-    # ═══════════════════════════════════════════════════════════
-    # 3.1 Top-level control flow
-    # ═══════════════════════════════════════════════════════════
-
-    async def run(self, args: dict | None = None) -> list[StepResult]:
-        """Execute the full workflow. Returns all StepResults."""
         wf = self.workflow
         wf.status = "running"
         wf.results.clear()
-        wf.phase_index = 0
-        wf.step_index = 0
 
         self._context = {
             "args": args or {},
             "env": dict(os.environ),
-            "steps": {},
-            "lanes": {},
-            "phases": {},
+            "nodes": {},
+            "previous": "",
         }
 
-        self._phase_counter.clear()
-        self._wf_phase_entry_count = 0
-        self._goto_counter.clear()
+        node_map = wf.node_map
 
-        current_phase_id = wf.phases[0].id if wf.phases else None
+        # Compute waves for display
+        waves = compute_waves(wf)
+        total_waves = len(waves)
+        node_wave: dict[str, int] = {}
+        for idx, wave in enumerate(waves):
+            for n in wave:
+                node_wave[n.id] = idx
+
+        # Execution state
+        pending_deps: dict[str, int] = {n.id: len(n.depends) for n in wf.nodes}
+        activated: set[str] = set()  # nodes activated by some path
+        completed: set[str] = set()
+        skipped: set[str] = set()
+        route_counter: dict[str, int] = {}  # "router_id:route_idx" → count
+        iteration: dict[str, int] = {n.id: 0 for n in wf.nodes}
+        running: dict[str, asyncio.Task] = {}
+        announced_waves: set[int] = set()
+
+        def _announce_wave(nid: str) -> None:
+            w = node_wave.get(nid, 0)
+            if w not in announced_waves and self._on_wave_start:
+                announced_waves.add(w)
+                wave_nids = [n.id for n in waves[w]]
+                self._on_wave_start(w, total_waves, wave_nids)
+
+        # Activate root nodes
+        ready_queue: list[str] = []
+        for n in wf.root_nodes:
+            activated.add(n.id)
+            ready_queue.append(n.id)
+            _announce_wave(n.id)
+
+        # Circuit breaker: total executions across all nodes
+        total_executions = 0
+        max_total = wf.max_iterations * len(wf.nodes)
+
+        def _set_previous(node_id: str, output: str) -> None:
+            self._context["previous"] = output
+
+        def _store_node_result(node_id: str, nr: NodeResult) -> None:
+            self._context["nodes"][node_id] = {
+                "output": nr.output,
+                "exit_code": nr.exit_code,
+                "duration": nr.duration,
+                "error": nr.error or "",
+            }
 
         try:
-            while current_phase_id is not None:
-                phase = self._find_phase(current_phase_id)
-                if phase is None:
-                    raise ValueError(f"Phase '{current_phase_id}' not found")
+            while ready_queue or running:
+                # Launch all ready nodes
+                for nid in list(ready_queue):
+                    if nid in running:
+                        continue
+                    node = node_map[nid]
+                    iteration[nid] += 1
 
-                wf.phase_index = wf.phases.index(phase)
+                    if node.type == "router":
+                        # Router: evaluate synchronously, don't spawn subprocess
+                        self._evaluate_router(
+                            node, node_map, completed, activated,
+                            pending_deps, ready_queue, iteration,
+                            route_counter, skipped,
+                            announce_wave=_announce_wave,
+                        )
+                    else:
+                        # Task: spawn subprocess
+                        task_text = fill_template(node.task, self._context)
+                        running[nid] = asyncio.create_task(
+                            self._exec_node(nid, task_text)
+                        )
+                    ready_queue.remove(nid)
 
-                # ── Circuit breaker ──
-                self._wf_phase_entry_count += 1
-                if self._wf_phase_entry_count > wf.max_iterations:
+                if not running:
+                    if not ready_queue:
+                        break
+                    continue  # loop back to launch ready_queue items
+
+                # Wait for any task to complete
+                done_tasks, _ = await asyncio.wait(
+                    running.values(),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                # Process completed tasks
+                for task in done_tasks:
+                    # Find node_id for this task
+                    nid = None
+                    for k, v in running.items():
+                        if v is task:
+                            nid = k
+                            break
+                    if nid is None:
+                        continue
+
+                    del running[nid]
+                    nr = task.result()
+                    total_executions += 1
+
+                    # Store result
+                    wf.results.append(nr)
+                    _store_node_result(nid, nr)
+                    _set_previous(nid, nr.output)
+                    completed.add(nid)
+
+                    # Callback
+                    wave_idx = node_wave.get(nid, 0)
+                    if self._on_node_done:
+                        self._on_node_done(nid, nr, wave_idx)
+
+                    self._progress(f"Node '{nid}' done ({nr.duration:.1f}s)")
+
+                    # Activate downstream dependents
+                    for dep_id in wf.dependents.get(nid, []):
+                        if dep_id in skipped:
+                            continue
+                        pending_deps[dep_id] -= 1
+                        if pending_deps[dep_id] <= 0:
+                            if dep_id not in running and dep_id not in ready_queue:
+                                ready_queue.append(dep_id)
+                                _announce_wave(dep_id)
+
+                # Circuit breaker
+                if total_executions >= max_total:
                     wf.status = "loop_limit"
                     self._progress(
-                        f"Workflow loop limit reached after {wf.max_iterations} phase executions"
+                        f"Workflow execution limit reached ({max_total} total executions)"
                     )
+                    # Cancel remaining tasks
+                    for t in running.values():
+                        t.cancel()
                     break
 
-                pid = phase.id or f"__phase_{wf.phase_index}"
-                self._phase_counter[pid] = self._phase_counter.get(pid, 0) + 1
-                phase_limit = phase.max_iterations or wf.max_iterations
-                if self._phase_counter[pid] > phase_limit:
-                    wf.status = "loop_limit"
-                    self._progress(
-                        f"Phase '{phase.name}' loop limit reached after {phase_limit} entries"
-                    )
-                    break
-
-                # ── Execute Phase ──
-                if phase.lanes:
-                    next_target = await self._run_lanes(phase)
-                else:
-                    next_target = await self._run_steps(phase)
-
-                # ── Determine next phase ──
-                if next_target == "__end__":
-                    break
-                elif next_target and next_target.startswith("phase."):
-                    current_phase_id = next_target.split(".", 1)[1]
-                    continue
-                elif next_target == "next":
-                    idx = wf.phases.index(phase)
-                    current_phase_id = (
-                        wf.phases[idx + 1].id if idx + 1 < len(wf.phases) else None
-                    )
-                    continue
-                elif next_target == "end":
-                    break
-                else:
-                    current_phase_id = None
+            # Propagate skips for unactivated nodes
+            for n in wf.nodes:
+                if n.id not in completed and n.id not in skipped:
+                    skipped.add(n.id)
+                    if self._on_node_skip:
+                        self._on_node_skip(n.id, "not activated")
 
             if wf.status not in ("error", "loop_limit"):
                 wf.status = "done"
@@ -133,215 +213,151 @@ class WorkflowRunner:
             wf.status = "error"
             raise
 
-    # ═══════════════════════════════════════════════════════════
-    # 3.2 Sequential mode — _run_steps
-    # ═══════════════════════════════════════════════════════════
+    def _evaluate_router(
+        self,
+        node: Node,
+        node_map: dict,
+        completed: set,
+        activated: set,
+        pending_deps: dict,
+        ready_queue: list,
+        iteration: dict,
+        route_counter: dict,
+        skipped: set,
+        announce_wave=None,
+    ) -> None:
+        """Evaluate a router node's routes and activate targets."""
+        # Concatenate outputs of all dependency nodes
+        dep_outputs = []
+        for dep in node.depends:
+            node_data = self._context.get("nodes", {}).get(dep, {})
+            dep_outputs.append(node_data.get("output", ""))
+        combined = "\n".join(dep_outputs)
 
-    async def _run_steps(self, phase: Phase) -> str | None:
-        """Run phase.steps sequentially. Returns goto target or None."""
-        si = 0
-        while si < len(phase.steps):
-            step = phase.steps[si]
-            wf = self.workflow
-            wf.step_index = si
-            self._progress(f"Step {si + 1}/{len(phase.steps)}: {step.task[:40]}")
+        # Evaluate routes (first-match-wins)
+        matched = False
+        all_targets: set[str] = set()
+        for ri, route in enumerate(node.routes):
+            route_key = f"{node.id}:{ri}"
+            current_count = route_counter.get(route_key, 0)
 
-            sr = await self._exec_step(step, wf.phases.index(phase), si)
-            wf.results.append(sr)
-            self._store_step(step, sr, lane_id=None)
-            self._context["previous"] = sr.output
-
-            self._step_done(sr, phase.name)
-
-            # Parse goto
-            target = self._resolve_goto(
-                step.goto, sr.output, f"step_{phase.id}_{step.id}"
-            )
-            if target == "next":
-                si += 1
-            elif target == "end":
-                break
-            elif target == "__end__":
-                self._progress("→ goto: __end__")
-                return "__end__"
-            elif target.startswith("phase."):
-                self._progress(f"→ goto: {target}")
-                self._store_phase_output(phase)
-                return target
-            else:
-                # step_id: jump within same phase
-                self._progress(f"→ goto: {target}")
-                idx = self._find_step_index(phase.steps, target)
-                if idx is not None:
-                    si = idx
-                else:
-                    self._progress(f"Warning: step '{target}' not found, continuing")
-                    si += 1
-
-        # All steps done → check Phase.goto
-        self._store_phase_output(phase)
-        return self._resolve_goto(phase.goto, "", f"phase_{phase.id}")
-
-    # ═══════════════════════════════════════════════════════════
-    # 3.3 Parallel lanes mode — _run_lanes
-    # ═══════════════════════════════════════════════════════════
-
-    async def _run_lanes(self, phase: Phase) -> str | None:
-        """Run all lanes concurrently. Returns goto target or None."""
-        self._progress(f"Running {len(phase.lanes)} lanes in parallel")
-
-        async def _run_single_lane(lane: Lane, lane_idx: int) -> str | None:
-            """Execute one lane. Returns a target if cross-phase jump needed."""
-            lane_output: str | None = None
-            si = 0
-            while si < len(lane.steps):
-                step = lane.steps[si]
-                sr = await self._exec_step(step, wf.phases.index(phase), si)
-                sr.lane = lane.id
-                wf.results.append(sr)
-                self._store_step(step, sr, lane_id=lane.id)
-                lane_output = sr.output
-
-                self._step_done(sr, phase.name, lane.name)
-
-                target = self._resolve_goto(
-                    step.goto, sr.output,
-                    f"step_{phase.id}_{lane.id}_{step.id}",
-                )
-                if target == "next":
-                    si += 1
-                elif target == "end":
-                    break
-                elif target == "__end__":
-                    self._progress(f"→ goto: __end__ (lane '{lane.name}')")
-                    return "__end__"
-                elif target.startswith("phase."):
-                    self._progress(f"→ goto: {target} (lane '{lane.name}')")
-                    return target  # cross-phase jump
-                else:
-                    # step_id jump within same lane
-                    self._progress(f"→ goto: {target} (lane '{lane.name}')")
-                    idx = self._find_step_index(lane.steps, target)
-                    si = idx if idx is not None else si + 1
-
-            # Store lane output
-            if lane.id:
-                self._context.setdefault("lanes", {})[lane.id] = {
-                    "output": lane_output or "",
-                }
-            return None  # lane completed normally
-
-        wf = self.workflow
-        tasks = [
-            asyncio.create_task(_run_single_lane(lane, i))
-            for i, lane in enumerate(phase.lanes)
-        ]
-        raw = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # Check if any lane triggered a cross-phase jump
-        cross_phase_target = None
-        for target in raw:
-            if isinstance(target, BaseException):
-                if not isinstance(target, asyncio.CancelledError):
-                    self._progress(f"Lane error: {target}")
+            # Check max limit
+            if route.max > 0 and current_count >= route.max:
                 continue
-            if target and (target.startswith("phase.") or target == "__end__"):
-                cross_phase_target = target
-                # Cancel remaining running lanes
-                for t in tasks:
-                    if not t.done():
-                        t.cancel()
-                self._progress("→ lane cancelled (other lane triggered cross-phase jump)")
-                break
 
-        if cross_phase_target:
-            self._store_phase_output(phase)
-            return cross_phase_target
+            # Check match
+            if route.match is not None:
+                if not re.search(route.match, combined):
+                    continue
 
-        # All lanes done → check Phase.goto
-        self._store_phase_output(phase)
-        return self._resolve_goto(phase.goto, "", f"phase_{phase.id}")
+            # Matched!
+            route_counter[route_key] = current_count + 1
+            matched = True
 
-    # ═══════════════════════════════════════════════════════════
-    # 3.4 Goto resolution engine
-    # ═══════════════════════════════════════════════════════════
+            if self._on_condition:
+                branch_name = f"route {ri}"
+                self._on_condition(node.id, True, branch_name)
 
-    def _resolve_goto(self, rules: list[GotoRule], output: str, key_prefix: str) -> str:
-        """Return the target of the first matching rule, or 'next'."""
-        for rule in rules:
-            rule_key = f"{key_prefix}_to_{rule.to}"
-            current_count = self._goto_counter.get(rule_key, 0)
+            # Activate targets
+            for target_id in route.to:
+                all_targets.add(target_id)
+                target_node = node_map.get(target_id)
 
-            if rule.max > 0 and current_count >= rule.max:
-                continue  # hit limit, skip this rule
+                if target_id in completed and target_node:
+                    # Back-edge — loop back
+                    iteration[target_id] += 1
+                    completed.discard(target_id)
+                    # Reset downstream chain (includes router if in completed)
+                    self._reset_downstream(target_id, node_map, completed, pending_deps, activated, skipped)
+                    # Router must re-evaluate after back-edge target re-runs
+                    completed.discard(node.id)
+                    pending_deps[node.id] = len(node.depends) - 1  # -1: target re-satisfies
+                    # Reset the target's own deps
+                    pending_deps[target_id] = len(target_node.depends)
+                    activated.add(target_id)
+                    skipped.discard(target_id)
+                    pending_deps[target_id] -= 1  # router satisfies one dep
+                    if pending_deps[target_id] <= 0:
+                        if target_id not in ready_queue:
+                            ready_queue.append(target_id)
+                            if announce_wave:
+                                announce_wave(target_id)
 
-            if rule.match is None:
-                self._goto_counter[rule_key] = current_count + 1
-                return rule.to
+                    # Loop iter callback
+                    max_iter = route.max if route.max > 0 else 0
+                    iter_result = NodeResult(
+                        node_id=target_id,
+                        task="",
+                        output="",
+                        exit_code=0,
+                        duration=0,
+                        iteration=iteration[target_id],
+                    )
+                    if self._on_loop_iter:
+                        self._on_loop_iter(target_id, iteration[target_id], max_iter, iter_result)
+                else:
+                    # Forward edge
+                    activated.add(target_id)
+                    skipped.discard(target_id)
+                    pending_deps[target_id] -= 1
+                    if pending_deps[target_id] <= 0 and target_id not in ready_queue:
+                        ready_queue.append(target_id)
+                        if announce_wave:
+                            announce_wave(target_id)
+            break  # first-match-wins
 
-            if re.search(rule.match, output):
-                self._goto_counter[rule_key] = current_count + 1
-                return rule.to
+        if not matched:
+            if self._on_condition:
+                self._on_condition(node.id, False, "no match")
 
-        return "next"
+        # Mark router as completed
+        completed.add(node.id)
 
-    # ═══════════════════════════════════════════════════════════
-    # 3.5 Helper methods
-    # ═══════════════════════════════════════════════════════════
+        # Mark all downstream nodes not activated by any route as skipped
+        for dep_id in self.workflow.dependents.get(node.id, []):
+            if dep_id not in all_targets and dep_id not in activated:
+                skipped.add(dep_id)
+                if self._on_node_skip:
+                    self._on_node_skip(dep_id, "not activated by router")
+                self._propagate_skip(dep_id, node_map, activated, skipped)
 
-    def _find_phase(self, phase_id: str) -> Phase | None:
-        for p in self.workflow.phases:
-            if p.id == phase_id:
-                return p
-        return None
+    def _reset_downstream(
+        self,
+        node_id: str,
+        node_map: dict,
+        completed: set,
+        pending_deps: dict,
+        activated: set,
+        skipped: set,
+    ) -> None:
+        """Reset all downstream nodes of a back-edge target."""
+        for child_id in self.workflow.dependents.get(node_id, []):
+            if child_id in completed:
+                completed.discard(child_id)
+                child_node = node_map.get(child_id)
+                if child_node:
+                    pending_deps[child_id] = len(child_node.depends)
+                activated.discard(child_id)
+                skipped.discard(child_id)
+                self._reset_downstream(child_id, node_map, completed, pending_deps, activated, skipped)
 
-    def _find_step_index(self, steps: list[Step], step_id: str) -> int | None:
-        for i, s in enumerate(steps):
-            if s.id == step_id:
-                return i
-        return None
+    def _propagate_skip(
+        self,
+        node_id: str,
+        node_map: dict,
+        activated: set,
+        skipped: set,
+    ) -> None:
+        """Mark a node and all its downstream as skipped."""
+        for child_id in self.workflow.dependents.get(node_id, []):
+            if child_id not in activated and child_id not in skipped:
+                skipped.add(child_id)
+                if self._on_node_skip:
+                    self._on_node_skip(child_id, "dependency skipped")
+                self._propagate_skip(child_id, node_map, activated, skipped)
 
-    def _store_step(self, step: Step, sr: StepResult, lane_id: str | None) -> None:
-        if not step.id:
-            return
-        entry = {
-            "output": sr.output,
-            "exit_code": sr.exit_code,
-            "duration": sr.duration,
-            "error": sr.error or "",
-        }
-        if lane_id:
-            self._context.setdefault("steps_by_lane", {}).setdefault(lane_id, {})[
-                step.id
-            ] = entry
-        else:
-            self._context.setdefault("steps", {})[step.id] = entry
-
-    def _store_phase_output(self, phase: Phase) -> None:
-        if not phase.id:
-            return
-        if phase.lanes:
-            outputs = []
-            for lane in phase.lanes:
-                if lane.id and lane.id in self._context.get("lanes", {}):
-                    outputs.append(self._context["lanes"][lane.id]["output"])
-            combined = "\n".join(outputs)
-        else:
-            phase_results = [
-                r
-                for r in self.workflow.results
-                if r.phase_index == self.workflow.phases.index(phase)
-            ]
-            combined = phase_results[-1].output if phase_results else ""
-        self._context.setdefault("phases", {})[phase.id] = {"output": combined}
-
-    # ═══════════════════════════════════════════════════════════
-    # Single step execution
-    # ═══════════════════════════════════════════════════════════
-
-    async def _exec_step(self, step: Step, pi: int, si: int) -> StepResult:
+    async def _exec_node(self, node_id: str, task: str) -> NodeResult:
         """Spawn mocode -p with the filled task template."""
-        task = fill_template(step.task, self._context)
         start = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -357,9 +373,8 @@ class WorkflowRunner:
             duration = time.monotonic() - start
             output = stdout.decode("utf-8", errors="replace").strip()
             error_msg = stderr.decode("utf-8", errors="replace").strip() or None
-            return StepResult(
-                phase_index=pi,
-                step_index=si,
+            return NodeResult(
+                node_id=node_id,
                 task=task,
                 output=output,
                 exit_code=proc.returncode or 0,
@@ -368,9 +383,8 @@ class WorkflowRunner:
             )
         except asyncio.TimeoutError:
             duration = time.monotonic() - start
-            return StepResult(
-                phase_index=pi,
-                step_index=si,
+            return NodeResult(
+                node_id=node_id,
                 task=task,
                 output="",
                 exit_code=1,
@@ -379,9 +393,8 @@ class WorkflowRunner:
             )
         except Exception as e:
             duration = time.monotonic() - start
-            return StepResult(
-                phase_index=pi,
-                step_index=si,
+            return NodeResult(
+                node_id=node_id,
                 task=task,
                 output="",
                 exit_code=1,
