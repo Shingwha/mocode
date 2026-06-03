@@ -1361,7 +1361,7 @@ class TestRunnerCallbacks:
         cond_calls = []
         runner = DAGRunner(
             wf,
-            on_condition=lambda nid, met, branch: cond_calls.append((nid, met, branch)),
+            on_condition=lambda nid, met, branch, targets: cond_calls.append((nid, met, branch, targets)),
         )
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
@@ -1373,6 +1373,7 @@ class TestRunnerCallbacks:
         assert len(cond_calls) >= 1
         assert cond_calls[0][0] == "r"
         assert cond_calls[0][1] is True
+        assert cond_calls[0][3] == ["b"]
 
     @pytest.mark.asyncio
     async def test_on_loop_iter_callback(self):

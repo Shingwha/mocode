@@ -1,8 +1,8 @@
 """DAGRunner — async event-driven execution engine for Workflow DAG.
 
 Each task node spawns a ``mocode -p`` subprocess. Router nodes evaluate
-conditions. Back-edges from routers enable loops. The engine auto-schedules
-parallel execution based on dependency satisfaction.
+conditions. Back-edges from routers enable loops. Nodes execute serially
+(max_concurrency=1) to avoid overloading LLM APIs.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ class DAGRunner:
         on_node_done: Callable[[str, NodeResult, int], None] | None = None,
         on_node_skip: Callable[[str, str], None] | None = None,
         on_loop_iter: Callable[[str, int, int, NodeResult], None] | None = None,
-        on_condition: Callable[[str, bool, str], None] | None = None,
+        on_condition: Callable[[str, bool, str, list[str]], None] | None = None,
         on_progress: Callable[[str], None] | None = None,
     ):
         self.workflow = workflow
@@ -115,8 +115,6 @@ class DAGRunner:
         self._skipped: set[str] = set()
         self._route_counter: dict[str, int] = {}
         self._iteration: dict[str, int] = {n.id: 0 for n in wf.nodes}
-        self._running: dict[str, asyncio.Task] = {}
-        self._task_to_nid: dict[asyncio.Task, str] = {}
         self._announced_waves: set[int] = set()
         self._completed_waves: set[int] = set()
         self._ready_queue: list[str] = []
@@ -139,87 +137,67 @@ class DAGRunner:
             self._ready_queue.append(n.id)
 
         try:
-            while self._ready_queue or self._running:
+            while self._ready_queue:
                 self._try_announce_waves()
 
-                # Launch all ready nodes
-                for nid in list(self._ready_queue):
-                    if nid in self._running:
-                        continue
-                    node = wf.node_map[nid]
-                    self._iteration[nid] += 1
+                # Execute one node at a time (serial)
+                nid = self._ready_queue.pop(0)
+                node = wf.node_map[nid]
+                self._iteration[nid] += 1
 
-                    if node.type == "router":
-                        self._evaluate_router(node)
-                    else:
-                        task_text = fill_template(node.task, self._context)
-                        if self._on_node_start:
-                            self._on_node_start(nid, node.description)
-                        context_header = (
-                            self._build_node_context_header(node)
-                            if self.node_context else None
+                if node.type == "router":
+                    self._evaluate_router(node)
+                    # Circuit breaker check after router (loops increment _total_executions)
+                    if self._total_executions >= self._max_total:
+                        wf.status = "loop_limit"
+                        self._progress(
+                            f"Workflow execution limit reached ({self._max_total} total executions)"
                         )
-                        task = asyncio.create_task(
-                            self._exec_node(nid, task_text, context_header)
-                        )
-                        self._running[nid] = task
-                        self._task_to_nid[task] = nid
-                    self._ready_queue.remove(nid)
-
-                if not self._running:
-                    if not self._ready_queue:
                         break
                     continue
 
-                # Wait for any task to complete
-                done_tasks, _ = await asyncio.wait(
-                    self._running.values(),
-                    return_when=asyncio.FIRST_COMPLETED,
+                task_text = fill_template(node.task, self._context)
+                if self._on_node_start:
+                    self._on_node_start(nid, node.description)
+                context_header = (
+                    self._build_node_context_header(node)
+                    if self.node_context else None
                 )
+                nr = await self._exec_node(nid, task_text, context_header)
+                self._total_executions += 1
 
-                # Process completed tasks
-                for task in done_tasks:
-                    nid = self._task_to_nid.pop(task, None)
-                    if nid is None:
+                # Store result
+                wf.results.append(nr)
+                self._context["nodes"][nid] = {
+                    "output": nr.output,
+                    "exit_code": nr.exit_code,
+                    "duration": nr.duration,
+                    "error": nr.error or "",
+                }
+                self._context["previous"] = nr.output
+                self._completed.add(nid)
+
+                # Callback
+                wave_idx = self._node_wave.get(nid, 0)
+                if self._on_node_done:
+                    self._on_node_done(nid, nr, wave_idx)
+
+                # Track wave completion
+                wave_node_ids = [n.id for n in self._waves[wave_idx]]
+                if all(nid_c in self._completed for nid_c in wave_node_ids):
+                    self._completed_waves.add(wave_idx)
+
+                self._progress(f"Node '{nid}' done ({nr.duration:.1f}s)")
+
+                # Activate downstream dependents
+                for dep_id in wf.dependents.get(nid, []):
+                    if dep_id in self._skipped:
                         continue
+                    self._pending_deps[dep_id] -= 1
+                    if self._pending_deps[dep_id] <= 0 and dep_id not in self._ready_queue:
+                        self._ready_queue.append(dep_id)
 
-                    del self._running[nid]
-                    nr = task.result()
-                    self._total_executions += 1
-
-                    # Store result
-                    wf.results.append(nr)
-                    self._context["nodes"][nid] = {
-                        "output": nr.output,
-                        "exit_code": nr.exit_code,
-                        "duration": nr.duration,
-                        "error": nr.error or "",
-                    }
-                    self._context["previous"] = nr.output
-                    self._completed.add(nid)
-
-                    # Callback
-                    wave_idx = self._node_wave.get(nid, 0)
-                    if self._on_node_done:
-                        self._on_node_done(nid, nr, wave_idx)
-
-                    # Track wave completion
-                    wave_node_ids = [n.id for n in self._waves[wave_idx]]
-                    if all(nid_c in self._completed for nid_c in wave_node_ids):
-                        self._completed_waves.add(wave_idx)
-
-                    self._progress(f"Node '{nid}' done ({nr.duration:.1f}s)")
-
-                    # Activate downstream dependents
-                    for dep_id in wf.dependents.get(nid, []):
-                        if dep_id in self._skipped:
-                            continue
-                        self._pending_deps[dep_id] -= 1
-                        if self._pending_deps[dep_id] <= 0:
-                            if dep_id not in self._running and dep_id not in self._ready_queue:
-                                self._ready_queue.append(dep_id)
-
-                    self._try_announce_waves()
+                self._try_announce_waves()
 
                 # Circuit breaker
                 if self._total_executions >= self._max_total:
@@ -227,8 +205,6 @@ class DAGRunner:
                     self._progress(
                         f"Workflow execution limit reached ({self._max_total} total executions)"
                     )
-                    for t in self._running.values():
-                        t.cancel()
                     break
 
             # Propagate skips for unactivated nodes
@@ -298,7 +274,7 @@ class DAGRunner:
             matched = True
 
             if self._on_condition:
-                self._on_condition(node.id, True, f"route {ri}")
+                self._on_condition(node.id, True, f"route {ri}", route.to)
 
             for target_id in route.to:
                 all_targets.add(target_id)
@@ -336,7 +312,7 @@ class DAGRunner:
 
         if not matched:
             if self._on_condition:
-                self._on_condition(node.id, False, "no match")
+                self._on_condition(node.id, False, "no match", [])
 
         # Mark router as completed
         self._completed.add(node.id)
