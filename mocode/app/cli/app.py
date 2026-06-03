@@ -49,8 +49,10 @@ class CLIApp:
         config: Config | None = None,
         display: Display | None = None,
         home: Path | None = None,
+        interactive: bool = True,
     ):
         self.home = home or Path.home() / ".mocode"
+        self.interactive = interactive
         _fix_console()
 
         self.config = config or Config.load()
@@ -58,16 +60,22 @@ class CLIApp:
             return  # caller checks and handles
 
         self.display = display or Display()
+
         self.commands = CommandRegistry()
-        self._register_commands()
-        self.display.set_commands(self.commands.all())
+        if self.interactive:
+            self._register_commands()
+            self.display.set_commands(self.commands.all())
+        else:
+            register_prompt_commands(self.commands)
 
         self.agent = self._build_agent()
-        self._session_mgr = SessionManager(
-            workdir=str(Path.cwd()),
-            store=FileSessionStore(),
-        )
-        self._session_mgr.create()
+
+        if self.interactive:
+            self._session_mgr = SessionManager(
+                workdir=str(Path.cwd()),
+                store=FileSessionStore(),
+            )
+            self._session_mgr.create()
 
     # ── Console setup ─────────────────────────────────────
 
@@ -123,12 +131,17 @@ class CLIApp:
 
         goal_hook = GoalHook()
 
+        hooks = []
+        if self.interactive:
+            hooks.append(CLIDisplayHook(self.display))
+        hooks.append(goal_hook)
+
         agent = (
             Agent()
             .provider(provider)
             .prompt(prompt)
             .tools(self._tools)
-            .hooks([CLIDisplayHook(self.display), goal_hook])
+            .hooks(hooks)
             .config(agent_config)
             .build()
         )
@@ -281,7 +294,7 @@ class CLIApp:
     # ── Entry point ────────────────────────────────────────
 
     def run(self):
-        """Sync entry point for the CLI."""
+        """Sync entry point for the interactive CLI."""
         try:
             asyncio.run(self._repl())
         except KeyboardInterrupt:
@@ -291,8 +304,45 @@ class CLIApp:
                 provider=self.config.active_provider,
             )
 
+    def run_oneshot(self, prompt: str, stdin_text: str | None = None):
+        """Non-interactive: run one query, print response, exit."""
+        try:
+            result = asyncio.run(self._oneshot(prompt, stdin_text))
+        except KeyboardInterrupt:
+            print("\nInterrupted.", file=sys.stderr)
+            sys.exit(1)
+        if result:
+            print(result)
+
+    async def _oneshot(self, prompt: str, stdin_text: str | None):
+        """Resolve slash commands, compose prompt, run agent."""
+        prompt = await self._resolve_prompt(prompt)
+        full_prompt = _compose_prompt(prompt, stdin_text)
+        return await self.agent.chat(full_prompt)
+
+    async def _resolve_prompt(self, text: str) -> str:
+        """Resolve slash command to prompt template, or return text as-is."""
+        if not text.startswith("/"):
+            return text
+        parts = text.split(None, 1)
+        cmd = self.commands.get(parts[0].lower())
+        if cmd is None:
+            return text
+        ctx = CommandContext(app=self, args=parts[1] if len(parts) > 1 else "", display=self.display)
+        result = await cmd.run(ctx)
+        if result.kind == "prompt":
+            return result.prompt
+        return text
+
 
 # ── Module-level helpers ────────────────────────────────────
+
+
+def _compose_prompt(prompt: str, stdin_text: str | None) -> str:
+    """Combine stdin context with the user's prompt."""
+    if not stdin_text or not stdin_text.rstrip():
+        return prompt
+    return f"{stdin_text.rstrip()}\n\n---\n\n{prompt}"
 
 
 def _fix_console():
