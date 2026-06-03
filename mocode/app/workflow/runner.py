@@ -120,6 +120,7 @@ class DAGRunner:
         self._ready_queue: list[str] = []
         self._total_executions = 0
         self._max_total = wf.max_iterations * len(wf.nodes)
+        self._in_loop: bool = False
 
     # ── Main execution loop ───────────────────────────────────
 
@@ -138,7 +139,8 @@ class DAGRunner:
 
         try:
             while self._ready_queue:
-                self._try_announce_waves()
+                if not self._in_loop:
+                    self._try_announce_waves()
 
                 # Execute one node at a time (serial)
                 nid = self._ready_queue.pop(0)
@@ -197,7 +199,8 @@ class DAGRunner:
                     if self._pending_deps[dep_id] <= 0 and dep_id not in self._ready_queue:
                         self._ready_queue.append(dep_id)
 
-                self._try_announce_waves()
+                if not self._in_loop:
+                    self._try_announce_waves()
 
                 # Circuit breaker
                 if self._total_executions >= self._max_total:
@@ -282,12 +285,14 @@ class DAGRunner:
 
                 if target_id in self._completed and target_node:
                     # Back-edge — loop back
-                    self._iteration[target_id] += 1
+                    self._in_loop = True
                     self._completed.discard(target_id)
                     # Allow the target's wave to be re-announced
                     target_wave_idx = self._node_wave.get(target_id)
                     if target_wave_idx is not None:
                         self._completed_waves.discard(target_wave_idx)
+                        for later_w in range(target_wave_idx, self._total_waves):
+                            self._announced_waves.discard(later_w)
                     self._reset_downstream(target_id)
                     # Router must re-evaluate after back-edge target re-runs
                     self._completed.discard(node.id)
@@ -295,6 +300,7 @@ class DAGRunner:
                     self._pending_deps[target_id] = len(target_node.depends)
                     self._activate_target(target_id)
 
+                    retry_count = self._route_counter[route_key]
                     max_iter = route.max if route.max > 0 else 0
                     iter_result = NodeResult(
                         node_id=target_id,
@@ -302,11 +308,13 @@ class DAGRunner:
                         output="",
                         exit_code=0,
                         duration=0,
-                        iteration=self._iteration[target_id],
+                        iteration=retry_count,
                     )
                     if self._on_loop_iter:
-                        self._on_loop_iter(target_id, self._iteration[target_id], max_iter, iter_result)
+                        self._on_loop_iter(target_id, retry_count, max_iter, iter_result)
                 else:
+                    if self._in_loop:
+                        self._in_loop = False
                     self._activate_target(target_id)
             break  # first-match-wins
 
@@ -321,6 +329,7 @@ class DAGRunner:
         for dep_id in wf.dependents.get(node.id, []):
             if dep_id not in all_targets and dep_id not in self._activated:
                 self._skipped.add(dep_id)
+                self._pending_deps[dep_id] -= 1
                 if self._on_node_skip:
                     self._on_node_skip(dep_id, "not activated by router")
                 self._propagate_skip(dep_id)
@@ -340,13 +349,15 @@ class DAGRunner:
         """Reset all downstream nodes of a back-edge target."""
         wf = self.workflow
         for child_id in wf.dependents.get(node_id, []):
-            if child_id in self._completed:
+            if child_id in self._completed or child_id in self._skipped:
                 self._completed.discard(child_id)
+                self._skipped.discard(child_id)
                 child_node = wf.node_map.get(child_id)
                 if child_node:
                     self._pending_deps[child_id] = len(child_node.depends)
+                    completed_deps = sum(1 for d in child_node.depends if d in self._completed)
+                    self._pending_deps[child_id] -= completed_deps
                 self._activated.discard(child_id)
-                self._skipped.discard(child_id)
                 self._reset_downstream(child_id)
 
     def _propagate_skip(self, node_id: str) -> None:

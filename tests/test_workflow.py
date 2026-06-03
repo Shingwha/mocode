@@ -1203,6 +1203,116 @@ class TestRunnerBackEdge:
         assert len(process_results) == 2
         assert wf.status == "done"
 
+    @pytest.mark.asyncio
+    async def test_multi_router_shared_downstream(self):
+        """Node depending on two routers runs when one skips and the other activates."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="start", task="Start"),
+                Node(
+                    id="r1", type="router", depends=["start"],
+                    routes=[
+                        Route(match="GO", to=["mid"]),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="mid", task="Mid", depends=["r1"]),
+                Node(
+                    id="r2", type="router", depends=["mid"],
+                    routes=[
+                        Route(match="RETRY", to=["mid"], max=1),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="done", task="Done", depends=["r1", "r2"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"GO"),      # start
+                _make_subprocess_mock(b"RETRY"),   # mid (1st)
+                _make_subprocess_mock(b"OK"),      # mid (2nd, back-edge)
+                _make_subprocess_mock(b"done"),    # done
+            ]
+            results = await runner.run()
+
+        assert any(r.node_id == "done" for r in results), "done node should have executed"
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_loop_iter_counter_uses_retry_count(self):
+        """Loop iter callback shows retry count (1, 2) not total activations (2, 4)."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="do", task="Do"),
+                Node(
+                    id="check", type="router", depends=["do"],
+                    routes=[
+                        Route(match="RETRY", to=["do"], max=2),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="done", task="Done", depends=["check"]),
+            ],
+        )
+        loop_calls: list[tuple[str, int, int]] = []
+        runner = DAGRunner(
+            wf,
+            on_loop_iter=lambda nid, it, mx, res: loop_calls.append((nid, it, mx)),
+        )
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"RETRY"),
+                _make_subprocess_mock(b"RETRY"),
+                _make_subprocess_mock(b"OK"),
+                _make_subprocess_mock(b"done"),
+            ]
+            await runner.run()
+
+        assert len(loop_calls) == 2
+        assert loop_calls[0][1] == 1  # first retry
+        assert loop_calls[1][1] == 2  # second retry
+
+    @pytest.mark.asyncio
+    async def test_wave_reannouncement_after_back_edge(self):
+        """After back-edge, later waves are re-announced only after loop completes."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="do", task="Do"),
+                Node(id="proc", task="Proc", depends=["do"]),
+                Node(
+                    id="check", type="router", depends=["proc"],
+                    routes=[
+                        Route(match="RETRY", to=["do"], max=1),
+                        Route(match=None, to=["done"]),
+                    ],
+                ),
+                Node(id="done", task="Done", depends=["check"]),
+            ],
+        )
+        wave_calls: list[tuple[int, int, list[str]]] = []
+        runner = DAGRunner(
+            wf,
+            on_wave_start=lambda idx, total, nids: wave_calls.append((idx, total, nids)),
+        )
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"attempt1"),
+                _make_subprocess_mock(b"RETRY"),
+                _make_subprocess_mock(b"attempt2"),
+                _make_subprocess_mock(b"OK"),
+                _make_subprocess_mock(b"done"),
+            ]
+            await runner.run()
+
+        # "done" wave should be announced exactly once, after the loop completes
+        done_wave_calls = [c for c in wave_calls if "done" in c[2]]
+        assert len(done_wave_calls) == 1
+
 
 # ===========================================================================
 # 11. Runner — Error handling
