@@ -1,6 +1,6 @@
 """Tests for CommandRegistry, CommandResult, and individual commands."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -117,3 +117,100 @@ class TestExportCommand:
         # Verify the file was created
         files = list(tmp_path.glob("session_*.json"))
         assert len(files) == 1
+
+class TestCopyCommand:
+    @pytest.mark.asyncio
+    async def test_copies_last_assistant_response(self):
+        app = MagicMock()
+        app.agent.messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "first response"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "target response"},
+        ]
+        display = MagicMock()
+
+        from mocode.app.cli.commands.copy import CopyCommand
+
+        with patch("pyperclip.copy") as mock_copy:
+            cmd = CopyCommand()
+            result = await cmd.run(_make_ctx(app=app, display=display))
+
+        assert result == CommandResult.CONTINUE
+        mock_copy.assert_called_once_with("target response")
+        display.info.assert_called_once()
+        assert "Copied: target response" in display.info.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_skips_tool_call_messages(self):
+        app = MagicMock()
+        app.agent.messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1"}]},
+            {"role": "tool", "content": "result"},
+            {"role": "assistant", "content": "the real response"},
+        ]
+        display = MagicMock()
+
+        from mocode.app.cli.commands.copy import CopyCommand
+
+        with patch("pyperclip.copy") as mock_copy:
+            cmd = CopyCommand()
+            result = await cmd.run(_make_ctx(app=app, display=display))
+
+        assert result == CommandResult.CONTINUE
+        mock_copy.assert_called_once_with("the real response")
+
+    @pytest.mark.asyncio
+    async def test_warns_when_no_assistant_response(self):
+        app = MagicMock()
+        app.agent.messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "tool", "content": "result"},
+        ]
+        display = MagicMock()
+
+        from mocode.app.cli.commands.copy import CopyCommand
+
+        with patch("pyperclip.copy") as mock_copy:
+            cmd = CopyCommand()
+            result = await cmd.run(_make_ctx(app=app, display=display))
+
+        assert result == CommandResult.CONTINUE
+        mock_copy.assert_not_called()
+        display.warn.assert_called_once()
+        assert "No assistant response" in display.warn.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_warns_on_empty_messages(self):
+        app = MagicMock()
+        app.agent.messages = []
+        display = MagicMock()
+
+        from mocode.app.cli.commands.copy import CopyCommand
+
+        with patch("pyperclip.copy") as mock_copy:
+            cmd = CopyCommand()
+            result = await cmd.run(_make_ctx(app=app, display=display))
+
+        assert result == CommandResult.CONTINUE
+        mock_copy.assert_not_called()
+        display.warn.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handles_clipboard_error_gracefully(self):
+        app = MagicMock()
+        app.agent.messages = [
+            {"role": "assistant", "content": "some content"},
+        ]
+        display = MagicMock()
+
+        from mocode.app.cli.commands.copy import CopyCommand
+
+        with patch("pyperclip.copy", side_effect=RuntimeError("no DISPLAY")):
+            cmd = CopyCommand()
+            result = await cmd.run(_make_ctx(app=app, display=display))
+
+        assert result == CommandResult.CONTINUE
+        display.error.assert_called_once()
+        assert "Clipboard error" in display.error.call_args[0][0]

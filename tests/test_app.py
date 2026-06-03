@@ -31,7 +31,7 @@ def _make_app() -> CLIApp:
     ):
         app = CLIApp(config=config, display=mock_display)
     app._session_mgr = mock_session_mgr
-    # Reset call counts — __init__ already called create()
+    # Reset call counts — _session_mgr is pre-mocked, clear init noise
     mock_session_mgr.reset_mock()
     # Keep _build_prompt mocked on the instance for replace calls
     app._build_prompt = MagicMock(return_value="test-prompt")

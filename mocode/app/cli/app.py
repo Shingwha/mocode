@@ -37,6 +37,7 @@ from .commands.clear import ClearCommand
 from .commands.model import ModelCommand
 from .commands.resume import ResumeCommand
 from .commands.connect import ConnectCommand
+from .commands.copy import CopyCommand
 from .commands.prompts import register_prompt_commands
 from .commands.workflow import WorkflowCommand
 from .display import Display
@@ -69,7 +70,7 @@ class CLIApp:
             for cmd in [
                 QuitCommand(), HelpCommand(), ExportCommand(),
                 ClearCommand(), ModelCommand(), ResumeCommand(), ConnectCommand(),
-                WorkflowCommand(),
+                WorkflowCommand(), CopyCommand(),
             ]:
                 self.commands.register(cmd)
             self.display.set_commands(self.commands.all())
@@ -87,7 +88,7 @@ class CLIApp:
                 workdir=str(Path.cwd()),
                 store=FileSessionStore(),
             )
-            self._session_mgr.create()
+            # Lazy create — session is only created on first actual save
 
     # ── Console setup ─────────────────────────────────────
 
