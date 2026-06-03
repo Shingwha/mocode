@@ -24,7 +24,7 @@ from .theme import (
 )
 
 if TYPE_CHECKING:
-    from ...workflow import Workflow
+    from ...workflow import StepResult, Workflow
     from .commands import Command
 
 
@@ -251,21 +251,30 @@ class Display:
         """Print workflow header before execution."""
         step_count = wf.total_steps()
         phase_count = wf.total_phases
+        lane_count = sum(len(p.lanes) for p in wf.phases if p.lanes)
+        lane_suffix = f" ({lane_count} parallel lanes)" if lane_count else ""
         self._print(
             f"{_s('●', YELLOW)} {_s(wf.name, BOLD)}"
-            f"  {_s(f'{phase_count} phases · {step_count} steps', DIM)}"
+            f"  {_s(f'{phase_count} phases · {step_count} steps{ lane_suffix}', DIM)}"
         )
         self._print()
 
     def workflow_step_done(
-        self, phase_name: str, exit_code: int, duration: float
+        self, sr: StepResult, phase_name: str, lane_name: str | None = None
     ) -> None:
         """Print a completed step result in real-time."""
-        dur = f"{duration:.1f}s"
-        if exit_code == 0:
-            self._print(f"  {_s('✓', YELLOW)} {phase_name}  {_s(dur, DIM)}")
+        dur = f"{sr.duration:.1f}s"
+        icon = _s('✓', YELLOW) if sr.exit_code == 0 else _s('✗', RED)
+        task_preview = sr.task[:40] if sr.task else ""
+
+        if lane_name:
+            # Lane mode: indented with lane prefix
+            self._print(
+                f"    {_s('│', DIM)} {_s(lane_name, SOFT_CYAN)} · {icon} {task_preview}  {_s(dur, DIM)}"
+            )
         else:
-            self._print(f"  {_s('✗', RED)} {phase_name}  {_s(dur, DIM)}")
+            # Sequential mode
+            self._print(f"  {icon} {phase_name} · {task_preview}  {_s(dur, DIM)}")
 
     def workflow_summary(self, wf: Workflow) -> None:
         """Print final output and summary after all steps completed."""

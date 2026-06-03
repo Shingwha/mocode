@@ -93,6 +93,10 @@ class Theme:
     icon_text: str = "│"
     icon_compact: str = "─"
     icon_input: str = "❯"
+    icon_lane: str = "│"
+    icon_goto: str = "→"
+    icon_cancel: str = "↯"
+    icon_phase: str = "◇"
     color_tool: str = CYAN
     color_error: str = RED
     color_reasoning: str = DIM

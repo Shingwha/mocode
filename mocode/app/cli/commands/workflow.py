@@ -88,23 +88,55 @@ class WorkflowCommand:
             ctx.display.warn(f"Workflow '{name}' not found.")
             return CommandResult.CONTINUE
 
-        lines = [f"Workflow: {wf.name}", f"Description: {wf.description}", ""]
+        lines = [
+            f"Workflow: {wf.name}",
+            f"Description: {wf.description}",
+            f"Max iterations: {wf.max_iterations}",
+            "",
+        ]
         for pi, phase in enumerate(wf.phases):
-            flags = []
-            if phase.parallel:
-                flags.append("parallel")
-            if phase.max_attempts > 1:
-                flags.append(f"max_attempts={phase.max_attempts}")
-            if phase.halt_if:
-                flags.append(f"halt_if={phase.halt_if!r}")
-            flag_str = f" ({', '.join(flags)})" if flags else ""
-            lines.append(f"  Phase {pi + 1}: {phase.name}{flag_str}")
-            for si, step in enumerate(phase.steps):
-                id_str = f" [{step.id}]" if step.id else ""
-                lines.append(f"    {si + 1}. {step.task[:60]}{id_str}")
+            phase_info = f"  Phase {pi + 1}: {phase.name}"
+            phase_extras = []
+            if phase.max_iterations:
+                phase_extras.append(f"max_iterations={phase.max_iterations}")
+            if phase.goto:
+                goto_str = ", ".join(
+                    f"goto: {g.to}" + (f" (match={g.match!r})" if g.match else "")
+                    + (f" (max={g.max})" if g.max else "")
+                    for g in phase.goto
+                )
+                phase_extras.append(goto_str)
+            if phase_extras:
+                phase_info += " (" + "; ".join(phase_extras) + ")"
+            lines.append(phase_info)
+
+            if phase.lanes:
+                for lane in phase.lanes:
+                    lane_str = f"    Lane: {lane.name}"
+                    if lane.id:
+                        lane_str += f" [{lane.id}]"
+                    lines.append(lane_str)
+                    for si, step in enumerate(lane.steps):
+                        lines.append(self._step_line(si, step, indent=6))
+            else:
+                for si, step in enumerate(phase.steps):
+                    lines.append(self._step_line(si, step, indent=4))
 
         ctx.display.info("\n".join(lines))
         return CommandResult.CONTINUE
+
+    def _step_line(self, si: int, step, indent: int) -> str:
+        s = f"{' ' * indent}{si + 1}. {step.task[:60]}"
+        if step.id:
+            s += f" [{step.id}]"
+        if step.goto:
+            goto_str = ", ".join(
+                f"→ {g.to}" + (f" if /{g.match}/" if g.match else "")
+                + (f" (max={g.max})" if g.max else "")
+                for g in step.goto
+            )
+            s += f" ({goto_str})"
+        return s
 
     async def _run(self, ctx: CommandContext, args_str: str) -> CommandResult:
         parts = args_str.split()
@@ -162,15 +194,34 @@ class WorkflowCommand:
             "```yaml\n"
             "name: my-workflow\n"
             "description: description text\n"
+            "max_iterations: 100          # optional, default 100\n"
+            "\n"
             "phases:\n"
-            "  - id: optional-phase-id\n"
+            "  - id: phase_id             # optional\n"
             "    name: Phase Name\n"
-            "    parallel: true          # optional\n"
-            "    max_attempts: 3         # optional\n"
-            "    halt_if: pattern        # optional regex\n"
+            "    max_iterations: 5        # optional, overrides workflow default\n"
+            "    # Sequential mode:\n"
             "    steps:\n"
-            "      - id: optional-step-id\n"
-            "        task: Task description (supports {args.key}, {steps.id.output}, {previous}, {env.VAR})\n"
+            "      - id: step_id          # optional\n"
+            "        task: Task description (supports {args.key}, {steps.id.output},\n"
+            "              {previous}, {lane.id.output}, {phase.id.output}, {env.VAR})\n"
+            "        goto:                # optional\n"
+            "          - match: pattern   # optional regex\n"
+            "            to: target       # next, end, step_id, phase.xxx, __end__\n"
+            "            max: 3           # optional, max hits before skipping\n"
+            "          - to: target       # fallback (no match)\n"
+            "    # OR parallel mode:\n"
+            "    lanes:\n"
+            "      - id: lane_id          # optional\n"
+            "        name: Lane Name\n"
+            "        steps:\n"
+            "          - id: step_id\n"
+            "            task: Task description\n"
+            "            goto: [...]\n"
+            "    goto:                    # optional Phase-level\n"
+            "      - match: pattern\n"
+            "        to: phase.other_phase\n"
+            "      - to: target\n"
             "```\n\n"
             "Save the file to .mocode/workflows/<name>.yaml in the current project directory. "
             "Create the .mocode/workflows/ directory if it does not exist."
