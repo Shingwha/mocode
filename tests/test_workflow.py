@@ -17,6 +17,7 @@ from mocode.app.workflow import (
     compute_waves,
     fill_template,
 )
+from mocode.app.workflow.models import infer_depends_from_task
 from mocode.app.workflow.runner import DAGRunner
 
 
@@ -191,6 +192,64 @@ class TestNodeResultModel:
             exit_code=0, duration=3.0, iteration=3,
         )
         assert nr.iteration == 3
+
+
+class TestDependsInference:
+    """Tests for auto-inference of depends from task template references."""
+
+    def test_infer_from_nodes_output(self):
+        assert infer_depends_from_task("Check {nodes.scan.output}") == ["scan"]
+
+    def test_infer_multiple_refs(self):
+        assert infer_depends_from_task(
+            "A: {nodes.a.output}, B: {nodes.b.duration}"
+        ) == ["a", "b"]
+
+    def test_infer_ignores_args(self):
+        assert infer_depends_from_task("Hello {args.name}") == []
+
+    def test_infer_ignores_env(self):
+        assert infer_depends_from_task("Path: {env.HOME}") == []
+
+    def test_infer_ignores_previous(self):
+        assert infer_depends_from_task("Prev: {previous}") == []
+
+    def test_infer_empty_task(self):
+        assert infer_depends_from_task("") == []
+
+    def test_infer_node_alias(self):
+        assert infer_depends_from_task("{node.x.output}") == ["x"]
+
+    def test_infer_sorted_unique(self):
+        result = infer_depends_from_task(
+            "{nodes.b.output} {nodes.a.output} {nodes.b.output}"
+        )
+        assert result == ["a", "b"]
+
+    def test_node_from_dict_auto_infers(self):
+        n = Node.from_dict({"id": "t", "task": "Process {nodes.src.output}"})
+        assert "src" in n.depends
+
+    def test_node_from_dict_merges_with_explicit(self):
+        n = Node.from_dict({
+            "id": "t", "task": "Use {nodes.src.output}",
+            "depends": ["gate"],
+        })
+        assert "gate" in n.depends
+        assert "src" in n.depends
+
+    def test_node_from_dict_no_task_no_inference(self):
+        n = Node.from_dict({"id": "r", "type": "router", "routes": []})
+        assert n.depends == []
+
+    def test_node_constructor_auto_infers(self):
+        """__post_init__ inference also works when using Node() directly."""
+        n = Node(id="t", task="Process {nodes.src.output}")
+        assert "src" in n.depends
+
+    def test_node_constructor_merges_explicit(self):
+        n = Node(id="t", task="Use {nodes.src.output}", depends=["gate"])
+        assert n.depends == ["gate", "src"]
 
 
 class TestWorkflowModel:
@@ -1315,7 +1374,108 @@ class TestRunnerBackEdge:
 
 
 # ===========================================================================
-# 11. Runner — Error handling
+# 11. Runner — Auto-inference integration (depends + router gating)
+# ===========================================================================
+
+
+class TestRunnerAutoInference:
+    """Auto-inferred depends interact correctly with router gating and back-edges."""
+
+    @pytest.mark.asyncio
+    async def test_router_target_not_auto_enqueued(self):
+        """Router-gated node with auto-inferred depends waits for router."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="start", task="Start"),
+                Node(id="validate", task="Val: {nodes.start.output}"),
+                Node(
+                    id="router", type="router", depends=["validate"],
+                    routes=[
+                        Route(match="FAIL", to=["start"], max=1),
+                        Route(match=None, to=["process"]),
+                    ],
+                ),
+                # auto-infers depends=[start] from {nodes.start.output}
+                # should NOT run until router fires
+                Node(id="process", task="Proc: {nodes.start.output}"),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as me:
+            me.side_effect = [
+                _make_subprocess_mock(b"data"),
+                _make_subprocess_mock(b"PASS"),
+                _make_subprocess_mock(b"done"),
+            ]
+            results = await runner.run()
+
+        proc_results = [r for r in results if r.node_id == "process"]
+        assert len(proc_results) == 1, "process should run exactly once"
+
+    @pytest.mark.asyncio
+    async def test_loop_retry_auto_inferred_deps(self):
+        """Full loop-retry scenario with auto-inference: no false loop on process."""
+        wf = Workflow(
+            name="lr",
+            max_iterations=20,
+            nodes=[
+                Node(id="g", task="Gen"),
+                Node(id="v", task="Val: {nodes.g.output}"),
+                Node(id="r", type="router", depends=["v"],
+                     routes=[
+                         Route(match="FAIL", to=["g"], max=3),
+                         Route(match=None, to=["p"]),
+                     ]),
+                Node(id="p", task="Proc: {nodes.g.output}"),
+                Node(id="o", task="Out: {nodes.p.output}"),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as me:
+            me.side_effect = [
+                _make_subprocess_mock(b"ok"), _make_subprocess_mock(b"FAIL err"),
+                _make_subprocess_mock(b"ok"), _make_subprocess_mock(b"FAIL err"),
+                _make_subprocess_mock(b"ok"), _make_subprocess_mock(b"FAIL err"),
+                _make_subprocess_mock(b"ok"), _make_subprocess_mock(b"PASS"),
+                _make_subprocess_mock(b"done"), _make_subprocess_mock(b"done"),
+            ]
+            results = await runner.run()
+
+        proc_count = sum(1 for r in results if r.node_id == "p")
+        out_count = sum(1 for r in results if r.node_id == "o")
+        assert proc_count == 1, f"process ran {proc_count}x (expect 1)"
+        assert out_count == 1, f"output ran {out_count}x (expect 1)"
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_explicit_depends_router_gate_only(self):
+        """Node with explicit depends on router (no template ref) still works."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(id="r", type="router", depends=["a"],
+                     routes=[Route(match=None, to=["b"])]),
+                # b depends on r but references a's output (auto-inferred)
+                Node(id="b", task="B: {nodes.a.output}", depends=["r"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as me:
+            me.side_effect = [
+                _make_subprocess_mock(b"data"),
+                _make_subprocess_mock(b"b done"),
+            ]
+            results = await runner.run()
+
+        b_results = [r for r in results if r.node_id == "b"]
+        assert len(b_results) == 1
+        assert wf.status == "done"
+
+
+# ===========================================================================
+# 12. Runner — Error handling
 # ===========================================================================
 
 

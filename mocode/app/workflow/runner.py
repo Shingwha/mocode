@@ -90,7 +90,7 @@ class DAGRunner:
 
     def _init_run(self, args: dict | None = None) -> None:
         """Initialize per-run state as instance variables."""
-        from .graph import compute_waves
+        from .graph import _collect_ancestors, compute_waves
 
         wf = self.workflow
 
@@ -109,7 +109,23 @@ class DAGRunner:
             for n in wave:
                 self._node_wave[n.id] = idx
 
+        # Initialize pending deps from explicit + auto-inferred depends
         self._pending_deps: dict[str, int] = {n.id: len(n.depends) for n in wf.nodes}
+
+        # Add non-back-edge router route edges so targets wait for router gating.
+        # Skip if target already depends on this router (no double-counting).
+        self._router_dep_extra: dict[str, int] = {}
+        for n in wf.nodes:
+            if n.type == "router":
+                ancestors = _collect_ancestors(n.id, wf.node_map)
+                for route in n.routes:
+                    for target in route.to:
+                        if target not in ancestors:  # not a back-edge
+                            target_node = wf.node_map.get(target)
+                            if target_node and n.id not in target_node.depends:
+                                self._router_dep_extra[target] = self._router_dep_extra.get(target, 0) + 1
+                                self._pending_deps[target] = self._pending_deps.get(target, 0) + 1
+
         self._activated: set[str] = set()
         self._completed: set[str] = set()
         self._skipped: set[str] = set()
@@ -349,16 +365,17 @@ class DAGRunner:
         """Reset all downstream nodes of a back-edge target."""
         wf = self.workflow
         for child_id in wf.dependents.get(node_id, []):
-            if child_id in self._completed or child_id in self._skipped:
-                self._completed.discard(child_id)
-                self._skipped.discard(child_id)
-                child_node = wf.node_map.get(child_id)
-                if child_node:
-                    self._pending_deps[child_id] = len(child_node.depends)
-                    completed_deps = sum(1 for d in child_node.depends if d in self._completed)
-                    self._pending_deps[child_id] -= completed_deps
-                self._activated.discard(child_id)
-                self._reset_downstream(child_id)
+            self._completed.discard(child_id)
+            self._skipped.discard(child_id)
+            child_node = wf.node_map.get(child_id)
+            if child_node:
+                base = len(child_node.depends)
+                extra = self._router_dep_extra.get(child_id, 0)
+                self._pending_deps[child_id] = base + extra
+                completed_deps = sum(1 for d in child_node.depends if d in self._completed)
+                self._pending_deps[child_id] -= completed_deps
+            self._activated.discard(child_id)
+            self._reset_downstream(child_id)
 
     def _propagate_skip(self, node_id: str) -> None:
         """Mark a node and all its downstream as skipped."""

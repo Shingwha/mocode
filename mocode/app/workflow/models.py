@@ -42,6 +42,9 @@ class Node:
 
     type "task"  — has a ``task`` template, runs via mocode -p.
     type "router" — has ``routes``, no ``task``; evaluates conditions.
+
+    ``depends`` is auto-inferred from ``{nodes.<id>.*}`` references in the
+    ``task`` template and merged with any explicit ``depends``.
     """
 
     id: str = ""
@@ -50,6 +53,14 @@ class Node:
     task: str = ""  # template string (empty for router)
     depends: list[str] = field(default_factory=list)
     routes: list[Route] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        """Auto-infer depends from {nodes.X.*} refs, merged with explicit depends."""
+        if self.task and self.type == "task":
+            inferred = infer_depends_from_task(self.task)
+            if inferred:
+                seen = set(self.depends)
+                self.depends.extend(nid for nid in inferred if nid not in seen)
 
     @classmethod
     def from_dict(cls, data: dict) -> Node:
@@ -76,6 +87,20 @@ class NodeResult:
     error: str | None = None
     status: str = "done"  # "done" | "skipped"
     iteration: int = 1  # which execution (increments on loop)
+
+
+# ── Depends inference ────────────────────────────────────────
+
+_RE_NODE_REF = re.compile(r"\{node(?:s?)\.(\w+)\.\w+\}")
+
+
+def infer_depends_from_task(task: str) -> list[str]:
+    """Extract node IDs from ``{nodes.<id>.*}`` / ``{node.<id>.*}`` references.
+
+    Returns a sorted unique list of node IDs found in the task template.
+    Router nodes (no task) return an empty list.
+    """
+    return sorted({m.group(1) for m in _RE_NODE_REF.finditer(task)})
 
 
 # ── Template filling ─────────────────────────────────────────
