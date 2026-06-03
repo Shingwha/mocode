@@ -16,33 +16,24 @@ def main():
     args = parse_args()
 
     if args.prompt is not None:
-        _run_oneshot(args)
+        _run_app(interactive=False, prompt=args.prompt, stdin_text=read_stdin_if_piped())
     else:
-        _run_interactive()
+        _run_app(interactive=True)
 
 
-def _run_oneshot(args):
-    """Non-interactive path: load config, run agent, print, exit."""
+def _run_app(*, interactive: bool, prompt: str | None = None, stdin_text: str | None = None):
+    """Unified entry: create CLIApp, check config, dispatch to run or run_oneshot."""
     from .app.cli import CLIApp
 
-    app = CLIApp(interactive=False)
+    app = CLIApp(interactive=interactive)
     if app.config is None:
         print("Config not found. Create ~/.mocode/config.json first.", file=sys.stderr)
         sys.exit(1)
 
-    stdin_text = read_stdin_if_piped()
-    app.run_oneshot(args.prompt, stdin_text)
-
-
-def _run_interactive():
-    """Interactive path: existing CLIApp flow."""
-    from .app.cli import CLIApp
-
-    app = CLIApp()
-    if app.config is None:
-        print("Config not found. Create ~/.mocode/config.json first.", file=sys.stderr)
-        sys.exit(1)
-    app.run()
+    if interactive:
+        app.run()
+    else:
+        app.run_oneshot(prompt, stdin_text)
 
 
 if __name__ == "__main__":

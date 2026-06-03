@@ -62,14 +62,18 @@ class CLIApp:
         self.display = display or Display()
 
         self.commands = CommandRegistry()
+        register_prompt_commands(self.commands)
         if self.interactive:
-            self._register_commands()
+            for cmd in [
+                QuitCommand(), HelpCommand(), ExportCommand(),
+                ClearCommand(), ModelCommand(), ResumeCommand(), ConnectCommand(),
+            ]:
+                self.commands.register(cmd)
             self.display.set_commands(self.commands.all())
-        else:
-            register_prompt_commands(self.commands)
 
         self.agent = self._build_agent()
 
+        self._session_mgr: SessionManager | None = None
         if self.interactive:
             self._session_mgr = SessionManager(
                 workdir=str(Path.cwd()),
@@ -81,22 +85,9 @@ class CLIApp:
 
     @property
     def session_mgr(self) -> SessionManager:
+        if self._session_mgr is None:
+            raise RuntimeError("session_mgr not available in non-interactive mode")
         return self._session_mgr
-
-    # ── Command registration ──────────────────────────────
-
-    def _register_commands(self):
-        for cmd in [
-            QuitCommand(),
-            HelpCommand(),
-            ExportCommand(),
-            ClearCommand(),
-            ModelCommand(),
-            ResumeCommand(),
-            ConnectCommand(),
-        ]:
-            self.commands.register(cmd)
-        register_prompt_commands(self.commands)
 
     # ── Agent construction ─────────────────────────────────
 
@@ -172,7 +163,7 @@ class CLIApp:
 
     def _save_session(self):
         """Persist current messages to session store. Skips empty sessions."""
-        if not self.agent.messages:
+        if self._session_mgr is None or not self.agent.messages:
             return
         self._session_mgr.save(
             self.agent.messages,
@@ -185,8 +176,9 @@ class CLIApp:
         self._save_session()
         self.agent.messages.clear()
         self.agent.messages.extend(messages)
-        self._session_mgr.clear()
-        self._session_mgr.create()
+        if self._session_mgr is not None:
+            self._session_mgr.clear()
+            self._session_mgr.create()
         self.agent.system_prompt = self._build_prompt()
         self.display.clear_screen()
         if messages:
@@ -213,8 +205,7 @@ class CLIApp:
     # ── Dispatch ───────────────────────────────────────────
 
     async def _dispatch(self, text: str) -> CommandResult:
-        """Route slash commands through the registry."""
-        low = text.lower()
+        """Resolve input: run command if slash-prefixed, otherwise mark for chat."""
         parts = text.split(None, 1)
         cmd_text = parts[0].lower()
         args = parts[1] if len(parts) > 1 else ""
@@ -224,11 +215,11 @@ class CLIApp:
             ctx = CommandContext(app=self, args=args, display=self.display)
             return await cmd.run(ctx)
 
-        if low.startswith("/"):
+        if text.startswith("/"):
             self.display.warn(f"Unknown command: {cmd_text}")
             return CommandResult.CONTINUE
 
-        return CommandResult.CONTINUE  # not a command — fall through to chat
+        return CommandResult(kind="chat", prompt=text)
 
     # ── Chat helper ────────────────────────────────────────
 
@@ -253,8 +244,6 @@ class CLIApp:
         if result:
             self.display.response(result)
 
-        self._session_mgr.mark_dirty()
-
     # ── REPL ───────────────────────────────────────────────
 
     async def _repl(self):
@@ -272,22 +261,10 @@ class CLIApp:
                 result = await self._dispatch(user_input)
                 if result == CommandResult.EXIT:
                     break
-
-                # Prompt command — show command name, send prompt silently
-                if result.kind == "prompt":
+                if result.kind in ("prompt", "chat"):
                     self.display.user_message(user_input)
                     await self._run_chat(result.prompt)
-                    continue
-
-                # If dispatch handled it (CONTINUE) but text started with /,
-                # skip chat. If not a command, fall through.
-                low = user_input.lower()
-                cmd = self.commands.get(low.split(None, 1)[0])
-                if cmd is not None or low.startswith("/"):
-                    continue
-
-                self.display.user_message(user_input)
-                await self._run_chat(user_input)
+                    self._session_mgr.mark_dirty()
         finally:
             self._save_session()
 
@@ -316,23 +293,11 @@ class CLIApp:
 
     async def _oneshot(self, prompt: str, stdin_text: str | None):
         """Resolve slash commands, compose prompt, run agent."""
-        prompt = await self._resolve_prompt(prompt)
-        full_prompt = _compose_prompt(prompt, stdin_text)
+        result = await self._dispatch(prompt)
+        if result.kind not in ("prompt", "chat"):
+            return None
+        full_prompt = _compose_prompt(result.prompt, stdin_text)
         return await self.agent.chat(full_prompt)
-
-    async def _resolve_prompt(self, text: str) -> str:
-        """Resolve slash command to prompt template, or return text as-is."""
-        if not text.startswith("/"):
-            return text
-        parts = text.split(None, 1)
-        cmd = self.commands.get(parts[0].lower())
-        if cmd is None:
-            return text
-        ctx = CommandContext(app=self, args=parts[1] if len(parts) > 1 else "", display=self.display)
-        result = await cmd.run(ctx)
-        if result.kind == "prompt":
-            return result.prompt
-        return text
 
 
 # ── Module-level helpers ────────────────────────────────────
