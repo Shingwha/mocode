@@ -11,6 +11,7 @@ from ...core import Agent
 from ...core.agent import AgentConfig
 from ...core.skill import SkillManager
 from ...core.tool import ToolRegistry
+from ...skills import WorkflowSkill
 from ..workflow import WorkflowRegistry
 from ...hooks import CompactHook, GoalHook
 from ...prompts.app import build_system_prompt
@@ -132,6 +133,10 @@ class CLIApp:
             self._tools.register(t)
 
         self._skill_mgr = SkillManager([self.home / "skills"])
+
+        # Register built-in skills
+        self._skill_mgr.register(WorkflowSkill())
+
         self._tools.register(SkillTool(self._skill_mgr))
 
         prompt = self._build_prompt()

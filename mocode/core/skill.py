@@ -1,4 +1,4 @@
-"""Skill discovery and loading — directory-based, parameterized paths.
+"""Skill discovery and loading — directory-based and built-in skills.
 
 Usage:
     from mocode.core.skill import SkillManager
@@ -6,6 +6,10 @@ Usage:
     mgr = SkillManager([Path.home() / ".mocode" / "skills"])
     skill = mgr.get("fastapi")
     content = skill.load_content()
+
+Built-in skills are registered programmatically (no filesystem):
+    skill = Skill.builtin(name="my-skill", description="...", content="...")
+    mgr.register(skill)
 """
 
 from __future__ import annotations
@@ -34,6 +38,17 @@ class Skill:
     path: Path
     metadata: SkillMetadata
     _content: str | None = None
+    _builtin: bool = False
+
+    @classmethod
+    def builtin(cls, name: str, description: str, content: str) -> Skill:
+        """Create a built-in skill with embedded content (no filesystem)."""
+        return cls(
+            path=Path(f"<builtin:{name}>"),
+            metadata=SkillMetadata(name=name, description=description),
+            _content=content,
+            _builtin=True,
+        )
 
     @property
     def skill_md_path(self) -> Path:
@@ -73,10 +88,19 @@ def _parse_frontmatter(text: str) -> dict | None:
 class SkillManager:
     def __init__(self, skill_dirs: list[Path] | None = None):
         self._skill_dirs: list[Path] = list(skill_dirs) if skill_dirs else []
-        self._skills: dict[str, Skill] = {}
+        self._skills: dict[str, Skill] = {}       # directory-discovered
+        self._builtin_skills: dict[str, Skill] = {}  # programmatically registered
         self.discover()
 
+    def register(self, skill: Skill) -> None:
+        """Register a programmatic (built-in) skill.
+
+        Built-in skills take priority over discovered skills with the same name.
+        """
+        self._builtin_skills[skill.metadata.name] = skill
+
     def discover(self) -> None:
+        """Re-discover directory-based skills. Built-in skills are NOT cleared."""
         self._skills.clear()
         for d in self._skill_dirs:
             if not d.is_dir():
@@ -102,10 +126,19 @@ class SkillManager:
         return Skill(path=path, metadata=meta)
 
     def get(self, name: str) -> Skill | None:
+        """Look up a skill by name. Built-in skills take priority."""
+        if name in self._builtin_skills:
+            return self._builtin_skills[name]
         return self._skills.get(name)
 
     def all_metadata(self) -> list[SkillMetadata]:
-        return [s.metadata for s in self._skills.values()]
+        """Return metadata for all skills (built-in first, then discovered)."""
+        result = [s.metadata for s in self._builtin_skills.values()]
+        result.extend(s.metadata for s in self._skills.values())
+        return result
 
     def names(self) -> list[str]:
-        return list(self._skills.keys())
+        """Return all skill names (built-in first, then discovered)."""
+        builtin_names = list(self._builtin_skills.keys())
+        discovered = [k for k in self._skills.keys() if k not in self._builtin_skills]
+        return builtin_names + discovered

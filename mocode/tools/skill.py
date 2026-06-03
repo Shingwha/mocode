@@ -23,6 +23,8 @@ def SkillTool(manager: SkillManager, *, name: str = "skill") -> Tool:
             hint = f" Available: {available}" if available else " No skills available."
             raise ToolError(f"Skill '{skill_name}' not found.{hint}", "not_found")
 
+        if skill._builtin:
+            return skill.load_content()
         return f"Base directory: {skill.path}\n\n{skill.load_content()}"
 
     return Tool(
