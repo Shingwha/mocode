@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mocode.app.workflow import (
+    GotoRule,
+    Lane,
     Phase,
     Step,
     StepResult,
@@ -44,24 +46,86 @@ def _make_ctx(app=None, display=None, args=""):
 
 
 # ---------------------------------------------------------------------------
-# Step / Phase models
+# 7.1 Model tests
 # ---------------------------------------------------------------------------
 
 
-class TestStep:
+class TestGotoRule:
+    def test_from_dict_full(self):
+        rule = GotoRule.from_dict({"match": "error", "to": "phase.retry", "max": 3})
+        assert rule.match == "error"
+        assert rule.to == "phase.retry"
+        assert rule.max == 3
+
+    def test_from_dict_default(self):
+        rule = GotoRule.from_dict({"to": "next"})
+        assert rule.match is None
+        assert rule.to == "next"
+        assert rule.max == 0
+
+    def test_from_dict_empty(self):
+        rule = GotoRule.from_dict({})
+        assert rule.match is None
+        assert rule.to == "next"
+        assert rule.max == 0
+
+    def test_default_fallback(self):
+        rule = GotoRule()
+        assert rule.match is None
+        assert rule.to == "next"
+        assert rule.max == 0
+
+
+class TestStepWithGoto:
     def test_from_dict_basic(self):
         step = Step.from_dict({"id": "web", "task": "Search the web"})
         assert step.id == "web"
         assert step.task == "Search the web"
+        assert step.goto == []
+
+    def test_from_dict_with_goto(self):
+        step = Step.from_dict({
+            "id": "check",
+            "task": "Check status",
+            "goto": [
+                {"match": "error", "to": "phase.retry", "max": 3},
+                {"to": "next"},
+            ],
+        })
+        assert step.id == "check"
+        assert len(step.goto) == 2
+        assert step.goto[0].match == "error"
+        assert step.goto[0].to == "phase.retry"
+        assert step.goto[1].to == "next"
 
     def test_from_dict_defaults(self):
         step = Step.from_dict({})
         assert step.id == ""
         assert step.task == ""
+        assert step.goto == []
 
 
-class TestPhase:
+class TestLane:
     def test_from_dict_basic(self):
+        lane = Lane.from_dict({
+            "id": "web",
+            "name": "Web Search",
+            "steps": [{"id": "s1", "task": "Search"}],
+        })
+        assert lane.id == "web"
+        assert lane.name == "Web Search"
+        assert len(lane.steps) == 1
+        assert lane.steps[0].id == "s1"
+
+    def test_from_dict_defaults(self):
+        lane = Lane.from_dict({})
+        assert lane.id == ""
+        assert lane.name == ""
+        assert lane.steps == []
+
+
+class TestPhaseModel:
+    def test_phase_with_steps(self):
         phase = Phase.from_dict({
             "id": "research",
             "name": "Research",
@@ -70,39 +134,138 @@ class TestPhase:
         assert phase.id == "research"
         assert phase.name == "Research"
         assert len(phase.steps) == 1
-        assert phase.steps[0].id == "web"
+        assert phase.lanes == []
+        assert phase.max_iterations == 0
+        assert phase.goto == []
+
+    def test_phase_with_lanes(self):
+        phase = Phase.from_dict({
+            "id": "review",
+            "name": "Review",
+            "lanes": [
+                {
+                    "id": "correctness",
+                    "steps": [{"id": "check", "task": "Check correctness"}],
+                },
+            ],
+        })
+        assert len(phase.lanes) == 1
+        assert phase.steps == []  # mutually exclusive
+        assert phase.lanes[0].id == "correctness"
+
+    def test_phase_steps_lanes_mutually_exclusive(self):
+        """lanes wins when both are present."""
+        phase = Phase.from_dict({
+            "name": "Test",
+            "steps": [{"task": "step1"}],
+            "lanes": [{"id": "l1", "steps": [{"task": "lane task"}]}],
+        })
+        assert len(phase.lanes) == 1
+        assert len(phase.steps) == 0
+
+    def test_phase_with_goto(self):
+        phase = Phase.from_dict({
+            "name": "P1",
+            "steps": [{"task": "Do it"}],
+            "goto": [
+                {"match": "done", "to": "phase.next"},
+                {"to": "end"},
+            ],
+        })
+        assert len(phase.goto) == 2
+        assert phase.goto[0].match == "done"
+        assert phase.goto[1].to == "end"
+
+    def test_phase_max_iterations(self):
+        phase = Phase.from_dict({
+            "name": "Loop",
+            "steps": [{"task": "Retry"}],
+            "max_iterations": 5,
+        })
+        assert phase.max_iterations == 5
 
     def test_from_dict_defaults(self):
         phase = Phase.from_dict({"name": "Test"})
         assert phase.id == ""
-        assert phase.parallel is False
-        assert phase.max_attempts == 1
-        assert phase.halt_if is None
         assert phase.steps == []
+        assert phase.lanes == []
+        assert phase.max_iterations == 0
+        assert phase.goto == []
 
-    def test_from_dict_loop_config(self):
-        phase = Phase.from_dict({
-            "name": "Retry",
-            "max_attempts": 3,
-            "halt_if": "PASS",
-            "steps": [{"task": "Do it"}],
-        })
-        assert phase.max_attempts == 3
-        assert phase.halt_if == "PASS"
+
+class TestWorkflowModel:
+    def test_workflow_max_iterations(self, tmp_path: Path):
+        path = _write_yaml(
+            tmp_path / "test.yaml",
+            {
+                "name": "my-wf",
+                "description": "test",
+                "max_iterations": 50,
+                "phases": [],
+            },
+        )
+        wf = Workflow.from_yaml(path)
+        assert wf.max_iterations == 50
+
+    def test_workflow_default_max_iterations(self, tmp_path: Path):
+        path = _write_yaml(
+            tmp_path / "test.yaml",
+            {"name": "wf", "phases": []},
+        )
+        wf = Workflow.from_yaml(path)
+        assert wf.max_iterations == 100
+
+    def test_total_steps_with_lanes(self):
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(
+                    name="P1",
+                    lanes=[
+                        Lane(id="a", steps=[Step(task="A1"), Step(task="A2")]),
+                        Lane(id="b", steps=[Step(task="B1")]),
+                    ],
+                ),
+            ],
+        )
+        assert wf.total_steps() == 3
+
+    def test_total_steps_mixed(self):
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(name="P1", steps=[Step(task="S1"), Step(task="S2")]),
+                Phase(
+                    name="P2",
+                    lanes=[Lane(id="l1", steps=[Step(task="L1")])],
+                ),
+            ],
+        )
+        assert wf.total_steps() == 3
 
 
 # ---------------------------------------------------------------------------
-# fill_template
+# 7.2 Template variable tests
 # ---------------------------------------------------------------------------
 
 
-class TestFillTemplate:
+class TestFillTemplateLanePhase:
+    def test_lane_output_placeholder(self):
+        ctx = {"lanes": {"correctness": {"output": "All good"}}}
+        assert fill_template("{lane.correctness.output}", ctx) == "All good"
+
+    def test_phase_output_placeholder(self):
+        ctx = {"phases": {"scan": {"output": "Scanned"}}}
+        assert fill_template("{phase.scan.output}", ctx) == "Scanned"
+
     def test_args_placeholder(self):
         ctx = {"args": {"topic": "AI"}}
         assert fill_template("Research {args.topic}", ctx) == "Research AI"
 
     def test_steps_dot_path(self):
-        ctx = {"steps": {"web": {"output": "found it", "exit_code": 0}}}
+        ctx = {"steps": {"web": {"output": "found it"}}}
         assert fill_template("{steps.web.output}", ctx) == "found it"
 
     def test_steps_exit_code(self):
@@ -135,7 +298,7 @@ class TestFillTemplate:
 
 
 # ---------------------------------------------------------------------------
-# Workflow
+# Workflow from_yaml
 # ---------------------------------------------------------------------------
 
 
@@ -191,12 +354,11 @@ class TestWorkflowState:
     def test_progress_bar(self):
         wf = self._make_wf()
         wf.phase_index = 0
-        wf.step_index = 1
-        assert wf.progress_bar() == "Phase 1/2 · Step 2/2"
+        assert wf.progress_bar() == "Phase 1/2"
 
-    def test_progress_bar_no_step(self):
+    def test_progress_bar_no_phase(self):
         wf = self._make_wf()
-        wf.phase_index = 5  # out of range
+        wf.phase_index = 5
         assert wf.progress_bar() == "Phase 6/2"
 
     def test_current_phase(self):
@@ -264,6 +426,140 @@ class TestWorkflowState:
         s = wf.detailed_summary()
         assert "[FAIL]" in s
         assert "boom" in s
+
+
+class TestStepResult:
+    def test_with_lane(self):
+        """StepResult supports optional lane field."""
+        sr = StepResult(
+            phase_index=0, step_index=0, task="test",
+            output="ok", exit_code=0, duration=1.0,
+            lane="correctness",
+        )
+        assert sr.lane == "correctness"
+
+    def test_lane_defaults_to_none(self):
+        """StepResult.lane defaults to None for backward compat."""
+        sr = StepResult(
+            phase_index=0, step_index=0, task="test",
+            output="ok", exit_code=0, duration=1.0,
+        )
+        assert sr.lane is None
+
+    def test_without_lane_works(self):
+        """Old-style StepResult without lane still works."""
+        sr = StepResult(
+            phase_index=0, step_index=0, task="test",
+            output="ok", exit_code=0, duration=1.0,
+        )
+        assert sr.lane is None
+        assert sr.exit_code == 0
+        assert sr.output == "ok"
+
+
+class TestRunnerStepDone:
+    """Verify _step_done is called and passes correct info."""
+
+    @pytest.mark.asyncio
+    async def test_step_done_called_sequential(self):
+        """_step_done is called after each step in sequential mode."""
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(name="P1", steps=[
+                    Step(id="s1", task="A"),
+                    Step(id="s2", task="B"),
+                ]),
+            ],
+        )
+        calls = []
+        runner = WorkflowRunner(wf, on_step_done=lambda *a: calls.append(a))
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"a"),
+                _make_subprocess_mock(b"b"),
+            ]
+            await runner.run()
+
+        assert len(calls) == 2
+        # Each call: (sr, phase_name, lane_name)
+        sr0, pname0, lane0 = calls[0]
+        assert isinstance(sr0, StepResult)
+        assert pname0 == "P1"
+        assert lane0 is None  # sequential
+        assert sr0.output == "a"
+
+        sr1, pname1, lane1 = calls[1]
+        assert sr1.output == "b"
+
+    @pytest.mark.asyncio
+    async def test_step_done_called_lanes(self):
+        """_step_done is called with lane info in parallel mode."""
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(
+                    name="P1",
+                    lanes=[
+                        Lane(id="a", name="Lane A", steps=[Step(id="a1", task="A1")]),
+                        Lane(id="b", name="Lane B", steps=[Step(id="b1", task="B1")]),
+                    ],
+                ),
+            ],
+        )
+        calls = []
+        runner = WorkflowRunner(wf, on_step_done=lambda *a: calls.append(a))
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"a-output"),
+                _make_subprocess_mock(b"b-output"),
+            ]
+            await runner.run()
+
+        assert len(calls) == 2
+        lane_calls = {(c[2], c[0].output) for c in calls}
+        assert ("Lane A", "a-output") in lane_calls
+        assert ("Lane B", "b-output") in lane_calls
+
+        # Verify sr.lane is set
+        for sr, _, lane_name in calls:
+            assert sr.lane is not None  # lane id, not name
+            assert sr.lane in ("a", "b")
+
+    @pytest.mark.asyncio
+    async def test_step_done_with_lane_display(self):
+        """Display.workflow_step_done receives lane info correctly."""
+        from mocode.app.cli.display import Display
+
+        display = Display()
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(
+                    name="P1",
+                    lanes=[
+                        Lane(id="x", name="Checker", steps=[Step(task="Check")]),
+                    ],
+                ),
+            ],
+        )
+        calls = []
+        original = display.workflow_step_done
+        display.workflow_step_done = lambda *a: calls.append(a)
+
+        runner = WorkflowRunner(wf, on_step_done=display.workflow_step_done)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(b"ok")
+            await runner.run()
+
+        assert len(calls) == 1
+        sr, phase_name, lane_name = calls[0]
+        assert phase_name == "P1"
+        assert lane_name == "Checker"
+        assert sr.lane == "x"
 
 
 # ---------------------------------------------------------------------------
@@ -335,7 +631,7 @@ class TestWorkflowRegistry:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowRunner
+# Runner helpers
 # ---------------------------------------------------------------------------
 
 
@@ -347,9 +643,14 @@ def _make_subprocess_mock(stdout: bytes = b"output", returncode: int = 0):
     return proc
 
 
-class TestWorkflowRunnerSerial:
+# ---------------------------------------------------------------------------
+# 7.3 Runner — Sequential steps
+# ---------------------------------------------------------------------------
+
+
+class TestRunnerSequential:
     @pytest.mark.asyncio
-    async def test_serial_execution(self, tmp_path: Path):
+    async def test_steps_sequential(self):
         wf = Workflow(
             name="test",
             description="",
@@ -370,49 +671,176 @@ class TestWorkflowRunnerSerial:
 
         assert len(results) == 2
         assert results[0].output == "hello"
-        assert results[1].task == "Result: hello"  # template filled
+        assert results[1].task == "Result: hello"
         assert results[1].output == "world"
         assert wf.status == "done"
 
     @pytest.mark.asyncio
-    async def test_serial_stops_on_failure(self, tmp_path: Path):
+    async def test_steps_goto_next(self):
         wf = Workflow(
             name="test",
             description="",
             phases=[
                 Phase(name="P1", steps=[
-                    Step(task="OK step"),
-                    Step(task="Fail step"),
-                    Step(task="Should not run"),
+                    Step(id="s1", task="First", goto=[GotoRule(to="next")]),
+                    Step(id="s2", task="Second"),
                 ]),
             ],
         )
         runner = WorkflowRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
-                _make_subprocess_mock(b"ok", returncode=0),
-                _make_subprocess_mock(b"fail", returncode=1),
+                _make_subprocess_mock(b"first"),
+                _make_subprocess_mock(b"second"),
             ]
             results = await runner.run()
 
-        assert len(results) == 2  # third step never ran
-        assert wf.status == "error"
+        assert len(results) == 2
+        assert wf.status == "done"
 
-
-class TestWorkflowRunnerParallel:
     @pytest.mark.asyncio
-    async def test_parallel_execution(self, tmp_path: Path):
+    async def test_steps_goto_end(self):
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(name="P1", steps=[
+                    Step(id="s1", task="First", goto=[GotoRule(to="end")]),
+                    Step(id="s2", task="Second"),
+                ]),
+            ],
+        )
+        runner = WorkflowRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(b"done")
+            results = await runner.run()
+
+        assert len(results) == 1  # second step never ran
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_steps_goto_step_id(self):
+        """Jump to a specific step within same phase."""
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(name="P1", steps=[
+                    Step(id="start", task="Start", goto=[
+                        GotoRule(match="retry", to="retry_step"),
+                    ]),
+                    Step(id="middle", task="Middle"),
+                    Step(id="retry_step", task="Retry", goto=[GotoRule(to="next")]),
+                    Step(id="end", task="End"),
+                ]),
+            ],
+        )
+        runner = WorkflowRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            # start outputs "retry" → triggers jump to retry_step
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"retry"),
+                _make_subprocess_mock(b"middle"),
+                _make_subprocess_mock(b"retry done"),
+                _make_subprocess_mock(b"final"),
+            ]
+            results = await runner.run()
+
+        # start → retry_step → end (middle is never visited)
+        assert len(results) == 3
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_steps_goto_phase_cross_phase(self):
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(
+                    id="phase_a",
+                    name="A",
+                    steps=[
+                        Step(id="s1", task="In A", goto=[
+                            GotoRule(to="phase.phase_c"),
+                        ]),
+                    ],
+                ),
+                Phase(id="phase_b", name="B", steps=[Step(task="In B")]),
+                Phase(id="phase_c", name="C", steps=[Step(task="In C")]),
+            ],
+        )
+        runner = WorkflowRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"jump"),
+                _make_subprocess_mock(b"done"),
+            ]
+            results = await runner.run()
+
+        assert len(results) == 2  # A.s1 → C.s1 (phase_b skipped)
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_steps_goto_end_workflow(self):
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(name="P1", steps=[
+                    Step(id="s1", task="First", goto=[
+                        GotoRule(to="__end__"),
+                    ]),
+                ]),
+                Phase(name="P2", steps=[Step(task="Second")]),
+            ],
+        )
+        runner = WorkflowRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(b"end all")
+            results = await runner.run()
+
+        assert len(results) == 1
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_steps_template_filled(self):
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(name="P1", steps=[
+                    Step(id="s1", task="Hello {args.name}"),
+                ]),
+            ],
+        )
+        runner = WorkflowRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(b"hi")
+            results = await runner.run(args={"name": "World"})
+
+        assert results[0].task == "Hello World"
+        assert wf.status == "done"
+
+
+# ---------------------------------------------------------------------------
+# 7.4 Runner — Lanes (parallel)
+# ---------------------------------------------------------------------------
+
+
+class TestRunnerLanes:
+    @pytest.mark.asyncio
+    async def test_lanes_execute_all(self):
         wf = Workflow(
             name="test",
             description="",
             phases=[
                 Phase(
                     name="P1",
-                    parallel=True,
-                    steps=[
-                        Step(id="a", task="Task A"),
-                        Step(id="b", task="Task B"),
+                    lanes=[
+                        Lane(id="a", steps=[Step(id="a1", task="Task A")]),
+                        Lane(id="b", steps=[Step(id="b1", task="Task B")]),
                     ],
+                    goto=[GotoRule(to="next")],
                 ),
             ],
         )
@@ -428,17 +856,72 @@ class TestWorkflowRunnerParallel:
         assert wf.status == "done"
 
     @pytest.mark.asyncio
-    async def test_parallel_one_fails(self, tmp_path: Path):
+    async def test_lanes_output_in_context(self):
         wf = Workflow(
             name="test",
             description="",
             phases=[
                 Phase(
                     name="P1",
-                    parallel=True,
-                    steps=[
-                        Step(task="OK"),
-                        Step(task="Fail"),
+                    lanes=[
+                        Lane(id="correctness", steps=[Step(task="Check")]),
+                    ],
+                    goto=[GotoRule(to="next")],
+                ),
+            ],
+        )
+        runner = WorkflowRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(b"all good")
+            await runner.run()
+
+        assert runner._context["lanes"]["correctness"]["output"] == "all good"
+
+    @pytest.mark.asyncio
+    async def test_lanes_phase_goto_after_all_done(self):
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(
+                    id="p1",
+                    name="P1",
+                    lanes=[
+                        Lane(id="a", steps=[Step(task="A")]),
+                        Lane(id="b", steps=[Step(task="B")]),
+                    ],
+                    goto=[GotoRule(to="phase.p2")],
+                ),
+                Phase(id="p2", name="P2", steps=[Step(task="Final")]),
+            ],
+        )
+        runner = WorkflowRunner(wf)
+        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"a"),
+                _make_subprocess_mock(b"b"),
+                _make_subprocess_mock(b"final"),
+            ]
+            results = await runner.run()
+
+        assert len(results) == 3
+        assert wf.status == "done"
+
+    @pytest.mark.asyncio
+    async def test_lanes_multi_step_lane(self):
+        """Each lane can have multiple sequential steps."""
+        wf = Workflow(
+            name="test",
+            description="",
+            phases=[
+                Phase(
+                    name="P1",
+                    lanes=[
+                        Lane(id="a", steps=[
+                            Step(id="a1", task="First A"),
+                            Step(id="a2", task="Second A"),
+                        ]),
+                        Lane(id="b", steps=[Step(id="b1", task="Only B")]),
                     ],
                 ),
             ],
@@ -446,65 +929,143 @@ class TestWorkflowRunnerParallel:
         runner = WorkflowRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
-                _make_subprocess_mock(b"ok", returncode=0),
-                _make_subprocess_mock(b"err", returncode=1),
+                _make_subprocess_mock(b"a1"),
+                _make_subprocess_mock(b"b1"),
+                _make_subprocess_mock(b"a2"),
             ]
             results = await runner.run()
 
-        assert wf.status == "error"
+        assert len(results) == 3
+        assert wf.status == "done"
 
 
-class TestWorkflowRunnerLoop:
+# ---------------------------------------------------------------------------
+# 7.5 Runner — Goto resolution
+# ---------------------------------------------------------------------------
+
+
+class TestGotoResolution:
+    def test_resolve_goto_match(self):
+        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
+        rules = [GotoRule(match="error.*", to="phase.retry")]
+        assert runner._resolve_goto(rules, "critical error occurred", "step_p1_s1") == "phase.retry"
+
+    def test_resolve_goto_default(self):
+        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
+        rules = [GotoRule(to="end")]
+        assert runner._resolve_goto(rules, "anything", "step_p1_s1") == "end"
+
+    def test_resolve_goto_first_match_wins(self):
+        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
+        rules = [
+            GotoRule(match="error", to="phase.retry"),
+            GotoRule(to="next"),
+        ]
+        assert runner._resolve_goto(rules, "all good", "step_p1_s1") == "next"
+        assert runner._resolve_goto(rules, "found an error", "step_p1_s1") == "phase.retry"
+
+    def test_resolve_goto_no_match_returns_next(self):
+        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
+        rules = [GotoRule(match="specific", to="end")]
+        assert runner._resolve_goto(rules, "something else", "step_p1_s1") == "next"
+
+    def test_resolve_goto_max_limit(self):
+        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
+        rules = [GotoRule(match="error", to="phase.retry", max=2)]
+
+        # First two hits go to retry
+        assert runner._resolve_goto(rules, "error", "step_p1_s1") == "phase.retry"
+        assert runner._resolve_goto(rules, "error", "step_p1_s1") == "phase.retry"
+        # Third hit exceeds max → falls through to next
+        assert runner._resolve_goto(rules, "error", "step_p1_s1") == "next"
+
+    def test_resolve_goto_max_zero_unlimited(self):
+        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
+        rules = [GotoRule(match="error", to="phase.retry", max=0)]
+
+        for _ in range(10):
+            assert runner._resolve_goto(rules, "error", "step_p1_s1") == "phase.retry"
+
+    def test_resolve_goto_empty_rules(self):
+        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
+        assert runner._resolve_goto([], "anything", "step_p1_s1") == "next"
+
+    def test_resolve_goto_multiple_rules_with_max(self):
+        runner = WorkflowRunner(Workflow(name="test", description="", phases=[]))
+        rules = [
+            GotoRule(match="error", to="phase.retry", max=1),
+            GotoRule(to="end"),
+        ]
+        assert runner._resolve_goto(rules, "error", "step_p1_s1") == "phase.retry"
+        # max hit → falls through to default
+        assert runner._resolve_goto(rules, "error again", "step_p1_s1") == "end"
+
+
+# ---------------------------------------------------------------------------
+# 7.6 Runner — Circuit breaker
+# ---------------------------------------------------------------------------
+
+
+class TestCircuitBreaker:
     @pytest.mark.asyncio
-    async def test_retry_on_failure(self, tmp_path: Path):
+    async def test_workflow_max_iterations_loop_limit(self):
+        """Global phase entry limit triggers loop_limit status."""
         wf = Workflow(
             name="test",
             description="",
+            max_iterations=3,
             phases=[
                 Phase(
-                    name="P1",
-                    max_attempts=3,
-                    steps=[Step(task="Try")],
+                    id="loop",
+                    name="Loop",
+                    steps=[Step(id="s1", task="Do it", goto=[
+                        GotoRule(to="phase.loop"),
+                    ])],
                 ),
             ],
         )
         runner = WorkflowRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"fail", returncode=1),
-                _make_subprocess_mock(b"ok", returncode=0),
-            ]
-            results = await runner.run()
+            mock_exec.return_value = _make_subprocess_mock(b"again")
+            await runner.run()
 
-        assert wf.status == "done"
-        assert mock_exec.call_count == 2
+        # 3 entries max → enters 3rd time, hits limit, stops
+        assert wf.status == "loop_limit"
 
     @pytest.mark.asyncio
-    async def test_halt_if_stops_early(self, tmp_path: Path):
+    async def test_phase_max_iterations_loop_limit(self):
+        """Phase-level max_iterations overrides lower than workflow default."""
         wf = Workflow(
             name="test",
             description="",
+            max_iterations=100,
             phases=[
                 Phase(
-                    name="P1",
-                    max_attempts=5,
-                    halt_if=r"DONE",
-                    steps=[Step(task="Check")],
+                    id="loop",
+                    name="Loop",
+                    max_iterations=2,
+                    steps=[Step(id="s1", task="Do it", goto=[
+                        GotoRule(to="phase.loop"),
+                    ])],
                 ),
             ],
         )
         runner = WorkflowRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_subprocess_mock(b"status: DONE")
-            results = await runner.run()
+            mock_exec.return_value = _make_subprocess_mock(b"again")
+            await runner.run()
 
-        assert wf.status == "done"
-        assert mock_exec.call_count == 1  # halted after first attempt
+        assert wf.status == "loop_limit"
 
 
-class TestWorkflowRunnerTimeout:
+# ---------------------------------------------------------------------------
+# Runner — Timeout / error handling
+# ---------------------------------------------------------------------------
+
+
+class TestRunnerTimeout:
     @pytest.mark.asyncio
-    async def test_timeout(self, tmp_path: Path):
+    async def test_timeout(self):
         wf = Workflow(
             name="test",
             description="",
@@ -521,20 +1082,19 @@ class TestWorkflowRunnerTimeout:
 
         assert results[0].exit_code == 1
         assert "timed out" in results[0].error
-        assert wf.status == "error"
+        # In the new design, step errors are handled via goto rules;
+        # the workflow completes normally unless a circuit breaker trips.
+        assert wf.status == "done"
 
 
-class TestWorkflowRunnerProgress:
+class TestRunnerProgress:
     @pytest.mark.asyncio
-    async def test_progress_callback_called_for_serial_steps(self):
+    async def test_progress_callback_called(self):
         wf = Workflow(
             name="test",
             description="",
             phases=[
-                Phase(name="P1", steps=[
-                    Step(task="Step A"),
-                    Step(task="Step B"),
-                ]),
+                Phase(name="P1", steps=[Step(task="Step A"), Step(task="Step B")]),
             ],
         )
         progress_calls = []
@@ -546,11 +1106,8 @@ class TestWorkflowRunnerProgress:
             ]
             await runner.run()
 
-        # phase start + 2×(step start + step done)
-        assert any("Phase 1" in msg for msg in progress_calls)
         assert any("Step 1" in msg for msg in progress_calls)
         assert any("Step 2" in msg for msg in progress_calls)
-        assert any("✓" in msg for msg in progress_calls)
 
     @pytest.mark.asyncio
     async def test_progress_callback_none_is_safe(self):
@@ -567,66 +1124,15 @@ class TestWorkflowRunnerProgress:
             results = await runner.run()
         assert results[0].exit_code == 0
 
-    @pytest.mark.asyncio
-    async def test_progress_parallel_reports_running_and_done(self):
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(
-                    name="P1",
-                    parallel=True,
-                    steps=[Step(task="A"), Step(task="B")],
-                ),
-            ],
-        )
-        progress_calls = []
-        runner = WorkflowRunner(wf, on_progress=progress_calls.append)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"a"),
-                _make_subprocess_mock(b"b"),
-            ]
-            await runner.run()
-
-        assert any("parallel" in msg.lower() for msg in progress_calls)
-        assert any("2/2 ok" in msg for msg in progress_calls)
-
-    @pytest.mark.asyncio
-    async def test_progress_loop_reports_attempts(self):
-        wf = Workflow(
-            name="test",
-            description="",
-            phases=[
-                Phase(
-                    name="P1",
-                    max_attempts=3,
-                    steps=[Step(task="Try")],
-                ),
-            ],
-        )
-        progress_calls = []
-        runner = WorkflowRunner(wf, on_progress=progress_calls.append)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"fail", returncode=1),
-                _make_subprocess_mock(b"ok", returncode=0),
-            ]
-            await runner.run()
-
-        assert any("Attempt 1" in msg for msg in progress_calls)
-        assert any("Attempt 2" in msg for msg in progress_calls)
-
 
 # ---------------------------------------------------------------------------
-# WorkflowCommand
+# 7.7 CLI command tests
 # ---------------------------------------------------------------------------
 
 
 class TestWorkflowCommand:
     @pytest.fixture
     def _setup_registry(self, tmp_path: Path):
-        """Create a temporary registry with one workflow."""
         _write_yaml(
             tmp_path / "demo.yaml",
             {
