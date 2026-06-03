@@ -31,6 +31,7 @@ from ..core.prompt import Prompt, Section
 def build_system_prompt(
     tools: Any = None,
     skill_manager: Any = None,
+    workflow_registry: Any = None,
     cwd: str = "",
     home: str = "",
     config_path: str = "",
@@ -43,6 +44,7 @@ def build_system_prompt(
     Args:
         tools: ToolRegistry — tool name/description pairs are listed in the prompt.
         skill_manager: SkillManager — skill metadata is listed in the prompt.
+        workflow_registry: WorkflowRegistry — available workflows are listed in the prompt.
         cwd: Current working directory shown to the LLM.
         home: MoCode home directory path.
         config_path: Config file path.
@@ -64,6 +66,11 @@ def build_system_prompt(
 
     if skill_manager is not None:
         sections.append(Section("skills", _render_skills(skill_manager), priority=50))
+
+    if workflow_registry is not None:
+        wf_sections = _render_workflows(workflow_registry, cwd)
+        if wf_sections:
+            sections.append(Section("workflows", wf_sections, priority=60))
 
     return Prompt(sections).context(**ctx).build(fmt="xml")
 
@@ -137,3 +144,34 @@ def _render_skills(skill_manager: Any) -> list[Section]:
         Section(m.name, m.description, attrs={"type": "skill"})
         for m in skill_manager.all_metadata()
     ]
+
+def _render_workflows(registry: Any, cwd: str = "") -> list[Section] | None:
+    """Render available workflows with usage guidance and per-workflow details."""
+    wfs = registry.list()
+    if not wfs:
+        return None
+
+    usage_guide = (
+        "MoCode Workflows are DAG-based multi-step task orchestrations. "
+        "Use the /workflow command to interact with them:\n"
+        "- /workflow list              — list all available workflows\n"
+        "- /workflow show <name>       — show workflow details\n"
+        "- /workflow run <name>        — execute a workflow\n"
+        "- /workflow create <desc>     — generate a new workflow from a description"
+    )
+
+    sections: list[Section] = [
+        Section("guide", usage_guide, priority=0),
+    ]
+
+    for wf in wfs:
+        attrs: dict[str, str] = {"name": wf.name, "nodes": str(len(wf.nodes))}
+        if wf.path and cwd:
+            try:
+                attrs["path"] = str(wf.path.relative_to(Path(cwd)))
+            except ValueError:
+                attrs["path"] = str(wf.path)
+        desc = wf.description or "(no description)"
+        sections.append(Section("workflow", desc, attrs=attrs))
+
+    return sections

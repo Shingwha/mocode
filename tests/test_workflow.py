@@ -2012,3 +2012,117 @@ class TestNodeContextHeader:
 
         assert headers_received[0] is None
 
+
+# ── Workflow prompt section tests ─────────────────────────────────────────
+
+
+class TestWorkflowsPromptSection:
+    """Tests for _render_workflows and workflows section in build_system_prompt."""
+
+    def test_empty_registry_returns_none(self):
+        """Empty WorkflowRegistry yields None (no section added)."""
+        from mocode.prompts.app import _render_workflows
+
+        registry = MagicMock()
+        registry.list.return_value = []
+        result = _render_workflows(registry)
+        assert result is None
+
+    def test_render_with_workflows(self):
+        """Registry with workflows returns guide + per-workflow sections."""
+        from pathlib import Path
+        from mocode.prompts.app import _render_workflows
+
+        wf1 = MagicMock()
+        wf1.name = "audit"
+        wf1.description = "Security audit pipeline"
+        wf1.nodes = [MagicMock(), MagicMock(), MagicMock()]
+        wf1.path = Path("/home/user/project/.mocode/workflows/audit.yaml")
+
+        wf2 = MagicMock()
+        wf2.name = "report"
+        wf2.description = ""
+        wf2.nodes = []
+        wf2.path = None
+
+        registry = MagicMock()
+        registry.list.return_value = [wf1, wf2]
+
+        cwd = "/home/user/project"
+        sections = _render_workflows(registry, cwd=cwd)
+        assert sections is not None
+        assert len(sections) == 3  # guide + audit + report
+
+        # First section is the usage guide
+        assert sections[0].name == "guide"
+        assert "/workflow run" in sections[0].content
+
+        # Second section uses fixed tag <workflow> with attrs
+        assert sections[1].name == "workflow"
+        assert sections[1].content == "Security audit pipeline"
+        assert sections[1].attrs["name"] == "audit"
+        assert sections[1].attrs["nodes"] == "3"
+        # Path is relative — accept native separator
+        expected_path = Path(".mocode") / "workflows" / "audit.yaml"
+        assert sections[1].attrs["path"] == str(expected_path)
+
+        # Third section — no path → no path attr
+        assert sections[2].name == "workflow"
+        assert sections[2].content == "(no description)"
+        assert sections[2].attrs["name"] == "report"
+        assert sections[2].attrs["nodes"] == "0"
+        assert "path" not in sections[2].attrs
+
+    def test_build_system_prompt_includes_workflows(self):
+        """build_system_prompt with workflow_registry produces <workflows> XML."""
+        from pathlib import Path
+        from mocode.prompts.app import build_system_prompt
+
+        wf = MagicMock()
+        wf.name = "audit"
+        wf.description = "Security check"
+        wf.nodes = [MagicMock(), MagicMock()]
+        wf.path = Path.cwd() / ".mocode" / "workflows" / "audit.yaml"
+
+        registry = MagicMock()
+        registry.list.return_value = [wf]
+
+        result = build_system_prompt(
+            workflow_registry=registry,
+            cwd=str(Path.cwd()),
+        )
+        assert "<workflows>" in result
+        assert '<workflow name="audit" nodes="2"' in result
+        assert 'path="' in result
+        assert "audit.yaml" in result
+        assert "Security check" in result
+        assert "/workflow run" in result
+        assert "/workflow list" in result
+
+        # Verify key sections still exist
+        assert "<guidelines>" in result
+        assert "<skills>" not in result  # skill_manager param not passed
+
+    def test_build_system_prompt_no_workflows(self):
+        """build_system_prompt without workflow_registry omits <workflows>."""
+        from mocode.prompts.app import build_system_prompt
+
+        result = build_system_prompt()
+        assert "<workflows>" not in result
+        assert "<guidelines>" in result
+        assert "<environment>" in result
+
+    def test_build_system_prompt_no_workflows_with_tools(self):
+        """Other sections still render when workflow_registry is absent."""
+        from mocode.prompts.app import build_system_prompt
+
+        mock_tool = MagicMock()
+        mock_tool.name = "read"
+        mock_tool.description = "Read files"
+
+        tools = MagicMock()
+        tools.all.return_value = [mock_tool]
+
+        result = build_system_prompt(tools=tools)
+        assert "<workflows>" not in result
+        assert "<read" in result

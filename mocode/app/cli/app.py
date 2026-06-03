@@ -173,6 +173,7 @@ class CLIApp:
         return build_system_prompt(
             tools=self._tools,
             skill_manager=self._skill_mgr,
+            workflow_registry=self._workflow_registry,
             cwd=str(Path.cwd()),
             home=str(self.home),
             config_path=str(self.home / "config.json"),
