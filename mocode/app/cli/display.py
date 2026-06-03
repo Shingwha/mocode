@@ -24,8 +24,19 @@ from .theme import (
     _s,
 )
 
+from ..workflow.events import (
+    LoopIterEvent,
+    NodeDoneEvent,
+    NodeSkippedEvent,
+    NodeStartEvent,
+    ProgressEvent,
+    RouterConditionEvent,
+    WaveReadyEvent,
+    WorkflowEvent,
+)
+
 if TYPE_CHECKING:
-    from ...workflow import NodeResult, Workflow
+    from ...workflow import Workflow
     from .commands import Command
 
 
@@ -151,10 +162,7 @@ class Display:
         self.theme = theme or Theme()
         self._input = Input(ps1=self.theme.icon_input)
         self._spinner = SpinnerRunner()
-        self._workflow_node_map: dict = {}
         self._wf_start_time: float = 0.0
-        self._wf_wave_current: int = 0
-        self._wf_wave_total: int = 0
 
     def set_commands(self, commands: list[Command]):
         """Set commands for autocomplete."""
@@ -261,53 +269,87 @@ class Display:
     def error(self, text: str):
         self._styled("", text, self.theme.color_error)
 
-    # ── Output: workflow ──────────────────────────────────
+    # ── Workflow event handling ───────────────────────────
 
-    def workflow_wave_start(self, wave_idx: int, total_waves: int, node_ids: list[str], branch: str = "") -> None:
+    def handle_event(self, event: WorkflowEvent) -> None:
+        """Single entry point for all workflow events."""
+        if isinstance(event, WaveReadyEvent):
+            self._on_wave_ready(event)
+        elif isinstance(event, RouterConditionEvent):
+            self._on_router_condition(event)
+        elif isinstance(event, NodeSkippedEvent):
+            self._on_node_skipped(event)
+        elif isinstance(event, NodeStartEvent):
+            self._on_node_start(event)
+        elif isinstance(event, NodeDoneEvent):
+            self._on_node_done(event)
+        elif isinstance(event, LoopIterEvent):
+            self._on_loop_iter(event)
+        elif isinstance(event, ProgressEvent):
+            self._on_progress(event)
+
+    def _on_wave_ready(self, event: WaveReadyEvent) -> None:
         """Print wave header."""
-        self._wf_wave_current = wave_idx + 1
-        self._wf_wave_total = total_waves
-        if wave_idx > 0:
+        if event.wave_idx > 0:
             self._print()
-        branch_suffix = f"  {_s(f'[{branch}]', SOFT_CYAN)}" if branch else ""
-        # Show node list (truncate if >4)
+        node_ids = event.node_ids
         if len(node_ids) <= 4:
             node_str = _s(", ".join(node_ids), DIM)
         else:
             shown = ", ".join(node_ids[:3])
             node_str = _s(f"{shown} +{len(node_ids) - 3} more", DIM)
         self._print(
-            f"{_s('◇', YELLOW)} Wave {wave_idx + 1}/{total_waves}  {node_str}{branch_suffix}"
+            f"{_s('◇', YELLOW)} Wave {event.wave_idx + 1}/{event.total_waves}  {node_str}"
         )
 
-    def workflow_start(self, wf: Workflow) -> None:
-        """Print workflow header before execution."""
-        node_count = wf.total_nodes()
-        self._workflow_node_map = dict(wf.node_map)
-        self._wf_start_time = time.monotonic()
-        self._print(
-            f"{_s('●', YELLOW)} {_s(wf.name, BOLD)}"
-            f"  {_s(f'{node_count} nodes', DIM)}"
-        )
-        self._print()
-
-    def workflow_node_start(self, node_id: str, description: str) -> None:
-        """Update spinner detail to show the currently running node."""
-        if description:
-            self.set_spinner_detail(f"{node_id}: {description}")
+    def _on_router_condition(self, event: RouterConditionEvent) -> None:
+        """Print router condition — always in router's wave context."""
+        if event.matched and event.targets:
+            target_str = ", ".join(event.targets)
+            self._print(
+                f"  └─ {_s('▸', SOFT_CYAN)} {_s(event.router_id, SOFT_CYAN)} → {_s(target_str, DIM)}"
+            )
         else:
-            self.set_spinner_detail(f"running: {node_id}")
+            self._print(
+                f"  └─ {_s('▹', GRAY)} {_s(event.router_id, GRAY)} · {_s('no match', DIM)}"
+            )
 
-    def workflow_node_done(self, node_id: str, result: NodeResult, wave_idx: int) -> None:
-        """Print a completed node result line immediately."""
-        dur = f"{result.duration:.1f}s"
-        icon = _s('✓', GREEN) if result.exit_code == 0 else _s('✗', RED)
-        node = self._workflow_node_map.get(node_id)
-        desc = node.description if node and node.description else (result.task[:40] if result.task else "")
-        iter_suffix = f" (iter {result.iteration})" if result.iteration > 1 else ""
+    def _on_node_skipped(self, event: NodeSkippedEvent) -> None:
+        """Print a skipped node line."""
+        icon, label = self._SKIP_STYLES.get(event.reason, ("∘", event.reason))
         self._print(
-            f"  └─ {icon} {_s(node_id, BOLD)} · {desc}{iter_suffix}  {_s(dur, DIM)}"
+            f"  │  {_s(icon, GRAY)} {_s(event.node_id, GRAY)}  {_s(label, DIM)}"
         )
+
+    def _on_node_start(self, event: NodeStartEvent) -> None:
+        """Update spinner detail to show the currently running node."""
+        if event.description:
+            self.set_spinner_detail(f"{event.node_id}: {event.description}")
+        else:
+            self.set_spinner_detail(f"running: {event.node_id}")
+
+    def _on_node_done(self, event: NodeDoneEvent) -> None:
+        """Print a completed node result line."""
+        dur = f"{event.result.duration:.1f}s"
+        icon = _s('✓', GREEN) if event.result.exit_code == 0 else _s('✗', RED)
+        desc = event.description or (event.result.task[:40] if event.result.task else "")
+        iter_suffix = f" (iter {event.result.iteration})" if event.result.iteration > 1 else ""
+        self._print(
+            f"  └─ {icon} {_s(event.node_id, BOLD)} · {desc}{iter_suffix}  {_s(dur, DIM)}"
+        )
+
+    def _on_loop_iter(self, event: LoopIterEvent) -> None:
+        """Print a loop iteration line."""
+        dur = f"{event.result.duration:.1f}s"
+        desc = event.description or (event.result.task[:40] if event.result.task else "")
+        max_str = str(event.max_iter) if event.max_iter > 0 else "∞"
+        self._print(
+            f"  └─ {_s('↻', YELLOW)} {_s(event.node_id, BOLD)} [{event.iteration}/{max_str}] · {desc}  {_s(dur, DIM)}"
+        )
+
+    def _on_progress(self, event: ProgressEvent) -> None:
+        """Update spinner detail with progress message."""
+        self.set_spinner_detail(event.message)
 
     _SKIP_STYLES: dict[str, tuple[str, str]] = {
         "not activated by router": ("○", "routed elsewhere"),
@@ -315,34 +357,17 @@ class Display:
         "not activated":            ("∘", "not reached"),
     }
 
-    def workflow_node_skip(self, node_id: str, reason: str) -> None:
-        """Print a skipped node line immediately."""
-        icon, label = self._SKIP_STYLES.get(reason, ("∘", reason))
-        self._print(
-            f"  │  {_s(icon, GRAY)} {_s(node_id, GRAY)}  {_s(label, DIM)}"
-        )
+    # ── Output: workflow lifecycle ────────────────────────
 
-    def workflow_loop_iter(self, node_id: str, iteration: int, max_iter: int, result: NodeResult) -> None:
-        """Print a loop iteration line immediately."""
-        dur = f"{result.duration:.1f}s"
-        node = self._workflow_node_map.get(node_id)
-        desc = node.description if node and node.description else (result.task[:40] if result.task else "")
-        max_str = str(max_iter) if max_iter > 0 else "∞"
+    def workflow_start(self, wf: Workflow) -> None:
+        """Print workflow header before execution."""
+        node_count = wf.total_nodes()
+        self._wf_start_time = time.monotonic()
         self._print(
-            f"  └─ {_s('↻', YELLOW)} {_s(node_id, BOLD)} [{iteration}/{max_str}] · {desc}  {_s(dur, DIM)}"
+            f"{_s('●', YELLOW)} {_s(wf.name, BOLD)}"
+            f"  {_s(f'{node_count} nodes', DIM)}"
         )
-
-    def workflow_condition(self, node_id: str, condition_met: bool, branch: str, targets: list[str] | None = None) -> None:
-        """Print router condition evaluation."""
-        if condition_met and targets:
-            target_str = ", ".join(targets)
-            self._print(
-                f"  └─ {_s('▸', SOFT_CYAN)} {_s(node_id, SOFT_CYAN)} → {_s(target_str, DIM)}"
-            )
-        else:
-            self._print(
-                f"  └─ {_s('▹', GRAY)} {_s(node_id, GRAY)} · {_s('no match', DIM)}"
-            )
+        self._print()
 
     def workflow_summary(self, wf: Workflow) -> None:
         """Print final output and summary."""

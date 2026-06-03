@@ -2,6 +2,16 @@
 
 from __future__ import annotations
 
+from .events import (
+    LoopIterEvent,
+    NodeDoneEvent,
+    NodeSkippedEvent,
+    NodeStartEvent,
+    ProgressEvent,
+    RouterConditionEvent,
+    WaveReadyEvent,
+    WorkflowEvent,
+)
 from .graph import compute_waves
 from .models import Node, NodeResult, Route, Workflow, fill_template
 from .registry import WorkflowRegistry
@@ -14,4 +24,12 @@ __all__ = [
     "WorkflowRegistry",
     "compute_waves",
     "fill_template",
+    "WorkflowEvent",
+    "WaveReadyEvent",
+    "RouterConditionEvent",
+    "NodeSkippedEvent",
+    "NodeStartEvent",
+    "NodeDoneEvent",
+    "LoopIterEvent",
+    "ProgressEvent",
 ]

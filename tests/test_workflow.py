@@ -9,13 +9,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from mocode.app.workflow import (
+    LoopIterEvent,
     Node,
+    NodeDoneEvent,
     NodeResult,
+    NodeSkippedEvent,
     Route,
+    WaveReadyEvent,
     Workflow,
     WorkflowRegistry,
+    WorkflowEvent,
     compute_waves,
     fill_template,
+)
+from mocode.app.workflow.events import (
+    ProgressEvent,
+    RouterConditionEvent,
 )
 from mocode.app.workflow.models import infer_depends_from_task
 from mocode.app.workflow.runner import DAGRunner
@@ -300,11 +309,6 @@ class TestWorkflowModel:
     def test_total_nodes(self):
         wf = Workflow(name="test", nodes=[Node(id="a"), Node(id="b")])
         assert wf.total_nodes() == 2
-
-    def test_completed_nodes(self):
-        wf = Workflow(name="test", nodes=[Node(id="a")])
-        wf.results.append(NodeResult(node_id="a", task="", output="", exit_code=0, duration=0))
-        assert wf.completed_nodes() == 1
 
     def test_summary(self):
         wf = Workflow(name="test")
@@ -1320,7 +1324,10 @@ class TestRunnerBackEdge:
         loop_calls: list[tuple[str, int, int]] = []
         runner = DAGRunner(
             wf,
-            on_loop_iter=lambda nid, it, mx, res: loop_calls.append((nid, it, mx)),
+            on_event=lambda e: (
+                loop_calls.append((e.node_id, e.iteration, e.max_iter))
+                if isinstance(e, LoopIterEvent) else None
+            ),
         )
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
@@ -1356,7 +1363,10 @@ class TestRunnerBackEdge:
         wave_calls: list[tuple[int, int, list[str]]] = []
         runner = DAGRunner(
             wf,
-            on_wave_start=lambda idx, total, nids: wave_calls.append((idx, total, nids)),
+            on_event=lambda e: (
+                wave_calls.append((e.wave_idx, e.total_waves, e.node_ids))
+                if isinstance(e, WaveReadyEvent) else None
+            ),
         )
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
@@ -1553,7 +1563,10 @@ class TestRunnerCallbacks:
         calls = []
         runner = DAGRunner(
             wf,
-            on_node_done=lambda nid, res, wave: calls.append((nid, res.node_id, wave)),
+            on_event=lambda e: (
+                calls.append((e.node_id, e.result.node_id, e.wave_idx))
+                if isinstance(e, NodeDoneEvent) else None
+            ),
         )
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
@@ -1583,7 +1596,10 @@ class TestRunnerCallbacks:
         skip_calls = []
         runner = DAGRunner(
             wf,
-            on_node_skip=lambda nid, reason: skip_calls.append((nid, reason)),
+            on_event=lambda e: (
+                skip_calls.append((e.node_id, e.reason))
+                if isinstance(e, NodeSkippedEvent) else None
+            ),
         )
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
@@ -1601,7 +1617,10 @@ class TestRunnerCallbacks:
         wave_calls = []
         runner = DAGRunner(
             wf,
-            on_wave_start=lambda idx, total, nids: wave_calls.append((idx, total, nids)),
+            on_event=lambda e: (
+                wave_calls.append((e.wave_idx, e.total_waves, e.node_ids))
+                if isinstance(e, WaveReadyEvent) else None
+            ),
         )
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
@@ -1631,7 +1650,10 @@ class TestRunnerCallbacks:
         cond_calls = []
         runner = DAGRunner(
             wf,
-            on_condition=lambda nid, met, branch, targets: cond_calls.append((nid, met, branch, targets)),
+            on_event=lambda e: (
+                cond_calls.append((e.router_id, e.matched, e.branch, e.targets))
+                if isinstance(e, RouterConditionEvent) else None
+            ),
         )
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
@@ -1664,7 +1686,10 @@ class TestRunnerCallbacks:
         loop_calls = []
         runner = DAGRunner(
             wf,
-            on_loop_iter=lambda nid, it, mx, res: loop_calls.append((nid, it, mx)),
+            on_event=lambda e: (
+                loop_calls.append((e.node_id, e.iteration, e.max_iter))
+                if isinstance(e, LoopIterEvent) else None
+            ),
         )
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.side_effect = [
@@ -1681,7 +1706,13 @@ class TestRunnerCallbacks:
     async def test_on_progress_callback(self):
         wf = Workflow(name="t", nodes=[Node(id="a", task="A")])
         progress_msgs = []
-        runner = DAGRunner(wf, on_progress=progress_msgs.append)
+        runner = DAGRunner(
+            wf,
+            on_event=lambda e: (
+                progress_msgs.append(e.message)
+                if isinstance(e, ProgressEvent) else None
+            ),
+        )
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
             mock_exec.return_value = _make_subprocess_mock(b"ok")
             await runner.run()
@@ -1844,7 +1875,7 @@ class TestNodeContextHeader:
             nodes=[Node(id="scan", task="Scan", description="Scan code")],
         )
         runner = DAGRunner(wf)
-        header = runner._build_node_context_header(wf.nodes[0])
+        header = runner._build_node_context_header(wf.nodes[0], wf)
         assert 'node "scan"' in header
         assert 'workflow "test-wf"' in header
 
@@ -1855,14 +1886,14 @@ class TestNodeContextHeader:
             nodes=[Node(id="a", task="A", description="Analyze stuff")],
         )
         runner = DAGRunner(wf)
-        header = runner._build_node_context_header(wf.nodes[0])
+        header = runner._build_node_context_header(wf.nodes[0], wf)
         assert "Description: Analyze stuff" in header
 
     def test_header_no_description(self):
         """Header works when node has no description."""
         wf = Workflow(name="wf", nodes=[Node(id="a", task="A")])
         runner = DAGRunner(wf)
-        header = runner._build_node_context_header(wf.nodes[0])
+        header = runner._build_node_context_header(wf.nodes[0], wf)
         assert "Description:" not in header
         assert 'node "a"' in header
 
@@ -1876,7 +1907,7 @@ class TestNodeContextHeader:
             ],
         )
         runner = DAGRunner(wf)
-        header = runner._build_node_context_header(wf.node_map["scan"])
+        header = runner._build_node_context_header(wf.node_map["scan"], wf)
         assert "Input from:" in header
         assert "- overview: Analyze structure" in header
 
@@ -1890,7 +1921,7 @@ class TestNodeContextHeader:
             ],
         )
         runner = DAGRunner(wf)
-        header = runner._build_node_context_header(wf.node_map["scan"])
+        header = runner._build_node_context_header(wf.node_map["scan"], wf)
         assert "Output to:" in header
         assert "- report: Generate report" in header
 
@@ -1908,14 +1939,14 @@ class TestNodeContextHeader:
         runner = DAGRunner(wf)
 
         # Root node: only output
-        root_header = runner._build_node_context_header(wf.node_map["root"])
+        root_header = runner._build_node_context_header(wf.node_map["root"], wf)
         assert "Input from:" not in root_header
         assert "Output to:" in root_header
         assert "- a: Branch A" in root_header
         assert "- b: Branch B" in root_header
 
         # Merge node: only input
-        merge_header = runner._build_node_context_header(wf.node_map["merge"])
+        merge_header = runner._build_node_context_header(wf.node_map["merge"], wf)
         assert "Input from:" in merge_header
         assert "- a: Branch A" in merge_header
         assert "- b: Branch B" in merge_header
@@ -1925,7 +1956,7 @@ class TestNodeContextHeader:
         """Header for isolated node has no Input/Output sections."""
         wf = Workflow(name="wf", nodes=[Node(id="solo", task="Solo")])
         runner = DAGRunner(wf)
-        header = runner._build_node_context_header(wf.nodes[0])
+        header = runner._build_node_context_header(wf.nodes[0], wf)
         assert "Input from:" not in header
         assert "Output to:" not in header
 

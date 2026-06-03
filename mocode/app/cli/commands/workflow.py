@@ -112,13 +112,7 @@ class WorkflowCommand:
 
         runner = DAGRunner(
             wf,
-            on_progress=ctx.display.set_spinner_detail,
-            on_wave_start=ctx.display.workflow_wave_start,
-            on_node_start=ctx.display.workflow_node_start,
-            on_node_done=ctx.display.workflow_node_done,
-            on_node_skip=ctx.display.workflow_node_skip,
-            on_loop_iter=ctx.display.workflow_loop_iter,
-            on_condition=ctx.display.workflow_condition,
+            on_event=ctx.display.handle_event,
         )
         try:
             async with ctx.display.spinner(f"Workflow: {wf.name}"):

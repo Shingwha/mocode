@@ -227,9 +227,6 @@ class Workflow:
     def total_nodes(self) -> int:
         return len(self.nodes)
 
-    def completed_nodes(self) -> int:
-        return len(self.results)
-
     def fresh_copy(self) -> Workflow:
         """Return a copy with reset runtime state, safe for execution."""
         import copy
