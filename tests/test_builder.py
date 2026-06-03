@@ -192,7 +192,7 @@ class TestChat:
 
 class TestPrompt:
     def test_xml(self):
-        result = Prompt().register(Section("a", "x")).build(format="xml")
+        result = Prompt().register(Section("a", "x")).build(fmt="xml")
         assert "<system-prompt>" in result
         assert "<a>" in result
 
@@ -208,17 +208,17 @@ class TestPrompt:
         result = (Prompt()
             .register(Section("z", "second", priority=20))
             .register(Section("a", "first", priority=10))
-            .build(format="text"))
+            .build(fmt="text"))
         assert result.index("first") < result.index("second")
 
     def test_disable(self):
         p = Prompt().register(Section("a", "vis")).register(Section("b", "hid"))
         p.disable("b")
-        assert "hid" not in p.build(format="text")
+        assert "hid" not in p.build(fmt="text")
 
     def test_context(self):
         p = Prompt().register(Section("g", lambda c: f"hi {c.get('name', 'world')}"))
-        assert "hi MoCode" in p.context(name="MoCode").build(format="text")
+        assert "hi MoCode" in p.context(name="MoCode").build(fmt="text")
 
     def test_find(self):
         p = Prompt().register(Section("x", "content"))
@@ -252,15 +252,15 @@ class TestPrompt:
         assert "b(off)" in r
 
     def test_static_content_no_lambda(self):
-        result = Prompt().register(Section("id", "You are a bot.")).build(format="xml")
+        result = Prompt().register(Section("id", "You are a bot.")).build(fmt="xml")
         assert "You are a bot." in result
 
     def test_enable(self):
         p = Prompt().register(Section("a", "vis"))
         p.disable("a")
-        assert "vis" not in p.build(format="text")
+        assert "vis" not in p.build(fmt="text")
         p.enable("a")
-        assert "vis" in p.build(format="text")
+        assert "vis" in p.build(fmt="text")
 
     def test_init_with_sections(self):
         p = Prompt([Section("a", "1"), Section("b", "2")])
@@ -272,7 +272,7 @@ class TestPrompt:
             Section("tool", "Run bash", attrs={"name": "bash"}),
             Section("tool", "Read files", attrs={"name": "read"}),
         ])
-        result = Prompt().register(tools).build(format="xml")
+        result = Prompt().register(tools).build(fmt="xml")
         assert '<tools>' in result
         assert '<tool name="bash">' in result
         assert 'Run bash' in result
@@ -284,7 +284,7 @@ class TestPrompt:
             Section("tool", "Run bash"),
             Section("tool", "Read files"),
         ])
-        result = Prompt().register(tools).build(format="text")
+        result = Prompt().register(tools).build(fmt="text")
         assert "Run bash" in result
         assert "Read files" in result
         assert "<tools>" not in result
@@ -295,7 +295,7 @@ class TestPrompt:
             Section("tool", "visible"),
             Section("tool", "hidden", enabled=False),
         ])
-        result = Prompt().register(tools).build(format="xml")
+        result = Prompt().register(tools).build(fmt="xml")
         assert "visible" in result
         assert "hidden" not in result
 
@@ -305,7 +305,7 @@ class TestPrompt:
                 Section("param", "verbose", attrs={"name": "v"}),
             ], attrs={"name": "bash"}),
         ])
-        result = Prompt().register(inner).build(format="xml")
+        result = Prompt().register(inner).build(fmt="xml")
         assert '<tools>' in result
         assert '<tool name="bash">' in result
         assert '<param name="v">' in result

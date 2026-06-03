@@ -5,10 +5,10 @@ Usage:
     from mocode.prompts import COMPACT_USER_TEMPLATE, build_system_prompt
 
     # For compact: build the system prompt string
-    system_str = summary_system_prompt.build(format="xml")
+    system_str = summary_system_prompt.build(fmt="xml")
 
     # For subagent: build the system prompt string
-    system_str = subagent_system_prompt.build(format="xml")
+    system_str = subagent_system_prompt.build(fmt="xml")
 
     # For app: build with context
     system_str = build_system_prompt(tools=registry, cwd="/path")

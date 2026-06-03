@@ -113,8 +113,8 @@ class Prompt:
             return f"{prefix}{name_part}:\n{content}"
         return f"{prefix}{name_part}: {content}"
 
-    def build(self, format: str = "text", wrap: str | None = None) -> str:
-        render = self._render_xml if format == "xml" else self._render_text
+    def build(self, fmt: str = "text", wrap: str | None = None) -> str:
+        render = self._render_xml if fmt == "xml" else self._render_text
         sorted_sections = sorted(self._sections.values(), key=lambda s: (s.priority, s.name))
         parts = []
         for s in sorted_sections:
@@ -123,12 +123,12 @@ class Prompt:
             content = render(s)
             if not content:
                 continue
-            if format == "xml":
+            if fmt == "xml":
                 parts.append(_xml_tag(s.name, content, **s.attrs))
             else:
                 parts.append(content)
         body = "\n\n".join(parts)
-        if format == "xml":
+        if fmt == "xml":
             tag = wrap or "system-prompt"
             return f"<{tag}>\n\n{body}\n\n</{tag}>"
         return body

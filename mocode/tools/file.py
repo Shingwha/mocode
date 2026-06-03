@@ -99,7 +99,7 @@ def _append(args: dict) -> str:
 
     with open(p, "a", encoding="utf-8") as f:
         f.write(content)
-    line_count = content.strip("\n").count("\n") + 1
+    line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
     return f"Appended {line_count} lines to {p.name}"
 
 

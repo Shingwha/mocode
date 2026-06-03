@@ -105,9 +105,6 @@ class HookRunner:
     def add(self, hook: AgentHook) -> None:
         self._hooks.append(hook)
 
-    def append(self, hook: AgentHook) -> None:
-        self._hooks.append(hook)
-
     async def _dispatch(self, method: str, ctx: AgentHookContext) -> None:
         for h in self._hooks:
             try:

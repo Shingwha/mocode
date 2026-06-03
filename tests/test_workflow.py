@@ -921,7 +921,7 @@ class TestRunnerParallel:
     @pytest.mark.asyncio
     async def test_merge_waits_for_both(self):
         wf = _simple_parallel_wf()
-        runner = DAGRunner(wf)
+        runner = DAGRunner(wf, node_context=False)
         call_order = []
 
         async def tracking_exec(*args, **kwargs):
@@ -1558,3 +1558,155 @@ class TestWorkflowCommand:
         result = await cmd.run(_make_ctx(app=app, display=display, args="list"))
         assert result.kind == "continue"
         display.info.assert_called_once()
+
+
+# ===========================================================================
+# 14. Node context header
+# ===========================================================================
+
+
+class TestNodeContextHeader:
+    def test_header_basic(self):
+        """Header includes node ID and workflow name."""
+        wf = Workflow(
+            name="test-wf",
+            nodes=[Node(id="scan", task="Scan", description="Scan code")],
+        )
+        runner = DAGRunner(wf)
+        header = runner._build_node_context_header(wf.nodes[0])
+        assert 'node "scan"' in header
+        assert 'workflow "test-wf"' in header
+
+    def test_header_includes_description(self):
+        """Header includes node's own description."""
+        wf = Workflow(
+            name="wf",
+            nodes=[Node(id="a", task="A", description="Analyze stuff")],
+        )
+        runner = DAGRunner(wf)
+        header = runner._build_node_context_header(wf.nodes[0])
+        assert "Description: Analyze stuff" in header
+
+    def test_header_no_description(self):
+        """Header works when node has no description."""
+        wf = Workflow(name="wf", nodes=[Node(id="a", task="A")])
+        runner = DAGRunner(wf)
+        header = runner._build_node_context_header(wf.nodes[0])
+        assert "Description:" not in header
+        assert 'node "a"' in header
+
+    def test_header_input_from(self):
+        """Header lists input nodes with descriptions."""
+        wf = Workflow(
+            name="wf",
+            nodes=[
+                Node(id="overview", task="Overview", description="Analyze structure"),
+                Node(id="scan", task="Scan", description="Scan code", depends=["overview"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        header = runner._build_node_context_header(wf.node_map["scan"])
+        assert "Input from:" in header
+        assert "- overview: Analyze structure" in header
+
+    def test_header_output_to(self):
+        """Header lists output nodes with descriptions."""
+        wf = Workflow(
+            name="wf",
+            nodes=[
+                Node(id="scan", task="Scan", description="Scan code"),
+                Node(id="report", task="Report", description="Generate report", depends=["scan"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+        header = runner._build_node_context_header(wf.node_map["scan"])
+        assert "Output to:" in header
+        assert "- report: Generate report" in header
+
+    def test_header_full_diamond(self):
+        """Header for middle node in diamond shows both input and output."""
+        wf = Workflow(
+            name="diamond",
+            nodes=[
+                Node(id="root", task="Root", description="Root step"),
+                Node(id="a", task="A", description="Branch A", depends=["root"]),
+                Node(id="b", task="B", description="Branch B", depends=["root"]),
+                Node(id="merge", task="Merge", description="Merge results", depends=["a", "b"]),
+            ],
+        )
+        runner = DAGRunner(wf)
+
+        # Root node: only output
+        root_header = runner._build_node_context_header(wf.node_map["root"])
+        assert "Input from:" not in root_header
+        assert "Output to:" in root_header
+        assert "- a: Branch A" in root_header
+        assert "- b: Branch B" in root_header
+
+        # Merge node: only input
+        merge_header = runner._build_node_context_header(wf.node_map["merge"])
+        assert "Input from:" in merge_header
+        assert "- a: Branch A" in merge_header
+        assert "- b: Branch B" in merge_header
+        assert "Output to:" not in merge_header
+
+    def test_header_no_deps_no_dependents(self):
+        """Header for isolated node has no Input/Output sections."""
+        wf = Workflow(name="wf", nodes=[Node(id="solo", task="Solo")])
+        runner = DAGRunner(wf)
+        header = runner._build_node_context_header(wf.nodes[0])
+        assert "Input from:" not in header
+        assert "Output to:" not in header
+
+    @pytest.mark.asyncio
+    async def test_runner_injects_header_when_enabled(self):
+        """When node_context=True, subprocess receives header + task."""
+        wf = Workflow(
+            name="test-wf",
+            nodes=[
+                Node(id="a", task="Do thing", description="Do a thing"),
+                Node(id="b", task="Next", description="Next step", depends=["a"]),
+            ],
+        )
+        runner = DAGRunner(wf, node_context=True)
+        prompts_received = []
+
+        async def capture_exec(node_id, task, context_header=None):
+            prompts_received.append((node_id, task, context_header))
+            return NodeResult(
+                node_id=node_id, task=task, output="ok",
+                exit_code=0, duration=0.1,
+            )
+
+        with patch.object(runner, "_exec_node", side_effect=capture_exec):
+            await runner.run()
+
+        # Node "b" should have context header
+        b_call = next(c for c in prompts_received if c[0] == "b")
+        assert b_call[2] is not None  # context_header not None
+        assert 'node "b"' in b_call[2]
+        assert "Input from:" in b_call[2]
+        assert "- a: Do a thing" in b_call[2]
+
+    @pytest.mark.asyncio
+    async def test_runner_no_header_when_disabled(self):
+        """When node_context=False, subprocess receives no header."""
+        wf = Workflow(
+            name="wf",
+            nodes=[Node(id="a", task="Task", description="Desc")],
+        )
+        runner = DAGRunner(wf, node_context=False)
+        headers_received = []
+
+        async def capture_exec(node_id, task, context_header=None):
+            headers_received.append(context_header)
+            return NodeResult(
+                node_id=node_id, task=task, output="ok",
+                exit_code=0, duration=0.1,
+            )
+
+        with patch.object(runner, "_exec_node", side_effect=capture_exec):
+            await runner.run()
+
+        assert headers_received[0] is None
+

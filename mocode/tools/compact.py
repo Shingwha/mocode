@@ -90,7 +90,7 @@ async def _generate_summary(provider, messages_text: str) -> str:
                 "role": "user",
                 "content": COMPACT_USER_TEMPLATE.format(messages_text=messages_text),
             }],
-            system=summary_system_prompt.build(format="xml"),
+            system=summary_system_prompt.build(fmt="xml"),
             tools=[],
             max_tokens=8000,
         )

@@ -23,7 +23,8 @@ def FetchTool(result_limit: int = 50000) -> Tool:
             )
 
         timeout = args.get("timeout", 30)
-        fetch_url = f"https://markdown.new/{url}"
+        base = "https://markdown.new/"
+        fetch_url = base + url.lstrip("/")
 
         try:
             async with httpx.AsyncClient() as client:

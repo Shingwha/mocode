@@ -40,7 +40,7 @@ TYPE_MAP = {
 }
 
 TEXT_EXTENSIONS = frozenset(set(TYPE_MAP.values()) | {
-    ".hpp", ".kt", ".m", ".mm",
+    ".hpp", ".m", ".mm",
     ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".fish",
     ".ini", ".cfg", ".conf", ".env",
     ".rst", ".adoc", ".tex", ".org",

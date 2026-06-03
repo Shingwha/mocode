@@ -55,7 +55,7 @@ class SubAgent:
         agent_config = AgentConfig(
             max_tokens=self._config.max_tokens,
             tool_result_limit=self._config.tool_result_limit,
-            tool_timeout=self._config.tool_timeout or 240,
+            tool_timeout=self._config.tool_timeout,
             max_iterations=self._config.max_tool_calls,
         )
 
@@ -109,7 +109,7 @@ def SubAgentTool(
             derived_tools = filtered
 
         sub_config = SubAgentConfig(
-            system_prompt=subagent_system_prompt.build(format="xml"),
+            system_prompt=subagent_system_prompt.build(fmt="xml"),
             max_tool_calls=args.get("max_tool_calls", 50),
             max_tokens=args.get("max_tokens", 8192),
             tool_timeout=tool_timeout,

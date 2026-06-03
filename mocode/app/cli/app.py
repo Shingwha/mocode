@@ -103,16 +103,19 @@ class CLIApp:
 
     # ── Agent construction ─────────────────────────────────
 
-    def _build_agent(self):
-        """Build the AgentLoop with tools, hooks, and prompt."""
+    def _create_provider(self) -> OpenAIProvider:
+        """Create an OpenAIProvider from the current config entry."""
         entry = self.config.current
-
-        provider = OpenAIProvider(
+        return OpenAIProvider(
             api_key=entry.api_key,
             model=self.config.active_model,
             base_url=entry.base_url,
             extra_body=self.config.extra_body,
         )
+
+    def _build_agent(self):
+        """Build the AgentLoop with tools, hooks, and prompt."""
+        provider = self._create_provider()
 
         agent_config = AgentConfig(
             max_tokens=self.config.max_tokens,
@@ -150,7 +153,7 @@ class CLIApp:
         )
 
         # agent exists now — attach hooks/tools that need agent reference
-        agent.hooks.append(CompactHook(agent))
+        agent.hooks.add(CompactHook(agent))
         self._tools.register(CompactTool(agent, lambda: agent.messages))
         self._tools.register(
             SubAgentTool(agent, self._tools, tool_timeout=agent.config.tool_timeout)
@@ -203,13 +206,7 @@ class CLIApp:
         self.config.active_model = model
         self.config.save()
 
-        entry = self.config.current
-        self.agent.provider = OpenAIProvider(
-            api_key=entry.api_key,
-            model=self.config.active_model,
-            base_url=entry.base_url,
-            extra_body=self.config.extra_body,
-        )
+        self.agent.provider = self._create_provider()
 
         label = self.config.current.name or key
         self.display.info(f"Switched to {label} / {model}")

@@ -65,7 +65,7 @@ def build_system_prompt(
     if skill_manager is not None:
         sections.append(Section("skills", _render_skills(skill_manager), priority=50))
 
-    return Prompt(sections).context(**ctx).build(format="xml")
+    return Prompt(sections).context(**ctx).build(fmt="xml")
 
 
 def _render_agents(home: str, cwd: str) -> str:
