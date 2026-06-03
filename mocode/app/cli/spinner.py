@@ -28,7 +28,6 @@ class SpinnerRunner:
     def __init__(self) -> None:
         self._active = False
         self._text = ""
-        self._len = 0
         self._start: float = 0.0
         self._detail: str = ""
 
@@ -37,10 +36,10 @@ class SpinnerRunner:
         return self._active
 
     def set_text(self, text: str):
-        self._text = text
+        self._text = text.replace("\n", " ")
 
     def set_detail(self, detail: str):
-        self._detail = detail
+        self._detail = detail.replace("\n", " ")
 
     @staticmethod
     def resolve(style: str | Spinner | None = None) -> Spinner:
@@ -72,15 +71,12 @@ class SpinnerRunner:
                 return f" {self._text}... ({elapsed} · {self._detail})"
             return f" {self._text}... ({elapsed})"
 
-        self._len = max(len(f) for f in spinner.frames) + len(text) + 30
-
         async def _spin():
             nonlocal idx
             while not stop.is_set():
                 frame = spinner.frames[idx % len(spinner.frames)]
                 suffix = _get_suffix()
-                print(f"\r{DIM}{frame}{suffix}{RST}", end="", flush=True)
-                self._len = max(self._len, len(frame) + len(suffix) + 10)
+                print(f"\r{DIM}{frame}{suffix}{RST}\033[K", end="", flush=True)
                 idx += 1
                 await asyncio.sleep(spinner.speed)
 
@@ -98,4 +94,4 @@ class SpinnerRunner:
             self._active = False
 
     def _clear(self):
-        print(f"\r{' ' * self._len}\r", end="", flush=True)
+        print(f"\r\033[K", end="", flush=True)
