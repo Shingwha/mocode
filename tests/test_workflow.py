@@ -1793,16 +1793,6 @@ class TestWorkflowCommand:
         display.warn.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_create_returns_prompt(self):
-        from mocode.app.cli.commands.workflow import WorkflowCommand
-
-        cmd = WorkflowCommand()
-        result = await cmd.run(_make_ctx(args="create a research workflow"))
-        assert result.kind == "prompt"
-        assert "workflow" in result.prompt.lower()
-        assert "nodes" in result.prompt
-
-    @pytest.mark.asyncio
     async def test_run_missing_args(self):
         from mocode.app.cli.commands.workflow import WorkflowCommand
 

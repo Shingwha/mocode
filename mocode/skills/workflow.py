@@ -22,13 +22,7 @@ They are defined as YAML files in `.mocode/workflows/` and run via the
 
 ## Quick Start
 
-```
-/workflow create Analyze a Python project for security issues, code style
-                violations, and dependency problems, then generate a report.
-```
-
-This will spawn a sub-agent that writes a `.mocode/workflows/<name>.yaml`
-file for you. Then:
+Write a `.mocode/workflows/<name>.yaml` file (see YAML Format below), then:
 
 ```
 /workflow run my-workflow path=.
@@ -152,7 +146,7 @@ The workflow-level `max_iterations` (default 100) is a global safety net.
 When a user describes a multi-step task suitable for orchestration:
 
 1. Ask clarifying questions about the steps and their dependencies
-2. Use `/workflow create <description>` or write the YAML file directly
+2. Write a `.mocode/workflows/<name>.yaml` file directly
 3. Run with `/workflow run <name>`
 4. Inspect results and iterate if needed
 

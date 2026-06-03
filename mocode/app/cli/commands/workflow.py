@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from ...workflow import Workflow, WorkflowRegistry
-from ...workflow._template import WORKFLOW_CREATE_PROMPT
 from ...workflow.runner import DAGRunner
-from ..prompts import Choice, select, text_input
+from ..prompts import Choice, select
 from . import CommandContext, CommandResult
 
 
@@ -25,8 +24,6 @@ class WorkflowCommand:
             return await self._run(ctx, sub_args)
         if sub == "show":
             return await self._show(ctx, sub_args)
-        if sub == "create":
-            return await self._create(ctx, sub_args)
         return await self._menu(ctx)
 
     # ── Interactive menu ──────────────────────────────────────
@@ -35,7 +32,7 @@ class WorkflowCommand:
         registry = ctx.app.workflow_registry
         workflows = registry.list()
         if not workflows:
-            ctx.display.info("No workflows found. Use /workflow create <description>")
+            ctx.display.info("No workflows found.")
             return CommandResult.CONTINUE
 
         choices = [
@@ -121,13 +118,4 @@ class WorkflowCommand:
         ctx.display.workflow_summary(wf, results)
         return CommandResult.CONTINUE
 
-    async def _create(self, ctx: CommandContext, description: str) -> CommandResult:
-        if not description.strip():
-            description = await text_input(
-                "Describe the workflow you want to create:"
-            )
-            if not description:
-                return CommandResult.CONTINUE
 
-        prompt = WORKFLOW_CREATE_PROMPT.format(description=description.strip())
-        return CommandResult.text(prompt)

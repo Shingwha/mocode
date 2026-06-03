@@ -156,8 +156,7 @@ def _render_workflows(registry: Any, cwd: str = "") -> list[Section] | None:
         "Use the /workflow command to interact with them:\n"
         "- /workflow list              — list all available workflows\n"
         "- /workflow show <name>       — show workflow details\n"
-        "- /workflow run <name>        — execute a workflow\n"
-        "- /workflow create <desc>     — generate a new workflow from a description"
+        "- /workflow run <name>        — execute a workflow"
     )
 
     sections: list[Section] = [
