@@ -16,7 +16,7 @@ sent to the LLM, and nodes can fan-out (parallel), fan-in (converge),
 route conditionally, and even loop with back-edges.
 
 They are defined as YAML files in `.mocode/workflows/` and run via the
-`/workflow run <name>` command.
+`/workflow run <name>` command or the `mocode workflow` CLI.
 
 ---
 
@@ -25,7 +25,14 @@ They are defined as YAML files in `.mocode/workflows/` and run via the
 Write a `.mocode/workflows/<name>.yaml` file (see YAML Format below), then:
 
 ```
+# Interactive
 /workflow run my-workflow path=.
+
+# CLI (background by default — prints run_id, exits immediately)
+mocode workflow run my-workflow path=.
+
+# CLI (foreground — block until done)
+mocode workflow run my-workflow --fg path=.
 ```
 
 ---
@@ -138,6 +145,27 @@ Back-edge routes (a router pointing back to an upstream node) create loops.
 **Always set `max: <N>` on back-edge routes** to prevent infinite loops.
 
 The workflow-level `max_iterations` (default 100) is a global safety net.
+
+---
+
+## CLI Commands
+
+**IMPORTANT:**
+- Use `mocode` directly in bash — do NOT use `python -m mocode`. The `mocode` executable is already on PATH.
+- Workflows run for a **very long time** (each node spawns an LLM subprocess). Always run in background (default) unless the user explicitly asks to wait. Use `--fg` only when foreground execution is specifically requested.
+
+```
+mocode workflow run <name> [key=value...]       # background (default), prints run_id
+mocode workflow run <name> --fg [key=value...]  # foreground, blocks until done
+mocode workflow list                            # list available workflows
+mocode workflow show <name>                     # show DAG structure
+mocode workflow status [run_id]                 # check run status (latest if omitted)
+mocode workflow result [run_id]                 # print full results (--json for raw)
+mocode workflow stop <run_id>                   # kill background workflow
+mocode workflow runs                            # list recent runs
+```
+
+Results are persisted to `~/.mocode/workflow_runs/<run_id>.json`.
 
 ---
 

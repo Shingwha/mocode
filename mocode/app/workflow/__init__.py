@@ -15,6 +15,7 @@ from .events import (
 from .graph import compute_waves
 from .models import Node, NodeResult, Route, Workflow, fill_template, summarize, detailed_summarize
 from .registry import WorkflowRegistry
+from .run_store import WorkflowRunStore
 
 __all__ = [
     "Node",
@@ -22,6 +23,7 @@ __all__ = [
     "Route",
     "Workflow",
     "WorkflowRegistry",
+    "WorkflowRunStore",
     "compute_waves",
     "fill_template",
     "summarize",

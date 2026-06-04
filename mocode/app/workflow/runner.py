@@ -10,10 +10,12 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from .models import Node, NodeResult, Workflow
+    from .run_store import WorkflowRunStore
 
 from .events import (
     LoopIterEvent,
@@ -39,18 +41,30 @@ class DAGRunner:
         timeout: int = 300,
         node_context: bool = True,
         on_event: Callable[[WorkflowEvent], None] | None = None,
+        run_id: str | None = None,
+        run_store: WorkflowRunStore | None = None,
     ):
         self.workflow = workflow
         self.mocode_cmd = mocode_cmd
         self.timeout = timeout
         self.node_context = node_context
         self._on_event = on_event
+        self.run_id = run_id
+        self.run_store = run_store
 
     # ── Event dispatch ────────────────────────────────────────
 
     def _emit(self, event: WorkflowEvent) -> None:
         if self._on_event:
             self._on_event(event)
+
+    # ── Persistence ─────────────────────────────────────────────
+
+    def _persist(self, results: list[NodeResult], status: str) -> None:
+        """Write results to run_store if configured."""
+        if self.run_store and self.run_id:
+            finished = datetime.now().isoformat() if status != "running" else None
+            self.run_store.update(self.run_id, results, status, finished)
 
     # ── Main execution loop ───────────────────────────────────
 
@@ -84,9 +98,11 @@ class DAGRunner:
                         node_id=n.id, reason="not activated", wave_idx=wave,
                     ))
 
+            self._persist(state.results, "completed")
             return state.results
 
         except Exception:
+            self._persist(state.results, "failed")
             raise
 
     # ── Wave announcement ─────────────────────────────────────
@@ -273,6 +289,7 @@ class DAGRunner:
         }
         state.context["previous"] = nr.output
         state.completed.add(node.id)
+        self._persist(state.results, "running")
 
         wave_idx = state.node_wave.get(node.id, 0)
         self._emit(NodeDoneEvent(
