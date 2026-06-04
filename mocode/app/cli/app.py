@@ -1,5 +1,7 @@
 """CLI application — CLIApp class owns config, display, input, spinner, agent, commands."""
 
+from __future__ import annotations
+
 import asyncio
 import signal
 import sys
@@ -13,6 +15,7 @@ from ...core.skill import SkillManager
 from ...core.tool import ToolRegistry
 from ...skills import WorkflowSkill
 from ..workflow import WorkflowRegistry
+from ..workflow.cli import make_registry as _make_workflow_registry
 from ...hooks import CompactHook, GoalHook
 from ...prompts.app import build_system_prompt
 from ...providers.openai import OpenAIProvider
@@ -76,10 +79,7 @@ class CLIApp:
                 self.commands.register(cmd)
             self.display.set_commands(self.commands.all())
 
-        self._workflow_registry = WorkflowRegistry([
-            self.home / "workflows",
-            Path.cwd() / ".mocode" / "workflows",
-        ])
+        self._workflow_registry = _make_workflow_registry()
 
         self.agent = self._build_agent()
 

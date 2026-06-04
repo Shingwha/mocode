@@ -226,9 +226,9 @@ class Workflow:
 # ── Summary helpers (standalone, operate on results lists) ──
 
 
-def summarize(workflow: Workflow, results: list[NodeResult]) -> str:
+def summarize(name: str, results: list[NodeResult]) -> str:
     """Compact one-line-per-result summary."""
-    lines = [f"Workflow: {workflow.name}"]
+    lines = [f"Workflow: {name}"]
     for r in results:
         status = "OK" if r.exit_code == 0 else "FAIL"
         task_preview = r.task[:40] if r.task else "(empty)"
@@ -239,9 +239,9 @@ def summarize(workflow: Workflow, results: list[NodeResult]) -> str:
     return "\n".join(lines)
 
 
-def detailed_summarize(workflow: Workflow, results: list[NodeResult], max_lines: int = 10) -> str:
+def detailed_summarize(name: str, results: list[NodeResult], max_lines: int = 10) -> str:
     """Multi-line summary with output and error excerpts."""
-    lines = [f"Workflow: {workflow.name}"]
+    lines = [f"Workflow: {name}"]
     for r in results:
         status = "OK" if r.exit_code == 0 else "FAIL"
         task_preview = r.task[:60] if r.task else "(empty)"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ...workflow import Workflow, WorkflowRegistry
+from ...workflow.cli import parse_kv_args
 from ...workflow.runner import DAGRunner
 from ..prompts import Choice, select
 from . import CommandContext, CommandResult
@@ -90,11 +91,7 @@ class WorkflowCommand:
             return CommandResult.CONTINUE
 
         name = parts[0]
-        user_args: dict[str, str] = {}
-        for p in parts[1:]:
-            if "=" in p:
-                k, v = p.split("=", 1)
-                user_args[k.strip()] = v.strip()
+        user_args = parse_kv_args(parts[1:])
 
         registry = ctx.app.workflow_registry
         wf = registry.get(name)

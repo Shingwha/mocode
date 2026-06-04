@@ -17,6 +17,9 @@ from .models import Node, NodeResult, Route, Workflow, fill_template, summarize,
 from .registry import WorkflowRegistry
 from .run_store import WorkflowRunStore
 
+# Re-export shared utilities from cli submodule for convenience
+from .cli import make_registry, parse_kv_args
+
 __all__ = [
     "Node",
     "NodeResult",
@@ -28,6 +31,8 @@ __all__ = [
     "fill_template",
     "summarize",
     "detailed_summarize",
+    "make_registry",
+    "parse_kv_args",
     "WorkflowEvent",
     "WaveReadyEvent",
     "RouterConditionEvent",
