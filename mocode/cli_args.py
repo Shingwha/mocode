@@ -12,13 +12,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="MoCode — Lean agent framework",
     )
     parser.add_argument(
-        "-p", "--prompt",
+        "-p",
+        "--prompt",
         help="Non-interactive mode: run one query and exit. "
-             "Pipe stdin to provide context.",
+        "Pipe stdin to provide context.",
     )
 
     # Workflow subparser — delegated to workflow module
     from .app.workflow.args import attach_workflow_parser
+
     attach_workflow_parser(parser)
 
     return parser

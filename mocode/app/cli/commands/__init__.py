@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 class CommandResult:
     """Result of running a command. Carries kind + optional prompt text."""
 
-    kind: str           # "continue" | "exit" | "prompt"
+    kind: str  # "continue" | "exit" | "prompt"
     prompt: str | None  # populated only when kind == "prompt"
 
     @classmethod
@@ -30,15 +30,15 @@ CommandResult.EXIT = CommandResult(kind="exit", prompt=None)
 @dataclass
 class CommandContext:
     app: CLIApp
-    args: str               # everything after the command name, stripped
+    args: str  # everything after the command name, stripped
     display: Display
 
 
 @runtime_checkable
 class Command(Protocol):
-    name: str                      # primary invoker, e.g. "/export"
-    description: str               # shown in /help and autocomplete
-    aliases: tuple[str, ...]       # e.g. ("/exit",) for /quit; ("quit","exit") bare words
+    name: str  # primary invoker, e.g. "/export"
+    description: str  # shown in /help and autocomplete
+    aliases: tuple[str, ...]  # e.g. ("/exit",) for /quit; ("quit","exit") bare words
 
     async def run(self, ctx: CommandContext) -> CommandResult: ...
 

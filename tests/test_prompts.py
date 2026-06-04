@@ -11,6 +11,7 @@ from mocode.app.cli.prompts import confirm, multiselect, select, text_input
 def _reset_style_cache():
     """Reset the module-level style cache so tests get a fresh one."""
     import mocode.app.cli.prompts as mod
+
     original = mod._style
     mod._style = None
     yield
@@ -87,12 +88,13 @@ class TestMultiselect:
             instance = mock_q.return_value
             instance.ask_async = AsyncMock(return_value=["a", "c"])
 
-            result = await multiselect("Toggle:", ["a", "b", "c"], checked=["a"])
+            await multiselect("Toggle:", ["a", "b", "c"], checked=["a"])
 
             # The choices passed to checkbox should include pre-checked items
             choices = mock_q.call_args[1]["choices"]
             # First choice "a" should be a Choice with checked=True
             from questionary import Choice
+
             assert any(isinstance(c, Choice) and c.checked for c in choices)
 
 
@@ -165,7 +167,9 @@ class TestTextInput:
             instance = mock_q.return_value
             instance.ask_async = AsyncMock(return_value="ok")
 
-            validator = lambda x: len(x) >= 2 or "too short"
+            def validator(x):
+                return len(x) >= 2 or "too short"
+
             await text_input("Name:", validate=validator)
 
             assert mock_q.call_args[1]["validate"] is validator

@@ -27,9 +27,7 @@ def validate_workflow(nodes: list[Node], node_map: dict[str, Node]) -> None:
     for n in nodes:
         for dep in n.depends:
             if dep not in node_map:
-                raise ValueError(
-                    f"Node '{n.id}' depends on unknown node '{dep}'"
-                )
+                raise ValueError(f"Node '{n.id}' depends on unknown node '{dep}'")
 
     # All route.to IDs must exist
     for n in nodes:
@@ -89,8 +87,10 @@ def _check_cycles(nodes: list[Node], node_map: dict[str, Node]) -> None:
                     and node_map[cn].type == "router"
                     and any(nn in r.to and r.max > 0 for r in node_map[cn].routes)
                     for i, (cn, nn) in enumerate(
-                        ((cycle_nodes[i], cycle_nodes[(i + 1) % len(cycle_nodes)])
-                         for i in range(len(cycle_nodes)))
+                        (
+                            (cycle_nodes[i], cycle_nodes[(i + 1) % len(cycle_nodes)])
+                            for i in range(len(cycle_nodes))
+                        )
                     )
                 )
                 if not has_valid:

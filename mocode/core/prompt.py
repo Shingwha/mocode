@@ -115,7 +115,9 @@ class Prompt:
 
     def build(self, fmt: str = "text", wrap: str | None = None) -> str:
         render = self._render_xml if fmt == "xml" else self._render_text
-        sorted_sections = sorted(self._sections.values(), key=lambda s: (s.priority, s.name))
+        sorted_sections = sorted(
+            self._sections.values(), key=lambda s: (s.priority, s.name)
+        )
         parts = []
         for s in sorted_sections:
             if not s.enabled:

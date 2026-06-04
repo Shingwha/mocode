@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ...workflow import Workflow, WorkflowRegistry
 from ...workflow.cli import parse_kv_args
 from ...workflow.runner import DAGRunner
 from ..prompts import Choice, select
@@ -114,5 +113,3 @@ class WorkflowCommand:
 
         ctx.display.workflow_summary(wf, results)
         return CommandResult.CONTINUE
-
-

@@ -1,6 +1,6 @@
 """Clear command — saves and clears the current conversation."""
 
-from . import Command, CommandContext, CommandResult
+from . import CommandContext, CommandResult
 
 
 class ClearCommand:

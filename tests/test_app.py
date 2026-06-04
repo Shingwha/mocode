@@ -25,7 +25,11 @@ def _make_app() -> CLIApp:
     mock_display = MagicMock()
     mock_session_mgr = MagicMock(spec=SessionManager)
     with (
-        patch.object(CLIApp, "_build_agent", return_value=MagicMock(messages=[], system_prompt="")),
+        patch.object(
+            CLIApp,
+            "_build_agent",
+            return_value=MagicMock(messages=[], system_prompt=""),
+        ),
         patch.object(CLIApp, "_build_prompt", return_value="test-prompt"),
         patch("mocode.app.cli.app.SessionManager", return_value=mock_session_mgr),
     ):

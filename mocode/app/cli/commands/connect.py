@@ -7,7 +7,7 @@ import json
 from ...config import ModelEntry, ProviderEntry
 from ..prompts import Choice, confirm, select, text_input
 
-from . import Command, CommandContext, CommandResult
+from . import CommandContext, CommandResult
 
 
 def mask_key(k: str) -> str:
@@ -34,7 +34,9 @@ class ConnectCommand:
         choices.append(Choice(title="Back", value="__back__"))
 
         chosen = await select(
-            "Manage providers:", choices, default=ctx.app.config.active_provider,
+            "Manage providers:",
+            choices,
+            default=ctx.app.config.active_provider,
         )
         if chosen is None or chosen == "__back__":
             return CommandResult.CONTINUE
@@ -60,7 +62,9 @@ class ConnectCommand:
             choices = [
                 Choice(title=f"Edit display name:  {name_display}", value="name"),
                 Choice(title=f"Edit API key:       {key_masked}", value="apikey"),
-                Choice(title=f"Edit base URL:      {entry.base_url or ''}", value="baseurl"),
+                Choice(
+                    title=f"Edit base URL:      {entry.base_url or ''}", value="baseurl"
+                ),
                 Choice(title=f"Edit models:        {models_display}", value="models"),
                 Choice(title="Edit per-model extra_body", value="extra_body"),
                 Choice(title="Delete provider", value="delete"),
@@ -96,7 +100,9 @@ class ConnectCommand:
 
             elif chosen == "models":
                 default_str = ", ".join(entry.model_names())
-                result = await text_input("Models (comma-separated):", default=default_str)
+                result = await text_input(
+                    "Models (comma-separated):", default=default_str
+                )
                 if result is not None:
                     new_names = [m.strip() for m in result.split(",") if m.strip()]
                     if new_names:
@@ -216,7 +222,9 @@ class ConnectCommand:
                 return "At least one model required"
             return True
 
-        models_str = await text_input("Models (comma-separated):", validate=_validate_models)
+        models_str = await text_input(
+            "Models (comma-separated):", validate=_validate_models
+        )
         if models_str is None:
             return
         model_names = [m.strip() for m in models_str.split(",") if m.strip()]

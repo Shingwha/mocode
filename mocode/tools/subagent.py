@@ -7,9 +7,7 @@ SubAgentTool exposes this as an LLM-callable tool.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from ..core.agent import AgentConfig, AgentLoop
 from ..core.hook import AgentHook, HookRunner

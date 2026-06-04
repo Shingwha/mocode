@@ -1,6 +1,6 @@
 """Tests for CommandRegistry, CommandResult, and individual commands."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -117,6 +117,7 @@ class TestExportCommand:
         # Verify the file was created
         files = list(tmp_path.glob("session_*.json"))
         assert len(files) == 1
+
 
 class TestCopyCommand:
     @pytest.mark.asyncio

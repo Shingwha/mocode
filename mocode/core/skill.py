@@ -16,6 +16,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mocode.core.virtualfs import VirtualFS
 
 
 @dataclass
@@ -69,15 +73,7 @@ class Skill:
         return self._content
 
     def _read_body(self) -> str:
-        try:
-            text = self.skill_md_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return ""
-        if text.startswith("---"):
-            parts = text.split("---", 2)
-            if len(parts) >= 3:
-                return parts[2].strip()
-        return text
+        return read_skill(self.path)[1]
 
 
 def _parse_frontmatter(text: str) -> dict | None:
@@ -94,9 +90,59 @@ def _parse_frontmatter(text: str) -> dict | None:
         return None
 
 
+def read_skill(skill_dir: Path) -> tuple[dict, str]:
+    """Read SKILL.md from *skill_dir*.
+
+    Returns ``(frontmatter_dict, body_content)``.
+    Frontmatter parsing failure → ``({}, raw_text)``.
+    File missing / unreadable → ``({}, "")``.
+    """
+    try:
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}, ""
+    fm = _parse_frontmatter(text)
+    if fm is not None:
+        parts = text.split("---", 2)
+        body = parts[2].strip() if len(parts) >= 3 else text
+        return fm, body
+    return {}, text
+
+
+def discover_references(skill_dir: Path, skill_name: str) -> dict[str, str]:
+    """Auto-discover ALL reference files in a skill directory.
+
+    Skips: SKILL.md, __init__.py, __pycache__/ dirs, .pyc files.
+    Returns dict mapping vfs://{skill_name}/{relative_path} → file content.
+    Text files are read as UTF-8; binary files are skipped gracefully.
+    """
+    result: dict[str, str] = {}
+    if not skill_dir.is_dir():
+        return result
+    for f in sorted(skill_dir.rglob("*")):
+        if not f.is_file():
+            continue
+        if f.name in ("SKILL.md", "__init__.py"):
+            continue
+        if "__pycache__" in f.parts:
+            continue
+        if f.suffix == ".pyc":
+            continue
+        try:
+            content = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        rel = f.relative_to(skill_dir).as_posix()
+        result[f"vfs://{skill_name}/{rel}"] = content
+    return result
+
+
 class SkillManager:
-    def __init__(self, skill_dirs: list[Path] | None = None):
+    def __init__(
+        self, skill_dirs: list[Path] | None = None, *, vfs: VirtualFS | None = None
+    ):
         self._skill_dirs: list[Path] = list(skill_dirs) if skill_dirs else []
+        self._vfs = vfs
         self._skills: dict[str, Skill] = {}  # directory-discovered
         self._builtin_skills: dict[str, Skill] = {}  # programmatically registered
         self.discover()
@@ -105,6 +151,7 @@ class SkillManager:
         """Register a built-in skill. Skipped if a discovered skill with the same name exists."""
         if skill.metadata.name not in self._skills:
             self._builtin_skills[skill.metadata.name] = skill
+            self._mount_to_vfs(skill)
 
     def discover(self) -> None:
         """Re-discover directory-based skills. Built-in skills are NOT cleared."""
@@ -130,7 +177,16 @@ class SkillManager:
         meta = SkillMetadata.from_dict(fm)
         if not meta.name:
             return None
-        return Skill(path=path, metadata=meta)
+        skill = Skill(path=path, metadata=meta)
+        skill.virtual_files = discover_references(path, meta.name)
+        self._mount_to_vfs(skill)
+        return skill
+
+    def _mount_to_vfs(self, skill: Skill) -> None:
+        if self._vfs is None:
+            return
+        for path, content in skill.virtual_files.items():
+            self._vfs.add(path, content)
 
     def get(self, name: str) -> Skill | None:
         """Look up a skill by name."""

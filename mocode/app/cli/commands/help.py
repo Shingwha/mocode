@@ -1,6 +1,6 @@
 """Help command — lists all registered commands."""
 
-from . import Command, CommandContext, CommandResult
+from . import CommandContext, CommandResult
 
 
 class HelpCommand:

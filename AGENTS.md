@@ -4,7 +4,7 @@
 
 ```bash
 uv sync                    # Install all deps (including dev, via --dev)
-uv run pytest              # Run all tests (3619 lines across 13 files, ~228 tests)
+uv run pytest              # Run all tests (5700+ lines across 13 files, ~384 tests)
 uv run pytest -xvs         # Fast fail with verbose output
 uv run pytest tests/test_builder.py -xvs                               # Single file
 uv run pytest tests/test_builder.py::TestBuilder::test_minimal_build   # Single test
@@ -30,9 +30,12 @@ mocode/core/           ← zero deps on app/, providers/, tools/, hooks/
 
 mocode/providers/      OpenAI-compatible provider implementation
 mocode/tools/          Factory functions returning Tool instances with closures
+mocode/tools/_helpers.py  Shared encoding fallback (utf-8 → gbk → cp936 → gb2312) and path validation (`require_file`, `require_dir`, `read_text`, `decode_bytes`)
 mocode/hooks/          Built-in hooks: CompactHook (auto 80% threshold), GoalHook
 mocode/prompts/        System prompt definitions for main agent, subagent, compact
+mocode/skills/         Built-in skill factories (e.g. WorkflowSkill) — registered programmatically
 mocode/app/            Application layer: Config, Session, CLI (CLIApp, Display, Input, Commands)
+  └── workflow/        DAG execution engine (models, graph, runner, state, events, registry)
 ```
 
 ### Core loop lifecycle (AgentLoop._loop)
@@ -52,6 +55,8 @@ mocode/app/            Application layer: Config, Session, CLI (CLIApp, Display,
 
 **Prompt is rebuilt on every `/resume`/`/clear`.** `_build_prompt()` re-reads AGENTS.md files each time, so changes take effect immediately without restart.
 
+**Two entry points.** `mocode` launches interactive REPL (`CLIApp.run()`). `mocode -p "prompt"` runs non-interactive oneshot (`CLIApp.run_oneshot()`). Both share the same `_build_agent()` composition root.
+
 ### Prompt section ordering
 
 Sections are ordered by priority (stable → dynamic) to maximize prefix cache hit rate:
@@ -60,12 +65,23 @@ Sections are ordered by priority (stable → dynamic) to maximize prefix cache h
 3. `environment` (priority 30) — cwd, home, config paths
 4. `tools` (priority 40) — ToolRegistry descriptions
 5. `skills` (priority 50) — SkillManager metadata
+6. `workflows` (priority 60) — WorkflowRegistry DAG definitions (omitted if none)
 
 ### Session persistence
 
 - Sessions auto-save after each chat turn (dirty tracking via `mark_dirty()`)
 - Filename: `session_{uuid4().hex[:12]}.json` under `sessions/{workdir_sha256[:16]}/`
 - `save_if_dirty()` on SIGINT ensures no data loss on abrupt exit
+
+### Workflow DAG execution
+
+The workflow engine (`mocode/app/workflow/`) executes YAML-defined DAGs:
+
+- **Node types**: `task` (runs `mocode -p` subprocess) and `router` (evaluates regex conditions on dependency output)
+- **Waves**: Nodes are grouped into waves by topological order. All nodes in a wave can execute in parallel (though currently serial at `max_concurrency=1`).
+- **Back-edges**: Router `route.to` can target already-completed nodes, creating loops. `route.max` limits iterations (0 = unlimited). Workflow-level `max_iterations` caps total executions.
+- **Template filling**: Task strings use `{nodes.<id>.output}`, `{args.<key>}`, `{env.<VAR>}`, `{previous}` placeholders. Dependencies are auto-inferred from `{nodes.X.*}` refs.
+- **Events**: `DAGRunner` emits typed events (`WaveReadyEvent`, `NodeStartEvent`, `NodeDoneEvent`, `RouterConditionEvent`, `LoopIterEvent`, `NodeSkippedEvent`, `ProgressEvent`) for consumer rendering.
 
 ## Code Conventions
 
@@ -87,6 +103,14 @@ def ReadTool() -> Tool:
 ```
 
 The `Tool` class supports both sync and async functions (`inspect.iscoroutinefunction`). Config is captured via closure at factory time.
+
+### ToolRegistry.derived()
+
+`ToolRegistry.derived(exclude=set)` creates a shallow copy with specified tools removed. Used by SubAgent to block `sub_agent` and `compact` tools:
+
+```python
+child_registry = parent_registry.derived(exclude={"sub_agent", "compact"})
+```
 
 ### Tool descriptions are dual-use
 

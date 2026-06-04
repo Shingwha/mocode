@@ -25,10 +25,12 @@ class TestGoalHook:
         hook = GoalHook()
         hook.set_goal("implement feature X")
 
-        ctx = AgentHookContext(messages=[
-            {"role": "user", "content": "do stuff"},
-            {"role": "assistant", "content": "working on it"},
-        ])
+        ctx = AgentHookContext(
+            messages=[
+                {"role": "user", "content": "do stuff"},
+                {"role": "assistant", "content": "working on it"},
+            ]
+        )
         await hook.after_iteration(ctx)
 
         assert ctx.continue_loop is True

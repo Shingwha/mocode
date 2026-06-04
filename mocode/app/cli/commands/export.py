@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from . import Command, CommandContext, CommandResult
+from . import CommandContext, CommandResult
 
 
 class ExportCommand:

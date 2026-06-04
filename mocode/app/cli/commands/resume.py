@@ -7,7 +7,7 @@ from pathlib import Path
 
 from ..prompts import Choice, select
 
-from . import Command, CommandContext, CommandResult
+from . import CommandContext, CommandResult
 
 MAX_RESUME_CHOICES = 20
 

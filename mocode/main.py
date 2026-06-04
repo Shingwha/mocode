@@ -25,14 +25,19 @@ def main():
 
     if getattr(args, "command", None) == "workflow":
         from .app.workflow.cli import run_cli
+
         run_cli(args)
     elif args.prompt is not None:
-        _run_app(interactive=False, prompt=args.prompt, stdin_text=read_stdin_if_piped())
+        _run_app(
+            interactive=False, prompt=args.prompt, stdin_text=read_stdin_if_piped()
+        )
     else:
         _run_app(interactive=True)
 
 
-def _run_app(*, interactive: bool, prompt: str | None = None, stdin_text: str | None = None):
+def _run_app(
+    *, interactive: bool, prompt: str | None = None, stdin_text: str | None = None
+):
     """Unified entry: create CLIApp, check config, dispatch to run or run_oneshot."""
     from .app.cli import CLIApp
 

@@ -28,7 +28,10 @@ def run_cli(args) -> None:
     """Top-level dispatch for ``mocode workflow <action>``."""
     action = getattr(args, "workflow_action", None)
     if not action:
-        print("Usage: mocode workflow <run|list|show|status|stop|result|runs>", file=sys.stderr)
+        print(
+            "Usage: mocode workflow <run|list|show|status|stop|result|runs>",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     dispatch = {
@@ -205,7 +208,9 @@ def _status(args) -> None:
 
     results = record.get("results", [])
     if results:
-        done = sum(1 for r in results if r.get("status") == "done" and r.get("exit_code") == 0)
+        done = sum(
+            1 for r in results if r.get("status") == "done" and r.get("exit_code") == 0
+        )
         failed = sum(1 for r in results if r.get("exit_code", 0) != 0)
         skipped = sum(1 for r in results if r.get("status") == "skipped")
         print(f"Nodes:     {done} done, {failed} failed, {skipped} skipped")

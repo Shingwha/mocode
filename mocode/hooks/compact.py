@@ -30,7 +30,8 @@ class CompactHook(AgentHook):
         if self._last_prompt_tokens > self._context_window * self._threshold:
             old_count = len(ctx.messages)
             ctx.messages[:] = await compact_messages(
-                self._agent.provider, ctx.messages,
+                self._agent.provider,
+                ctx.messages,
             )
             ctx.compact_old = old_count
             ctx.compact_new = len(ctx.messages)

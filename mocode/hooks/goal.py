@@ -66,14 +66,16 @@ class GoalHook(AgentHook):
         self._turn_count += 1
         if self._turn_count > self._max_turns:
             self._paused = True
-            ctx.messages.append({
-                "role": "user",
-                "content": (
-                    f"[Goal] Turn limit ({self._max_turns}) reached, goal paused.\n"
-                    f"Goal: {self._condition}\n"
-                    f"Use goal(action=\"resume\") to continue, or goal(action=\"clear\") to stop."
-                ),
-            })
+            ctx.messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"[Goal] Turn limit ({self._max_turns}) reached, goal paused.\n"
+                        f"Goal: {self._condition}\n"
+                        f'Use goal(action="resume") to continue, or goal(action="clear") to stop.'
+                    ),
+                }
+            )
             ctx.continue_loop = False
             return True
         return False
@@ -98,14 +100,16 @@ class GoalHook(AgentHook):
             return
 
         ctx.continue_loop = True
-        ctx.messages.append({
-            "role": "user",
-            "content": (
-                f"[Goal] Continue working on: {self._condition}\n"
-                f"Progress: turn {self._turn_count}/{self._max_turns}.\n"
-                f"Use goal(action=\"status\") to check details, or goal(action=\"clear\") when done."
-            ),
-        })
+        ctx.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    f"[Goal] Continue working on: {self._condition}\n"
+                    f"Progress: turn {self._turn_count}/{self._max_turns}.\n"
+                    f'Use goal(action="status") to check details, or goal(action="clear") when done.'
+                ),
+            }
+        )
 
     async def _tick_idle(self, ctx: AgentHookContext) -> None:
         """Called from after_iteration (no tool calls) — tracks idle streaks."""
@@ -115,14 +119,16 @@ class GoalHook(AgentHook):
         self._idle_count += 1
         if self._idle_count >= self._max_idle:
             self._paused = True
-            ctx.messages.append({
-                "role": "user",
-                "content": (
-                    f"[Goal] No tool calls for {self._idle_count} turns, goal paused.\n"
-                    f"Goal: {self._condition}\n"
-                    f"Use goal(action=\"resume\") to continue, or goal(action=\"clear\") to stop."
-                ),
-            })
+            ctx.messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"[Goal] No tool calls for {self._idle_count} turns, goal paused.\n"
+                        f"Goal: {self._condition}\n"
+                        f'Use goal(action="resume") to continue, or goal(action="clear") to stop.'
+                    ),
+                }
+            )
             ctx.continue_loop = False
             return
 

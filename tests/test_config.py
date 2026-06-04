@@ -1,9 +1,5 @@
 """Tests for mocode.app.config — Config, ModelEntry, ProviderEntry, load/save."""
 
-import json
-
-import pytest
-
 from mocode.app.config import Config, ModelEntry, ProviderEntry
 
 
@@ -71,7 +67,9 @@ class TestConfig:
 
     def test_current_property(self):
         entry = ProviderEntry(api_key="sk-test", models=[ModelEntry(name="gpt-4o")])
-        c = Config(active_provider="openai", active_model="gpt-4o", providers={"openai": entry})
+        c = Config(
+            active_provider="openai", active_model="gpt-4o", providers={"openai": entry}
+        )
         assert c.current is entry
 
     def test_current_missing_provider(self):
@@ -113,7 +111,10 @@ class TestConfig:
                     base_url="https://api.deepseek.com",
                     models=[
                         ModelEntry(name="deepseek-chat"),
-                        ModelEntry(name="deepseek-reasoner", extra_body={"thinking": {"type": "enabled"}}),
+                        ModelEntry(
+                            name="deepseek-reasoner",
+                            extra_body={"thinking": {"type": "enabled"}},
+                        ),
                     ],
                 ),
                 "openai": ProviderEntry(
@@ -137,8 +138,13 @@ class TestConfig:
         assert c2.providers["deepseek"].name == "DeepSeek"
         assert c2.providers["deepseek"].api_key == "sk-test"
         assert c2.providers["deepseek"].base_url == "https://api.deepseek.com"
-        assert c2.providers["deepseek"].model_names() == ["deepseek-chat", "deepseek-reasoner"]
-        assert c2.providers["deepseek"].get_extra_body("deepseek-reasoner") == {"thinking": {"type": "enabled"}}
+        assert c2.providers["deepseek"].model_names() == [
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ]
+        assert c2.providers["deepseek"].get_extra_body("deepseek-reasoner") == {
+            "thinking": {"type": "enabled"}
+        }
         assert c2.providers["openai"].api_key == "sk-openai"
         assert c2.providers["openai"].model_names() == ["gpt-4o"]
 
@@ -160,7 +166,9 @@ class TestConfig:
         assert c.providers["deepseek"].api_key == "sk-test"
 
     def test_from_dict_defaults(self):
-        c = Config.from_dict({"active_provider": "x", "active_model": "m", "providers": {}})
+        c = Config.from_dict(
+            {"active_provider": "x", "active_model": "m", "providers": {}}
+        )
         assert c.max_tokens == 8192
         assert c.tool_result_limit == 25000
         assert c.tool_timeout == 240
@@ -177,7 +185,10 @@ class TestConfig:
                     base_url="https://api.deepseek.com",
                     models=[
                         ModelEntry(name="deepseek-chat"),
-                        ModelEntry(name="deepseek-reasoner", extra_body={"thinking": {"type": "enabled"}}),
+                        ModelEntry(
+                            name="deepseek-reasoner",
+                            extra_body={"thinking": {"type": "enabled"}},
+                        ),
                     ],
                 ),
             },
@@ -197,7 +208,10 @@ class TestConfig:
         assert pd["base_url"] == "https://api.deepseek.com"
         assert len(pd["models"]) == 2
         assert pd["models"][0] == {"name": "deepseek-chat"}
-        assert pd["models"][1] == {"name": "deepseek-reasoner", "extra_body": {"thinking": {"type": "enabled"}}}
+        assert pd["models"][1] == {
+            "name": "deepseek-reasoner",
+            "extra_body": {"thinking": {"type": "enabled"}},
+        }
 
 
 class TestConfigPersistence:

@@ -10,7 +10,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from ..core.provider import Provider, Response, ToolCall, Usage
+from ..core.provider import Response, ToolCall, Usage
 
 
 class OpenAIProvider:
@@ -134,7 +134,10 @@ class OpenAIProvider:
                     if isinstance(block, dict) and block.get("type") == "image_url":
                         path = (block.get("_meta") or {}).get("path", "")
                         new_content.append(
-                            {"type": "text", "text": OpenAIProvider._image_placeholder(path)}
+                            {
+                                "type": "text",
+                                "text": OpenAIProvider._image_placeholder(path),
+                            }
                         )
                         found = True
                     else:

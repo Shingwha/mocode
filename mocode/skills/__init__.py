@@ -1,18 +1,16 @@
-"""Built-in skills for MoCode.
-
-Each module exports a factory function that returns a ``Skill`` instance
-with embedded content — no filesystem required.
+"""Built-in skills for MoCode — factory functions with package data.
 
 Usage:
     from mocode.skills import WorkflowSkill
 
-    skill_mgr = SkillManager([...])
+    skill_mgr = SkillManager([...], vfs=vfs)
     skill_mgr.register(WorkflowSkill())
 
 To add a new built-in skill:
-    1. Create ``mocode/skills/my_skill.py`` with a factory function
-    2. Import and export it from ``mocode/skills/__init__.py``
-    3. Register it in ``mocode/app/cli/app.py`` (_build_agent)
+    1. Create ``mocode/skills/my_skill/`` directory with SKILL.md + references
+    2. Create ``mocode/skills/my_skill/__init__.py`` with a factory function
+    3. Import and export it from ``mocode/skills/__init__.py``
+    4. Register it in ``mocode/app/cli/app.py`` (_build_agent)
 """
 
 from __future__ import annotations

@@ -50,7 +50,9 @@ class SpinnerRunner:
             return style
         if style in _PRESETS:
             return _PRESETS[style]
-        raise ValueError(f"Unknown spinner style: {style!r}. Available: {list(_PRESETS)}")
+        raise ValueError(
+            f"Unknown spinner style: {style!r}. Available: {list(_PRESETS)}"
+        )
 
     @asynccontextmanager
     async def spin(self, text: str = "Thinking", style: str | Spinner | None = None):
@@ -95,4 +97,4 @@ class SpinnerRunner:
             self._active = False
 
     def _clear(self):
-        print(f"\r\033[K", end="", flush=True)
+        print("\r\033[K", end="", flush=True)

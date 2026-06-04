@@ -11,13 +11,10 @@ from .spinner import SpinnerRunner
 from .theme import (
     BG_USER,
     BOLD,
-    CYAN,
     DIM,
     GRAY,
     GREEN,
-    MAGENTA,
     RED,
-    RST,
     SOFT_CYAN,
     YELLOW,
     Theme,
@@ -331,9 +328,13 @@ class Display:
     def _on_node_done(self, event: NodeDoneEvent) -> None:
         """Print a completed node result line."""
         dur = f"{event.result.duration:.1f}s"
-        icon = _s('✓', GREEN) if event.result.exit_code == 0 else _s('✗', RED)
-        desc = event.description or (event.result.task[:40] if event.result.task else "")
-        iter_suffix = f" (iter {event.result.iteration})" if event.result.iteration > 1 else ""
+        icon = _s("✓", GREEN) if event.result.exit_code == 0 else _s("✗", RED)
+        desc = event.description or (
+            event.result.task[:40] if event.result.task else ""
+        )
+        iter_suffix = (
+            f" (iter {event.result.iteration})" if event.result.iteration > 1 else ""
+        )
         self._print(
             f"  └─ {icon} {_s(event.node_id, BOLD)} · {desc}{iter_suffix}  {_s(dur, DIM)}"
         )
@@ -341,7 +342,9 @@ class Display:
     def _on_loop_iter(self, event: LoopIterEvent) -> None:
         """Print a loop iteration line."""
         dur = f"{event.result.duration:.1f}s"
-        desc = event.description or (event.result.task[:40] if event.result.task else "")
+        desc = event.description or (
+            event.result.task[:40] if event.result.task else ""
+        )
         max_str = str(event.max_iter) if event.max_iter > 0 else "∞"
         self._print(
             f"  └─ {_s('↻', YELLOW)} {_s(event.node_id, BOLD)} [{event.iteration}/{max_str}] · {desc}  {_s(dur, DIM)}"
@@ -353,8 +356,8 @@ class Display:
 
     _SKIP_STYLES: dict[str, tuple[str, str]] = {
         "not activated by router": ("○", "routed elsewhere"),
-        "dependency skipped":       ("◌", "upstream skipped"),
-        "not activated":            ("∘", "not reached"),
+        "dependency skipped": ("◌", "upstream skipped"),
+        "not activated": ("∘", "not reached"),
     }
 
     # ── Output: workflow lifecycle ────────────────────────
@@ -364,8 +367,7 @@ class Display:
         node_count = wf.total_nodes()
         self._wf_start_time = time.monotonic()
         self._print(
-            f"{_s('●', YELLOW)} {_s(wf.name, BOLD)}"
-            f"  {_s(f'{node_count} nodes', DIM)}"
+            f"{_s('●', YELLOW)} {_s(wf.name, BOLD)}  {_s(f'{node_count} nodes', DIM)}"
         )
         self._print()
 
@@ -376,7 +378,9 @@ class Display:
         passed = sum(1 for r in results if r.exit_code == 0 and r.status == "done")
         failed = sum(1 for r in results if r.exit_code != 0)
         skipped_count = sum(1 for r in results if r.status == "skipped")
-        wall_time = time.monotonic() - self._wf_start_time if self._wf_start_time else 0.0
+        wall_time = (
+            time.monotonic() - self._wf_start_time if self._wf_start_time else 0.0
+        )
 
         # Final output — find the last result with meaningful content
         last_output_result = None
@@ -385,14 +389,14 @@ class Display:
                 last_output_result = r
                 break
         if last_output_result:
-            self._print(_s('─' * 48, YELLOW))
+            self._print(_s("─" * 48, YELLOW))
             for ol in last_output_result.output.splitlines():
                 self._print(ol)
         # Show errors from any failed result
         for r in results:
             if r.error and r.exit_code != 0:
                 if not last_output_result:
-                    self._print(_s('─' * 48, YELLOW))
+                    self._print(_s("─" * 48, YELLOW))
                     last_output_result = r  # just to avoid double separator
                 self._print(_s(f"Error: {r.error}", RED))
 
@@ -436,7 +440,11 @@ class Display:
             rendered.add(node_id)
             node = node_map[node_id]
             connector = "└─" if is_last else "├─"
-            preview = node.description if node.description else (node.task[:50] if node.task else "")
+            preview = (
+                node.description
+                if node.description
+                else (node.task[:50] if node.task else "")
+            )
 
             if node.type == "router":
                 route_strs = [_format_route(r) for r in node.routes]
@@ -444,9 +452,7 @@ class Display:
                     f"{prefix}{connector} {_s(node_id, SOFT_CYAN)} · router  {_s('→', YELLOW)} {' | '.join(route_strs)}"
                 )
             else:
-                lines.append(
-                    f"{prefix}{connector} {_s(node_id, BOLD)} · {preview}"
-                )
+                lines.append(f"{prefix}{connector} {_s(node_id, BOLD)} · {preview}")
 
             children = dependents.get(node_id, [])
             child_prefix = prefix + ("   " if is_last else "│  ")

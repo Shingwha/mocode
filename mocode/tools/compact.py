@@ -86,10 +86,14 @@ def build_fallback_summary(messages: list[dict]) -> str:
 async def _generate_summary(provider, messages_text: str) -> str:
     try:
         resp = await provider.call(
-            messages=[{
-                "role": "user",
-                "content": COMPACT_USER_TEMPLATE.format(messages_text=messages_text),
-            }],
+            messages=[
+                {
+                    "role": "user",
+                    "content": COMPACT_USER_TEMPLATE.format(
+                        messages_text=messages_text
+                    ),
+                }
+            ],
             system=summary_system_prompt.build(fmt="xml"),
             tools=[],
             max_tokens=8000,
@@ -130,6 +134,7 @@ def CompactTool(
     get_messages: Callable[[], list[dict]],
 ) -> Tool:
     """Create a tool that lets the LLM trigger context compression."""
+
     async def _compact(args: dict) -> str:
         messages = get_messages()
         if not messages:

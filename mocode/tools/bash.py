@@ -94,7 +94,9 @@ class BashSession:
 
         full_cmd = command
         if self._env_vars:
-            exports = "; ".join([f'export {k}="{v}"' for k, v in self._env_vars.items()])
+            exports = "; ".join(
+                [f'export {k}="{v}"' for k, v in self._env_vars.items()]
+            )
             full_cmd = f"{exports}; {command}"
 
         try:
@@ -160,7 +162,10 @@ def BashTool(timeout: int = 240) -> Tool:
         "Working directory and environment variables persist across commands. "
         "Use 'restart' to reset session state (cwd, env vars).",
         {
-            "command": {"type": "string", "description": "The bash command to execute (Unix-style syntax)"},
+            "command": {
+                "type": "string",
+                "description": "The bash command to execute (Unix-style syntax)",
+            },
             "restart": {
                 "type": "boolean",
                 "optional": True,

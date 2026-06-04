@@ -3,11 +3,18 @@
 import pytest
 
 from mocode.core import (
-    AgentHook, AgentHookContext, Response, ToolCall, Tool, ToolRegistry,
+    AgentHook,
+    Response,
+    ToolCall,
+    Tool,
+    ToolRegistry,
 )
 from mocode.core.tool import ToolError
 from mocode.tools.subagent import (
-    SubAgent, SubAgentConfig, SubAgentResult, SubAgentTool,
+    SubAgent,
+    SubAgentConfig,
+    SubAgentResult,
+    SubAgentTool,
 )
 
 
@@ -31,6 +38,7 @@ class MockProvider:
 
 class MockAgent:
     """Minimal agent-like object with a .provider attribute."""
+
     def __init__(self, provider):
         self.provider = provider
 
@@ -79,21 +87,35 @@ class TestSubAgent:
 
     @pytest.mark.asyncio
     async def test_run_with_tool_calls(self):
-        tool = Tool("echo", "Echo", {"text": {"type": "string", "description": "text"}}, lambda a: f"echoed: {a['text']}")
+        tool = Tool(
+            "echo",
+            "Echo",
+            {"text": {"type": "string", "description": "text"}},
+            lambda a: f"echoed: {a['text']}",
+        )
         registry = ToolRegistry()
         registry.register(tool)
 
-        provider = MockProvider(responses=[
-            Response(content="", tool_calls=[ToolCall(id="1", name="echo", arguments='{"text": "hello"}')]),
-            Response(content="Got echo result"),
-        ])
+        provider = MockProvider(
+            responses=[
+                Response(
+                    content="",
+                    tool_calls=[
+                        ToolCall(id="1", name="echo", arguments='{"text": "hello"}')
+                    ],
+                ),
+                Response(content="Got echo result"),
+            ]
+        )
         cfg = SubAgentConfig(system_prompt="test")
         sub = SubAgent(agent=MockAgent(provider), tools=registry, config=cfg)
         result = await sub.run("run echo")
 
         assert result.content == "Got echo result"
         assert result.tool_calls_made == 1
-        assert len(result.messages) == 4  # user + assistant(tool_call) + tool + assistant(final)
+        assert (
+            len(result.messages) == 4
+        )  # user + assistant(tool_call) + tool + assistant(final)
 
     @pytest.mark.asyncio
     async def test_max_tool_calls_limit(self):
@@ -102,7 +124,9 @@ class TestSubAgent:
         registry.register(tool)
 
         # Always returns a tool call — should hit the limit
-        always_call = Response(content="", tool_calls=[ToolCall(id="1", name="noop", arguments='{}')])
+        always_call = Response(
+            content="", tool_calls=[ToolCall(id="1", name="noop", arguments="{}")]
+        )
         provider = MockProvider(responses=[always_call] * 10)
         cfg = SubAgentConfig(system_prompt="test", max_tool_calls=3)
         sub = SubAgent(agent=MockAgent(provider), tools=registry, config=cfg)
@@ -121,7 +145,9 @@ class TestSubAgent:
                 raise RuntimeError("LLM is down")
 
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(agent=MockAgent(FailingProvider()), tools=ToolRegistry(), config=cfg)
+        sub = SubAgent(
+            agent=MockAgent(FailingProvider()), tools=ToolRegistry(), config=cfg
+        )
         result = await sub.run("test")
         assert result.had_error is True
 
@@ -129,7 +155,7 @@ class TestSubAgent:
     async def test_tool_filtering(self):
         """SubAgent receives pre-filtered tools — filtering is SubAgentTool's responsibility."""
         t1 = Tool("t1", "T1", {}, lambda a: "r1")
-        t2 = Tool("t2", "T2", {}, lambda a: "r2")
+        Tool("t2", "T2", {}, lambda a: "r2")
         registry = ToolRegistry()
         registry.register(t1)
 
@@ -191,12 +217,19 @@ class TestSubAgent:
         registry = ToolRegistry()
         registry.register(tool)
 
-        provider = MockProvider(responses=[
-            Response(content="", tool_calls=[ToolCall(id="1", name="ping", arguments='{}')]),
-            Response(content="done"),
-        ])
+        provider = MockProvider(
+            responses=[
+                Response(
+                    content="",
+                    tool_calls=[ToolCall(id="1", name="ping", arguments="{}")],
+                ),
+                Response(content="done"),
+            ]
+        )
         cfg = SubAgentConfig(system_prompt="test")
-        sub = SubAgent(agent=MockAgent(provider), tools=registry, config=cfg, hooks=[TestHook()])
+        sub = SubAgent(
+            agent=MockAgent(provider), tools=registry, config=cfg, hooks=[TestHook()]
+        )
         await sub.run("ping")
 
         assert ("start", "ping") in events
@@ -210,13 +243,18 @@ class TestSubAgent:
         registry.register(t1)
         registry.register(t2)
 
-        provider = MockProvider(responses=[
-            Response(content="", tool_calls=[
-                ToolCall(id="1", name="t1", arguments='{}'),
-                ToolCall(id="2", name="t2", arguments='{}'),
-            ]),
-            Response(content="both done"),
-        ])
+        provider = MockProvider(
+            responses=[
+                Response(
+                    content="",
+                    tool_calls=[
+                        ToolCall(id="1", name="t1", arguments="{}"),
+                        ToolCall(id="2", name="t2", arguments="{}"),
+                    ],
+                ),
+                Response(content="both done"),
+            ]
+        )
         cfg = SubAgentConfig(system_prompt="test")
         sub = SubAgent(agent=MockAgent(provider), tools=registry, config=cfg)
         result = await sub.run("run both")
@@ -255,14 +293,26 @@ class TestSubAgentTool:
 
     @pytest.mark.asyncio
     async def test_returns_content(self):
-        tool = Tool("echo", "Echo", {"text": {"type": "string", "description": "text"}}, lambda a: a["text"])
+        tool = Tool(
+            "echo",
+            "Echo",
+            {"text": {"type": "string", "description": "text"}},
+            lambda a: a["text"],
+        )
         registry = ToolRegistry()
         registry.register(tool)
 
-        provider = MockProvider(responses=[
-            Response(content="", tool_calls=[ToolCall(id="1", name="echo", arguments='{"text": "hi"}')]),
-            Response(content="result from sub"),
-        ])
+        provider = MockProvider(
+            responses=[
+                Response(
+                    content="",
+                    tool_calls=[
+                        ToolCall(id="1", name="echo", arguments='{"text": "hi"}')
+                    ],
+                ),
+                Response(content="result from sub"),
+            ]
+        )
 
         sub_tool = SubAgentTool(MockAgent(provider), registry)
         result = await sub_tool.run_async({"task": "say hi"})

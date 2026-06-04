@@ -4,7 +4,8 @@ import pytest
 
 from mocode.core import AgentHookContext, Response, Usage
 from mocode.tools.compact import (
-    compact_messages, CompactTool,
+    compact_messages,
+    CompactTool,
     format_messages_for_summary,
 )
 from mocode.hooks.compact import CompactHook
@@ -30,6 +31,7 @@ class MockProvider:
 
 class MockAgent:
     """Minimal agent-like object with a .provider attribute."""
+
     def __init__(self, provider):
         self.provider = provider
 
@@ -93,7 +95,9 @@ class TestCompactHook:
 
     @pytest.mark.asyncio
     async def test_before_iteration_reads_usage(self):
-        hook = CompactHook(MockAgent(MockProvider()), threshold=0.80, context_window=128_000)
+        hook = CompactHook(
+            MockAgent(MockProvider()), threshold=0.80, context_window=128_000
+        )
         assert hook._last_prompt_tokens == 0
 
         ctx = AgentHookContext(usage=Usage(prompt_tokens=50000, completion_tokens=100))
@@ -121,7 +125,9 @@ class TestCompactHook:
 
     @pytest.mark.asyncio
     async def test_before_iteration_skips_when_under_threshold(self):
-        hook = CompactHook(MockAgent(MockProvider()), threshold=0.80, context_window=128_000)
+        hook = CompactHook(
+            MockAgent(MockProvider()), threshold=0.80, context_window=128_000
+        )
         hook._last_prompt_tokens = 10_000
 
         messages = [
@@ -207,10 +213,13 @@ class TestPureHelpers:
 
     def test_format_messages_with_multimodal(self):
         messages = [
-            {"role": "user", "content": [
-                {"type": "text", "text": "look at this"},
-                {"type": "image_url", "image_url": {"url": "data:..."}},
-            ]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look at this"},
+                    {"type": "image_url", "image_url": {"url": "data:..."}},
+                ],
+            },
         ]
         text = format_messages_for_summary(messages)
         assert "look at this" in text

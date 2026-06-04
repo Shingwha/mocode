@@ -13,6 +13,7 @@ from typing import Any, Protocol, runtime_checkable
 @dataclass
 class ToolCall:
     """LLM-issued tool call."""
+
     id: str
     name: str
     arguments: str  # JSON string
@@ -21,6 +22,7 @@ class ToolCall:
 @dataclass
 class Usage:
     """Token usage."""
+
     prompt_tokens: int
     completion_tokens: int
 
@@ -28,6 +30,7 @@ class Usage:
 @dataclass
 class Response:
     """Normalized LLM response — all consumers only touch this type."""
+
     content: str | None = None
     tool_calls: list[ToolCall] | None = None
     usage: Usage | None = None

@@ -1,6 +1,6 @@
 """Copy command — copies the last assistant response to clipboard."""
 
-from . import Command, CommandContext, CommandResult
+from . import CommandContext, CommandResult
 
 
 class CopyCommand:

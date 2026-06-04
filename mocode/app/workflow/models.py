@@ -239,7 +239,9 @@ def summarize(name: str, results: list[NodeResult]) -> str:
     return "\n".join(lines)
 
 
-def detailed_summarize(name: str, results: list[NodeResult], max_lines: int = 10) -> str:
+def detailed_summarize(
+    name: str, results: list[NodeResult], max_lines: int = 10
+) -> str:
     """Multi-line summary with output and error excerpts."""
     lines = [f"Workflow: {name}"]
     for r in results:

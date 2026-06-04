@@ -11,7 +11,6 @@ import base64
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from .hook import HookRunner, AgentHookContext
 from .provider import Provider, Response, Usage
@@ -38,7 +37,9 @@ class AgentLoop:
     """LLM chat engine — receives all dependencies via constructor."""
 
     INTERRUPT_MSG = "[Response was interrupted by the user before completion.]"
-    INTERRUPT_TOOL_MSG = "[Tool execution was interrupted by the user before completion.]"
+    INTERRUPT_TOOL_MSG = (
+        "[Tool execution was interrupted by the user before completion.]"
+    )
 
     def __init__(
         self,
@@ -112,7 +113,9 @@ class AgentLoop:
                     self.config.max_tokens,
                 )
             except asyncio.CancelledError:
-                self.messages.append({"role": "assistant", "content": self.INTERRUPT_MSG})
+                self.messages.append(
+                    {"role": "assistant", "content": self.INTERRUPT_MSG}
+                )
                 raise
 
             ctx.reset_response()
@@ -131,14 +134,24 @@ class AgentLoop:
 
             if response.tool_calls:
                 all_tc_dicts = [
-                    {"id": t.id, "type": "function", "function": {"name": t.name, "arguments": t.arguments}}
+                    {
+                        "id": t.id,
+                        "type": "function",
+                        "function": {"name": t.name, "arguments": t.arguments},
+                    }
                     for t in response.tool_calls
                 ]
                 try:
-                    tool_results = await self._run_tool_calls_parallel(response.tool_calls, ctx)
+                    tool_results = await self._run_tool_calls_parallel(
+                        response.tool_calls, ctx
+                    )
                 except asyncio.CancelledError:
                     tool_results = [
-                        {"role": "tool", "tool_call_id": tc.id, "content": self.INTERRUPT_TOOL_MSG}
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": self.INTERRUPT_TOOL_MSG,
+                        }
                         for tc in response.tool_calls
                     ]
                     self.messages.append(self._assistant_msg(response, all_tc_dicts))
@@ -155,7 +168,10 @@ class AgentLoop:
                 self.messages = ctx.messages
 
                 self._iteration_count += 1
-                if self.config.max_iterations > 0 and self._iteration_count >= self.config.max_iterations:
+                if (
+                    self.config.max_iterations > 0
+                    and self._iteration_count >= self.config.max_iterations
+                ):
                     break
                 if ctx.continue_loop is False:
                     break
@@ -180,8 +196,12 @@ class AgentLoop:
         return msg
 
     _IMG_MEDIA = {
-        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-        ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
     }
 
     @staticmethod
@@ -195,10 +215,12 @@ class AgentLoop:
             try:
                 b64 = base64.b64encode(p.read_bytes()).decode()
                 media_type = AgentLoop._IMG_MEDIA[p.suffix.lower()]
-                parts.append({
-                    "type": "image_url",
-                    "image_url": {"url": f"data:{media_type};base64,{b64}"},
-                })
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{b64}"},
+                    }
+                )
             except Exception:
                 continue
 
@@ -216,7 +238,9 @@ class AgentLoop:
             return result[:limit] + "\n... [truncated]"
         return result
 
-    async def _run_tool_async(self, tool_name: str, tool_args: dict, ctx: AgentHookContext) -> str:
+    async def _run_tool_async(
+        self, tool_name: str, tool_args: dict, ctx: AgentHookContext
+    ) -> str:
         """Returns tool result string."""
         call_id = self._next_call_id()
 
@@ -258,7 +282,9 @@ class AgentLoop:
         await self.hooks.on_tool_complete(ctx)
         return ctx.tool_result
 
-    async def _run_tool_calls_parallel(self, tool_calls: list, ctx: AgentHookContext) -> list[dict]:
+    async def _run_tool_calls_parallel(
+        self, tool_calls: list, ctx: AgentHookContext
+    ) -> list[dict]:
         async def _run_one(tc):
             tool_args = json.loads(tc.arguments)
             # Per-call ctx so concurrent tools don't clobber each other's tool_name/tool_args/tool_error
@@ -275,7 +301,9 @@ class AgentLoop:
         for i, raw in enumerate(raw_results):
             tc = tool_calls[i]
             if isinstance(raw, BaseException):
-                tool_results.append({"role": "tool", "tool_call_id": tc.id, "content": f"error: {raw}"})
+                tool_results.append(
+                    {"role": "tool", "tool_call_id": tc.id, "content": f"error: {raw}"}
+                )
             else:
                 tool_results.append(raw)
 

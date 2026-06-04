@@ -1,14 +1,11 @@
 """Tests for mocode.app.session — Session, FileSessionStore, SessionManager."""
 
-import json
-
 import pytest
 
 from mocode.app.session import (
     FileSessionStore,
     Session,
     SessionManager,
-    SessionStore,
 )
 
 
@@ -72,12 +69,18 @@ class TestFileSessionStore:
 
     def test_list_sorted(self, store):
         s1 = Session(
-            id="session_s1", created_at="2025-01-01T00:00:00",
-            updated_at="2025-01-01T00:00:00", workdir="/p", messages=[],
+            id="session_s1",
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+            workdir="/p",
+            messages=[],
         )
         s2 = Session(
-            id="session_s2", created_at="2025-01-02T00:00:00",
-            updated_at="2025-01-02T00:00:00", workdir="/p", messages=[],
+            id="session_s2",
+            created_at="2025-01-02T00:00:00",
+            updated_at="2025-01-02T00:00:00",
+            workdir="/p",
+            messages=[],
         )
         store.save("/p", s1)
         store.save("/p", s2)
@@ -87,8 +90,11 @@ class TestFileSessionStore:
 
     def test_delete(self, store):
         s = Session(
-            id="session_s1", created_at="2025-01-01T00:00:00",
-            updated_at="2025-01-01T00:00:00", workdir="/p", messages=[],
+            id="session_s1",
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+            workdir="/p",
+            messages=[],
         )
         store.save("/p", s)
         assert store.delete("/p", "session_s1") is True
@@ -99,12 +105,18 @@ class TestFileSessionStore:
 
     def test_workdir_isolation(self, store):
         s1 = Session(
-            id="session_s1", created_at="2025-01-01T00:00:00",
-            updated_at="2025-01-01T00:00:00", workdir="/a", messages=[],
+            id="session_s1",
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+            workdir="/a",
+            messages=[],
         )
         s2 = Session(
-            id="session_s2", created_at="2025-01-01T00:00:00",
-            updated_at="2025-01-01T00:00:00", workdir="/b", messages=[],
+            id="session_s2",
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+            workdir="/b",
+            messages=[],
         )
         store.save("/a", s1)
         store.save("/b", s2)
@@ -156,7 +168,7 @@ class TestSessionManager:
         manager.mark_dirty()
         assert manager.is_dirty is True
 
-        sid = manager.create()
+        manager.create()
         assert manager.is_dirty is False
 
         manager.mark_dirty()

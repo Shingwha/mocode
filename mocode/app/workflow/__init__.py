@@ -13,7 +13,15 @@ from .events import (
     WorkflowEvent,
 )
 from .graph import compute_waves
-from .models import Node, NodeResult, Route, Workflow, fill_template, summarize, detailed_summarize
+from .models import (
+    Node,
+    NodeResult,
+    Route,
+    Workflow,
+    fill_template,
+    summarize,
+    detailed_summarize,
+)
 from .registry import WorkflowRegistry
 from .run_store import WorkflowRunStore
 

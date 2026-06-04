@@ -379,7 +379,7 @@ class TestSkillTool:
 
 
 # ---------------------------------------------------------------------------
-# WorkflowSkill (built-in skill factory)
+# WorkflowSkill (built-in skill factory — reads from package data)
 # ---------------------------------------------------------------------------
 
 

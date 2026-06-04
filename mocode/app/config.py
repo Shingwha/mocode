@@ -103,10 +103,12 @@ class Config:
                 if isinstance(raw_m, str):
                     models.append(ModelEntry(name=raw_m))
                 elif isinstance(raw_m, dict):
-                    models.append(ModelEntry(
-                        name=raw_m.get("name", ""),
-                        extra_body=raw_m.get("extra_body"),
-                    ))
+                    models.append(
+                        ModelEntry(
+                            name=raw_m.get("name", ""),
+                            extra_body=raw_m.get("extra_body"),
+                        )
+                    )
             providers[key] = ProviderEntry(
                 name=pdata.get("name", ""),
                 api_key=pdata.get("api_key", ""),

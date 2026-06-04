@@ -2,7 +2,7 @@
 
 from ..prompts import Choice, select
 
-from . import Command, CommandContext, CommandResult
+from . import CommandContext, CommandResult
 
 
 class ModelCommand:
@@ -16,9 +16,7 @@ class ModelCommand:
         for key, entry in ctx.app.config.providers.items():
             title = entry.name or key
             preview = ", ".join(entry.model_names()) or ctx.app.config.active_model
-            provider_choices.append(
-                Choice(title=title, value=key, description=preview)
-            )
+            provider_choices.append(Choice(title=title, value=key, description=preview))
 
         if not provider_choices:
             ctx.display.warn("No providers configured.")
@@ -36,7 +34,9 @@ class ModelCommand:
         models = entry.model_names()
         # Skip model picker if there's only one (or zero) models
         if len(models) <= 1:
-            ctx.app.switch_to(chosen_key, models[0] if models else ctx.app.config.active_model)
+            ctx.app.switch_to(
+                chosen_key, models[0] if models else ctx.app.config.active_model
+            )
             return CommandResult.CONTINUE
 
         model_choices = [

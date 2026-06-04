@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Callable
 import questionary
 from questionary import Choice
 
-from .theme import Theme, questionary_style
+from .theme import questionary_style
 
 if TYPE_CHECKING:
     pass
@@ -56,9 +56,19 @@ async def multiselect(
     if checked is not None:
         resolved: list[str | Choice] = []
         for c in choices:
-            val = c if isinstance(c, str) else (c.value if c.value is not None else str(c.title))
+            val = (
+                c
+                if isinstance(c, str)
+                else (c.value if c.value is not None else str(c.title))
+            )
             if val in checked:
-                resolved.append(Choice(title=c if isinstance(c, str) else c.title, value=val, checked=True))
+                resolved.append(
+                    Choice(
+                        title=c if isinstance(c, str) else c.title,
+                        value=val,
+                        checked=True,
+                    )
+                )
             else:
                 resolved.append(c)
         choices = resolved

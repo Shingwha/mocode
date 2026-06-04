@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 @dataclass
 class AgentHookContext:
     """Carries typed state through a single AgentLoop iteration."""
+
     # Response state (set before on_response)
     iteration: int = 0
     messages: list[dict] = field(default_factory=list)
@@ -94,10 +95,17 @@ class HookRunner:
     """Fan-out dispatcher for a list of AgentHooks with error isolation."""
 
     _log = logging.getLogger(__name__)
-    _METHODS = frozenset({
-        "before_iteration", "on_response", "after_tools",
-        "after_iteration", "on_tool_start", "on_tool_complete", "on_compact",
-    })
+    _METHODS = frozenset(
+        {
+            "before_iteration",
+            "on_response",
+            "after_tools",
+            "after_iteration",
+            "on_tool_start",
+            "on_tool_complete",
+            "on_compact",
+        }
+    )
 
     def __init__(self, hooks: list[AgentHook] | None = None):
         self._hooks: list[AgentHook] = list(hooks or [])
@@ -110,11 +118,15 @@ class HookRunner:
             try:
                 await getattr(h, method)(ctx)
             except Exception:
-                self._log.debug("Hook %s.%s failed", type(h).__name__, method, exc_info=True)
+                self._log.debug(
+                    "Hook %s.%s failed", type(h).__name__, method, exc_info=True
+                )
 
     def __getattr__(self, name: str):
         if name in self._METHODS:
+
             async def method(ctx: AgentHookContext) -> None:
                 await self._dispatch(name, ctx)
+
             return method
         raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")

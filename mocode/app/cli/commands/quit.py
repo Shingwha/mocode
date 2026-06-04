@@ -1,6 +1,6 @@
 """Quit command — exits the REPL."""
 
-from . import Command, CommandContext, CommandResult
+from . import CommandContext, CommandResult
 
 
 class QuitCommand:

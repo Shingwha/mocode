@@ -32,7 +32,9 @@ class SlashCompleter(Completer):
             return
         for cmd in self._commands:
             if cmd.name.startswith(text):
-                yield Completion(cmd.name, start_position=-len(text), display_meta=cmd.description)
+                yield Completion(
+                    cmd.name, start_position=-len(text), display_meta=cmd.description
+                )
 
 
 def build_keybindings(paste_handler=None):
@@ -43,7 +45,10 @@ def build_keybindings(paste_handler=None):
     def _(event):
         buf = event.current_buffer
         if buf.complete_state:
-            completion = buf.complete_state.current_completion or buf.complete_state.completions[0]
+            completion = (
+                buf.complete_state.current_completion
+                or buf.complete_state.completions[0]
+            )
             buf.apply_completion(completion)
         else:
             buf.start_completion(select_first=True)
@@ -67,6 +72,7 @@ def build_keybindings(paste_handler=None):
         event.current_buffer.insert_text("\n")
 
     if paste_handler:
+
         @bindings.add(Keys.BracketedPaste)
         def _(event):
             paste_handler(event)
@@ -117,6 +123,7 @@ class Input:
         def _replace(m):
             pid = int(m.group(1))
             return self._paste_store.get(pid, m.group(0))
+
         return _PASTE_MARKER_RE.sub(_replace, text)
 
     async def prompt(self) -> str:
@@ -125,9 +132,11 @@ class Input:
         self._paste_counter = 0
         raw = await self._session.prompt_async(f"{self._ps1} ")
         # Clear the prompt_toolkit input lines from the terminal
-        lines = raw.count('\n') + 1
+        lines = raw.count("\n") + 1
         for _ in range(lines):
             print("\033[A\033[2K", end="", flush=True)
         text = self._resolve_paste_markers(raw).strip()
         # Sanitize surrogates from prompt_toolkit on Windows
-        return text.encode("utf-16-le", errors="surrogatepass").decode("utf-16-le", errors="replace")
+        return text.encode("utf-16-le", errors="surrogatepass").decode(
+            "utf-16-le", errors="replace"
+        )

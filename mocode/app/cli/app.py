@@ -147,17 +147,12 @@ class CLIApp:
         ]:
             self._tools.register(t)
 
-        self._skill_mgr = SkillManager([self.home / "skills"])
+        self._skill_mgr = SkillManager([self.home / "skills"], vfs=self._vfs)
 
         # Register built-in skills
         self._skill_mgr.register(WorkflowSkill())
         self._skill_mgr.register(AmesimTunerSkill())
         self._skill_mgr.register(SimulinkTunerSkill())
-
-        # Collect virtual files from all registered skills into VFS
-        for skill in self._skill_mgr._builtin_skills.values():
-            for path, content in skill.virtual_files.items():
-                self._vfs.add(path, content)
 
         self._tools.register(SkillTool(self._skill_mgr))
 

@@ -41,7 +41,11 @@ def _make_app() -> CLIApp:
     mock_display = MagicMock()
     mock_session_mgr = MagicMock(spec=SessionManager)
     with (
-        patch.object(CLIApp, "_build_agent", return_value=MagicMock(messages=[], system_prompt="")),
+        patch.object(
+            CLIApp,
+            "_build_agent",
+            return_value=MagicMock(messages=[], system_prompt=""),
+        ),
         patch.object(CLIApp, "_build_prompt", return_value="test-prompt"),
         patch("mocode.app.cli.app.SessionManager", return_value=mock_session_mgr),
     ):
@@ -59,7 +63,11 @@ class TestConnectTopLevel:
     async def test_back_returns_immediately(self):
         app = _make_app()
         cmd = ConnectCommand()
-        with patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock, return_value="__back__"):
+        with patch(
+            "mocode.app.cli.commands.connect.select",
+            new_callable=AsyncMock,
+            return_value="__back__",
+        ):
             result = await cmd.run(_make_ctx(app))
         assert result == CommandResult.CONTINUE
         assert len(app.config.providers) == 2
@@ -68,7 +76,11 @@ class TestConnectTopLevel:
     async def test_cancel_returns_immediately(self):
         app = _make_app()
         cmd = ConnectCommand()
-        with patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock, return_value=None):
+        with patch(
+            "mocode.app.cli.commands.connect.select",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
             result = await cmd.run(_make_ctx(app))
         assert result == CommandResult.CONTINUE
         assert len(app.config.providers) == 2
@@ -78,14 +90,22 @@ class TestConnectTopLevel:
         app = _make_app()
         cmd = ConnectCommand()
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock, return_value="__add__"),
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock, side_effect=[
-                "newprov",       # key
-                "NewProv",       # name
-                "https://api.new",  # base_url
-                "sk-newkey1234",    # api_key
-                "model-a, model-b",  # models
-            ]),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                return_value="__add__",
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                side_effect=[
+                    "newprov",  # key
+                    "NewProv",  # name
+                    "https://api.new",  # base_url
+                    "sk-newkey1234",  # api_key
+                    "model-a, model-b",  # models
+                ],
+            ),
         ):
             result = await cmd.run(_make_ctx(app))
 
@@ -101,8 +121,11 @@ class TestConnectTopLevel:
         app = _make_app()
         cmd = ConnectCommand()
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  side_effect=["deepseek", "back"]),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                side_effect=["deepseek", "back"],
+            ),
         ):
             await cmd.run(_make_ctx(app))
 
@@ -113,10 +136,16 @@ class TestConnectEdit:
         app = _make_app()
         cmd = ConnectCommand()
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  side_effect=["name", "back"]),
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                  return_value="DeepSeek Renamed"),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                side_effect=["name", "back"],
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                return_value="DeepSeek Renamed",
+            ),
         ):
             await cmd._edit(_make_ctx(app), "deepseek")
 
@@ -128,10 +157,16 @@ class TestConnectEdit:
         app = _make_app()
         cmd = ConnectCommand()
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  side_effect=["name", "back"]),
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                  return_value=None),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                side_effect=["name", "back"],
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
             await cmd._edit(_make_ctx(app), "deepseek")
 
@@ -143,8 +178,11 @@ class TestConnectEdit:
         app = _make_app()
         cmd = ConnectCommand()
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  side_effect=["delete", "back"]),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                side_effect=["delete", "back"],
+            ),
         ):
             await cmd._edit(_make_ctx(app), "deepseek")
 
@@ -155,9 +193,16 @@ class TestConnectEdit:
         app = _make_app()
         cmd = ConnectCommand()
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  side_effect=["delete"]),
-            patch("mocode.app.cli.commands.connect.confirm", new_callable=AsyncMock, return_value=True),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                side_effect=["delete"],
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.confirm",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
         ):
             await cmd._edit(_make_ctx(app), "zhipu")
 
@@ -170,10 +215,16 @@ class TestConnectEdit:
         cmd = ConnectCommand()
 
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  side_effect=["models", "back"]),
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                  return_value="deepseek-reasoner"),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                side_effect=["models", "back"],
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                return_value="deepseek-reasoner",
+            ),
         ):
             await cmd._edit(_make_ctx(app), "deepseek")
 
@@ -185,10 +236,16 @@ class TestConnectEdit:
         app = _make_app()
         cmd = ConnectCommand()
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  side_effect=["apikey", "back"]),
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                  return_value="sk-newapikey9999"),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                side_effect=["apikey", "back"],
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                return_value="sk-newapikey9999",
+            ),
         ):
             await cmd._edit(_make_ctx(app), "deepseek")
 
@@ -199,24 +256,38 @@ class TestConnectEdit:
         app = _make_app()
         cmd = ConnectCommand()
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  side_effect=["baseurl", "back"]),
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                  return_value="https://new-api.example.com"),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                side_effect=["baseurl", "back"],
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                return_value="https://new-api.example.com",
+            ),
         ):
             await cmd._edit(_make_ctx(app), "deepseek")
 
-        assert app.config.providers["deepseek"].base_url == "https://new-api.example.com"
+        assert (
+            app.config.providers["deepseek"].base_url == "https://new-api.example.com"
+        )
 
     @pytest.mark.asyncio
     async def test_clear_base_url(self):
         app = _make_app()
         cmd = ConnectCommand()
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  side_effect=["baseurl", "back"]),
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                  return_value=""),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                side_effect=["baseurl", "back"],
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                return_value="",
+            ),
         ):
             await cmd._edit(_make_ctx(app), "deepseek")
 
@@ -229,13 +300,17 @@ class TestConnectAdd:
         app = _make_app()
         cmd = ConnectCommand()
         with (
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock, side_effect=[
-                "openai",           # key
-                "OpenAI",           # name
-                "https://api.openai.com",  # base_url
-                "sk-openai1234",    # api_key
-                "gpt-4.1, o3",     # models
-            ]),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                side_effect=[
+                    "openai",  # key
+                    "OpenAI",  # name
+                    "https://api.openai.com",  # base_url
+                    "sk-openai1234",  # api_key
+                    "gpt-4.1, o3",  # models
+                ],
+            ),
         ):
             await cmd._add(_make_ctx(app))
 
@@ -251,7 +326,11 @@ class TestConnectAdd:
     async def test_cancel_at_key_aborts(self):
         app = _make_app()
         cmd = ConnectCommand()
-        with patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock, return_value=None):
+        with patch(
+            "mocode.app.cli.commands.connect.text_input",
+            new_callable=AsyncMock,
+            return_value=None,
+        ):
             await cmd._add(_make_ctx(app))
         assert len(app.config.providers) == 2
 
@@ -259,8 +338,11 @@ class TestConnectAdd:
     async def test_cancel_at_name_aborts(self):
         app = _make_app()
         cmd = ConnectCommand()
-        with patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                   side_effect=["newkey", None]):
+        with patch(
+            "mocode.app.cli.commands.connect.text_input",
+            new_callable=AsyncMock,
+            side_effect=["newkey", None],
+        ):
             await cmd._add(_make_ctx(app))
         assert "newkey" not in app.config.providers
 
@@ -268,8 +350,11 @@ class TestConnectAdd:
     async def test_empty_api_key_aborts(self):
         app = _make_app()
         cmd = ConnectCommand()
-        with patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                   side_effect=["newkey", "Name", "https://url", "   "]):
+        with patch(
+            "mocode.app.cli.commands.connect.text_input",
+            new_callable=AsyncMock,
+            side_effect=["newkey", "Name", "https://url", "   "],
+        ):
             await cmd._add(_make_ctx(app))
         assert "newkey" not in app.config.providers
 
@@ -284,8 +369,8 @@ class TestConnectAdd:
                 return f"Provider '{s.strip()}' already exists"
             return True
 
-        assert _validate_key("deepseek") != True
-        assert _validate_key("") != True
+        assert _validate_key("deepseek") is not True
+        assert _validate_key("") is not True
         assert _validate_key("newprov") is True
 
 
@@ -297,14 +382,22 @@ class TestConnectExtraBody:
         cmd = ConnectCommand()
 
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  return_value="deepseek-chat"),
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                  return_value='{"thinking": {"type": "enabled"}}'),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                return_value="deepseek-chat",
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                return_value='{"thinking": {"type": "enabled"}}',
+            ),
         ):
             await cmd._extra_body(_make_ctx(app), entry)
 
-        assert entry.get_extra_body("deepseek-chat") == {"thinking": {"type": "enabled"}}
+        assert entry.get_extra_body("deepseek-chat") == {
+            "thinking": {"type": "enabled"}
+        }
 
     @pytest.mark.asyncio
     async def test_clear_extra_body(self):
@@ -314,10 +407,16 @@ class TestConnectExtraBody:
         cmd = ConnectCommand()
 
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  return_value="deepseek-chat"),
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                  return_value=""),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                return_value="deepseek-chat",
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                return_value="",
+            ),
         ):
             await cmd._extra_body(_make_ctx(app), entry)
 
@@ -331,10 +430,16 @@ class TestConnectExtraBody:
         cmd = ConnectCommand()
 
         with (
-            patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                  return_value="deepseek-chat"),
-            patch("mocode.app.cli.commands.connect.text_input", new_callable=AsyncMock,
-                  return_value="{invalid}"),
+            patch(
+                "mocode.app.cli.commands.connect.select",
+                new_callable=AsyncMock,
+                return_value="deepseek-chat",
+            ),
+            patch(
+                "mocode.app.cli.commands.connect.text_input",
+                new_callable=AsyncMock,
+                return_value="{invalid}",
+            ),
         ):
             await cmd._extra_body(_make_ctx(app), entry)
 
@@ -346,8 +451,11 @@ class TestConnectExtraBody:
         entry = app.config.providers["deepseek"]
         cmd = ConnectCommand()
 
-        with patch("mocode.app.cli.commands.connect.select", new_callable=AsyncMock,
-                   return_value="__back__"):
+        with patch(
+            "mocode.app.cli.commands.connect.select",
+            new_callable=AsyncMock,
+            return_value="__back__",
+        ):
             await cmd._extra_body(_make_ctx(app), entry)
 
         assert entry.get_extra_body("deepseek-chat") is None

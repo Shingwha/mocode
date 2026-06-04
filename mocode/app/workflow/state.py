@@ -17,9 +17,14 @@ if TYPE_CHECKING:
 class RunState:
     """All mutable state for one workflow run. Created fresh per ``run()`` call."""
 
-    context: dict = field(default_factory=lambda: {
-        "args": {}, "env": {}, "nodes": {}, "previous": "",
-    })
+    context: dict = field(
+        default_factory=lambda: {
+            "args": {},
+            "env": {},
+            "nodes": {},
+            "previous": "",
+        }
+    )
     pending_deps: dict[str, int] = field(default_factory=dict)
     activated: set[str] = field(default_factory=set)
     completed: set[str] = field(default_factory=set)
@@ -77,7 +82,9 @@ class RunState:
                     if not target_node or n.id in target_node.depends:
                         continue
                     gates.add(target)
-                    state.router_dep_extra[target] = state.router_dep_extra.get(target, 0) + 1
+                    state.router_dep_extra[target] = (
+                        state.router_dep_extra.get(target, 0) + 1
+                    )
                     state.pending_deps[target] = state.pending_deps.get(target, 0) + 1
             if gates:
                 state.router_gates[n.id] = gates
@@ -128,9 +135,11 @@ class RunState:
         events = []
         for n in self.waves[wave_idx]:
             if n.id in self.skip_recorded and n.id not in self.completed:
-                events.append(NodeSkippedEvent(
-                    node_id=n.id,
-                    reason=self.skip_reasons[n.id],
-                    wave_idx=wave_idx,
-                ))
+                events.append(
+                    NodeSkippedEvent(
+                        node_id=n.id,
+                        reason=self.skip_reasons[n.id],
+                        wave_idx=wave_idx,
+                    )
+                )
         return events
