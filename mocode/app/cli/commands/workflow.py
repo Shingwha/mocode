@@ -55,7 +55,8 @@ class WorkflowCommand:
         if action is None or action == "back":
             return CommandResult.CONTINUE
         if action == "run":
-            return await self._run(ctx, chosen)
+            ctx.display.set_pending_input(f"/workflow run {chosen}")
+            return CommandResult.CONTINUE
         return await self._show(ctx, chosen)
 
     # ── Subcommands ───────────────────────────────────────────

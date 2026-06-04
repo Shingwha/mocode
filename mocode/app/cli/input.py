@@ -126,11 +126,11 @@ class Input:
 
         return _PASTE_MARKER_RE.sub(_replace, text)
 
-    async def prompt(self) -> str:
+    async def prompt(self, default: str = "") -> str:
         self._ensure_session()
         self._paste_store.clear()
         self._paste_counter = 0
-        raw = await self._session.prompt_async(f"{self._ps1} ")
+        raw = await self._session.prompt_async(f"{self._ps1} ", default=default)
         # Clear the prompt_toolkit input lines from the terminal
         lines = raw.count("\n") + 1
         for _ in range(lines):

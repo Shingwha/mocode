@@ -160,6 +160,7 @@ class Display:
         self._input = Input(ps1=self.theme.icon_input)
         self._spinner = SpinnerRunner()
         self._wf_start_time: float = 0.0
+        self._pending_input: str | None = None
 
     def set_commands(self, commands: list[Command]):
         """Set commands for autocomplete."""
@@ -167,8 +168,14 @@ class Display:
 
     # ── Input delegation ──────────────────────────────────
 
+    def set_pending_input(self, text: str) -> None:
+        """Queue text to pre-fill the next prompt."""
+        self._pending_input = text
+
     async def prompt(self) -> str:
-        return await self._input.prompt()
+        default = self._pending_input or ""
+        self._pending_input = None
+        return await self._input.prompt(default=default)
 
     # ── Spinner delegation ────────────────────────────────
 
