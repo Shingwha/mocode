@@ -62,6 +62,29 @@ class TestGrep:
         result = vfs.grep("zzz")
         assert "No matches" in result
 
+    def test_grep_ignore_case(self):
+        vfs = VirtualFS()
+        vfs.add("a.md", "Hello World\nfoo bar\nHELLO again")
+        result = vfs.grep("hello", ignore_case=True)
+        assert "Hello World" in result
+        assert "HELLO again" in result
+
+    def test_grep_ignore_case_false_by_default(self):
+        vfs = VirtualFS()
+        vfs.add("a.md", "Hello World\nfoo bar")
+        result = vfs.grep("hello")
+        assert "No matches" in result
+
+    def test_grep_ignore_case_with_pattern(self):
+        """Pre-compiled pattern with IGNORECASE should also work."""
+        import re
+        vfs = VirtualFS()
+        vfs.add("a.md", "AgentLoop\nagentloop")
+        pattern = re.compile("agentloop", re.IGNORECASE)
+        result = vfs.grep(pattern)
+        assert "AgentLoop" in result
+        assert "agentloop" in result
+
 
 class TestMountDirectory:
     def test_mount_basic(self, tmp_path: Path):

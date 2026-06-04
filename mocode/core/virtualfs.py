@@ -78,6 +78,7 @@ class VirtualFS:
         output_mode: str = "content",
         max_results: int = 100,
         context_lines: int = 0,
+        ignore_case: bool = False,
     ) -> str:
         """Search virtual file contents.
 
@@ -85,7 +86,8 @@ class VirtualFS:
         *output_mode* is one of ``"content"``, ``"files"``, ``"count"``.
         """
         if isinstance(pattern, str):
-            pattern = re.compile(pattern)
+            flags = re.IGNORECASE if ignore_case else 0
+            pattern = re.compile(pattern, flags)
 
         if output_mode == "files":
             return self._grep_files(pattern, type_filter, max_results)

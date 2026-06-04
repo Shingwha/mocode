@@ -211,8 +211,62 @@ def _glob(args: dict, vfs: VirtualFS | None = None) -> str:
 # ── grep ─────────────────────────────────────────────────────
 
 
+def _grep_single_file(
+    pattern: re.Pattern,
+    filepath: Path,
+    output_mode: str,
+    context_lines: int,
+    max_results: int,
+) -> str:
+    """Search a single file and return formatted results."""
+    try:
+        file_lines = (
+            filepath.read_text(encoding="utf-8", errors="replace").splitlines()
+        )
+    except Exception:
+        return f"Cannot read file: {filepath}"
+
+    match_indices = [i for i, line in enumerate(file_lines) if pattern.search(line)]
+
+    if not match_indices:
+        return f"No matches for '{pattern.pattern}' in {filepath}"
+
+    if output_mode == "files":
+        return f"[Found 1 file]\n{filepath}"
+
+    if output_mode == "count":
+        return f"{filepath}:{len(match_indices)}"
+
+    # content mode
+    if context_lines > 0:
+        expanded: set[int] = set()
+        for idx in match_indices:
+            for j in range(
+                max(0, idx - context_lines),
+                min(len(file_lines), idx + context_lines + 1),
+            ):
+                expanded.add(j)
+        display_indices = sorted(expanded)
+    else:
+        display_indices = match_indices
+
+    match_set = set(match_indices)
+    hits: list[str] = []
+    for idx in display_indices:
+        sep = ":" if idx in match_set else "-"
+        hits.append(f"{filepath}{sep}{idx + 1}{sep}{file_lines[idx]}")
+        if len(hits) >= max_results:
+            break
+
+    header = f"[Showing {len(hits)} match(es) for '{pattern.pattern}']"
+    return header + "\n" + "\n".join(hits)
+
+
 def _grep(args: dict, vfs: VirtualFS | None = None) -> str:
-    pattern = re.compile(args["pattern"])
+    raw_ic = args.get("ignore_case", False)
+    ignore_case = str(raw_ic).lower() in ("true", "1", "yes") if isinstance(raw_ic, str) else bool(raw_ic)
+    flags = re.IGNORECASE if ignore_case else 0
+    pattern = re.compile(args["pattern"], flags)
     base_path = args.get("path", ".")
     max_results = int(args.get("limit", 100)) or 100
     type_filter = _get_type_filter(args.get("type", ""))
@@ -231,8 +285,15 @@ def _grep(args: dict, vfs: VirtualFS | None = None) -> str:
             context_lines=context_lines,
         )
 
-    # Real filesystem search
-    real_path = require_dir(Path(base_path).resolve())
+    # Single file search — when path points to a file, search only that file
+    target = Path(base_path).resolve()
+    if target.is_file():
+        return _grep_single_file(
+            pattern, target, output_mode, context_lines, max_results
+        )
+
+    # Real filesystem search (directory)
+    real_path = require_dir(target)
     if output_mode == "files":
         result = _grep_files(pattern, real_path, type_filter, max_results)
     elif output_mode == "count":
@@ -396,12 +457,13 @@ def GrepTool(vfs: VirtualFS | None = None) -> Tool:
         "Only searches text files (skips binary files by extension). "
         "Use 'type' to filter by file extension (e.g. 'py' for Python files). "
         "Use 'context' to show surrounding lines. Use 'output_mode' to control output format. "
+        "Use 'ignore_case' for case-insensitive matching. "
         "Supports virtual files — use path='vfs://' to search virtual files only.",
         {
             "pattern": {"type": "string", "description": "Regex pattern to search for"},
             "path": {
                 "type": "string",
-                "description": "Directory to search in (defaults to current directory). Use 'vfs://' to search virtual files only.",
+                "description": "Directory to search in (defaults to current directory). Also accepts a single file path. Use 'vfs://' to search virtual files only.",
                 "default": ".",
             },
             "type": {
@@ -424,6 +486,11 @@ def GrepTool(vfs: VirtualFS | None = None) -> Tool:
                 "type": "integer",
                 "description": "Max results (default 100)",
                 "default": 100,
+            },
+            "ignore_case": {
+                "type": "boolean",
+                "description": "Case-insensitive matching (default false)",
+                "default": False,
             },
         },
         lambda args: _grep(args, vfs),
