@@ -140,8 +140,8 @@ class CLIApp:
             WriteTool(),
             AppendTool(),
             EditTool(),
-            GlobTool(),
-            GrepTool(),
+            GlobTool(vfs=self._vfs),
+            GrepTool(vfs=self._vfs),
             BashTool(),
             FetchTool(),
         ]:
@@ -196,6 +196,7 @@ class CLIApp:
             tools=self._tools,
             skill_manager=self._skill_mgr,
             workflow_registry=self._workflow_registry,
+            vfs=self._vfs,
             cwd=str(Path.cwd()),
             home=str(self.home),
             config_path=str(self.home / "config.json"),

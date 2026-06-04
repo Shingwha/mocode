@@ -32,6 +32,7 @@ def build_system_prompt(
     tools: Any = None,
     skill_manager: Any = None,
     workflow_registry: Any = None,
+    vfs: Any = None,
     cwd: str = "",
     home: str = "",
     config_path: str = "",
@@ -45,6 +46,7 @@ def build_system_prompt(
         tools: ToolRegistry — tool name/description pairs are listed in the prompt.
         skill_manager: SkillManager — skill metadata is listed in the prompt.
         workflow_registry: WorkflowRegistry — available workflows are listed in the prompt.
+        vfs: VirtualFS — virtual file system for listing available virtual files.
         cwd: Current working directory shown to the LLM.
         home: MoCode home directory path.
         config_path: Config file path.
@@ -70,6 +72,9 @@ def build_system_prompt(
             priority=30,
         )
     )
+
+    if vfs is not None:
+        sections.append(Section("vfs", _render_vfs(vfs), priority=35))
 
     if tools is not None:
         sections.append(Section("tools", _render_tools(tools), priority=40))
@@ -148,6 +153,30 @@ def _render_environment(
     if sessions_dir:
         parts.append(f"sessions: {sessions_dir}")
     return "\n".join(parts)
+
+
+def _render_vfs(vfs: Any) -> str:
+    """Render virtual file system guidance and available files."""
+    files = vfs.list()
+
+    guidance = (
+        "## Virtual File System (VFS)\n\n"
+        "MoCode has a virtual file system that provides read-only access to embedded content. "
+        "Virtual files are prefixed with ``vfs://`` and can be accessed using the ``read``, "
+        "``glob``, and ``grep`` tools.\n\n"
+        "### Usage\n\n"
+        "- **Read a virtual file**: ``read(path='vfs://workflow/yaml-reference.md')``\n"
+        "- **Search virtual files**: ``grep(pattern='keyword', path='vfs://')``\n"
+        "- **List virtual files**: ``glob(pattern='**/*', path='vfs://')``\n\n"
+        "Virtual files are provided by skills and contain reference documentation, "
+        "templates, and examples."
+    )
+
+    if files:
+        file_list = "\n".join(f"- ``{path}``" for path in sorted(files))
+        guidance += f"\n\n### Available Virtual Files\n\n{file_list}"
+
+    return guidance
 
 
 def _render_tools(tools: Any) -> list[Section]:
