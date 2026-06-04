@@ -7,7 +7,6 @@ import re
 from pathlib import Path
 
 from ..core.tool import Tool
-from ..core.virtualfs import VirtualFS
 from ._helpers import require_dir
 
 IGNORE_DIRS = frozenset(
@@ -312,18 +311,7 @@ def _grep_content(
     return header + "\n" + "\n".join(hits)
 
 
-def GlobTool(vfs: VirtualFS | None = None) -> Tool:
-
-    def _glob_with_vfs(args: dict) -> str:
-        result = _glob(args)
-        if not vfs:
-            return result
-        vfs_matches = vfs.glob(args["pattern"])
-        if not vfs_matches:
-            return result
-        vfs_section = "\n".join(vfs_matches)
-        return result + "\n\n[virtual files]\n" + vfs_section
-
+def GlobTool() -> Tool:
     return Tool(
         "glob",
         "Find files matching a glob pattern, sorted by modification time (newest first). "
@@ -339,26 +327,15 @@ def GlobTool(vfs: VirtualFS | None = None) -> Tool:
                 "default": ".",
             },
         },
-        _glob_with_vfs,
+        _glob,
     )
 
 
-def GrepTool(vfs: VirtualFS | None = None) -> Tool:
-
-    def _grep_with_vfs(args: dict) -> str:
-        result = _grep(args)
-        if not vfs:
-            return result
-        vfs_hits = vfs.grep(args["pattern"])
-        if not vfs_hits:
-            return result
-        lines = [f"{path}:{lineno}:{line}" for path, lineno, line in vfs_hits]
-        return result + "\n\n[virtual files]\n" + "\n".join(lines)
-
+def GrepTool() -> Tool:
     return Tool(
         "grep",
         "Search file contents for a regex pattern across a directory tree. "
-        "Automatically excludes .git, node_modules, __pycache__, and other non-project directories. "
+        "Automatically excludes .git, node_modules, __pycache__, and other common non-project directories. "
         "Only searches text files (skips binary files by extension). "
         "Use 'type' to filter by file extension (e.g. 'py' for Python files). "
         "Use 'context' to show surrounding lines. Use 'output_mode' to control output format.",
@@ -391,5 +368,5 @@ def GrepTool(vfs: VirtualFS | None = None) -> Tool:
                 "default": 100,
             },
         },
-        _grep_with_vfs,
+        _grep,
     )

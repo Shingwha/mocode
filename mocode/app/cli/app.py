@@ -140,8 +140,8 @@ class CLIApp:
             WriteTool(),
             AppendTool(),
             EditTool(),
-            GlobTool(vfs=self._vfs),
-            GrepTool(vfs=self._vfs),
+            GlobTool(),
+            GrepTool(),
             BashTool(),
             FetchTool(),
         ]:
