@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mocode.core.skill import Skill, discover_references, read_skill
+from mocode.core.skill import Skill, SkillMetadata, discover_references, read_skill
 
 _PKG_DIR = Path(__file__).parent
 
@@ -19,9 +19,9 @@ def WorkflowSkill() -> Skill:
     name = fm.get("name", "workflow")
     description = fm.get("description", "")
     virtual_files = discover_references(_PKG_DIR, name)
-    return Skill.builtin(
-        name=name,
-        description=description,
-        content=content,
+    return Skill(
+        path=f"vfs://{name}/",
+        metadata=SkillMetadata(name=name, description=description),
+        _content=content,
         virtual_files=virtual_files,
     )

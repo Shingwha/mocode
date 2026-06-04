@@ -185,8 +185,12 @@ def _render_tools(tools: Any) -> list[Section]:
 
 def _render_skills(skill_manager: Any) -> list[Section]:
     return [
-        Section(m.name, m.description, attrs={"type": "skill"})
-        for m in skill_manager.all_metadata()
+        Section(
+            s.metadata.name,
+            s.metadata.description,
+            attrs={"type": "skill", "path": str(s.path)},
+        )
+        for s in skill_manager.all()
     ]
 
 

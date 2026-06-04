@@ -1,4 +1,4 @@
-"""Skill discovery and loading — directory-based and built-in skills.
+"""Skill discovery and loading — directory-based skills.
 
 Usage:
     from mocode.core.skill import SkillManager
@@ -7,8 +7,8 @@ Usage:
     skill = mgr.get("fastapi")
     content = skill.load_content()
 
-Built-in skills are registered programmatically (no filesystem):
-    skill = Skill.builtin(name="my-skill", description="...", content="...")
+Skills can also be registered programmatically:
+    skill = Skill(path=Path("vfs://my-skill/"), metadata=..., _content="...")
     mgr.register(skill)
 """
 
@@ -39,32 +39,15 @@ class SkillMetadata:
 
 @dataclass
 class Skill:
-    path: Path
+    path: Path | str
     metadata: SkillMetadata
     _content: str | None = None
-    _builtin: bool = False
     virtual_files: dict[str, str] = field(default_factory=dict)
-
-    @classmethod
-    def builtin(
-        cls,
-        name: str,
-        description: str,
-        content: str,
-        *,
-        virtual_files: dict[str, str] | None = None,
-    ) -> Skill:
-        """Create a built-in skill with embedded content (no filesystem)."""
-        return cls(
-            path=Path(f"<builtin:{name}>"),
-            metadata=SkillMetadata(name=name, description=description),
-            _content=content,
-            _builtin=True,
-            virtual_files=virtual_files or {},
-        )
 
     @property
     def skill_md_path(self) -> Path:
+        if isinstance(self.path, str):
+            raise ValueError(f"Cannot compute skill_md_path for virtual path: {self.path}")
         return self.path / "SKILL.md"
 
     def load_content(self) -> str:
@@ -73,6 +56,8 @@ class Skill:
         return self._content
 
     def _read_body(self) -> str:
+        if isinstance(self.path, str):
+            return ""
         return read_skill(self.path)[1]
 
 
@@ -148,13 +133,13 @@ class SkillManager:
         self.discover()
 
     def register(self, skill: Skill) -> None:
-        """Register a built-in skill. Skipped if a discovered skill with the same name exists."""
+        """Register a skill programmatically. Skipped if a discovered skill with the same name exists."""
         if skill.metadata.name not in self._skills:
             self._builtin_skills[skill.metadata.name] = skill
             self._mount_to_vfs(skill)
 
     def discover(self) -> None:
-        """Re-discover directory-based skills. Built-in skills are NOT cleared."""
+        """Re-discover directory-based skills. Registered skills are NOT cleared."""
         self._skills.clear()
         for d in self._skill_dirs:
             if not d.is_dir():
@@ -194,12 +179,16 @@ class SkillManager:
             return self._skills[name]
         return self._builtin_skills.get(name)
 
-    def all_metadata(self) -> list[SkillMetadata]:
-        """Return metadata for all skills (discovered first, then built-in)."""
-        result = [s.metadata for s in self._skills.values()]
-        result.extend(s.metadata for s in self._builtin_skills.values())
+    def all(self) -> list[Skill]:
+        """Return all skills (discovered first, then registered)."""
+        result = list(self._skills.values())
+        result.extend(self._builtin_skills.values())
         return result
 
+    def all_metadata(self) -> list[SkillMetadata]:
+        """Return metadata for all skills (discovered first, then registered)."""
+        return [s.metadata for s in self.all()]
+
     def names(self) -> list[str]:
-        """Return all skill names (discovered first, then built-in)."""
+        """Return all skill names (discovered first, then registered)."""
         return list(self._skills.keys()) + list(self._builtin_skills.keys())

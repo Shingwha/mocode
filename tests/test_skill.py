@@ -110,52 +110,16 @@ class TestSkill:
         )
         assert skill.load_content() == ""
 
-
-# ---------------------------------------------------------------------------
-# Skill.builtin
-# ---------------------------------------------------------------------------
-
-
-class TestSkillBuiltin:
-    def test_creates_skill_with_embedded_content(self):
-        skill = Skill.builtin("test-skill", "A test", "Hello from builtin")
-        assert skill.metadata.name == "test-skill"
-        assert skill.metadata.description == "A test"
-        assert skill.load_content() == "Hello from builtin"
-        assert skill._builtin is True
-        assert "<builtin:" in str(skill.path)
-
-    def test_load_content_returns_embedded_content(self):
-        skill = Skill.builtin("x", "desc", "content")
-        assert skill.load_content() == "content"
-
-    def test_builtin_flag_is_true(self):
-        skill = Skill.builtin("x", "desc", "body")
-        assert skill._builtin is True
-
-    def test_builtin_with_virtual_files(self):
-        skill = Skill.builtin(
-            "vfs-skill",
-            "has vfs",
-            "main content",
-            virtual_files={"vfs://demo/ref.md": "reference content"},
-        )
-        assert skill.virtual_files == {"vfs://demo/ref.md": "reference content"}
-
-    def test_builtin_default_virtual_files_empty(self):
-        skill = Skill.builtin("x", "desc", "body")
-        assert skill.virtual_files == {}
-
-    def test_directory_skill_has_builtin_false(self, tmp_path: Path):
-        skill_dir = tmp_path / "normal"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: normal\ndescription: normal\n---\n\nBody\n", encoding="utf-8"
-        )
+    def test_create_with_vfs_path(self):
         skill = Skill(
-            path=skill_dir, metadata=SkillMetadata(name="normal", description="normal")
+            path="vfs://my-skill/",
+            metadata=SkillMetadata(name="my-skill", description="desc"),
+            _content="body",
+            virtual_files={"vfs://my-skill/ref.md": "ref content"},
         )
-        assert skill._builtin is False
+        assert skill.path == "vfs://my-skill/"
+        assert skill.load_content() == "body"
+        assert skill.virtual_files == {"vfs://my-skill/ref.md": "ref content"}
 
 
 # ---------------------------------------------------------------------------
@@ -163,34 +127,42 @@ class TestSkillBuiltin:
 # ---------------------------------------------------------------------------
 
 
-class TestSkillManagerBuiltin:
+def _make_registered_skill(name: str, description: str, content: str) -> Skill:
+    """Create a Skill with VFS path for registration tests."""
+    return Skill(
+        path=f"vfs://{name}/",
+        metadata=SkillMetadata(name=name, description=description),
+        _content=content,
+    )
+
+
+class TestSkillManagerRegistered:
     def test_register_adds_skill(self):
         mgr = SkillManager()
-        skill = Skill.builtin("my-skill", "desc", "content")
+        skill = _make_registered_skill("my-skill", "desc", "content")
         mgr.register(skill)
         assert mgr.names() == ["my-skill"]
         assert mgr.get("my-skill") is skill
 
     def test_registered_skill_appears_in_all_metadata(self):
         mgr = SkillManager()
-        mgr.register(Skill.builtin("a", "desc a", "body a"))
-        mgr.register(Skill.builtin("b", "desc b", "body b"))
+        mgr.register(_make_registered_skill("a", "desc a", "body a"))
+        mgr.register(_make_registered_skill("b", "desc b", "body b"))
         names = {m.name for m in mgr.all_metadata()}
         assert names == {"a", "b"}
 
-    def test_discovered_overrides_builtin(self, tmp_path: Path):
-        """Discovered skill overrides built-in skill with the same name."""
+    def test_discovered_overrides_registered(self, tmp_path: Path):
+        """Discovered skill overrides registered skill with the same name."""
         _make_skill_dir(tmp_path, "shared", "discovered desc", "discovered body")
         mgr = SkillManager([tmp_path])
-        mgr.register(Skill.builtin("shared", "builtin desc", "builtin body"))
+        mgr.register(_make_registered_skill("shared", "registered desc", "registered body"))
         skill = mgr.get("shared")
         assert skill is not None
         assert skill.load_content() == "discovered body"
-        assert skill._builtin is False
 
-    def test_discover_does_not_clear_builtins(self, tmp_path: Path):
+    def test_discover_does_not_clear_registered(self, tmp_path: Path):
         mgr = SkillManager()
-        mgr.register(Skill.builtin("keep-me", "desc", "content"))
+        mgr.register(_make_registered_skill("keep-me", "desc", "content"))
         # discover with empty dir
         mgr._skill_dirs = [tmp_path]
         mgr.discover()
@@ -200,15 +172,15 @@ class TestSkillManagerBuiltin:
     def test_names_includes_both(self, tmp_path: Path):
         _make_skill_dir(tmp_path, "discovered", "desc", "body")
         mgr = SkillManager([tmp_path])
-        mgr.register(Skill.builtin("builtin", "desc", "body"))
+        mgr.register(_make_registered_skill("registered", "desc", "body"))
         names = mgr.names()
-        assert "builtin" in names
+        assert "registered" in names
         assert "discovered" in names
 
-    def test_nested_builtin_then_discover(self, tmp_path: Path):
-        """Built-in survives discover() call."""
+    def test_registered_then_discover(self, tmp_path: Path):
+        """Registered skill survives discover() call."""
         mgr = SkillManager()
-        mgr.register(Skill.builtin("survivor", "desc", "content"))
+        mgr.register(_make_registered_skill("survivor", "desc", "content"))
         _make_skill_dir(tmp_path, "new-guy", "desc", "body")
         mgr._skill_dirs = [tmp_path]
         mgr.discover()
@@ -337,45 +309,29 @@ class TestSkillTool:
         tool = SkillTool(mgr, name="load-skill")
         assert tool.name == "load-skill"
 
-    def test_builtin_skill_returns_content_without_directory(self):
-        """Built-in skills should not show 'Base directory' in output."""
+    def test_registered_skill_returns_content_with_directory(self):
+        """Registered skills show 'Base directory' in output."""
         mgr = SkillManager()
-        mgr.register(Skill.builtin("builtin-skill", "desc", "builtin content"))
+        mgr.register(_make_registered_skill("reg-skill", "desc", "reg content"))
         tool = SkillTool(mgr)
-        result = tool.run({"name": "builtin-skill"})
-        assert "Base directory:" not in result
-        assert result == "builtin content"
+        result = tool.run({"name": "reg-skill"})
+        assert "Base directory: vfs://reg-skill/" in result
+        assert "reg content" in result
 
-    def test_builtin_skill_with_virtual_files_lists_them(self):
-        mgr = SkillManager()
-        mgr.register(
-            Skill.builtin(
-                "vfs-skill",
-                "desc",
-                "main content",
-                virtual_files={"vfs://demo/ref.md": "ref content"},
-            )
-        )
-        tool = SkillTool(mgr)
-        result = tool.run({"name": "vfs-skill"})
-        assert "main content" in result
-        assert "Available files:" in result
-        assert "vfs://demo/ref.md" in result
-
-    def test_builtin_skill_works_with_discovered(self, tmp_path: Path):
-        """Built-in and discovered skills coexist in SkillTool."""
+    def test_all_skills_show_base_directory(self, tmp_path: Path):
+        """Both registered and discovered skills show 'Base directory'."""
         _make_skill_dir(tmp_path, "discovered", "desc", "discovered body")
         mgr = SkillManager([tmp_path])
-        mgr.register(Skill.builtin("builtin", "desc", "builtin body"))
+        mgr.register(_make_registered_skill("registered", "desc", "registered body"))
         tool = SkillTool(mgr)
 
         disc_result = tool.run({"name": "discovered"})
         assert "Base directory:" in disc_result
         assert "discovered body" in disc_result
 
-        builtin_result = tool.run({"name": "builtin"})
-        assert "Base directory:" not in builtin_result
-        assert builtin_result == "builtin body"
+        reg_result = tool.run({"name": "registered"})
+        assert "Base directory: vfs://registered/" in reg_result
+        assert "registered body" in reg_result
 
 
 # ---------------------------------------------------------------------------
@@ -384,9 +340,9 @@ class TestSkillTool:
 
 
 class TestWorkflowSkill:
-    def test_returns_builtin_skill(self):
+    def test_returns_skill_with_vfs_path(self):
         skill = WorkflowSkill()
-        assert skill._builtin is True
+        assert str(skill.path) == "vfs://workflow/"
         assert skill.metadata.name == "workflow"
         assert "MoCode Workflows" in skill.metadata.description
 
@@ -416,5 +372,5 @@ class TestWorkflowSkill:
         mgr.register(WorkflowSkill())
         tool = SkillTool(mgr)
         result = tool.run({"name": "workflow"})
-        assert "Base directory:" not in result
+        assert "Base directory: vfs://workflow/" in result
         assert "MoCode Workflows" in result
