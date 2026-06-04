@@ -94,9 +94,13 @@ class DAGRunner:
                 if n.id not in state.completed and n.id not in state.skip_recorded:
                     state.skip(n.id, "not activated")
                     wave = state.node_wave.get(n.id, 0)
-                    self._emit(NodeSkippedEvent(
-                        node_id=n.id, reason="not activated", wave_idx=wave,
-                    ))
+                    self._emit(
+                        NodeSkippedEvent(
+                            node_id=n.id,
+                            reason="not activated",
+                            wave_idx=wave,
+                        )
+                    )
 
             self._persist(state.results, "completed")
             return state.results
@@ -124,13 +128,18 @@ class DAGRunner:
                 self._emit(event)
 
             node_ids = [
-                n.id for n in state.waves[w]
+                n.id
+                for n in state.waves[w]
                 if n.id not in state.skip_recorded and n.id not in state.completed
             ]
             if node_ids:
-                self._emit(WaveReadyEvent(
-                    wave_idx=w, total_waves=total, node_ids=node_ids,
-                ))
+                self._emit(
+                    WaveReadyEvent(
+                        wave_idx=w,
+                        total_waves=total,
+                        node_ids=node_ids,
+                    )
+                )
 
     # ── Router evaluation ─────────────────────────────────────
 
@@ -158,11 +167,15 @@ class DAGRunner:
             state.route_counter[route_key] = state.route_counter.get(route_key, 0) + 1
             matched = True
 
-            self._emit(RouterConditionEvent(
-                router_id=node.id, matched=True,
-                branch=f"route {ri}", targets=route.to,
-                wave_idx=router_wave,
-            ))
+            self._emit(
+                RouterConditionEvent(
+                    router_id=node.id,
+                    matched=True,
+                    branch=f"route {ri}",
+                    targets=route.to,
+                    wave_idx=router_wave,
+                )
+            )
 
             for target_id in route.to:
                 all_targets.add(target_id)
@@ -174,11 +187,15 @@ class DAGRunner:
             break  # first-match-wins
 
         if not matched:
-            self._emit(RouterConditionEvent(
-                router_id=node.id, matched=False,
-                branch="no match", targets=[],
-                wave_idx=router_wave,
-            ))
+            self._emit(
+                RouterConditionEvent(
+                    router_id=node.id,
+                    matched=False,
+                    branch="no match",
+                    targets=[],
+                    wave_idx=router_wave,
+                )
+            )
 
         state.completed.add(node.id)
 
@@ -195,13 +212,19 @@ class DAGRunner:
             # Also skip router-gated targets not activated
             for target_id in state.router_gates.get(node.id, set()):
                 if target_id not in all_targets and target_id not in state.activated:
-                    state.pending_deps[target_id] = state.pending_deps.get(target_id, 0) - 1
+                    state.pending_deps[target_id] = (
+                        state.pending_deps.get(target_id, 0) - 1
+                    )
                     state.skip(target_id, "not activated by router")
 
     # ── Back-edge handling ────────────────────────────────────
 
     def _handle_back_edge(
-        self, router: Node, target_id: str, route_key: str, route_idx: int,
+        self,
+        router: Node,
+        target_id: str,
+        route_key: str,
+        route_idx: int,
         state: RunState,
     ) -> None:
         """Handle a back-edge: reset downstream, re-enqueue target, emit loop event."""
@@ -211,12 +234,14 @@ class DAGRunner:
         downstream = self._collect_downstream(target_id, wf)
         downstream.add(target_id)
 
-        # Reset all of them
+        # Reset all of them — two passes to avoid order-dependent pending_deps
         for nid in downstream:
             state.completed.discard(nid)
             state.skipped.discard(nid)
             state.skip_recorded.discard(nid)
             state.activated.discard(nid)
+
+        for nid in downstream:
             node = wf.node_map.get(nid)
             if node:
                 base = len(node.depends)
@@ -244,13 +269,22 @@ class DAGRunner:
             0,
         )
         iter_result = NodeResult(
-            node_id=target_id, task="", output="",
-            exit_code=0, duration=0, iteration=retry_count,
+            node_id=target_id,
+            task="",
+            output="",
+            exit_code=0,
+            duration=0,
+            iteration=retry_count,
         )
-        self._emit(LoopIterEvent(
-            node_id=target_id, description=router.description,
-            iteration=retry_count, max_iter=max_iter, result=iter_result,
-        ))
+        self._emit(
+            LoopIterEvent(
+                node_id=target_id,
+                description=router.description,
+                iteration=retry_count,
+                max_iter=max_iter,
+                result=iter_result,
+            )
+        )
 
     @staticmethod
     def _collect_downstream(node_id: str, wf: Workflow) -> set[str]:
@@ -274,8 +308,7 @@ class DAGRunner:
         self._emit(NodeStartEvent(node_id=node.id, description=node.description))
 
         context_header = (
-            self._build_node_context_header(node, wf)
-            if self.node_context else None
+            self._build_node_context_header(node, wf) if self.node_context else None
         )
         nr = await self._exec_node(node.id, task_text, context_header)
         state.total_executions += 1
@@ -292,10 +325,14 @@ class DAGRunner:
         self._persist(state.results, "running")
 
         wave_idx = state.node_wave.get(node.id, 0)
-        self._emit(NodeDoneEvent(
-            node_id=node.id, description=node.description,
-            result=nr, wave_idx=wave_idx,
-        ))
+        self._emit(
+            NodeDoneEvent(
+                node_id=node.id,
+                description=node.description,
+                result=nr,
+                wave_idx=wave_idx,
+            )
+        )
         self._emit(ProgressEvent(message=f"Node '{node.id}' done ({nr.duration:.1f}s)"))
 
         # Activate downstream dependents
@@ -335,23 +372,30 @@ class DAGRunner:
     # ── Subprocess execution ──────────────────────────────────
 
     async def _exec_node(
-        self, node_id: str, task: str, context_header: str | None = None,
+        self,
+        node_id: str,
+        task: str,
+        context_header: str | None = None,
     ) -> NodeResult:
         """Spawn mocode -p with the filled task template."""
         prompt = f"{context_header}\n\n---\nTask: {task}" if context_header else task
         start = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
-                self.mocode_cmd, "-p", prompt,
+                self.mocode_cmd,
+                "-p",
+                prompt,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self.timeout,
+                proc.communicate(),
+                timeout=self.timeout,
             )
             duration = time.monotonic() - start
             return NodeResult(
-                node_id=node_id, task=task,
+                node_id=node_id,
+                task=task,
                 output=stdout.decode("utf-8", errors="replace").strip(),
                 exit_code=proc.returncode or 0,
                 duration=duration,
@@ -360,13 +404,20 @@ class DAGRunner:
         except asyncio.TimeoutError:
             duration = time.monotonic() - start
             return NodeResult(
-                node_id=node_id, task=task, output="",
-                exit_code=1, duration=duration,
+                node_id=node_id,
+                task=task,
+                output="",
+                exit_code=1,
+                duration=duration,
                 error=f"timed out after {self.timeout}s",
             )
         except Exception as e:
             duration = time.monotonic() - start
             return NodeResult(
-                node_id=node_id, task=task, output="",
-                exit_code=1, duration=duration, error=str(e),
+                node_id=node_id,
+                task=task,
+                output="",
+                exit_code=1,
+                duration=duration,
+                error=str(e),
             )
