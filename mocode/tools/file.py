@@ -51,8 +51,16 @@ def _read_text(p: Path, offset: int, limit: int) -> str:
 
 _READ_PARAMS = {
     "path": {"type": "string", "description": "File path to read"},
-    "offset": {"type": "integer", "description": "Line number to start from (1-based, default 1)", "default": 1},
-    "limit": {"type": "integer", "description": "Max lines to read (0 = all lines)", "default": 0},
+    "offset": {
+        "type": "integer",
+        "description": "Line number to start from (1-based, default 1)",
+        "default": 1,
+    },
+    "limit": {
+        "type": "integer",
+        "description": "Max lines to read (0 = all lines)",
+        "default": 0,
+    },
 }
 
 _READ_DESC = (
@@ -82,7 +90,9 @@ def _write(args: dict) -> str:
     content = args["content"]
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
-    line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+    line_count = content.count("\n") + (
+        1 if content and not content.endswith("\n") else 0
+    )
     return f"Wrote {line_count} lines to {p.name}"
 
 
@@ -99,7 +109,9 @@ def _append(args: dict) -> str:
 
     with open(p, "a", encoding="utf-8") as f:
         f.write(content)
-    line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+    line_count = content.count("\n") + (
+        1 if content and not content.endswith("\n") else 0
+    )
     return f"Appended {line_count} lines to {p.name}"
 
 
@@ -107,7 +119,7 @@ def _edit(args: dict) -> str:
     p = require_file(Path(args["path"]))
 
     text = p.read_text(encoding="utf-8")
-    old, new = args["old"], args["new"]
+    old, new = args["old_string"], args["new_string"]
 
     if old not in text:
         raise ToolError("old_string not found in file", "not_found")
@@ -160,9 +172,16 @@ def EditTool() -> Tool:
         "Use all=true to replace every occurrence. The file must already exist.",
         {
             "path": {"type": "string", "description": "File path to edit"},
-            "old": {"type": "string", "description": "Exact text to find (must be unique unless all=true)"},
-            "new": {"type": "string", "description": "Replacement text"},
-            "all": {"type": "boolean", "description": "Replace all occurrences instead of just the first", "default": False},
+            "old_string": {
+                "type": "string",
+                "description": "Exact text to find (must be unique unless all=true)",
+            },
+            "new_string": {"type": "string", "description": "Replacement text"},
+            "all": {
+                "type": "boolean",
+                "description": "Replace all occurrences instead of just the first",
+                "default": False,
+            },
         },
         _edit,
     )
