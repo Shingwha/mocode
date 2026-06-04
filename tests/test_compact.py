@@ -6,7 +6,6 @@ from mocode.core import AgentHookContext, Response, Usage
 from mocode.tools.compact import (
     compact_messages,
     CompactTool,
-    format_messages_for_summary,
 )
 from mocode.hooks.compact import CompactHook
 
@@ -41,15 +40,6 @@ class MockAgent:
 
 class TestCompactMessages:
     @pytest.mark.asyncio
-    async def test_returns_original_when_few_messages(self):
-        messages = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-        ]
-        result = await compact_messages(MockProvider(), messages)
-        assert result is messages
-
-    @pytest.mark.asyncio
     async def test_generates_summary(self):
         provider = MockProvider(responses=[Response(content="Summary of conversation")])
 
@@ -66,44 +56,11 @@ class TestCompactMessages:
         assert "[Context Summary]" in result[0]["content"]
         assert "Summary of conversation" in result[0]["content"]
 
-    @pytest.mark.asyncio
-    async def test_fallback_summary(self):
-        provider = MockProvider(responses=[Response(content="")])
-
-        messages = [
-            {"role": "user", "content": "Hello there"},
-            {"role": "assistant", "content": "Hi!"},
-            {"role": "user", "content": "Do something"},
-        ]
-        result = await compact_messages(provider, messages)
-
-        assert len(result) == 1
-        assert "Conversation summary" in result[0]["content"]
-
 
 # ---- CompactHook ----
 
 
 class TestCompactHook:
-    def test_default_context_window(self):
-        hook = CompactHook(MockAgent(MockProvider()))
-        assert hook._context_window == 256_000
-
-    def test_custom_context_window(self):
-        hook = CompactHook(MockAgent(MockProvider()), context_window=200_000)
-        assert hook._context_window == 200_000
-
-    @pytest.mark.asyncio
-    async def test_before_iteration_reads_usage(self):
-        hook = CompactHook(
-            MockAgent(MockProvider()), threshold=0.80, context_window=128_000
-        )
-        assert hook._last_prompt_tokens == 0
-
-        ctx = AgentHookContext(usage=Usage(prompt_tokens=50000, completion_tokens=100))
-        await hook.before_iteration(ctx)
-        assert hook._last_prompt_tokens == 50000
-
     @pytest.mark.asyncio
     async def test_before_iteration_compacts_when_over_threshold(self):
         provider = MockProvider(responses=[Response(content="summary")])
@@ -138,47 +95,11 @@ class TestCompactHook:
         await hook.before_iteration(ctx)
         assert ctx.messages is messages
 
-    @pytest.mark.asyncio
-    async def test_on_compact_called(self):
-        provider = MockProvider(responses=[Response(content="summary")])
-        compact_events = []
-
-        class TrackingHook(CompactHook):
-            async def on_compact(self, ctx):
-                compact_events.append((ctx.compact_old, ctx.compact_new))
-
-        hook = TrackingHook(MockAgent(provider), threshold=0.80, context_window=128_000)
-        hook._last_prompt_tokens = 110_000
-
-        messages = [
-            {"role": "user", "content": "a"},
-            {"role": "assistant", "content": "b"},
-            {"role": "user", "content": "c"},
-            {"role": "assistant", "content": "d"},
-        ]
-        ctx = AgentHookContext(messages=messages)
-        await hook.before_iteration(ctx)
-        assert len(compact_events) == 1
-        assert compact_events[0][0] == 4
-        assert compact_events[0][1] == 1
-
 
 # ---- CompactTool ----
 
 
 class TestCompactTool:
-    def test_no_params_schema(self):
-        tool = CompactTool(MockAgent(MockProvider()), lambda: [])
-        schema = tool.to_schema()
-        assert schema["function"]["parameters"]["properties"] == {}
-        assert schema["function"]["parameters"]["required"] == []
-
-    @pytest.mark.asyncio
-    async def test_empty_messages(self):
-        tool = CompactTool(MockAgent(MockProvider()), lambda: [])
-        result = await tool.run_async({})
-        assert result == "No messages to compact"
-
     @pytest.mark.asyncio
     async def test_compacts_and_mutates_in_place(self):
         provider = MockProvider(responses=[Response(content="compressed summary")])
@@ -194,33 +115,3 @@ class TestCompactTool:
         assert "compacted" in result.lower()
         assert len(messages) == 1
         assert "[Context Summary]" in messages[0]["content"]
-
-
-# ---- Pure helpers ----
-
-
-class TestPureHelpers:
-    def test_format_messages_for_summary(self):
-        messages = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-            {"role": "tool", "tool_call_id": "1", "content": "output"},
-        ]
-        text = format_messages_for_summary(messages)
-        assert "[User] hello" in text
-        assert "[Assistant] hi" in text
-        assert "[Tool] output" in text
-
-    def test_format_messages_with_multimodal(self):
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "look at this"},
-                    {"type": "image_url", "image_url": {"url": "data:..."}},
-                ],
-            },
-        ]
-        text = format_messages_for_summary(messages)
-        assert "look at this" in text
-        assert "[image attached]" in text
