@@ -9,6 +9,6 @@ class ClearCommand:
     aliases = ()
 
     async def run(self, ctx: CommandContext) -> CommandResult:
-        ctx.app.replace_messages([])
+        ctx.app.clear_conversation()
         ctx.display.info("Session saved and cleared.")
         return CommandResult.CONTINUE

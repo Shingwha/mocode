@@ -1,10 +1,10 @@
-"""Tests for CLIApp replace_messages()."""
+"""Tests for CLIApp session lifecycle methods."""
 
 from unittest.mock import MagicMock, patch
 
 from mocode.app.cli.app import CLIApp
 from mocode.app.config import Config, ProviderEntry, ModelEntry
-from mocode.app.session import SessionManager
+from mocode.app.session import Session, SessionManager
 
 
 def _make_app() -> CLIApp:
@@ -35,28 +35,17 @@ def _make_app() -> CLIApp:
     ):
         app = CLIApp(config=config, display=mock_display)
     app._session_mgr = mock_session_mgr
-    # Reset call counts — _session_mgr is pre-mocked, clear init noise
     mock_session_mgr.reset_mock()
-    # Keep _build_prompt mocked on the instance for replace calls
     app._build_prompt = MagicMock(return_value="test-prompt")
     return app
 
 
-class TestReplaceMessages:
-    def test_clears_and_extends_messages(self):
+class TestClearConversation:
+    def test_clears_messages(self):
         app = _make_app()
         app.agent.messages = [{"role": "user", "content": "old"}]
 
-        new_msgs = [{"role": "user", "content": "new"}]
-        app.replace_messages(new_msgs)
-
-        assert app.agent.messages == new_msgs
-
-    def test_empty_list_clears(self):
-        app = _make_app()
-        app.agent.messages = [{"role": "user", "content": "old"}]
-
-        app.replace_messages([])
+        app.clear_conversation()
 
         assert app.agent.messages == []
 
@@ -64,14 +53,14 @@ class TestReplaceMessages:
         app = _make_app()
         app.agent.messages = [{"role": "user", "content": "old"}]
 
-        app.replace_messages([])
+        app.clear_conversation()
 
         app._session_mgr.save.assert_called_once()
 
     def test_clears_and_creates_session(self):
         app = _make_app()
 
-        app.replace_messages([])
+        app.clear_conversation()
 
         app._session_mgr.clear.assert_called_once()
         app._session_mgr.create.assert_called_once()
@@ -79,21 +68,89 @@ class TestReplaceMessages:
     def test_clears_screen(self):
         app = _make_app()
 
-        app.replace_messages([])
+        app.clear_conversation()
 
         app.display.clear_screen.assert_called_once()
 
-    def test_renders_messages_when_non_empty(self):
+    def test_does_not_render(self):
+        app = _make_app()
+
+        app.clear_conversation()
+
+        app.display.render_messages.assert_not_called()
+
+
+class TestResumeFromFile:
+    def test_loads_messages(self):
+        app = _make_app()
+        app.agent.messages = [{"role": "user", "content": "old"}]
+
+        new_msgs = [{"role": "user", "content": "new"}]
+        app.resume_from_file(new_msgs)
+
+        assert app.agent.messages == new_msgs
+
+    def test_saves_session_first(self):
+        app = _make_app()
+        app.agent.messages = [{"role": "user", "content": "old"}]
+
+        app.resume_from_file([{"role": "user", "content": "new"}])
+
+        app._session_mgr.save.assert_called_once()
+
+    def test_clears_and_creates_session(self):
+        app = _make_app()
+
+        app.resume_from_file([{"role": "user", "content": "new"}])
+
+        app._session_mgr.clear.assert_called_once()
+        app._session_mgr.create.assert_called_once()
+
+    def test_renders_messages(self):
         app = _make_app()
         msgs = [{"role": "user", "content": "hello"}]
 
-        app.replace_messages(msgs)
+        app.resume_from_file(msgs)
 
         app.display.render_messages.assert_called_once_with(msgs)
 
-    def test_does_not_render_when_empty(self):
+    def test_empty_messages_no_render(self):
         app = _make_app()
 
-        app.replace_messages([])
+        app.resume_from_file([])
 
         app.display.render_messages.assert_not_called()
+
+
+class TestResumeSession:
+    def test_preserves_session_identity(self):
+        app = _make_app()
+        app.agent.messages = [{"role": "user", "content": "old"}]
+
+        session = Session(
+            id="session_abc",
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+            workdir="/tmp",
+            messages=[{"role": "user", "content": "resumed"}],
+        )
+        app.resume_session(session)
+
+        assert app.agent.messages == session.messages
+        app._session_mgr.switch_to.assert_called_once_with(session)
+        app._session_mgr.create.assert_not_called()
+
+    def test_saves_current_before_resume(self):
+        app = _make_app()
+        app.agent.messages = [{"role": "user", "content": "old"}]
+
+        session = Session(
+            id="session_abc",
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+            workdir="/tmp",
+            messages=[],
+        )
+        app.resume_session(session)
+
+        app._session_mgr.save.assert_called_once()

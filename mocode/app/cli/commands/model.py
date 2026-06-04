@@ -34,7 +34,7 @@ class ModelCommand:
         models = entry.model_names()
         # Skip model picker if there's only one (or zero) models
         if len(models) <= 1:
-            ctx.app.switch_to(
+            ctx.app.switch_provider(
                 chosen_key, models[0] if models else ctx.app.config.active_model
             )
             return CommandResult.CONTINUE
@@ -59,5 +59,5 @@ class ModelCommand:
         if chosen_model is None:
             return CommandResult.CONTINUE
 
-        ctx.app.switch_to(chosen_key, chosen_model)
+        ctx.app.switch_provider(chosen_key, chosen_model)
         return CommandResult.CONTINUE

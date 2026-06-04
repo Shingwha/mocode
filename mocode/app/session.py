@@ -130,13 +130,12 @@ def _extract_title(messages: list[dict[str, Any]]) -> str:
 
 
 class SessionManager:
-    """Orchestrates session lifecycle — create, resume, save, dirty tracking."""
+    """Orchestrates session lifecycle — create, resume, save, import, export."""
 
     def __init__(self, workdir: str, store: SessionStore):
         self._workdir = workdir
         self._store = store
         self._active_id: str | None = None
-        self._dirty: bool = False
 
     @property
     def workdir(self) -> str:
@@ -145,10 +144,6 @@ class SessionManager:
     @property
     def active_id(self) -> str | None:
         return self._active_id
-
-    @property
-    def is_dirty(self) -> bool:
-        return self._dirty
 
     def create(self, metadata: dict[str, Any] | None = None) -> str:
         session_id = f"session_{uuid4().hex[:12]}"
@@ -163,7 +158,6 @@ class SessionManager:
         )
         self._store.save(self._workdir, session)
         self._active_id = session_id
-        self._dirty = False
         return session_id
 
     def resume(self, session_id: str) -> Session | None:
@@ -171,8 +165,17 @@ class SessionManager:
         if session is None:
             return None
         self._active_id = session_id
-        self._dirty = False
         return session
+
+    def switch_to(self, session: Session) -> None:
+        """Set an already-loaded session as active (used by resume)."""
+        self._active_id = session.id
+
+    def get_active(self) -> Session | None:
+        """Return the currently active session, or None."""
+        if self._active_id is None:
+            return None
+        return self._store.load(self._workdir, self._active_id)
 
     def save(
         self,
@@ -198,7 +201,6 @@ class SessionManager:
                 if metadata:
                     session.metadata.update(metadata)
                 self._store.save(self._workdir, session)
-                self._dirty = False
                 return session
 
         session_id = f"session_{uuid4().hex[:12]}"
@@ -215,18 +217,32 @@ class SessionManager:
         )
         self._store.save(self._workdir, session)
         self._active_id = session_id
-        self._dirty = False
         return session
 
-    def save_if_dirty(
-        self,
-        messages: list[dict[str, Any]],
-        model: str = "",
-        provider: str = "",
-    ) -> Session | None:
-        if not self._dirty:
+    def export_to_file(
+        self, session: Session, path: Path, system_prompt: str = ""
+    ) -> None:
+        """Export session to a portable JSON file."""
+        data = {"system_prompt": system_prompt, **session.to_dict()}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+
+    @staticmethod
+    def import_from_file(path: Path) -> tuple[list[dict], str] | None:
+        """Import messages from a portable JSON file. Returns (messages, title) or None."""
+        if not path.exists() or path.suffix != ".json":
             return None
-        return self.save(messages, model, provider)
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        if isinstance(data, dict) and "messages" in data:
+            messages = data["messages"]
+            title = _extract_title(messages) or path.stem
+            return messages, title
+        return None
 
     def list(self) -> list[Session]:
         return self._store.list(self._workdir)
@@ -237,13 +253,5 @@ class SessionManager:
             self._active_id = None
         return result
 
-    def mark_dirty(self) -> None:
-        self._dirty = True
-
-    def invalidate(self) -> None:
-        self._active_id = None
-        self._dirty = True
-
     def clear(self) -> None:
         self._active_id = None
-        self._dirty = False

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from ..config import Config
-from ..session import FileSessionStore, SessionManager
+from ..session import FileSessionStore, Session, SessionManager
 from ...core import Agent
 from ...core.agent import AgentConfig
 from ...core.skill import SkillManager
@@ -200,10 +200,10 @@ class CLIApp:
             sessions_dir=str(self.home / "sessions"),
         )
 
-    # ── Rebuild / message helpers ──────────────────────────
+    # ── Session lifecycle ─────────────────────────────────
 
-    def _save_session(self):
-        """Persist current messages to session store. Skips empty sessions."""
+    def _save_current_session(self) -> None:
+        """Persist current agent messages to the active session."""
         if self._session_mgr is None or not self.agent.messages:
             return
         self._session_mgr.save(
@@ -212,9 +212,20 @@ class CLIApp:
             provider=self.config.active_provider,
         )
 
-    def replace_messages(self, messages: list[dict]):
-        """Swap agent messages — used by /clear and /resume."""
-        self._save_session()
+    def resume_session(self, session: Session) -> None:
+        """Resume an existing session — preserves session identity."""
+        self._save_current_session()
+        self._session_mgr.switch_to(session)
+        self.agent.messages.clear()
+        self.agent.messages.extend(session.messages)
+        self.agent.system_prompt = self._build_prompt()
+        self.display.clear_screen()
+        if session.messages:
+            self.display.render_messages(session.messages)
+
+    def resume_from_file(self, messages: list[dict]) -> None:
+        """Load messages from an external file — creates a new session."""
+        self._save_current_session()
         self.agent.messages.clear()
         self.agent.messages.extend(messages)
         if self._session_mgr is not None:
@@ -225,9 +236,19 @@ class CLIApp:
         if messages:
             self.display.render_messages(messages)
 
-    def switch_to(self, key: str, model: str):
+    def clear_conversation(self) -> None:
+        """Save and clear the current conversation."""
+        self._save_current_session()
+        self.agent.messages.clear()
+        if self._session_mgr is not None:
+            self._session_mgr.clear()
+            self._session_mgr.create()
+        self.agent.system_prompt = self._build_prompt()
+        self.display.clear_screen()
+
+    def switch_provider(self, key: str, model: str):
         """Apply provider/model switch — swap provider in-place."""
-        self._save_session()
+        self._save_current_session()
         self.config.active_provider = key
         self.config.active_model = model
         self.config.save()
@@ -299,9 +320,9 @@ class CLIApp:
                 if result.kind in ("prompt", "chat"):
                     self.display.user_message(user_input)
                     await self._run_chat(result.prompt)
-                    self._session_mgr.mark_dirty()
+                    self._save_current_session()
         finally:
-            self._save_session()
+            self._save_current_session()
 
     # ── Entry point ────────────────────────────────────────
 
@@ -310,11 +331,7 @@ class CLIApp:
         try:
             asyncio.run(self._repl())
         except KeyboardInterrupt:
-            self._session_mgr.save_if_dirty(
-                self.agent.messages,
-                model=self.config.active_model,
-                provider=self.config.active_provider,
-            )
+            self._save_current_session()
 
     def run_oneshot(self, prompt: str, stdin_text: str | None = None):
         """Non-interactive: run one query, print response, exit."""

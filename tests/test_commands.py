@@ -11,6 +11,7 @@ from mocode.app.cli.commands.help import HelpCommand
 from mocode.app.cli.commands.export import ExportCommand
 from mocode.app.cli.commands.clear import ClearCommand
 from mocode.app.cli.commands.resume import ResumeCommand
+from mocode.app.session import Session
 
 
 def _make_ctx(app=None, display=None, args=""):
@@ -51,19 +52,26 @@ class TestQuitCommand:
 
 class TestClearCommand:
     @pytest.mark.asyncio
-    async def test_calls_replace_messages(self):
+    async def test_calls_clear_conversation(self):
         app = MagicMock()
         cmd = ClearCommand()
         result = await cmd.run(_make_ctx(app=app))
         assert result == CommandResult.CONTINUE
-        app.replace_messages.assert_called_once_with([])
+        app.clear_conversation.assert_called_once()
 
 
 class TestExportCommand:
     @pytest.mark.asyncio
     async def test_exports_messages(self, tmp_path, monkeypatch):
+        session = Session(
+            id="session_test",
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+            workdir="/tmp",
+            messages=[{"role": "user", "content": "hi"}],
+        )
         app = MagicMock()
-        app.agent.messages = [{"role": "user", "content": "hi"}]
+        app.session_mgr.get_active.return_value = session
         app.agent.system_prompt = "You are helpful."
         display = MagicMock()
 
@@ -75,21 +83,25 @@ class TestExportCommand:
         display.info.assert_called_once()
         info_msg = display.info.call_args[0][0]
         assert "Exported 1 msgs" in info_msg
-        assert "prompt 16 chars" in info_msg
 
-        # Verify the file was created with correct structure
-        files = list(tmp_path.glob("session_*.json"))
-        assert len(files) == 1
+        app.session_mgr.export_to_file.assert_called_once()
 
-        data = json.loads(files[0].read_text(encoding="utf-8"))
-        assert data["system_prompt"] == "You are helpful."
-        assert data["messages"] == [{"role": "user", "content": "hi"}]
+    @pytest.mark.asyncio
+    async def test_warns_when_no_session(self):
+        app = MagicMock()
+        app.session_mgr.get_active.return_value = None
+        display = MagicMock()
+
+        cmd = ExportCommand()
+        result = await cmd.run(_make_ctx(app=app, display=display))
+
+        assert result == CommandResult.CONTINUE
+        display.warn.assert_called_once()
 
 
 class TestResumeCommand:
     @pytest.mark.asyncio
     async def test_resume_from_exported_file(self, tmp_path):
-        # Write an export-style file
         export_data = {
             "system_prompt": "You are a coder.",
             "messages": [
@@ -108,11 +120,10 @@ class TestResumeCommand:
         result = await cmd.run(_make_ctx(app=app, display=display, args=str(path)))
 
         assert result == CommandResult.CONTINUE
-        app.replace_messages.assert_called_once_with(export_data["messages"])
+        app.resume_from_file.assert_called_once_with(export_data["messages"])
 
     @pytest.mark.asyncio
     async def test_resume_rejects_invalid_format(self, tmp_path):
-        # Old array format — should fail
         path = tmp_path / "old.json"
         path.write_text(json.dumps([{"role": "user", "content": "hi"}]), encoding="utf-8")
 
@@ -122,6 +133,5 @@ class TestResumeCommand:
         result = await cmd.run(_make_ctx(app=app, display=display, args=str(path)))
 
         assert result == CommandResult.CONTINUE
-        app.replace_messages.assert_not_called()
-        display.error.assert_called_once()
-        assert "Invalid format" in display.error.call_args[0][0]
+        app.resume_from_file.assert_not_called()
+        display.warn.assert_called_once()

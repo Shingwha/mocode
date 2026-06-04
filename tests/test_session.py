@@ -105,7 +105,6 @@ class TestSessionManager:
         sid = manager.create()
         assert sid.startswith("session_")
         assert manager.active_id == sid
-        assert manager.is_dirty is False
 
     def test_save_and_resume(self, manager):
         sid = manager.create()
@@ -117,13 +116,53 @@ class TestSessionManager:
         assert session.messages == messages
         assert session.model == "gpt-4o"
 
-    def test_dirty_tracking(self, manager):
-        assert manager.is_dirty is False
-        manager.mark_dirty()
-        assert manager.is_dirty is True
-
-        manager.create()
-        assert manager.is_dirty is False
-
     def test_resume_nonexistent(self, manager):
         assert manager.resume("nope") is None
+
+    def test_switch_to(self, manager):
+        sid = manager.create()
+        session = manager.resume(sid)
+        assert session is not None
+
+        manager.clear()
+        assert manager.active_id is None
+
+        manager.switch_to(session)
+        assert manager.active_id == sid
+
+    def test_get_active(self, manager):
+        assert manager.get_active() is None
+
+        sid = manager.create()
+        manager.save([{"role": "user", "content": "hi"}])
+
+        active = manager.get_active()
+        assert active is not None
+        assert active.id == sid
+
+    def test_export_and_import(self, manager, tmp_path):
+        sid = manager.create()
+        messages = [{"role": "user", "content": "hello"}]
+        manager.save(messages, model="gpt-4o", provider="openai")
+        session = manager.get_active()
+
+        path = tmp_path / "export.json"
+        manager.export_to_file(session, path, system_prompt="You are helpful.")
+        assert path.exists()
+
+        result = SessionManager.import_from_file(path)
+        assert result is not None
+        imported_msgs, title = result
+        assert imported_msgs == messages
+
+    def test_import_invalid_file(self, manager, tmp_path):
+        path = tmp_path / "bad.json"
+        path.write_text("not json", encoding="utf-8")
+        assert SessionManager.import_from_file(path) is None
+
+        path2 = tmp_path / "array.json"
+        path2.write_text('[{"role": "user"}]', encoding="utf-8")
+        assert SessionManager.import_from_file(path2) is None
+
+    def test_import_nonexistent(self, manager, tmp_path):
+        assert SessionManager.import_from_file(tmp_path / "nope.json") is None

@@ -76,7 +76,7 @@ class ConnectCommand:
                 if dirty:
                     ctx.app.config.save()
                     if key == ctx.app.config.active_provider:
-                        ctx.app.switch_to(key, ctx.app.config.active_model)
+                        ctx.app.switch_provider(key, ctx.app.config.active_model)
                     ctx.display.info("Config saved.")
                 return
 
