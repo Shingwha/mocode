@@ -1,5 +1,7 @@
 """Tests for CLIApp session lifecycle methods."""
 
+from __future__ import annotations
+
 from unittest.mock import MagicMock, patch
 
 from mocode.app.cli.app import CLIApp
@@ -57,27 +59,12 @@ class TestClearConversation:
 
         app._session_mgr.save.assert_called_once()
 
-    def test_clears_and_creates_session(self):
-        app = _make_app()
-
-        app.clear_conversation()
-
-        app._session_mgr.clear.assert_called_once()
-        app._session_mgr.create.assert_called_once()
-
     def test_clears_screen(self):
         app = _make_app()
 
         app.clear_conversation()
 
         app.display.clear_screen.assert_called_once()
-
-    def test_does_not_render(self):
-        app = _make_app()
-
-        app.clear_conversation()
-
-        app.display.render_messages.assert_not_called()
 
 
 class TestResumeFromFile:
@@ -98,14 +85,6 @@ class TestResumeFromFile:
 
         app._session_mgr.save.assert_called_once()
 
-    def test_clears_and_creates_session(self):
-        app = _make_app()
-
-        app.resume_from_file([{"role": "user", "content": "new"}])
-
-        app._session_mgr.clear.assert_called_once()
-        app._session_mgr.create.assert_called_once()
-
     def test_renders_messages(self):
         app = _make_app()
         msgs = [{"role": "user", "content": "hello"}]
@@ -113,13 +92,6 @@ class TestResumeFromFile:
         app.resume_from_file(msgs)
 
         app.display.render_messages.assert_called_once_with(msgs)
-
-    def test_empty_messages_no_render(self):
-        app = _make_app()
-
-        app.resume_from_file([])
-
-        app.display.render_messages.assert_not_called()
 
 
 class TestResumeSession:

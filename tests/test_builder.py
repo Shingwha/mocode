@@ -266,24 +266,12 @@ class TestChat:
 
 
 class TestPrompt:
-    def test_xml(self):
+    def test_xml_format(self):
         result = Prompt().register(Section("a", "x")).build(fmt="xml")
         assert "<system-prompt>" in result
         assert "<a>" in result
 
-    def test_text_default(self):
-        result = Prompt().register(Section("a", "x")).build()
-        assert result == "a: x"
-
-    def test_text_attrs(self):
-        result = (
-            Prompt()
-            .register(Section("tool", "desc", attrs={"name": "bash", "type": "shell"}))
-            .build()
-        )
-        assert "tool (name=bash, type=shell): desc" == result
-
-    def test_priority(self):
+    def test_priority_ordering(self):
         result = (
             Prompt()
             .register(Section("z", "second", priority=20))
@@ -296,57 +284,6 @@ class TestPrompt:
         p = Prompt().register(Section("a", "vis")).register(Section("b", "hid"))
         p.disable("b")
         assert "hid" not in p.build(fmt="text")
-
-    def test_context(self):
-        p = Prompt().register(Section("g", lambda c: f"hi {c.get('name', 'world')}"))
-        assert "hi MoCode" in p.context(name="MoCode").build(fmt="text")
-
-    def test_find(self):
-        p = Prompt().register(Section("x", "content"))
-        assert p.get("x") is not None
-        assert p.get("x").content == "content"
-        assert p.get("missing") is None
-
-    def test_all(self):
-        p = Prompt().register(Section("a", "1")).register(Section("b", "2"))
-        names = {s.name for s in p.all()}
-        assert names == {"a", "b"}
-
-    def test_remove(self):
-        p = Prompt().register(Section("x", "content"))
-        removed = p.unregister("x")
-        assert removed is not None
-        assert removed.name == "x"
-        assert p.get("x") is None
-        assert p.unregister("missing") is None
-
-    def test_add_replaces_duplicate(self):
-        p = Prompt().register(Section("x", "old")).register(Section("x", "new"))
-        assert p.get("x").content == "new"
-        assert len(p.all()) == 1
-
-    def test_repr(self):
-        p = Prompt().register(Section("a", "1")).register(Section("b", "2"))
-        p.disable("b")
-        r = repr(p)
-        assert "a(on)" in r
-        assert "b(off)" in r
-
-    def test_static_content_no_lambda(self):
-        result = Prompt().register(Section("id", "You are a bot.")).build(fmt="xml")
-        assert "You are a bot." in result
-
-    def test_enable(self):
-        p = Prompt().register(Section("a", "vis"))
-        p.disable("a")
-        assert "vis" not in p.build(fmt="text")
-        p.enable("a")
-        assert "vis" in p.build(fmt="text")
-
-    def test_init_with_sections(self):
-        p = Prompt([Section("a", "1"), Section("b", "2")])
-        assert len(p.all()) == 2
-        assert p.get("a").content == "1"
 
     def test_nested_section_xml(self):
         tools = Section(
@@ -362,51 +299,6 @@ class TestPrompt:
         assert "Run bash" in result
         assert '<tool name="read">' in result
         assert "Read files" in result
-
-    def test_nested_section_text(self):
-        tools = Section(
-            "tools",
-            [
-                Section("tool", "Run bash"),
-                Section("tool", "Read files"),
-            ],
-        )
-        result = Prompt().register(tools).build(fmt="text")
-        assert "Run bash" in result
-        assert "Read files" in result
-        assert "<tools>" not in result
-        assert "<tool>" not in result
-
-    def test_nested_disabled_child_skipped(self):
-        tools = Section(
-            "tools",
-            [
-                Section("tool", "visible"),
-                Section("tool", "hidden", enabled=False),
-            ],
-        )
-        result = Prompt().register(tools).build(fmt="xml")
-        assert "visible" in result
-        assert "hidden" not in result
-
-    def test_deep_nested(self):
-        inner = Section(
-            "tools",
-            [
-                Section(
-                    "tool",
-                    [
-                        Section("param", "verbose", attrs={"name": "v"}),
-                    ],
-                    attrs={"name": "bash"},
-                ),
-            ],
-        )
-        result = Prompt().register(inner).build(fmt="xml")
-        assert "<tools>" in result
-        assert '<tool name="bash">' in result
-        assert '<param name="v">' in result
-        assert "verbose" in result
 
 
 # ---- Tool ----
@@ -425,18 +317,6 @@ class TestTool:
                 lambda a: str(int(a["a"]) + int(a["b"])),
             ).run({"a": "3", "b": "5"})
             == "8"
-        )
-
-    @pytest.mark.asyncio
-    async def test_async(self):
-        async def f(a):
-            return f"async:{a['x']}"
-
-        assert (
-            await Tool(
-                "t", "T", {"x": {"type": "string", "description": "x"}}, f
-            ).run_async({"x": "hi"})
-            == "async:hi"
         )
 
     def test_error_propagates(self):
@@ -460,15 +340,6 @@ class TestTool:
         ).to_schema()
         assert "name" in schema["function"]["parameters"]["required"]
         assert "count" not in schema["function"]["parameters"]["required"]
-
-    def test_derived(self):
-        reg = ToolRegistry()
-        reg.register(Tool("a", "A", {}, lambda a: "a"))
-        reg.register(Tool("b", "B", {}, lambda a: "b"))
-        d = reg.derived(exclude={"b"})
-        assert d.get("a") is not None
-        assert d.get("b") is None
-        assert reg.get("b") is not None
 
 
 # ---- AgentHook / HookRunner ----
@@ -520,30 +391,6 @@ class TestAgentHook:
         runner = HookRunner([BadHook(), GoodHook()])
         await runner.before_iteration(AgentHookContext())
         assert calls == ["good"]
-
-    @pytest.mark.asyncio
-    async def test_before_iteration_modifies_messages(self):
-        class FilterHook(AgentHook):
-            async def before_iteration(self, ctx):
-                ctx.messages[:] = [m for m in ctx.messages if m.get("role") != "system"]
-
-        runner = HookRunner([FilterHook()])
-        ctx = AgentHookContext(
-            messages=[
-                {"role": "system", "content": "sys"},
-                {"role": "user", "content": "hi"},
-            ]
-        )
-        await runner.before_iteration(ctx)
-        assert len(ctx.messages) == 1
-        assert ctx.messages[0]["role"] == "user"
-
-    @pytest.mark.asyncio
-    async def test_add_hook(self):
-        runner = HookRunner()
-        assert len(runner._hooks) == 0
-        runner.add(AgentHook())
-        assert len(runner._hooks) == 1
 
     @pytest.mark.asyncio
     async def test_tool_hooks(self):

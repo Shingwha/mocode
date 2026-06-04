@@ -491,38 +491,12 @@ class TestRunnerErrorHandling:
 
 class TestWorkflowMenuPendingInput:
     @pytest.mark.asyncio
-    async def test_menu_run_sets_pending_input(self):
-        """Selecting 'Run' from menu should set pending input, not execute directly."""
-        from mocode.app.cli.commands import CommandResult
-        from mocode.app.cli.commands.workflow import WorkflowCommand
-
-        wf = Workflow(
-            name="test-wf",
-            nodes=[Node(id="a", task="Do stuff")],
-        )
-        registry = MagicMock()
-        registry.list.return_value = [wf]
-
-        app = MagicMock()
-        app.workflow_registry = registry
-        display = MagicMock()
-        ctx = _make_ctx(app=app, display=display)
-
-        cmd = WorkflowCommand()
-
-        with patch(
-            "mocode.app.cli.commands.workflow.select",
-            new_callable=AsyncMock,
-        ) as mock_select:
-            mock_select.side_effect = ["test-wf", "run"]
-            result = await cmd._menu(ctx)
-
-        assert result == CommandResult.CONTINUE
-        display.set_pending_input.assert_called_once_with("/workflow run test-wf")
-
-    @pytest.mark.asyncio
-    async def test_menu_show_still_works(self):
-        """Selecting 'Show details' from menu should still show details."""
+    @pytest.mark.parametrize(
+        "action,expect_pending_input,expect_show",
+        [("run", True, False), ("show", False, True), ("back", False, False)],
+    )
+    async def test_menu_action(self, action, expect_pending_input, expect_show):
+        """Menu actions: run sets pending input, show displays details, back returns."""
         from mocode.app.cli.commands import CommandResult
         from mocode.app.cli.commands.workflow import WorkflowCommand
 
@@ -546,39 +520,15 @@ class TestWorkflowMenuPendingInput:
             "mocode.app.cli.commands.workflow.select",
             new_callable=AsyncMock,
         ) as mock_select:
-            mock_select.side_effect = ["test-wf", "show"]
+            mock_select.side_effect = ["test-wf", action]
             result = await cmd._menu(ctx)
 
         assert result == CommandResult.CONTINUE
-        display.workflow_show.assert_called_once_with(wf)
-        display.set_pending_input.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_menu_back_returns_continue(self):
-        """Selecting 'Back' from action menu should return CONTINUE."""
-        from mocode.app.cli.commands import CommandResult
-        from mocode.app.cli.commands.workflow import WorkflowCommand
-
-        wf = Workflow(
-            name="test-wf",
-            nodes=[Node(id="a", task="Do stuff")],
-        )
-        registry = MagicMock()
-        registry.list.return_value = [wf]
-
-        app = MagicMock()
-        app.workflow_registry = registry
-        display = MagicMock()
-        ctx = _make_ctx(app=app, display=display)
-
-        cmd = WorkflowCommand()
-
-        with patch(
-            "mocode.app.cli.commands.workflow.select",
-            new_callable=AsyncMock,
-        ) as mock_select:
-            mock_select.side_effect = ["test-wf", "back"]
-            result = await cmd._menu(ctx)
-
-        assert result == CommandResult.CONTINUE
-        display.set_pending_input.assert_not_called()
+        if expect_pending_input:
+            display.set_pending_input.assert_called_once_with("/workflow run test-wf")
+        else:
+            display.set_pending_input.assert_not_called()
+        if expect_show:
+            display.workflow_show.assert_called_once_with(wf)
+        else:
+            display.workflow_show.assert_not_called()

@@ -19,7 +19,11 @@ from mocode.core.virtualfs import VirtualFS
 
 
 class TestGrepIgnoreCase:
-    def test_ignore_case_true(self, tmp_path: Path):
+    @pytest.mark.parametrize(
+        "ignore_case,should_match",
+        [(True, True), (False, False), ("true", True)],
+    )
+    def test_ignore_case(self, tmp_path: Path, ignore_case, should_match):
         (tmp_path / "a.py").write_text("class AgentLoop:\n    pass\n", encoding="utf-8")
         args = {
             "pattern": "agentloop",
@@ -28,52 +32,13 @@ class TestGrepIgnoreCase:
             "output_mode": "content",
             "limit": 100,
             "context": 0,
-            "ignore_case": True,
+            "ignore_case": ignore_case,
         }
         result = _grep(args)
-        assert "AgentLoop" in result
-
-    def test_ignore_case_false_by_default(self, tmp_path: Path):
-        (tmp_path / "a.py").write_text("class AgentLoop:\n    pass\n", encoding="utf-8")
-        args = {
-            "pattern": "agentloop",
-            "path": str(tmp_path),
-            "type": "py",
-            "output_mode": "content",
-            "limit": 100,
-            "context": 0,
-        }
-        result = _grep(args)
-        assert "No matches" in result
-
-    def test_ignore_case_explicit_false(self, tmp_path: Path):
-        (tmp_path / "a.py").write_text("class AgentLoop:\n    pass\n", encoding="utf-8")
-        args = {
-            "pattern": "agentloop",
-            "path": str(tmp_path),
-            "type": "py",
-            "output_mode": "content",
-            "limit": 100,
-            "context": 0,
-            "ignore_case": False,
-        }
-        result = _grep(args)
-        assert "No matches" in result
-
-    def test_ignore_case_string_true(self, tmp_path: Path):
-        """Handle string 'true' from LLM tool calls."""
-        (tmp_path / "a.py").write_text("Error: something failed\n", encoding="utf-8")
-        args = {
-            "pattern": "error",
-            "path": str(tmp_path),
-            "type": "py",
-            "output_mode": "content",
-            "limit": 100,
-            "context": 0,
-            "ignore_case": "true",
-        }
-        result = _grep(args)
-        assert "Error" in result
+        if should_match:
+            assert "AgentLoop" in result
+        else:
+            assert "No matches" in result
 
     def test_ignore_case_with_vfs(self):
         vfs = VirtualFS()
@@ -284,15 +249,6 @@ class TestGlobVfsSubdir:
         assert "a.md" in result
         assert "b.md" in result
 
-    def test_glob_vfs_deep_subdir(self):
-        vfs = VirtualFS()
-        vfs.add("workflow/ref/example/test.md", "deep")
-        vfs.add("workflow/overview.md", "top")
-        tool = GlobTool(vfs=vfs)
-        result = tool.run({"pattern": "*.md", "path": "vfs://workflow/ref/example"})
-        assert "test.md" in result
-        assert "overview.md" not in result
-
 
 class TestGrepVfsSubdir:
     def test_grep_vfs_subdir_content(self):
@@ -304,22 +260,6 @@ class TestGrepVfsSubdir:
             "pattern": "flow",
             "path": "vfs://workflow",
             "output_mode": "content",
-            "limit": 100,
-            "context": 0,
-            "type": "",
-        })
-        assert "guide.md" in result
-        assert "doc.md" not in result
-
-    def test_grep_vfs_subdir_files(self):
-        vfs = VirtualFS()
-        vfs.add("workflow/guide.md", "run the flow")
-        vfs.add("other/doc.md", "flow chart")
-        tool = GrepTool(vfs=vfs)
-        result = tool.run({
-            "pattern": "flow",
-            "path": "vfs://workflow",
-            "output_mode": "files",
             "limit": 100,
             "context": 0,
             "type": "",

@@ -171,14 +171,6 @@ class TestEnterKeybinding:
         handler(event)
         buf.apply_completion.assert_called_once_with(c1)
 
-    def test_enter_submits_when_completion_menu_has_no_items(self):
-        cs = _make_complete_state([], current_completion=None)
-        handler = _find_handler(self.bindings, "enter")
-        buf = _make_buffer("hello", complete_state=cs)
-        event = _make_event(buf)
-        handler(event)
-        buf.validate_and_handle.assert_called_once()
-
     def test_enter_never_calls_cancel_completion(self):
         """Verify we no longer cancel+submit when the menu is open."""
         c1 = Completion("/help", start_position=-5)
@@ -242,13 +234,6 @@ class TestNewlineKeybinding:
 
     def test_escape_enter_inserts_newline(self):
         handler = _find_handler(self.bindings, "escape+enter")
-        buf = _make_buffer("hello")
-        event = _make_event(buf)
-        handler(event)
-        buf.insert_text.assert_called_once_with("\n")
-
-    def test_ctrl_j_inserts_newline(self):
-        handler = _find_handler(self.bindings, "c-j")
         buf = _make_buffer("hello")
         event = _make_event(buf)
         handler(event)

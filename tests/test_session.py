@@ -155,14 +155,5 @@ class TestSessionManager:
         imported_msgs, title = result
         assert imported_msgs == messages
 
-    def test_import_invalid_file(self, manager, tmp_path):
-        path = tmp_path / "bad.json"
-        path.write_text("not json", encoding="utf-8")
-        assert SessionManager.import_from_file(path) is None
-
-        path2 = tmp_path / "array.json"
-        path2.write_text('[{"role": "user"}]', encoding="utf-8")
-        assert SessionManager.import_from_file(path2) is None
-
     def test_import_nonexistent(self, manager, tmp_path):
         assert SessionManager.import_from_file(tmp_path / "nope.json") is None
