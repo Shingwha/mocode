@@ -9,6 +9,7 @@ from prompt_toolkit.completion import Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.keys import Keys
 
+from mocode.app.cli.commands import CommandRegistry
 from mocode.app.cli.input import SlashCompleter, build_keybindings
 
 # prompt_toolkit normalises key names: "enter" → Keys.ControlM, "tab" → Keys.ControlI
@@ -28,7 +29,25 @@ def _make_command(name: str, description: str = ""):
     cmd = MagicMock()
     cmd.name = name
     cmd.description = description
+    cmd.aliases = ()
     return cmd
+
+
+def _make_registry(*cmds) -> CommandRegistry:
+    """Build a CommandRegistry from mock commands."""
+    reg = CommandRegistry()
+    for cmd in cmds:
+        reg.register(cmd)
+    return reg
+
+
+def _find_handler(bindings, key):
+    """Find the handler for a given key in the bindings."""
+    target = _KEY_ALIASES.get(key, (key,))
+    for binding in bindings.bindings:
+        if binding.keys == target:
+            return binding.handler
+    raise KeyError(f"No handler for {key!r}")
 
 
 def _make_event(buffer=None):
@@ -60,8 +79,11 @@ def _make_complete_state(completions, current_completion=None):
 
 class TestSlashCompleter:
     def test_matches_slash_command(self):
-        commands = [_make_command("/help", "Show help"), _make_command("/quit", "Exit")]
-        completer = SlashCompleter(commands)
+        reg = _make_registry(
+            _make_command("/help", "Show help"),
+            _make_command("/quit", "Exit"),
+        )
+        completer = SlashCompleter(reg)
         doc = Document("/he")
         completions = list(completer.get_completions(doc, MagicMock()))
         assert len(completions) == 1
@@ -69,26 +91,26 @@ class TestSlashCompleter:
         assert completions[0].display_meta[0][1] == "Show help"
 
     def test_no_match_without_slash(self):
-        commands = [_make_command("/help")]
-        completer = SlashCompleter(commands)
+        reg = _make_registry(_make_command("/help"))
+        completer = SlashCompleter(reg)
         doc = Document("hello")
         completions = list(completer.get_completions(doc, MagicMock()))
         assert completions == []
 
     def test_no_match_with_space(self):
-        commands = [_make_command("/help")]
-        completer = SlashCompleter(commands)
+        reg = _make_registry(_make_command("/help"))
+        completer = SlashCompleter(reg)
         doc = Document("/help foo")
         completions = list(completer.get_completions(doc, MagicMock()))
         assert completions == []
 
     def test_multiple_matches(self):
-        commands = [
+        reg = _make_registry(
             _make_command("/export"),
             _make_command("/exit"),
             _make_command("/help"),
-        ]
-        completer = SlashCompleter(commands)
+        )
+        completer = SlashCompleter(reg)
         doc = Document("/e")
         completions = list(completer.get_completions(doc, MagicMock()))
         names = [c.text for c in completions]
@@ -97,14 +119,15 @@ class TestSlashCompleter:
         assert "/help" not in names
 
     def test_no_commands(self):
-        completer = SlashCompleter([])
+        reg = _make_registry()
+        completer = SlashCompleter(reg)
         doc = Document("/h")
         completions = list(completer.get_completions(doc, MagicMock()))
         assert completions == []
 
     def test_start_position_replaces_full_text(self):
-        commands = [_make_command("/help")]
-        completer = SlashCompleter(commands)
+        reg = _make_registry(_make_command("/help"))
+        completer = SlashCompleter(reg)
         doc = Document("/he")
         completions = list(completer.get_completions(doc, MagicMock()))
         assert completions[0].start_position == -3  # -len("/he")
@@ -121,16 +144,8 @@ class TestEnterKeybinding:
     def setup_bindings(self):
         self.bindings = build_keybindings()
 
-    def _find_handler(self, key):
-        """Find the handler for a given key in the bindings."""
-        target = _KEY_ALIASES.get(key, (key,))
-        for binding in self.bindings.bindings:
-            if binding.keys == target:
-                return binding.handler
-        raise KeyError(f"No handler for {key!r}")
-
     def test_enter_submits_when_no_completion_menu(self):
-        handler = self._find_handler("enter")
+        handler = _find_handler(self.bindings, "enter")
         buf = _make_buffer("hello", complete_state=None)
         event = _make_event(buf)
         handler(event)
@@ -140,7 +155,7 @@ class TestEnterKeybinding:
         c1 = Completion("/help", start_position=-5)
         c2 = Completion("/history", start_position=-5)
         cs = _make_complete_state([c1, c2], current_completion=c1)
-        handler = self._find_handler("enter")
+        handler = _find_handler(self.bindings, "enter")
         buf = _make_buffer("/hel", complete_state=cs)
         event = _make_event(buf)
         handler(event)
@@ -150,7 +165,7 @@ class TestEnterKeybinding:
         c1 = Completion("/help", start_position=-5)
         c2 = Completion("/history", start_position=-5)
         cs = _make_complete_state([c1, c2], current_completion=None)
-        handler = self._find_handler("enter")
+        handler = _find_handler(self.bindings, "enter")
         buf = _make_buffer("/h", complete_state=cs)
         event = _make_event(buf)
         handler(event)
@@ -158,7 +173,7 @@ class TestEnterKeybinding:
 
     def test_enter_submits_when_completion_menu_has_no_items(self):
         cs = _make_complete_state([], current_completion=None)
-        handler = self._find_handler("enter")
+        handler = _find_handler(self.bindings, "enter")
         buf = _make_buffer("hello", complete_state=cs)
         event = _make_event(buf)
         handler(event)
@@ -168,7 +183,7 @@ class TestEnterKeybinding:
         """Verify we no longer cancel+submit when the menu is open."""
         c1 = Completion("/help", start_position=-5)
         cs = _make_complete_state([c1], current_completion=None)
-        handler = self._find_handler("enter")
+        handler = _find_handler(self.bindings, "enter")
         buf = _make_buffer("/h", complete_state=cs)
         event = _make_event(buf)
         handler(event)
@@ -187,15 +202,8 @@ class TestTabKeybinding:
     def setup_bindings(self):
         self.bindings = build_keybindings()
 
-    def _find_handler(self, key):
-        target = _KEY_ALIASES.get(key, (key,))
-        for binding in self.bindings.bindings:
-            if binding.keys == target:
-                return binding.handler
-        raise KeyError(f"No handler for {key!r}")
-
     def test_tab_starts_completion_when_no_menu(self):
-        handler = self._find_handler("tab")
+        handler = _find_handler(self.bindings, "tab")
         buf = _make_buffer("/h", complete_state=None)
         event = _make_event(buf)
         handler(event)
@@ -204,7 +212,7 @@ class TestTabKeybinding:
     def test_tab_applies_current_completion(self):
         c1 = Completion("/help", start_position=-5)
         cs = _make_complete_state([c1], current_completion=c1)
-        handler = self._find_handler("tab")
+        handler = _find_handler(self.bindings, "tab")
         buf = _make_buffer("/he", complete_state=cs)
         event = _make_event(buf)
         handler(event)
@@ -214,7 +222,7 @@ class TestTabKeybinding:
         c1 = Completion("/help", start_position=-5)
         c2 = Completion("/history", start_position=-5)
         cs = _make_complete_state([c1, c2], current_completion=None)
-        handler = self._find_handler("tab")
+        handler = _find_handler(self.bindings, "tab")
         buf = _make_buffer("/h", complete_state=cs)
         event = _make_event(buf)
         handler(event)
@@ -232,22 +240,15 @@ class TestNewlineKeybinding:
     def setup_bindings(self):
         self.bindings = build_keybindings()
 
-    def _find_handler(self, key):
-        target = _KEY_ALIASES.get(key, (key,))
-        for binding in self.bindings.bindings:
-            if binding.keys == target:
-                return binding.handler
-        raise KeyError(f"No handler for {key!r}")
-
     def test_escape_enter_inserts_newline(self):
-        handler = self._find_handler("escape+enter")
+        handler = _find_handler(self.bindings, "escape+enter")
         buf = _make_buffer("hello")
         event = _make_event(buf)
         handler(event)
         buf.insert_text.assert_called_once_with("\n")
 
     def test_ctrl_j_inserts_newline(self):
-        handler = self._find_handler("c-j")
+        handler = _find_handler(self.bindings, "c-j")
         buf = _make_buffer("hello")
         event = _make_event(buf)
         handler(event)

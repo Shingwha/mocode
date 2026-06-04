@@ -47,6 +47,7 @@ from .commands.prompts import register_prompt_commands
 from .commands.workflow import WorkflowCommand
 from .display import Display
 from .hook import CLIDisplayHook
+from .input import Input
 
 
 class CLIApp:
@@ -67,8 +68,6 @@ class CLIApp:
         if self.config is None:
             return  # caller checks and handles
 
-        self.display = display or Display()
-
         self.commands = CommandRegistry()
         register_prompt_commands(self.commands)
         if self.interactive:
@@ -84,7 +83,9 @@ class CLIApp:
                 CopyCommand(),
             ]:
                 self.commands.register(cmd)
-            self.display.set_commands(self.commands.all())
+
+        _input = Input(self.commands, ps1="❯")
+        self.display = display or Display(input_=_input)
 
         self._workflow_registry = _make_workflow_registry()
 

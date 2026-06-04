@@ -12,7 +12,7 @@ from prompt_toolkit.keys import Keys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .commands import Command
+    from .commands import CommandRegistry
 
 # Paste marker thresholds
 _PASTE_LINE_THRESHOLD = 3
@@ -20,21 +20,35 @@ _PASTE_CHAR_THRESHOLD = 100
 _PASTE_MARKER_RE = re.compile(r"\[Pasted text #(\d+) \+\d+ (?:lines|chars)\]")
 
 
-class SlashCompleter(Completer):
-    """Prefix-match /commands from a Command list."""
+# ── Completion helpers ──────────────────────────────────
 
-    def __init__(self, commands: list[Command]):
-        self._commands = commands
+
+def _apply_best_completion(buf) -> None:
+    """Apply the current or first available completion from the menu."""
+    completion = (
+        buf.complete_state.current_completion or buf.complete_state.completions[0]
+    )
+    buf.apply_completion(completion)
+
+
+class SlashCompleter(Completer):
+    """Prefix-match /commands from a CommandRegistry."""
+
+    def __init__(self, registry: CommandRegistry):
+        self._registry = registry
 
     def get_completions(self, document, complete_event):
         text = document.text
         if not text.startswith("/") or " " in text:
             return
-        for cmd in self._commands:
+        for cmd in self._registry.all():
             if cmd.name.startswith(text):
                 yield Completion(
                     cmd.name, start_position=-len(text), display_meta=cmd.description
                 )
+
+
+# ── Keybindings ─────────────────────────────────────────
 
 
 def build_keybindings(paste_handler=None):
@@ -45,11 +59,7 @@ def build_keybindings(paste_handler=None):
     def _(event):
         buf = event.current_buffer
         if buf.complete_state:
-            completion = (
-                buf.complete_state.current_completion
-                or buf.complete_state.completions[0]
-            )
-            buf.apply_completion(completion)
+            _apply_best_completion(buf)
         else:
             buf.start_completion(select_first=True)
 
@@ -57,11 +67,7 @@ def build_keybindings(paste_handler=None):
     def _(event):
         buf = event.current_buffer
         if buf.complete_state and buf.complete_state.completions:
-            completion = (
-                buf.complete_state.current_completion
-                or buf.complete_state.completions[0]
-            )
-            buf.apply_completion(completion)
+            _apply_best_completion(buf)
         else:
             buf.validate_and_handle()
 
@@ -82,24 +88,23 @@ def build_keybindings(paste_handler=None):
     return bindings
 
 
+# ── Input ───────────────────────────────────────────────
+
+
 class Input:
     """Manages the PromptSession, paste handling, and command completion."""
 
-    def __init__(self, commands: list[Command] | None = None, ps1: str = "❯"):
+    def __init__(self, registry: CommandRegistry, ps1: str = "❯"):
         self._ps1 = ps1
         self._paste_store: dict[int, str] = {}
         self._paste_counter: int = 0
-        self._commands = commands or []
+        self._registry = registry
         self._session: PromptSession | None = None
-
-    def set_commands(self, commands: list[Command]):
-        self._commands = commands
-        self._session = None  # force recreation
 
     def _ensure_session(self):
         if self._session is None:
             self._session = PromptSession(
-                completer=SlashCompleter(self._commands),
+                completer=SlashCompleter(self._registry),
                 complete_while_typing=True,
                 key_bindings=build_keybindings(self._handle_paste),
             )

@@ -6,7 +6,6 @@ import json
 import time
 from typing import TYPE_CHECKING
 
-from .input import Input
 from .spinner import SpinnerRunner
 from .theme import (
     BG_USER,
@@ -34,7 +33,7 @@ from ..workflow.events import (
 
 if TYPE_CHECKING:
     from ...workflow import Workflow
-    from .commands import Command
+    from .input import Input
 
 
 # ── Tool display helpers ────────────────────────────────
@@ -155,16 +154,12 @@ def _format_route(route) -> str:
 class Display:
     """CLI display — output rendering. Input and spinner are delegated."""
 
-    def __init__(self, theme: Theme | None = None):
+    def __init__(self, input_: Input, theme: Theme | None = None):
         self.theme = theme or Theme()
-        self._input = Input(ps1=self.theme.icon_input)
+        self._input = input_
         self._spinner = SpinnerRunner()
         self._wf_start_time: float = 0.0
         self._pending_input: str | None = None
-
-    def set_commands(self, commands: list[Command]):
-        """Set commands for autocomplete."""
-        self._input.set_commands(commands)
 
     # ── Input delegation ──────────────────────────────────
 
