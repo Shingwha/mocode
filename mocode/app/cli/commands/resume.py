@@ -35,14 +35,15 @@ class ResumeCommand:
             return
 
         try:
-            messages = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except Exception as e:
             ctx.display.error(f"Failed to read JSON: {e}")
             return
 
-        if not isinstance(messages, list):
-            ctx.display.error("Invalid format: expected a JSON array of messages")
+        if not isinstance(data, dict) or "messages" not in data:
+            ctx.display.error("Invalid format: expected {system_prompt, messages}")
             return
+        messages = data["messages"]
 
         ctx.app.replace_messages(messages)
         user_count = sum(1 for m in messages if m.get("role") == "user")

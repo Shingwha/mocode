@@ -15,9 +15,16 @@ class ExportCommand:
     async def run(self, ctx: CommandContext) -> CommandResult:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = Path.cwd() / f"session_{ts}.json"
+        data = {
+            "system_prompt": ctx.app.agent.system_prompt,
+            "messages": ctx.app.agent.messages,
+        }
         path.write_text(
-            json.dumps(ctx.app.agent.messages, ensure_ascii=False, indent=2),
+            json.dumps(data, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
-        ctx.display.info(f"Exported {len(ctx.app.agent.messages)} msgs → {path}")
+        sp_len = len(ctx.app.agent.system_prompt)
+        ctx.display.info(
+            f"Exported {len(ctx.app.agent.messages)} msgs (prompt {sp_len} chars) → {path}"
+        )
         return CommandResult.CONTINUE
