@@ -183,25 +183,17 @@ def _glob(args: dict, vfs: VirtualFS | None = None) -> str:
         reverse=True,
     )
 
-    # Also search VFS
-    vfs_paths: list[str] = vfs.glob(pattern) if vfs else []
-
-    if not files and not vfs_paths:
+    if not files:
         return f"No files matching '{pattern}' in {base}"
 
     truncated = len(files) > _GLOB_MAX
     files = files[:_GLOB_MAX]
 
     cwd = Path.cwd()
-    if base == cwd:
-        paths = [str(p.relative_to(base)) for p in files]
-    else:
-        paths = [str(p) for p in files]
+    paths = [str(p.relative_to(base)) if base == cwd else str(p) for p in files]
 
-    all_paths = paths + vfs_paths
-    total = len(files) + len(vfs_paths)
-    header = f"[Found {total}{'+' if truncated else ''} file(s) matching '{pattern}']"
-    result = header + "\n" + "\n".join(all_paths)
+    header = f"[Found {len(files)}{'+' if truncated else ''} file(s) matching '{pattern}']"
+    result = header + "\n" + "\n".join(paths)
 
     if truncated:
         result += f"\n... and more files not shown (showing first {_GLOB_MAX})"
@@ -295,27 +287,10 @@ def _grep(args: dict, vfs: VirtualFS | None = None) -> str:
     # Real filesystem search (directory)
     real_path = require_dir(target)
     if output_mode == "files":
-        result = _grep_files(pattern, real_path, type_filter, max_results)
-    elif output_mode == "count":
-        result = _grep_count(pattern, real_path, type_filter, max_results)
-    else:
-        result = _grep_content(
-            pattern, real_path, type_filter, max_results, context_lines
-        )
-
-    # Also search VFS
-    if vfs:
-        vfs_result = vfs.grep(
-            pattern,
-            type_filter=type_filter,
-            output_mode=output_mode,
-            max_results=max_results,
-            context_lines=context_lines,
-        )
-        if vfs_result and not vfs_result.startswith("No matches"):
-            result += "\n\n" + vfs_result
-
-    return result
+        return _grep_files(pattern, real_path, type_filter, max_results)
+    if output_mode == "count":
+        return _grep_count(pattern, real_path, type_filter, max_results)
+    return _grep_content(pattern, real_path, type_filter, max_results, context_lines)
 
 
 def _grep_files(
@@ -433,7 +408,8 @@ def GlobTool(vfs: VirtualFS | None = None) -> Tool:
         "glob",
         "Find files matching a glob pattern, sorted by modification time (newest first). "
         "Automatically excludes .git, node_modules, __pycache__, and other common non-project directories. "
-        "Supports virtual files via vfs:// prefix.",
+        "Supports virtual files via vfs:// prefix. "
+        "Real filesystem paths search only real files; the two are never mixed.",
         {
             "pattern": {
                 "type": "string",
@@ -441,7 +417,7 @@ def GlobTool(vfs: VirtualFS | None = None) -> Tool:
             },
             "path": {
                 "type": "string",
-                "description": "Base directory to search in (defaults to current directory). Use 'vfs://' to search virtual files.",
+                "description": "Base directory to search in (defaults to current directory). Use 'vfs://' to search virtual files only.",
                 "default": ".",
             },
         },
@@ -458,7 +434,8 @@ def GrepTool(vfs: VirtualFS | None = None) -> Tool:
         "Use 'type' to filter by file extension (e.g. 'py' for Python files). "
         "Use 'context' to show surrounding lines. Use 'output_mode' to control output format. "
         "Use 'ignore_case' for case-insensitive matching. "
-        "Supports virtual files — use path='vfs://' to search virtual files only.",
+        "Supports virtual files — use path='vfs://' to search virtual files only. "
+        "Real filesystem paths search only real files; the two are never mixed.",
         {
             "pattern": {"type": "string", "description": "Regex pattern to search for"},
             "path": {
