@@ -9,13 +9,27 @@ from .tool import Tool, ToolRegistry, ToolError
 from .hook import AgentHook, AgentHookContext, HookRunner
 from .prompt import Prompt, Section
 from .skill import Skill, SkillMetadata, SkillManager
+from .virtualfs import VirtualFS
 
 __all__ = [
     "Agent",
-    "AgentLoop", "AgentConfig", "LoopResult",
-    "Provider", "Response", "ToolCall", "Usage",
-    "Tool", "ToolRegistry", "ToolError",
-    "AgentHook", "AgentHookContext", "HookRunner",
-    "Prompt", "Section",
-    "Skill", "SkillMetadata", "SkillManager",
+    "AgentLoop",
+    "AgentConfig",
+    "LoopResult",
+    "Provider",
+    "Response",
+    "ToolCall",
+    "Usage",
+    "Tool",
+    "ToolRegistry",
+    "ToolError",
+    "AgentHook",
+    "AgentHookContext",
+    "HookRunner",
+    "Prompt",
+    "Section",
+    "Skill",
+    "SkillMetadata",
+    "SkillManager",
+    "VirtualFS",
 ]

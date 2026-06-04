@@ -13,6 +13,7 @@ from ...core import Agent
 from ...core.agent import AgentConfig
 from ...core.skill import SkillManager
 from ...core.tool import ToolRegistry
+from ...core.virtualfs import VirtualFS
 from ...skills import WorkflowSkill
 from ..workflow import WorkflowRegistry
 from ..workflow.cli import make_registry as _make_workflow_registry
@@ -72,9 +73,15 @@ class CLIApp:
         register_prompt_commands(self.commands)
         if self.interactive:
             for cmd in [
-                QuitCommand(), HelpCommand(), ExportCommand(),
-                ClearCommand(), ModelCommand(), ResumeCommand(), ConnectCommand(),
-                WorkflowCommand(), CopyCommand(),
+                QuitCommand(),
+                HelpCommand(),
+                ExportCommand(),
+                ClearCommand(),
+                ModelCommand(),
+                ResumeCommand(),
+                ConnectCommand(),
+                WorkflowCommand(),
+                CopyCommand(),
             ]:
                 self.commands.register(cmd)
             self.display.set_commands(self.commands.all())
@@ -125,10 +132,18 @@ class CLIApp:
             tool_timeout=self.config.tool_timeout,
         )
 
+        self._vfs = VirtualFS()
+
         self._tools = ToolRegistry()
         for t in [
-            ReadTool(), WriteTool(), AppendTool(), EditTool(),
-            GlobTool(), GrepTool(), BashTool(), FetchTool(),
+            ReadTool(vfs=self._vfs),
+            WriteTool(),
+            AppendTool(),
+            EditTool(),
+            GlobTool(vfs=self._vfs),
+            GrepTool(vfs=self._vfs),
+            BashTool(),
+            FetchTool(),
         ]:
             self._tools.register(t)
 
@@ -136,6 +151,11 @@ class CLIApp:
 
         # Register built-in skills
         self._skill_mgr.register(WorkflowSkill())
+
+        # Collect virtual files from all registered skills into VFS
+        for skill in self._skill_mgr._builtin_skills.values():
+            for path, content in skill.virtual_files.items():
+                self._vfs.add(path, content)
 
         self._tools.register(SkillTool(self._skill_mgr))
 
@@ -331,6 +351,7 @@ def _fix_console():
     if sys.platform != "win32":
         return
     import ctypes
+
     try:
         ctypes.windll.kernel32.SetConsoleMode(
             ctypes.windll.kernel32.GetStdHandle(-11), 7

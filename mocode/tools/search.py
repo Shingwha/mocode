@@ -6,49 +6,115 @@ import os
 import re
 from pathlib import Path
 
-from ..core.tool import Tool, ToolError
+from ..core.tool import Tool
+from ..core.virtualfs import VirtualFS
 from ._helpers import require_dir
 
-IGNORE_DIRS = frozenset({
-    # VCS
-    ".git", ".svn", ".hg",
-    # Python
-    "__pycache__", ".venv", "venv", "env",
-    ".tox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
-    # JS/TS
-    "node_modules", ".next", ".nuxt",
-    # JVM
-    ".gradle",
-    # Rust
-    "target",
-    # Build output
-    "dist", "build",
-    # IDE
-    ".idea", ".vscode",
-    # Other
-    ".cache", "coverage", ".terraform",
-})
+IGNORE_DIRS = frozenset(
+    {
+        # VCS
+        ".git",
+        ".svn",
+        ".hg",
+        # Python
+        "__pycache__",
+        ".venv",
+        "venv",
+        "env",
+        ".tox",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        # JS/TS
+        "node_modules",
+        ".next",
+        ".nuxt",
+        # JVM
+        ".gradle",
+        # Rust
+        "target",
+        # Build output
+        "dist",
+        "build",
+        # IDE
+        ".idea",
+        ".vscode",
+        # Other
+        ".cache",
+        "coverage",
+        ".terraform",
+    }
+)
 
 TYPE_MAP = {
-    "py": ".py", "js": ".js", "ts": ".ts", "tsx": ".tsx", "jsx": ".jsx",
-    "go": ".go", "rs": ".rs", "java": ".java", "c": ".c", "cpp": ".cpp",
-    "h": ".h", "rb": ".rb", "php": ".php", "cs": ".cs", "swift": ".swift",
-    "kt": ".kt", "scala": ".scala", "lua": ".lua", "r": ".r",
-    "html": ".html", "css": ".css", "vue": ".vue", "svelte": ".svelte",
-    "json": ".json", "yaml": ".yaml", "yml": ".yml", "toml": ".toml",
-    "md": ".md", "txt": ".txt", "sql": ".sql", "xml": ".xml", "sh": ".sh",
+    "py": ".py",
+    "js": ".js",
+    "ts": ".ts",
+    "tsx": ".tsx",
+    "jsx": ".jsx",
+    "go": ".go",
+    "rs": ".rs",
+    "java": ".java",
+    "c": ".c",
+    "cpp": ".cpp",
+    "h": ".h",
+    "rb": ".rb",
+    "php": ".php",
+    "cs": ".cs",
+    "swift": ".swift",
+    "kt": ".kt",
+    "scala": ".scala",
+    "lua": ".lua",
+    "r": ".r",
+    "html": ".html",
+    "css": ".css",
+    "vue": ".vue",
+    "svelte": ".svelte",
+    "json": ".json",
+    "yaml": ".yaml",
+    "yml": ".yml",
+    "toml": ".toml",
+    "md": ".md",
+    "txt": ".txt",
+    "sql": ".sql",
+    "xml": ".xml",
+    "sh": ".sh",
 }
 
-TEXT_EXTENSIONS = frozenset(set(TYPE_MAP.values()) | {
-    ".hpp", ".m", ".mm",
-    ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".fish",
-    ".ini", ".cfg", ".conf", ".env",
-    ".rst", ".adoc", ".tex", ".org",
-    ".scss", ".less", ".sass",
-    ".svg", ".csv", ".tsv",
-    ".dockerfile", ".makefile", ".cmake",
-    ".gitignore", ".gitattributes", ".editorconfig",
-})
+TEXT_EXTENSIONS = frozenset(
+    set(TYPE_MAP.values())
+    | {
+        ".hpp",
+        ".m",
+        ".mm",
+        ".bash",
+        ".zsh",
+        ".ps1",
+        ".bat",
+        ".cmd",
+        ".fish",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".env",
+        ".rst",
+        ".adoc",
+        ".tex",
+        ".org",
+        ".scss",
+        ".less",
+        ".sass",
+        ".svg",
+        ".csv",
+        ".tsv",
+        ".dockerfile",
+        ".makefile",
+        ".cmake",
+        ".gitignore",
+        ".gitattributes",
+        ".editorconfig",
+    }
+)
 
 _GLOB_MAX = 200
 
@@ -88,9 +154,12 @@ def _glob(args: dict) -> str:
     base = require_dir(Path(args.get("path", ".")).resolve())
     pattern = args["pattern"]
     files = sorted(
-        (p for p in base.glob(pattern)
-         if p.is_file()
-         and not any(part in IGNORE_DIRS for part in p.relative_to(base).parts)),
+        (
+            p
+            for p in base.glob(pattern)
+            if p.is_file()
+            and not any(part in IGNORE_DIRS for part in p.relative_to(base).parts)
+        ),
         key=lambda f: os.path.getmtime(f),
         reverse=True,
     )
@@ -108,7 +177,9 @@ def _glob(args: dict) -> str:
     else:
         paths = [str(p) for p in files]
 
-    header = f"[Found {len(files)}{'+' if truncated else ''} files matching '{pattern}']"
+    header = (
+        f"[Found {len(files)}{'+' if truncated else ''} files matching '{pattern}']"
+    )
     result = header + "\n" + "\n".join(paths)
 
     if truncated:
@@ -129,10 +200,14 @@ def _grep(args: dict) -> str:
     elif output_mode == "count":
         return _grep_count(pattern, base_path, type_filter, max_results)
     else:
-        return _grep_content(pattern, base_path, type_filter, max_results, context_lines)
+        return _grep_content(
+            pattern, base_path, type_filter, max_results, context_lines
+        )
 
 
-def _grep_files(pattern: re.Pattern, base_path: Path, type_filter: set[str] | None, max_results: int) -> str:
+def _grep_files(
+    pattern: re.Pattern, base_path: Path, type_filter: set[str] | None, max_results: int
+) -> str:
     found = []
     for filepath in _walk_text_files(base_path, type_filter):
         try:
@@ -150,12 +225,17 @@ def _grep_files(pattern: re.Pattern, base_path: Path, type_filter: set[str] | No
         return f"No files matching '{pattern.pattern}' in {base_path}"
 
     cwd = Path.cwd()
-    paths = [str(Path(f).relative_to(cwd)) if Path(f).is_relative_to(cwd) else f for f in found]
+    paths = [
+        str(Path(f).relative_to(cwd)) if Path(f).is_relative_to(cwd) else f
+        for f in found
+    ]
     header = f"[Found {len(paths)} file(s)]"
     return header + "\n" + "\n".join(paths)
 
 
-def _grep_count(pattern: re.Pattern, base_path: Path, type_filter: set[str] | None, max_results: int) -> str:
+def _grep_count(
+    pattern: re.Pattern, base_path: Path, type_filter: set[str] | None, max_results: int
+) -> str:
     results = []
     for filepath in _walk_text_files(base_path, type_filter):
         try:
@@ -176,12 +256,22 @@ def _grep_count(pattern: re.Pattern, base_path: Path, type_filter: set[str] | No
     return "\n".join(results)
 
 
-def _grep_content(pattern: re.Pattern, base_path: Path, type_filter: set[str] | None, max_results: int, context_lines: int) -> str:
+def _grep_content(
+    pattern: re.Pattern,
+    base_path: Path,
+    type_filter: set[str] | None,
+    max_results: int,
+    context_lines: int,
+) -> str:
     hits = []
     cwd = Path.cwd()
     for filepath in _walk_text_files(base_path, type_filter):
         try:
-            file_lines = Path(filepath).read_text(encoding="utf-8", errors="replace").splitlines()
+            file_lines = (
+                Path(filepath)
+                .read_text(encoding="utf-8", errors="replace")
+                .splitlines()
+            )
         except Exception:
             continue
 
@@ -189,12 +279,19 @@ def _grep_content(pattern: re.Pattern, base_path: Path, type_filter: set[str] | 
         if not match_indices:
             continue
 
-        display_path = str(Path(filepath).relative_to(cwd)) if Path(filepath).is_relative_to(cwd) else filepath
+        display_path = (
+            str(Path(filepath).relative_to(cwd))
+            if Path(filepath).is_relative_to(cwd)
+            else filepath
+        )
 
         if context_lines > 0:
             expanded = set()
             for idx in match_indices:
-                for j in range(max(0, idx - context_lines), min(len(file_lines), idx + context_lines + 1)):
+                for j in range(
+                    max(0, idx - context_lines),
+                    min(len(file_lines), idx + context_lines + 1),
+                ):
                     expanded.add(j)
             display_indices = sorted(expanded)
         else:
@@ -215,20 +312,49 @@ def _grep_content(pattern: re.Pattern, base_path: Path, type_filter: set[str] | 
     return header + "\n" + "\n".join(hits)
 
 
-def GlobTool() -> Tool:
+def GlobTool(vfs: VirtualFS | None = None) -> Tool:
+
+    def _glob_with_vfs(args: dict) -> str:
+        result = _glob(args)
+        if not vfs:
+            return result
+        vfs_matches = vfs.glob(args["pattern"])
+        if not vfs_matches:
+            return result
+        vfs_section = "\n".join(vfs_matches)
+        return result + "\n\n[virtual files]\n" + vfs_section
+
     return Tool(
         "glob",
         "Find files matching a glob pattern, sorted by modification time (newest first). "
         "Automatically excludes .git, node_modules, __pycache__, and other common non-project directories.",
         {
-            "pattern": {"type": "string", "description": "Glob pattern (e.g. '**/*.py', 'src/**/*.ts')"},
-            "path": {"type": "string", "description": "Base directory to search in (defaults to current directory)", "default": "."},
+            "pattern": {
+                "type": "string",
+                "description": "Glob pattern (e.g. '**/*.py', 'src/**/*.ts')",
+            },
+            "path": {
+                "type": "string",
+                "description": "Base directory to search in (defaults to current directory)",
+                "default": ".",
+            },
         },
-        _glob,
+        _glob_with_vfs,
     )
 
 
-def GrepTool() -> Tool:
+def GrepTool(vfs: VirtualFS | None = None) -> Tool:
+
+    def _grep_with_vfs(args: dict) -> str:
+        result = _grep(args)
+        if not vfs:
+            return result
+        vfs_hits = vfs.grep(args["pattern"])
+        if not vfs_hits:
+            return result
+        lines = [f"{path}:{lineno}:{line}" for path, lineno, line in vfs_hits]
+        return result + "\n\n[virtual files]\n" + "\n".join(lines)
+
     return Tool(
         "grep",
         "Search file contents for a regex pattern across a directory tree. "
@@ -238,11 +364,32 @@ def GrepTool() -> Tool:
         "Use 'context' to show surrounding lines. Use 'output_mode' to control output format.",
         {
             "pattern": {"type": "string", "description": "Regex pattern to search for"},
-            "path": {"type": "string", "description": "Directory to search in (defaults to current directory)", "default": "."},
-            "type": {"type": "string", "description": "File extension filter, e.g. 'py', 'js', 'go' (comma-separated for multiple)", "default": ""},
-            "output_mode": {"type": "string", "description": "Output format: 'content' shows lines, 'files' shows file paths, 'count' shows match counts", "enum": ["content", "files", "count"], "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match", "default": 0},
-            "limit": {"type": "integer", "description": "Max results (default 100)", "default": 100},
+            "path": {
+                "type": "string",
+                "description": "Directory to search in (defaults to current directory)",
+                "default": ".",
+            },
+            "type": {
+                "type": "string",
+                "description": "File extension filter, e.g. 'py', 'js', 'go' (comma-separated for multiple)",
+                "default": "",
+            },
+            "output_mode": {
+                "type": "string",
+                "description": "Output format: 'content' shows lines, 'files' shows file paths, 'count' shows match counts",
+                "enum": ["content", "files", "count"],
+                "default": "content",
+            },
+            "context": {
+                "type": "integer",
+                "description": "Number of context lines before and after each match",
+                "default": 0,
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results (default 100)",
+                "default": 100,
+            },
         },
-        _grep,
+        _grep_with_vfs,
     )

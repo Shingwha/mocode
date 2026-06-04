@@ -31,20 +31,28 @@ def _make_skill_dir(base: Path, name: str, description: str, body: str = "") -> 
 
 class TestSkillMetadata:
     def test_from_dict_basic(self):
-        meta = SkillMetadata.from_dict({"name": "fastapi", "description": "FastAPI tips"})
+        meta = SkillMetadata.from_dict(
+            {"name": "fastapi", "description": "FastAPI tips"}
+        )
         assert meta.name == "fastapi"
         assert meta.description == "FastAPI tips"
         assert meta.attrs == {}
 
     def test_from_dict_extra_fields_go_to_attrs(self):
-        meta = SkillMetadata.from_dict({
-            "name": "react",
-            "description": "React patterns",
+        meta = SkillMetadata.from_dict(
+            {
+                "name": "react",
+                "description": "React patterns",
+                "license": "MIT",
+                "compatibility": "0.3",
+                "author": "alice",
+            }
+        )
+        assert meta.attrs == {
             "license": "MIT",
             "compatibility": "0.3",
             "author": "alice",
-        })
-        assert meta.attrs == {"license": "MIT", "compatibility": "0.3", "author": "alice"}
+        }
 
     def test_from_dict_missing_fields(self):
         meta = SkillMetadata.from_dict({})
@@ -65,7 +73,9 @@ class TestSkill:
             "---\nname: my-skill\ndescription: test\n---\n\nHello world\n",
             encoding="utf-8",
         )
-        skill = Skill(path=skill_dir, metadata=SkillMetadata(name="my-skill", description="test"))
+        skill = Skill(
+            path=skill_dir, metadata=SkillMetadata(name="my-skill", description="test")
+        )
         assert skill.load_content() == "Hello world"
 
     def test_load_content_caches(self, tmp_path: Path):
@@ -74,7 +84,9 @@ class TestSkill:
         (skill_dir / "SKILL.md").write_text(
             "---\nname: cached\ndescription: d\n---\n\nBody\n", encoding="utf-8"
         )
-        skill = Skill(path=skill_dir, metadata=SkillMetadata(name="cached", description="d"))
+        skill = Skill(
+            path=skill_dir, metadata=SkillMetadata(name="cached", description="d")
+        )
         _ = skill.load_content()
         assert skill._content == "Body"
         # Overwrite file — cached content should not change
@@ -85,13 +97,17 @@ class TestSkill:
         skill_dir = tmp_path / "raw"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("Just plain text", encoding="utf-8")
-        skill = Skill(path=skill_dir, metadata=SkillMetadata(name="raw", description=""))
+        skill = Skill(
+            path=skill_dir, metadata=SkillMetadata(name="raw", description="")
+        )
         assert skill.load_content() == "Just plain text"
 
     def test_load_content_missing_file(self, tmp_path: Path):
         skill_dir = tmp_path / "missing"
         skill_dir.mkdir()
-        skill = Skill(path=skill_dir, metadata=SkillMetadata(name="missing", description=""))
+        skill = Skill(
+            path=skill_dir, metadata=SkillMetadata(name="missing", description="")
+        )
         assert skill.load_content() == ""
 
 
@@ -117,13 +133,28 @@ class TestSkillBuiltin:
         skill = Skill.builtin("x", "desc", "body")
         assert skill._builtin is True
 
+    def test_builtin_with_virtual_files(self):
+        skill = Skill.builtin(
+            "vfs-skill",
+            "has vfs",
+            "main content",
+            virtual_files={"vfs://demo/ref.md": "reference content"},
+        )
+        assert skill.virtual_files == {"vfs://demo/ref.md": "reference content"}
+
+    def test_builtin_default_virtual_files_empty(self):
+        skill = Skill.builtin("x", "desc", "body")
+        assert skill.virtual_files == {}
+
     def test_directory_skill_has_builtin_false(self, tmp_path: Path):
         skill_dir = tmp_path / "normal"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text(
             "---\nname: normal\ndescription: normal\n---\n\nBody\n", encoding="utf-8"
         )
-        skill = Skill(path=skill_dir, metadata=SkillMetadata(name="normal", description="normal"))
+        skill = Skill(
+            path=skill_dir, metadata=SkillMetadata(name="normal", description="normal")
+        )
         assert skill._builtin is False
 
 
@@ -192,7 +223,9 @@ class TestSkillManagerBuiltin:
 
 class TestSkillManager:
     def test_discover_finds_skills(self, tmp_path: Path):
-        _make_skill_dir(tmp_path, "fastapi", "FastAPI tips", "Use dependency injection.")
+        _make_skill_dir(
+            tmp_path, "fastapi", "FastAPI tips", "Use dependency injection."
+        )
         _make_skill_dir(tmp_path, "react", "React patterns", "Use hooks.")
         mgr = SkillManager([tmp_path])
         assert mgr.names() == ["fastapi", "react"]
@@ -209,7 +242,9 @@ class TestSkillManager:
     def test_discover_skips_no_name(self, tmp_path: Path):
         d = tmp_path / "noname"
         d.mkdir()
-        (d / "SKILL.md").write_text("---\ndescription: no name\n---\nbody", encoding="utf-8")
+        (d / "SKILL.md").write_text(
+            "---\ndescription: no name\n---\nbody", encoding="utf-8"
+        )
         assert SkillManager([tmp_path]).names() == []
 
     def test_discover_no_dirs(self):
@@ -274,7 +309,9 @@ class TestSkillManager:
 
 class TestSkillTool:
     def test_returns_content(self, tmp_path: Path):
-        _make_skill_dir(tmp_path, "fastapi", "FastAPI tips", "Use dependency injection.")
+        _make_skill_dir(
+            tmp_path, "fastapi", "FastAPI tips", "Use dependency injection."
+        )
         mgr = SkillManager([tmp_path])
         tool = SkillTool(mgr)
         result = tool.run({"name": "fastapi"})
@@ -309,6 +346,22 @@ class TestSkillTool:
         assert "Base directory:" not in result
         assert result == "builtin content"
 
+    def test_builtin_skill_with_virtual_files_lists_them(self):
+        mgr = SkillManager()
+        mgr.register(
+            Skill.builtin(
+                "vfs-skill",
+                "desc",
+                "main content",
+                virtual_files={"vfs://demo/ref.md": "ref content"},
+            )
+        )
+        tool = SkillTool(mgr)
+        result = tool.run({"name": "vfs-skill"})
+        assert "main content" in result
+        assert "Available files:" in result
+        assert "vfs://demo/ref.md" in result
+
     def test_builtin_skill_works_with_discovered(self, tmp_path: Path):
         """Built-in and discovered skills coexist in SkillTool."""
         _make_skill_dir(tmp_path, "discovered", "desc", "discovered body")
@@ -323,6 +376,7 @@ class TestSkillTool:
         builtin_result = tool.run({"name": "builtin"})
         assert "Base directory:" not in builtin_result
         assert builtin_result == "builtin body"
+
 
 # ---------------------------------------------------------------------------
 # WorkflowSkill (built-in skill factory)
@@ -340,8 +394,15 @@ class TestWorkflowSkill:
         skill = WorkflowSkill()
         content = skill.load_content()
         assert "MoCode Workflows" in content
-        assert "/workflow" in content
+        assert "vfs://workflow/" in content
         assert "DAG" in content or "nodes" in content
+
+    def test_has_virtual_files(self):
+        skill = WorkflowSkill()
+        assert "vfs://workflow/yaml-reference.md" in skill.virtual_files
+        assert "vfs://workflow/cli-reference.md" in skill.virtual_files
+        assert "YAML" in skill.virtual_files["vfs://workflow/yaml-reference.md"]
+        assert "CLI" in skill.virtual_files["vfs://workflow/cli-reference.md"]
 
     def test_registers_and_resolves_via_manager(self):
         mgr = SkillManager()

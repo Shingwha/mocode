@@ -39,15 +39,24 @@ class Skill:
     metadata: SkillMetadata
     _content: str | None = None
     _builtin: bool = False
+    virtual_files: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def builtin(cls, name: str, description: str, content: str) -> Skill:
+    def builtin(
+        cls,
+        name: str,
+        description: str,
+        content: str,
+        *,
+        virtual_files: dict[str, str] | None = None,
+    ) -> Skill:
         """Create a built-in skill with embedded content (no filesystem)."""
         return cls(
             path=Path(f"<builtin:{name}>"),
             metadata=SkillMetadata(name=name, description=description),
             _content=content,
             _builtin=True,
+            virtual_files=virtual_files or {},
         )
 
     @property
@@ -88,7 +97,7 @@ def _parse_frontmatter(text: str) -> dict | None:
 class SkillManager:
     def __init__(self, skill_dirs: list[Path] | None = None):
         self._skill_dirs: list[Path] = list(skill_dirs) if skill_dirs else []
-        self._skills: dict[str, Skill] = {}       # directory-discovered
+        self._skills: dict[str, Skill] = {}  # directory-discovered
         self._builtin_skills: dict[str, Skill] = {}  # programmatically registered
         self.discover()
 

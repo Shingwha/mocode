@@ -57,9 +57,19 @@ def build_system_prompt(
     # Order: stable → dynamic (maximizes prefix cache hit rate)
     sections.append(Section("guidelines", _render_guidelines, priority=10))
     sections.append(Section("agents", _render_agents(home, cwd), priority=20))
-    sections.append(Section("environment", _render_environment(
-        cwd, home, config_path, skills_dir, sessions_dir,
-    ), priority=30))
+    sections.append(
+        Section(
+            "environment",
+            _render_environment(
+                cwd,
+                home,
+                config_path,
+                skills_dir,
+                sessions_dir,
+            ),
+            priority=30,
+        )
+    )
 
     if tools is not None:
         sections.append(Section("tools", _render_tools(tools), priority=40))
@@ -78,8 +88,10 @@ def build_system_prompt(
 def _render_agents(home: str, cwd: str) -> str:
     """Read AGENTS.md files and render the agents section."""
     parts = []
-    for p in (Path(home) / "AGENTS.md" if home else None,
-              Path(cwd) / "AGENTS.md" if cwd else None):
+    for p in (
+        Path(home) / "AGENTS.md" if home else None,
+        Path(cwd) / "AGENTS.md" if cwd else None,
+    ):
         if p is not None and p.exists():
             content = p.read_text(encoding="utf-8").strip()
             if content:
@@ -109,16 +121,22 @@ def _render_agents(home: str, cwd: str) -> str:
 
 
 def _render_guidelines(_ctx: dict[str, Any]) -> str:
-    return "\n".join([
-        "- Be concise and direct",
-        "- Prefer `edit` over `write` for existing files",
-        "- Verify changes before claiming success",
-        "- Handle errors gracefully",
-    ])
+    return "\n".join(
+        [
+            "- Be concise and direct",
+            "- Prefer `edit` over `write` for existing files",
+            "- Verify changes before claiming success",
+            "- Handle errors gracefully",
+        ]
+    )
 
 
 def _render_environment(
-    cwd: str, home: str, config_path: str, skills_dir: str, sessions_dir: str,
+    cwd: str,
+    home: str,
+    config_path: str,
+    skills_dir: str,
+    sessions_dir: str,
 ) -> str:
     parts = [f"cwd: {cwd}"]
     if home:
@@ -133,10 +151,7 @@ def _render_environment(
 
 
 def _render_tools(tools: Any) -> list[Section]:
-    return [
-        Section(t.name, t.description, attrs={"type": "tool"})
-        for t in tools.all()
-    ]
+    return [Section(t.name, t.description, attrs={"type": "tool"}) for t in tools.all()]
 
 
 def _render_skills(skill_manager: Any) -> list[Section]:
@@ -144,6 +159,7 @@ def _render_skills(skill_manager: Any) -> list[Section]:
         Section(m.name, m.description, attrs={"type": "skill"})
         for m in skill_manager.all_metadata()
     ]
+
 
 def _render_workflows(registry: Any, cwd: str = "") -> list[Section] | None:
     """Render available workflows with usage guidance and per-workflow details."""
@@ -153,10 +169,11 @@ def _render_workflows(registry: Any, cwd: str = "") -> list[Section] | None:
 
     usage_guide = (
         "MoCode Workflows are DAG-based multi-step task orchestrations. "
-        "Use the /workflow command to interact with them:\n"
-        "- /workflow list              — list all available workflows\n"
-        "- /workflow show <name>       — show workflow details\n"
-        "- /workflow run <name>        — execute a workflow"
+        "CLI commands (run in bash):\n"
+        "- mocode workflow list              — list all available workflows\n"
+        "- mocode workflow show <name>       — show workflow details\n"
+        "- mocode workflow run <name>        — execute a workflow\n\n"
+        "Full reference: read vfs://workflow/cli-reference.md"
     )
 
     sections: list[Section] = [

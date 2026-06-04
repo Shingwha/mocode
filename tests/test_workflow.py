@@ -18,7 +18,6 @@ from mocode.app.workflow import (
     WaveReadyEvent,
     Workflow,
     WorkflowRegistry,
-    WorkflowEvent,
     compute_waves,
     fill_template,
     summarize,
@@ -67,7 +66,7 @@ def _make_subprocess_mock(stdout: bytes = b"output", returncode: int = 0):
 def _simple_linear_wf(n: int = 3) -> Workflow:
     """Build a linear chain: n0 -> n1 -> ... -> n{n-1}."""
     nodes = [
-        Node(id=f"n{i}", task=f"Task {i}", depends=[f"n{i-1}"] if i > 0 else [])
+        Node(id=f"n{i}", task=f"Task {i}", depends=[f"n{i - 1}"] if i > 0 else [])
         for i in range(n)
     ]
     return Workflow(name="linear", nodes=nodes)
@@ -133,15 +132,17 @@ class TestNodeModel:
         assert n.routes == []
 
     def test_from_dict_router(self):
-        n = Node.from_dict({
-            "id": "decide",
-            "type": "router",
-            "depends": ["summary"],
-            "routes": [
-                {"match": "critical", "to": ["fix"]},
-                {"match": None, "to": ["done"]},
-            ],
-        })
+        n = Node.from_dict(
+            {
+                "id": "decide",
+                "type": "router",
+                "depends": ["summary"],
+                "routes": [
+                    {"match": "critical", "to": ["fix"]},
+                    {"match": None, "to": ["done"]},
+                ],
+            }
+        )
         assert n.id == "decide"
         assert n.type == "router"
         assert n.task == ""
@@ -171,8 +172,11 @@ class TestNodeModel:
 class TestNodeResultModel:
     def test_basic(self):
         nr = NodeResult(
-            node_id="scan", task="Scan", output="found 3 issues",
-            exit_code=0, duration=5.2,
+            node_id="scan",
+            task="Scan",
+            output="found 3 issues",
+            exit_code=0,
+            duration=5.2,
         )
         assert nr.node_id == "scan"
         assert nr.output == "found 3 issues"
@@ -184,23 +188,35 @@ class TestNodeResultModel:
 
     def test_with_error(self):
         nr = NodeResult(
-            node_id="x", task="", output="", exit_code=1,
-            duration=0.5, error="timed out",
+            node_id="x",
+            task="",
+            output="",
+            exit_code=1,
+            duration=0.5,
+            error="timed out",
         )
         assert nr.error == "timed out"
         assert nr.exit_code == 1
 
     def test_skipped_status(self):
         nr = NodeResult(
-            node_id="x", task="", output="", exit_code=0,
-            duration=0, status="skipped",
+            node_id="x",
+            task="",
+            output="",
+            exit_code=0,
+            duration=0,
+            status="skipped",
         )
         assert nr.status == "skipped"
 
     def test_iteration(self):
         nr = NodeResult(
-            node_id="fix", task="Fix", output="fixed",
-            exit_code=0, duration=3.0, iteration=3,
+            node_id="fix",
+            task="Fix",
+            output="fixed",
+            exit_code=0,
+            duration=3.0,
+            iteration=3,
         )
         assert nr.iteration == 3
 
@@ -242,10 +258,13 @@ class TestDependsInference:
         assert "src" in n.depends
 
     def test_node_from_dict_merges_with_explicit(self):
-        n = Node.from_dict({
-            "id": "t", "task": "Use {nodes.src.output}",
-            "depends": ["gate"],
-        })
+        n = Node.from_dict(
+            {
+                "id": "t",
+                "task": "Use {nodes.src.output}",
+                "depends": ["gate"],
+            }
+        )
         assert "gate" in n.depends
         assert "src" in n.depends
 
@@ -313,7 +332,9 @@ class TestWorkflowModel:
     def test_summary(self):
         wf = Workflow(name="test")
         results = [
-            NodeResult(node_id="a", task="Do thing", output="ok", exit_code=0, duration=1.5)
+            NodeResult(
+                node_id="a", task="Do thing", output="ok", exit_code=0, duration=1.5
+            )
         ]
         s = summarize(wf, results)
         assert "test" in s
@@ -323,7 +344,14 @@ class TestWorkflowModel:
     def test_summary_failed(self):
         wf = Workflow(name="test")
         results = [
-            NodeResult(node_id="a", task="Fail", output="", exit_code=1, duration=0.5, error="boom")
+            NodeResult(
+                node_id="a",
+                task="Fail",
+                output="",
+                exit_code=1,
+                duration=0.5,
+                error="boom",
+            )
         ]
         s = summarize(wf, results)
         assert "[FAIL]" in s
@@ -331,7 +359,9 @@ class TestWorkflowModel:
     def test_detailed_summary_includes_output(self):
         wf = Workflow(name="test")
         results = [
-            NodeResult(node_id="a", task="T", output="Hello world", exit_code=0, duration=1.0)
+            NodeResult(
+                node_id="a", task="T", output="Hello world", exit_code=0, duration=1.0
+            )
         ]
         s = detailed_summarize(wf, results)
         assert "Hello world" in s
@@ -340,7 +370,9 @@ class TestWorkflowModel:
         wf = Workflow(name="test")
         long_output = "\n".join(f"line {i}" for i in range(50))
         results = [
-            NodeResult(node_id="a", task="T", output=long_output, exit_code=0, duration=1.0)
+            NodeResult(
+                node_id="a", task="T", output=long_output, exit_code=0, duration=1.0
+            )
         ]
         s = detailed_summarize(wf, results)
         assert "more lines" in s
@@ -348,7 +380,14 @@ class TestWorkflowModel:
     def test_detailed_summary_shows_error(self):
         wf = Workflow(name="test")
         results = [
-            NodeResult(node_id="a", task="T", output="", exit_code=1, duration=0.5, error="kaboom")
+            NodeResult(
+                node_id="a",
+                task="T",
+                output="",
+                exit_code=1,
+                duration=0.5,
+                error="kaboom",
+            )
         ]
         s = detailed_summarize(wf, results)
         assert "kaboom" in s
@@ -356,7 +395,14 @@ class TestWorkflowModel:
     def test_summary_with_iteration(self):
         wf = Workflow(name="test")
         results = [
-            NodeResult(node_id="fix", task="Fix", output="ok", exit_code=0, duration=2.0, iteration=3)
+            NodeResult(
+                node_id="fix",
+                task="Fix",
+                output="ok",
+                exit_code=0,
+                duration=2.0,
+                iteration=3,
+            )
         ]
         s = summarize(wf, results)
         assert "iter 3" in s
@@ -369,151 +415,189 @@ class TestWorkflowModel:
 
 class TestWorkflowValidation:
     def test_duplicate_id_via_yaml(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "dup.yaml", {
-            "name": "dup",
-            "nodes": [
-                {"id": "a", "task": "A"},
-                {"id": "a", "task": "A2"},
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "dup.yaml",
+            {
+                "name": "dup",
+                "nodes": [
+                    {"id": "a", "task": "A"},
+                    {"id": "a", "task": "A2"},
+                ],
+            },
+        )
         with pytest.raises(ValueError, match="Duplicate"):
             Workflow.from_yaml(path)
 
     def test_empty_id_rejected(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "empty_id.yaml", {
-            "name": "test",
-            "nodes": [{"id": "", "task": "A"}],
-        })
+        path = _write_yaml(
+            tmp_path / "empty_id.yaml",
+            {
+                "name": "test",
+                "nodes": [{"id": "", "task": "A"}],
+            },
+        )
         with pytest.raises(ValueError, match="non-empty"):
             Workflow.from_yaml(path)
 
     def test_unknown_dep_rejected(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "bad_dep.yaml", {
-            "name": "test",
-            "nodes": [
-                {"id": "a", "task": "A", "depends": ["nonexistent"]},
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "bad_dep.yaml",
+            {
+                "name": "test",
+                "nodes": [
+                    {"id": "a", "task": "A", "depends": ["nonexistent"]},
+                ],
+            },
+        )
         with pytest.raises(ValueError, match="unknown node"):
             Workflow.from_yaml(path)
 
     def test_unknown_route_target_rejected(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "bad_route.yaml", {
-            "name": "test",
-            "nodes": [
-                {"id": "a", "task": "A"},
-                {
-                    "id": "r",
-                    "type": "router",
-                    "depends": ["a"],
-                    "routes": [{"match": None, "to": ["ghost"]}],
-                },
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "bad_route.yaml",
+            {
+                "name": "test",
+                "nodes": [
+                    {"id": "a", "task": "A"},
+                    {
+                        "id": "r",
+                        "type": "router",
+                        "depends": ["a"],
+                        "routes": [{"match": None, "to": ["ghost"]}],
+                    },
+                ],
+            },
+        )
         with pytest.raises(ValueError, match="unknown node"):
             Workflow.from_yaml(path)
 
     def test_router_must_have_routes(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "no_routes.yaml", {
-            "name": "test",
-            "nodes": [
-                {"id": "a", "task": "A"},
-                {"id": "r", "type": "router", "depends": ["a"]},
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "no_routes.yaml",
+            {
+                "name": "test",
+                "nodes": [
+                    {"id": "a", "task": "A"},
+                    {"id": "r", "type": "router", "depends": ["a"]},
+                ],
+            },
+        )
         with pytest.raises(ValueError, match="must have 'routes'"):
             Workflow.from_yaml(path)
 
     def test_router_must_not_have_task(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "router_task.yaml", {
-            "name": "test",
-            "nodes": [
-                {"id": "a", "task": "A"},
-                {
-                    "id": "r", "type": "router", "depends": ["a"],
-                    "task": "Should not be here",
-                    "routes": [{"match": None, "to": ["a"]}],
-                },
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "router_task.yaml",
+            {
+                "name": "test",
+                "nodes": [
+                    {"id": "a", "task": "A"},
+                    {
+                        "id": "r",
+                        "type": "router",
+                        "depends": ["a"],
+                        "task": "Should not be here",
+                        "routes": [{"match": None, "to": ["a"]}],
+                    },
+                ],
+            },
+        )
         with pytest.raises(ValueError, match="must not have 'task'"):
             Workflow.from_yaml(path)
 
     def test_task_node_must_have_task(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "no_task.yaml", {
-            "name": "test",
-            "nodes": [{"id": "a"}],
-        })
+        path = _write_yaml(
+            tmp_path / "no_task.yaml",
+            {
+                "name": "test",
+                "nodes": [{"id": "a"}],
+            },
+        )
         with pytest.raises(ValueError, match="must have 'task'"):
             Workflow.from_yaml(path)
 
     def test_self_dependency_rejected(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "self_dep.yaml", {
-            "name": "test",
-            "nodes": [
-                {"id": "a", "task": "A", "depends": ["a"]},
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "self_dep.yaml",
+            {
+                "name": "test",
+                "nodes": [
+                    {"id": "a", "task": "A", "depends": ["a"]},
+                ],
+            },
+        )
         with pytest.raises(ValueError, match="depend on itself"):
             Workflow.from_yaml(path)
 
     def test_old_phases_format_rejected(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "old.yaml", {
-            "name": "old",
-            "phases": [{"name": "P1", "steps": [{"task": "T"}]}],
-        })
+        path = _write_yaml(
+            tmp_path / "old.yaml",
+            {
+                "name": "old",
+                "phases": [{"name": "P1", "steps": [{"task": "T"}]}],
+            },
+        )
         with pytest.raises(ValueError, match="Old 'phases' format"):
             Workflow.from_yaml(path)
 
     def test_cycle_without_router_back_edge_rejected(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "cycle.yaml", {
-            "name": "test",
-            "nodes": [
-                {"id": "a", "task": "A", "depends": ["b"]},
-                {"id": "b", "task": "B", "depends": ["a"]},
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "cycle.yaml",
+            {
+                "name": "test",
+                "nodes": [
+                    {"id": "a", "task": "A", "depends": ["b"]},
+                    {"id": "b", "task": "B", "depends": ["a"]},
+                ],
+            },
+        )
         with pytest.raises(ValueError, match="Cycle"):
             Workflow.from_yaml(path)
 
     def test_valid_router_back_edge_accepted(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "loop.yaml", {
-            "name": "test",
-            "nodes": [
-                {"id": "do", "task": "Do work"},
-                {
-                    "id": "check",
-                    "type": "router",
-                    "depends": ["do"],
-                    "routes": [
-                        {"match": "FAIL", "to": ["do"], "max": 3},
-                        {"match": None, "to": ["done"]},
-                    ],
-                },
-                {"id": "done", "task": "Done", "depends": ["check"]},
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "loop.yaml",
+            {
+                "name": "test",
+                "nodes": [
+                    {"id": "do", "task": "Do work"},
+                    {
+                        "id": "check",
+                        "type": "router",
+                        "depends": ["do"],
+                        "routes": [
+                            {"match": "FAIL", "to": ["do"], "max": 3},
+                            {"match": None, "to": ["done"]},
+                        ],
+                    },
+                    {"id": "done", "task": "Done", "depends": ["check"]},
+                ],
+            },
+        )
         wf = Workflow.from_yaml(path)
         assert wf.name == "test"
         assert len(wf.nodes) == 3
 
     def test_router_back_edge_without_max_rejected(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "inf_loop.yaml", {
-            "name": "test",
-            "nodes": [
-                {"id": "do", "task": "Do work"},
-                {
-                    "id": "check",
-                    "type": "router",
-                    "depends": ["do"],
-                    "routes": [
-                        {"match": "FAIL", "to": ["do"]},
-                        {"match": None, "to": ["done"]},
-                    ],
-                },
-                {"id": "done", "task": "Done", "depends": ["check"]},
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "inf_loop.yaml",
+            {
+                "name": "test",
+                "nodes": [
+                    {"id": "do", "task": "Do work"},
+                    {
+                        "id": "check",
+                        "type": "router",
+                        "depends": ["do"],
+                        "routes": [
+                            {"match": "FAIL", "to": ["do"]},
+                            {"match": None, "to": ["done"]},
+                        ],
+                    },
+                    {"id": "done", "task": "Done", "depends": ["check"]},
+                ],
+            },
+        )
         with pytest.raises(ValueError, match="Cycle"):
             Workflow.from_yaml(path)
 
@@ -525,14 +609,17 @@ class TestWorkflowValidation:
 
 class TestWorkflowFromYaml:
     def test_basic_parse(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "basic.yaml", {
-            "name": "basic",
-            "description": "A test",
-            "nodes": [
-                {"id": "a", "task": "Hello"},
-                {"id": "b", "task": "World", "depends": ["a"]},
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "basic.yaml",
+            {
+                "name": "basic",
+                "description": "A test",
+                "nodes": [
+                    {"id": "a", "task": "Hello"},
+                    {"id": "b", "task": "World", "depends": ["a"]},
+                ],
+            },
+        )
         wf = Workflow.from_yaml(path)
         assert wf.name == "basic"
         assert wf.description == "A test"
@@ -540,52 +627,69 @@ class TestWorkflowFromYaml:
         assert wf.nodes[1].depends == ["a"]
 
     def test_missing_name_uses_stem(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "my-workflow.yaml", {
-            "nodes": [{"id": "a", "task": "A"}],
-        })
+        path = _write_yaml(
+            tmp_path / "my-workflow.yaml",
+            {
+                "nodes": [{"id": "a", "task": "A"}],
+            },
+        )
         wf = Workflow.from_yaml(path)
         assert wf.name == "my-workflow"
 
     def test_max_iterations(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "mi.yaml", {
-            "name": "mi",
-            "max_iterations": 50,
-            "nodes": [{"id": "a", "task": "A"}],
-        })
+        path = _write_yaml(
+            tmp_path / "mi.yaml",
+            {
+                "name": "mi",
+                "max_iterations": 50,
+                "nodes": [{"id": "a", "task": "A"}],
+            },
+        )
         wf = Workflow.from_yaml(path)
         assert wf.max_iterations == 50
 
     def test_default_max_iterations(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "def.yaml", {
-            "name": "def",
-            "nodes": [{"id": "a", "task": "A"}],
-        })
+        path = _write_yaml(
+            tmp_path / "def.yaml",
+            {
+                "name": "def",
+                "nodes": [{"id": "a", "task": "A"}],
+            },
+        )
         wf = Workflow.from_yaml(path)
         assert wf.max_iterations == 100
 
     def test_path_stored(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "p.yaml", {
-            "name": "p",
-            "nodes": [{"id": "a", "task": "A"}],
-        })
+        path = _write_yaml(
+            tmp_path / "p.yaml",
+            {
+                "name": "p",
+                "nodes": [{"id": "a", "task": "A"}],
+            },
+        )
         wf = Workflow.from_yaml(path)
         assert wf.path == path
 
     def test_router_node_parsed(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "router.yaml", {
-            "name": "r",
-            "nodes": [
-                {"id": "a", "task": "A"},
-                {
-                    "id": "r1", "type": "router", "depends": ["a"],
-                    "routes": [
-                        {"match": "ok", "to": ["done"]},
-                        {"match": None, "to": ["done"]},
-                    ],
-                },
-                {"id": "done", "task": "Done", "depends": ["r1"]},
-            ],
-        })
+        path = _write_yaml(
+            tmp_path / "router.yaml",
+            {
+                "name": "r",
+                "nodes": [
+                    {"id": "a", "task": "A"},
+                    {
+                        "id": "r1",
+                        "type": "router",
+                        "depends": ["a"],
+                        "routes": [
+                            {"match": "ok", "to": ["done"]},
+                            {"match": None, "to": ["done"]},
+                        ],
+                    },
+                    {"id": "done", "task": "Done", "depends": ["r1"]},
+                ],
+            },
+        )
         wf = Workflow.from_yaml(path)
         router = wf.node_map["r1"]
         assert router.type == "router"
@@ -658,18 +762,24 @@ class TestFillTemplate:
 
 class TestWorkflowRegistry:
     def test_discovers_yaml(self, tmp_path: Path):
-        _write_yaml(tmp_path / "wf1.yaml", {
-            "name": "wf1",
-            "nodes": [{"id": "a", "task": "A"}],
-        })
+        _write_yaml(
+            tmp_path / "wf1.yaml",
+            {
+                "name": "wf1",
+                "nodes": [{"id": "a", "task": "A"}],
+            },
+        )
         reg = WorkflowRegistry([tmp_path])
         assert reg.names() == ["wf1"]
 
     def test_discovers_yml_too(self, tmp_path: Path):
-        _write_yaml(tmp_path / "wf2.yml", {
-            "name": "wf2",
-            "nodes": [{"id": "a", "task": "A"}],
-        })
+        _write_yaml(
+            tmp_path / "wf2.yml",
+            {
+                "name": "wf2",
+                "nodes": [{"id": "a", "task": "A"}],
+            },
+        )
         reg = WorkflowRegistry([tmp_path])
         assert "wf2" in reg.names()
 
@@ -679,17 +789,24 @@ class TestWorkflowRegistry:
         assert reg.names() == []
 
     def test_get(self, tmp_path: Path):
-        _write_yaml(tmp_path / "wf.yaml", {
-            "name": "my-wf",
-            "nodes": [{"id": "a", "task": "A"}],
-        })
+        _write_yaml(
+            tmp_path / "wf.yaml",
+            {
+                "name": "my-wf",
+                "nodes": [{"id": "a", "task": "A"}],
+            },
+        )
         reg = WorkflowRegistry([tmp_path])
         assert reg.get("my-wf") is not None
         assert reg.get("nope") is None
 
     def test_list(self, tmp_path: Path):
-        _write_yaml(tmp_path / "a.yaml", {"name": "a", "nodes": [{"id": "x", "task": "X"}]})
-        _write_yaml(tmp_path / "b.yaml", {"name": "b", "nodes": [{"id": "y", "task": "Y"}]})
+        _write_yaml(
+            tmp_path / "a.yaml", {"name": "a", "nodes": [{"id": "x", "task": "X"}]}
+        )
+        _write_yaml(
+            tmp_path / "b.yaml", {"name": "b", "nodes": [{"id": "y", "task": "Y"}]}
+        )
         reg = WorkflowRegistry([tmp_path])
         assert len(reg.list()) == 2
 
@@ -703,10 +820,13 @@ class TestWorkflowRegistry:
 
     def test_invalid_yaml_skipped(self, tmp_path: Path):
         (tmp_path / "bad.yaml").write_text(":::invalid:::\n  [", encoding="utf-8")
-        _write_yaml(tmp_path / "good.yaml", {
-            "name": "good",
-            "nodes": [{"id": "a", "task": "A"}],
-        })
+        _write_yaml(
+            tmp_path / "good.yaml",
+            {
+                "name": "good",
+                "nodes": [{"id": "a", "task": "A"}],
+            },
+        )
         reg = WorkflowRegistry([tmp_path])
         assert reg.names() == ["good"]
 
@@ -719,29 +839,43 @@ class TestWorkflowRegistry:
 
     def test_later_dir_overwrites_same_name(self, tmp_path: Path):
         d1, d2 = tmp_path / "a", tmp_path / "b"
-        _write_yaml(d1 / "shared.yaml", {
-            "name": "shared", "description": "v1",
-            "nodes": [{"id": "x", "task": "X"}],
-        })
-        _write_yaml(d2 / "shared.yaml", {
-            "name": "shared", "description": "v2",
-            "nodes": [{"id": "y", "task": "Y"}],
-        })
+        _write_yaml(
+            d1 / "shared.yaml",
+            {
+                "name": "shared",
+                "description": "v1",
+                "nodes": [{"id": "x", "task": "X"}],
+            },
+        )
+        _write_yaml(
+            d2 / "shared.yaml",
+            {
+                "name": "shared",
+                "description": "v2",
+                "nodes": [{"id": "y", "task": "Y"}],
+            },
+        )
         reg = WorkflowRegistry([d1, d2])
         assert reg.get("shared").description == "v2"
 
     def test_invalid_workflow_skipped(self, tmp_path: Path):
-        _write_yaml(tmp_path / "bad.yaml", {
-            "name": "bad",
-            "nodes": [
-                {"id": "a", "task": "A"},
-                {"id": "a", "task": "A2"},
-            ],
-        })
-        _write_yaml(tmp_path / "ok.yaml", {
-            "name": "ok",
-            "nodes": [{"id": "b", "task": "B"}],
-        })
+        _write_yaml(
+            tmp_path / "bad.yaml",
+            {
+                "name": "bad",
+                "nodes": [
+                    {"id": "a", "task": "A"},
+                    {"id": "a", "task": "A2"},
+                ],
+            },
+        )
+        _write_yaml(
+            tmp_path / "ok.yaml",
+            {
+                "name": "ok",
+                "nodes": [{"id": "b", "task": "B"}],
+            },
+        )
         reg = WorkflowRegistry([tmp_path])
         assert reg.names() == ["ok"]
 
@@ -795,7 +929,9 @@ class TestComputeWaves:
             nodes=[
                 Node(id="do", task="Do work"),
                 Node(
-                    id="check", type="router", depends=["do"],
+                    id="check",
+                    type="router",
+                    depends=["do"],
                     routes=[
                         Route(match="FAIL", to=["do"], max=3),
                         Route(match=None, to=["done"]),
@@ -835,7 +971,9 @@ class TestRunnerLinearChain:
     async def test_single_node(self):
         wf = Workflow(name="t", nodes=[Node(id="a", task="Say hello")])
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.return_value = _make_subprocess_mock(b"hello")
             results = await runner.run()
 
@@ -843,12 +981,13 @@ class TestRunnerLinearChain:
         assert results[0].node_id == "a"
         assert results[0].output == "hello"
 
-
     @pytest.mark.asyncio
     async def test_linear_chain_abc(self):
         wf = _simple_linear_wf(3)
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"out-a"),
                 _make_subprocess_mock(b"out-b"),
@@ -861,7 +1000,6 @@ class TestRunnerLinearChain:
         assert results[1].output == "out-b"
         assert results[2].output == "out-c"
 
-
     @pytest.mark.asyncio
     async def test_template_filling_in_chain(self):
         wf = Workflow(
@@ -872,7 +1010,9 @@ class TestRunnerLinearChain:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"hello"),
                 _make_subprocess_mock(b"world"),
@@ -885,7 +1025,9 @@ class TestRunnerLinearChain:
     async def test_args_passed_to_template(self):
         wf = Workflow(name="t", nodes=[Node(id="a", task="Hello {args.name}")])
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.return_value = _make_subprocess_mock(b"hi")
             results = await runner.run(args={"name": "World"})
 
@@ -901,7 +1043,9 @@ class TestRunnerLinearChain:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"step-a"),
                 _make_subprocess_mock(b"step-b"),
@@ -921,7 +1065,9 @@ class TestRunnerParallel:
     async def test_diamond_all_nodes_run(self):
         wf = _simple_parallel_wf()
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"root-out"),
                 _make_subprocess_mock(b"a-out"),
@@ -934,7 +1080,6 @@ class TestRunnerParallel:
         ids = {r.node_id for r in results}
         assert ids == {"root", "a", "b", "merge"}
 
-
     @pytest.mark.asyncio
     async def test_parallel_nodes_use_dependency_output(self):
         wf = Workflow(
@@ -946,7 +1091,9 @@ class TestRunnerParallel:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"root-data"),
                 _make_subprocess_mock(b"a-done"),
@@ -970,7 +1117,9 @@ class TestRunnerParallel:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"a"),
                 _make_subprocess_mock(b"b"),
@@ -979,7 +1128,6 @@ class TestRunnerParallel:
             results = await runner.run()
 
         assert len(results) == 3
-
 
     @pytest.mark.asyncio
     async def test_merge_waits_for_both(self):
@@ -1005,7 +1153,10 @@ class TestRunnerParallel:
                 call_order.append("merge")
             return proc
 
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec", side_effect=tracking_exec):
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec",
+            side_effect=tracking_exec,
+        ):
             results = await runner.run()
 
         assert len(results) == 4
@@ -1030,7 +1181,9 @@ class TestRunnerRouter:
             nodes=[
                 Node(id="a", task="A"),
                 Node(
-                    id="r", type="router", depends=["a"],
+                    id="r",
+                    type="router",
+                    depends=["a"],
                     routes=[
                         Route(match="yes", to=["b"]),
                         Route(match=None, to=["c"]),
@@ -1041,10 +1194,12 @@ class TestRunnerRouter:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"yes please"),  # a
-                _make_subprocess_mock(b"b done"),       # b (activated by route 0)
+                _make_subprocess_mock(b"b done"),  # b (activated by route 0)
             ]
             results = await runner.run()
 
@@ -1060,7 +1215,9 @@ class TestRunnerRouter:
             nodes=[
                 Node(id="a", task="A"),
                 Node(
-                    id="r", type="router", depends=["a"],
+                    id="r",
+                    type="router",
+                    depends=["a"],
                     routes=[
                         Route(match="critical", to=["fix"]),
                         Route(match=None, to=["done"]),
@@ -1071,10 +1228,12 @@ class TestRunnerRouter:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
-                _make_subprocess_mock(b"no issues"),      # a
-                _make_subprocess_mock(b"report generated"), # done
+                _make_subprocess_mock(b"no issues"),  # a
+                _make_subprocess_mock(b"report generated"),  # done
             ]
             results = await runner.run()
 
@@ -1089,7 +1248,9 @@ class TestRunnerRouter:
             nodes=[
                 Node(id="a", task="A"),
                 Node(
-                    id="r", type="router", depends=["a"],
+                    id="r",
+                    type="router",
+                    depends=["a"],
                     routes=[
                         Route(match=None, to=["b"]),
                     ],
@@ -1099,10 +1260,12 @@ class TestRunnerRouter:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"something"),  # a
-                _make_subprocess_mock(b"b done"),     # b
+                _make_subprocess_mock(b"b done"),  # b
             ]
             results = await runner.run()
 
@@ -1118,7 +1281,9 @@ class TestRunnerRouter:
             nodes=[
                 Node(id="do", task="Do work"),
                 Node(
-                    id="r", type="router", depends=["do"],
+                    id="r",
+                    type="router",
+                    depends=["do"],
                     routes=[
                         Route(match="critical", to=["do"], max=1),
                         Route(match=None, to=["done"]),
@@ -1128,11 +1293,13 @@ class TestRunnerRouter:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"critical error"),  # do (1st run)
-                _make_subprocess_mock(b"fixed"),            # do (back-edge re-run)
-                _make_subprocess_mock(b"done output"),      # done (fallback on re-eval)
+                _make_subprocess_mock(b"fixed"),  # do (back-edge re-run)
+                _make_subprocess_mock(b"done output"),  # done (fallback on re-eval)
             ]
             results = await runner.run()
 
@@ -1140,7 +1307,6 @@ class TestRunnerRouter:
         do_count = node_ids.count("do")
         assert do_count == 2  # initial + 1 back-edge re-run
         assert "done" in node_ids
-
 
     @pytest.mark.asyncio
     async def test_router_no_routes_matched(self):
@@ -1150,7 +1316,9 @@ class TestRunnerRouter:
             nodes=[
                 Node(id="a", task="A"),
                 Node(
-                    id="r", type="router", depends=["a"],
+                    id="r",
+                    type="router",
+                    depends=["a"],
                     routes=[
                         Route(match="specific_pattern", to=["b"]),
                     ],
@@ -1159,7 +1327,9 @@ class TestRunnerRouter:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.return_value = _make_subprocess_mock(b"no match here")
             results = await runner.run()
 
@@ -1182,7 +1352,9 @@ class TestRunnerBackEdge:
             nodes=[
                 Node(id="do", task="Do work"),
                 Node(
-                    id="check", type="router", depends=["do"],
+                    id="check",
+                    type="router",
+                    depends=["do"],
                     routes=[
                         Route(match="RETRY", to=["do"], max=2),
                         Route(match=None, to=["done"]),
@@ -1192,11 +1364,13 @@ class TestRunnerBackEdge:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
-                _make_subprocess_mock(b"RETRY"),     # do (1st)
-                _make_subprocess_mock(b"RETRY"),     # do (2nd, back-edge)
-                _make_subprocess_mock(b"OK"),        # do (3rd, back-edge)
+                _make_subprocess_mock(b"RETRY"),  # do (1st)
+                _make_subprocess_mock(b"RETRY"),  # do (2nd, back-edge)
+                _make_subprocess_mock(b"OK"),  # do (3rd, back-edge)
                 _make_subprocess_mock(b"finished"),  # done
             ]
             results = await runner.run()
@@ -1204,7 +1378,6 @@ class TestRunnerBackEdge:
         do_results = [r for r in results if r.node_id == "do"]
         assert len(do_results) == 3  # initial + 2 retries
         assert "done" in {r.node_id for r in results}
-
 
     @pytest.mark.asyncio
     async def test_circuit_breaker(self):
@@ -1215,7 +1388,9 @@ class TestRunnerBackEdge:
             nodes=[
                 Node(id="do", task="Do"),
                 Node(
-                    id="check", type="router", depends=["do"],
+                    id="check",
+                    type="router",
+                    depends=["do"],
                     routes=[
                         Route(match="RETRY", to=["do"], max=10),
                         Route(match=None, to=["done"]),
@@ -1225,12 +1400,15 @@ class TestRunnerBackEdge:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.return_value = _make_subprocess_mock(b"RETRY")
             results = await runner.run()
 
         # Circuit breaker cut execution short — results limited by max_iterations
         assert len(results) < 10  # would be infinite without breaker
+
     @pytest.mark.asyncio
     async def test_back_edge_resets_downstream(self):
         """When a back-edge fires, downstream nodes are reset and re-run."""
@@ -1240,7 +1418,9 @@ class TestRunnerBackEdge:
                 Node(id="do", task="Do"),
                 Node(id="process", task="Process: {nodes.do.output}", depends=["do"]),
                 Node(
-                    id="check", type="router", depends=["process"],
+                    id="check",
+                    type="router",
+                    depends=["process"],
                     routes=[
                         Route(match="FAIL", to=["do"], max=2),
                         Route(match=None, to=["done"]),
@@ -1250,13 +1430,15 @@ class TestRunnerBackEdge:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"attempt1"),  # do
-                _make_subprocess_mock(b"FAIL"),       # process
+                _make_subprocess_mock(b"FAIL"),  # process
                 _make_subprocess_mock(b"attempt2"),  # do (back-edge)
-                _make_subprocess_mock(b"OK"),         # process (re-run)
-                _make_subprocess_mock(b"done"),       # done
+                _make_subprocess_mock(b"OK"),  # process (re-run)
+                _make_subprocess_mock(b"done"),  # done
             ]
             results = await runner.run()
 
@@ -1264,7 +1446,6 @@ class TestRunnerBackEdge:
         process_results = [r for r in results if r.node_id == "process"]
         assert len(do_results) == 2
         assert len(process_results) == 2
-
 
     @pytest.mark.asyncio
     async def test_multi_router_shared_downstream(self):
@@ -1274,7 +1455,9 @@ class TestRunnerBackEdge:
             nodes=[
                 Node(id="start", task="Start"),
                 Node(
-                    id="r1", type="router", depends=["start"],
+                    id="r1",
+                    type="router",
+                    depends=["start"],
                     routes=[
                         Route(match="GO", to=["mid"]),
                         Route(match=None, to=["done"]),
@@ -1282,7 +1465,9 @@ class TestRunnerBackEdge:
                 ),
                 Node(id="mid", task="Mid", depends=["r1"]),
                 Node(
-                    id="r2", type="router", depends=["mid"],
+                    id="r2",
+                    type="router",
+                    depends=["mid"],
                     routes=[
                         Route(match="RETRY", to=["mid"], max=1),
                         Route(match=None, to=["done"]),
@@ -1292,17 +1477,20 @@ class TestRunnerBackEdge:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
-                _make_subprocess_mock(b"GO"),      # start
-                _make_subprocess_mock(b"RETRY"),   # mid (1st)
-                _make_subprocess_mock(b"OK"),      # mid (2nd, back-edge)
-                _make_subprocess_mock(b"done"),    # done
+                _make_subprocess_mock(b"GO"),  # start
+                _make_subprocess_mock(b"RETRY"),  # mid (1st)
+                _make_subprocess_mock(b"OK"),  # mid (2nd, back-edge)
+                _make_subprocess_mock(b"done"),  # done
             ]
             results = await runner.run()
 
-        assert any(r.node_id == "done" for r in results), "done node should have executed"
-
+        assert any(r.node_id == "done" for r in results), (
+            "done node should have executed"
+        )
 
     @pytest.mark.asyncio
     async def test_loop_iter_counter_uses_retry_count(self):
@@ -1312,7 +1500,9 @@ class TestRunnerBackEdge:
             nodes=[
                 Node(id="do", task="Do"),
                 Node(
-                    id="check", type="router", depends=["do"],
+                    id="check",
+                    type="router",
+                    depends=["do"],
                     routes=[
                         Route(match="RETRY", to=["do"], max=2),
                         Route(match=None, to=["done"]),
@@ -1326,10 +1516,13 @@ class TestRunnerBackEdge:
             wf,
             on_event=lambda e: (
                 loop_calls.append((e.node_id, e.iteration, e.max_iter))
-                if isinstance(e, LoopIterEvent) else None
+                if isinstance(e, LoopIterEvent)
+                else None
             ),
         )
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"RETRY"),
                 _make_subprocess_mock(b"RETRY"),
@@ -1351,7 +1544,9 @@ class TestRunnerBackEdge:
                 Node(id="do", task="Do"),
                 Node(id="proc", task="Proc", depends=["do"]),
                 Node(
-                    id="check", type="router", depends=["proc"],
+                    id="check",
+                    type="router",
+                    depends=["proc"],
                     routes=[
                         Route(match="RETRY", to=["do"], max=1),
                         Route(match=None, to=["done"]),
@@ -1365,10 +1560,13 @@ class TestRunnerBackEdge:
             wf,
             on_event=lambda e: (
                 wave_calls.append((e.wave_idx, e.total_waves, e.node_ids))
-                if isinstance(e, WaveReadyEvent) else None
+                if isinstance(e, WaveReadyEvent)
+                else None
             ),
         )
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"attempt1"),
                 _make_subprocess_mock(b"RETRY"),
@@ -1400,7 +1598,9 @@ class TestRunnerAutoInference:
                 Node(id="start", task="Start"),
                 Node(id="validate", task="Val: {nodes.start.output}"),
                 Node(
-                    id="router", type="router", depends=["validate"],
+                    id="router",
+                    type="router",
+                    depends=["validate"],
                     routes=[
                         Route(match="FAIL", to=["start"], max=1),
                         Route(match=None, to=["process"]),
@@ -1432,11 +1632,15 @@ class TestRunnerAutoInference:
             nodes=[
                 Node(id="g", task="Gen"),
                 Node(id="v", task="Val: {nodes.g.output}"),
-                Node(id="r", type="router", depends=["v"],
-                     routes=[
-                         Route(match="FAIL", to=["g"], max=3),
-                         Route(match=None, to=["p"]),
-                     ]),
+                Node(
+                    id="r",
+                    type="router",
+                    depends=["v"],
+                    routes=[
+                        Route(match="FAIL", to=["g"], max=3),
+                        Route(match=None, to=["p"]),
+                    ],
+                ),
                 Node(id="p", task="Proc: {nodes.g.output}"),
                 Node(id="o", task="Out: {nodes.p.output}"),
             ],
@@ -1444,11 +1648,16 @@ class TestRunnerAutoInference:
         runner = DAGRunner(wf)
         with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as me:
             me.side_effect = [
-                _make_subprocess_mock(b"ok"), _make_subprocess_mock(b"FAIL err"),
-                _make_subprocess_mock(b"ok"), _make_subprocess_mock(b"FAIL err"),
-                _make_subprocess_mock(b"ok"), _make_subprocess_mock(b"FAIL err"),
-                _make_subprocess_mock(b"ok"), _make_subprocess_mock(b"PASS"),
-                _make_subprocess_mock(b"done"), _make_subprocess_mock(b"done"),
+                _make_subprocess_mock(b"ok"),
+                _make_subprocess_mock(b"FAIL err"),
+                _make_subprocess_mock(b"ok"),
+                _make_subprocess_mock(b"FAIL err"),
+                _make_subprocess_mock(b"ok"),
+                _make_subprocess_mock(b"FAIL err"),
+                _make_subprocess_mock(b"ok"),
+                _make_subprocess_mock(b"PASS"),
+                _make_subprocess_mock(b"done"),
+                _make_subprocess_mock(b"done"),
             ]
             results = await runner.run()
 
@@ -1457,7 +1666,6 @@ class TestRunnerAutoInference:
         assert proc_count == 1, f"process ran {proc_count}x (expect 1)"
         assert out_count == 1, f"output ran {out_count}x (expect 1)"
 
-
     @pytest.mark.asyncio
     async def test_explicit_depends_router_gate_only(self):
         """Node with explicit depends on router (no template ref) still works."""
@@ -1465,8 +1673,12 @@ class TestRunnerAutoInference:
             name="t",
             nodes=[
                 Node(id="a", task="A"),
-                Node(id="r", type="router", depends=["a"],
-                     routes=[Route(match=None, to=["b"])]),
+                Node(
+                    id="r",
+                    type="router",
+                    depends=["a"],
+                    routes=[Route(match=None, to=["b"])],
+                ),
                 # b depends on r but references a's output (auto-inferred)
                 Node(id="b", task="B: {nodes.a.output}", depends=["r"]),
             ],
@@ -1483,7 +1695,6 @@ class TestRunnerAutoInference:
         assert len(b_results) == 1
 
 
-
 # ===========================================================================
 # 12. Runner — Error handling
 # ===========================================================================
@@ -1494,7 +1705,9 @@ class TestRunnerErrorHandling:
     async def test_timeout(self):
         wf = Workflow(name="t", nodes=[Node(id="a", task="Slow task")])
         runner = DAGRunner(wf, timeout=1)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             proc = MagicMock()
             proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
             mock_exec.return_value = proc
@@ -1503,12 +1716,13 @@ class TestRunnerErrorHandling:
         assert results[0].exit_code == 1
         assert "timed out" in results[0].error
 
-
     @pytest.mark.asyncio
     async def test_subprocess_exception(self):
         wf = Workflow(name="t", nodes=[Node(id="a", task="Fail")])
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = RuntimeError("spawn failed")
             results = await runner.run()
 
@@ -1526,7 +1740,9 @@ class TestRunnerErrorHandling:
             ],
         )
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"root"),
                 _make_subprocess_mock(b"a ok"),
@@ -1543,8 +1759,12 @@ class TestRunnerErrorHandling:
     async def test_nonzero_exit_code_stored(self):
         wf = Workflow(name="t", nodes=[Node(id="a", task="Fail")])
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
-            mock_exec.return_value = _make_subprocess_mock(b"error output", returncode=2)
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.return_value = _make_subprocess_mock(
+                b"error output", returncode=2
+            )
             results = await runner.run()
 
         assert results[0].exit_code == 2
@@ -1565,10 +1785,13 @@ class TestRunnerCallbacks:
             wf,
             on_event=lambda e: (
                 calls.append((e.node_id, e.result.node_id, e.wave_idx))
-                if isinstance(e, NodeDoneEvent) else None
+                if isinstance(e, NodeDoneEvent)
+                else None
             ),
         )
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"a"),
                 _make_subprocess_mock(b"b"),
@@ -1586,7 +1809,9 @@ class TestRunnerCallbacks:
             nodes=[
                 Node(id="a", task="A"),
                 Node(
-                    id="r", type="router", depends=["a"],
+                    id="r",
+                    type="router",
+                    depends=["a"],
                     routes=[Route(match=None, to=["b"])],
                 ),
                 Node(id="b", task="B", depends=["r"]),
@@ -1598,10 +1823,13 @@ class TestRunnerCallbacks:
             wf,
             on_event=lambda e: (
                 skip_calls.append((e.node_id, e.reason))
-                if isinstance(e, NodeSkippedEvent) else None
+                if isinstance(e, NodeSkippedEvent)
+                else None
             ),
         )
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"a"),
                 _make_subprocess_mock(b"b"),
@@ -1619,10 +1847,13 @@ class TestRunnerCallbacks:
             wf,
             on_event=lambda e: (
                 wave_calls.append((e.wave_idx, e.total_waves, e.node_ids))
-                if isinstance(e, WaveReadyEvent) else None
+                if isinstance(e, WaveReadyEvent)
+                else None
             ),
         )
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"a"),
                 _make_subprocess_mock(b"b"),
@@ -1638,7 +1869,9 @@ class TestRunnerCallbacks:
             nodes=[
                 Node(id="a", task="A"),
                 Node(
-                    id="r", type="router", depends=["a"],
+                    id="r",
+                    type="router",
+                    depends=["a"],
                     routes=[
                         Route(match="yes", to=["b"]),
                         Route(match=None, to=["b"]),
@@ -1652,10 +1885,13 @@ class TestRunnerCallbacks:
             wf,
             on_event=lambda e: (
                 cond_calls.append((e.router_id, e.matched, e.branch, e.targets))
-                if isinstance(e, RouterConditionEvent) else None
+                if isinstance(e, RouterConditionEvent)
+                else None
             ),
         )
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"yes please"),
                 _make_subprocess_mock(b"b"),
@@ -1674,7 +1910,9 @@ class TestRunnerCallbacks:
             nodes=[
                 Node(id="do", task="Do"),
                 Node(
-                    id="check", type="router", depends=["do"],
+                    id="check",
+                    type="router",
+                    depends=["do"],
                     routes=[
                         Route(match="RETRY", to=["do"], max=2),
                         Route(match=None, to=["done"]),
@@ -1688,14 +1926,17 @@ class TestRunnerCallbacks:
             wf,
             on_event=lambda e: (
                 loop_calls.append((e.node_id, e.iteration, e.max_iter))
-                if isinstance(e, LoopIterEvent) else None
+                if isinstance(e, LoopIterEvent)
+                else None
             ),
         )
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.side_effect = [
                 _make_subprocess_mock(b"RETRY"),  # do (1st)
-                _make_subprocess_mock(b"OK"),     # do (2nd, back-edge)
-                _make_subprocess_mock(b"done"),   # done
+                _make_subprocess_mock(b"OK"),  # do (2nd, back-edge)
+                _make_subprocess_mock(b"done"),  # done
             ]
             await runner.run()
 
@@ -1710,10 +1951,13 @@ class TestRunnerCallbacks:
             wf,
             on_event=lambda e: (
                 progress_msgs.append(e.message)
-                if isinstance(e, ProgressEvent) else None
+                if isinstance(e, ProgressEvent)
+                else None
             ),
         )
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.return_value = _make_subprocess_mock(b"ok")
             await runner.run()
 
@@ -1723,12 +1967,13 @@ class TestRunnerCallbacks:
     async def test_callbacks_none_are_safe(self):
         wf = Workflow(name="t", nodes=[Node(id="a", task="A")])
         runner = DAGRunner(wf)
-        with patch("mocode.app.workflow.runner.asyncio.create_subprocess_exec") as mock_exec:
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
             mock_exec.return_value = _make_subprocess_mock(b"ok")
             results = await runner.run()
 
         assert len(results) == 1
-
 
 
 # ===========================================================================
@@ -1739,11 +1984,14 @@ class TestRunnerCallbacks:
 class TestWorkflowCommand:
     @pytest.fixture
     def _setup_registry(self, tmp_path: Path):
-        _write_yaml(tmp_path / "demo.yaml", {
-            "name": "demo",
-            "description": "Demo workflow",
-            "nodes": [{"id": "a", "task": "Hello"}],
-        })
+        _write_yaml(
+            tmp_path / "demo.yaml",
+            {
+                "name": "demo",
+                "description": "Demo workflow",
+                "nodes": [{"id": "a", "task": "Hello"}],
+            },
+        )
         return tmp_path
 
     @pytest.mark.asyncio
@@ -1831,12 +2079,17 @@ class TestWorkflowCommand:
             mock_runner.run = AsyncMock(return_value=[])
             MockRunner.return_value = mock_runner
 
-            result = await cmd.run(_make_ctx(
-                app=app, display=display,
-                args="run demo path=/src verbose=true",
-            ))
+            await cmd.run(
+                _make_ctx(
+                    app=app,
+                    display=display,
+                    args="run demo path=/src verbose=true",
+                )
+            )
 
-            mock_runner.run.assert_called_once_with(args={"path": "/src", "verbose": "true"})
+            mock_runner.run.assert_called_once_with(
+                args={"path": "/src", "verbose": "true"}
+            )
 
     @pytest.mark.asyncio
     async def test_list_empty(self):
@@ -1893,7 +2146,12 @@ class TestNodeContextHeader:
             name="wf",
             nodes=[
                 Node(id="overview", task="Overview", description="Analyze structure"),
-                Node(id="scan", task="Scan", description="Scan code", depends=["overview"]),
+                Node(
+                    id="scan",
+                    task="Scan",
+                    description="Scan code",
+                    depends=["overview"],
+                ),
             ],
         )
         runner = DAGRunner(wf)
@@ -1907,7 +2165,12 @@ class TestNodeContextHeader:
             name="wf",
             nodes=[
                 Node(id="scan", task="Scan", description="Scan code"),
-                Node(id="report", task="Report", description="Generate report", depends=["scan"]),
+                Node(
+                    id="report",
+                    task="Report",
+                    description="Generate report",
+                    depends=["scan"],
+                ),
             ],
         )
         runner = DAGRunner(wf)
@@ -1923,7 +2186,12 @@ class TestNodeContextHeader:
                 Node(id="root", task="Root", description="Root step"),
                 Node(id="a", task="A", description="Branch A", depends=["root"]),
                 Node(id="b", task="B", description="Branch B", depends=["root"]),
-                Node(id="merge", task="Merge", description="Merge results", depends=["a", "b"]),
+                Node(
+                    id="merge",
+                    task="Merge",
+                    description="Merge results",
+                    depends=["a", "b"],
+                ),
             ],
         )
         runner = DAGRunner(wf)
@@ -1966,8 +2234,11 @@ class TestNodeContextHeader:
         async def capture_exec(node_id, task, context_header=None):
             prompts_received.append((node_id, task, context_header))
             return NodeResult(
-                node_id=node_id, task=task, output="ok",
-                exit_code=0, duration=0.1,
+                node_id=node_id,
+                task=task,
+                output="ok",
+                exit_code=0,
+                duration=0.1,
             )
 
         with patch.object(runner, "_exec_node", side_effect=capture_exec):
@@ -1993,8 +2264,11 @@ class TestNodeContextHeader:
         async def capture_exec(node_id, task, context_header=None):
             headers_received.append(context_header)
             return NodeResult(
-                node_id=node_id, task=task, output="ok",
-                exit_code=0, duration=0.1,
+                node_id=node_id,
+                task=task,
+                output="ok",
+                exit_code=0,
+                duration=0.1,
             )
 
         with patch.object(runner, "_exec_node", side_effect=capture_exec):
@@ -2045,7 +2319,7 @@ class TestWorkflowsPromptSection:
 
         # First section is the usage guide
         assert sections[0].name == "guide"
-        assert "/workflow run" in sections[0].content
+        assert "mocode workflow run" in sections[0].content
 
         # Second section uses fixed tag <workflow> with attrs
         assert sections[1].name == "workflow"
@@ -2086,8 +2360,8 @@ class TestWorkflowsPromptSection:
         assert 'path="' in result
         assert "audit.yaml" in result
         assert "Security check" in result
-        assert "/workflow run" in result
-        assert "/workflow list" in result
+        assert "mocode workflow run" in result
+        assert "mocode workflow list" in result
 
         # Verify key sections still exist
         assert "<guidelines>" in result

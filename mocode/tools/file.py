@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..core.tool import Tool, ToolError
+from ..core.virtualfs import VirtualFS
 from ._helpers import read_text, require_file
 
 
@@ -71,13 +72,48 @@ _READ_DESC = (
 )
 
 
-def ReadTool() -> Tool:
+def _read_virtual(path: str, content: str, offset: int, limit: int) -> str:
+    """Format virtual file content to match _read_text output."""
+    all_lines = content.splitlines(keepends=True)
+    total = len(all_lines)
+    size_kb = len(content.encode("utf-8")) / 1024
+
+    start = max(0, offset - 1)
+    end = start + limit if limit else total
+    selected = all_lines[start:end]
+
+    if not selected:
+        raise ToolError(
+            f"Line {offset} is beyond end of file (file has {total} lines)",
+            "out_of_range",
+        )
+
+    header = f"[{path} | {total} lines | {size_kb:.1f} KB]"
+    lines_text = "".join(
+        f"{start + idx + 1:>5} | {line}" for idx, line in enumerate(selected)
+    )
+
+    end_line = start + len(selected)
+    if end_line < total:
+        footer = f"\n[Showing lines {start + 1}-{end_line} of {total}. Use offset={end_line + 1} to read more.]"
+    else:
+        footer = ""
+
+    return header + "\n" + lines_text + footer
+
+
+def ReadTool(vfs: VirtualFS | None = None) -> Tool:
     """Create a read tool."""
 
     def _read(args: dict) -> str:
-        p = require_file(Path(args["path"]))
+        path = args["path"]
         offset = max(1, int(args.get("offset", 1)))
         limit = int(args.get("limit", 0)) or 999999
+
+        if vfs and vfs.exists(path):
+            return _read_virtual(path, vfs.get(path), offset, limit)
+
+        p = require_file(Path(path))
         return _read_text(p, offset, limit)
 
     return Tool("read", _READ_DESC, _READ_PARAMS, _read)

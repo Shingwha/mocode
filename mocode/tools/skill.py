@@ -24,8 +24,15 @@ def SkillTool(manager: SkillManager, *, name: str = "skill") -> Tool:
             raise ToolError(f"Skill '{skill_name}' not found.{hint}", "not_found")
 
         if skill._builtin:
-            return skill.load_content()
-        return f"Base directory: {skill.path}\n\n{skill.load_content()}"
+            content = skill.load_content()
+        else:
+            content = f"Base directory: {skill.path}\n\n{skill.load_content()}"
+
+        if skill.virtual_files:
+            files = "\n".join(f"  {p}" for p in skill.virtual_files)
+            content += f"\n\nAvailable files:\n{files}"
+
+        return content
 
     return Tool(
         name,
