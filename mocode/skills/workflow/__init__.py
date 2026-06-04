@@ -1,27 +1,12 @@
-"""Built-in skill: Workflow — DAG-based multi-step task orchestration.
-
-Teaches the agent how to design, create, and run MoCode Workflows so it
-can guide users through the workflow lifecycle.
-"""
+"""Built-in skill: Workflow — DAG-based multi-step task orchestration."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from mocode.core.skill import Skill, SkillMetadata, discover_references, read_skill
-
-_PKG_DIR = Path(__file__).parent
+from mocode.core.skill import make_builtin_skill
 
 
-def WorkflowSkill() -> Skill:
+def WorkflowSkill():
     """MoCode Workflows — DAG-based multi-step task orchestration."""
-    fm, content = read_skill(_PKG_DIR)
-    name = fm.get("name", "workflow")
-    description = fm.get("description", "")
-    virtual_files = discover_references(_PKG_DIR, name)
-    return Skill(
-        path=f"vfs://{name}/",
-        metadata=SkillMetadata(name=name, description=description),
-        _content=content,
-        virtual_files=virtual_files,
-    )
+    return make_builtin_skill(Path(__file__).parent, default_name="workflow")

@@ -5,7 +5,8 @@ from pathlib import Path
 import pytest
 
 from mocode.core import ToolError
-from mocode.core.skill import Skill, SkillManager, SkillMetadata
+from mocode.core.skill import Skill, SkillManager, SkillMetadata, make_builtin_skill
+from mocode.core.virtualfs import VirtualFS
 from mocode.tools.skill import SkillTool
 from mocode.skills import WorkflowSkill
 
@@ -22,6 +23,15 @@ def _make_skill_dir(base: Path, name: str, description: str, body: str = "") -> 
     frontmatter = f"---\nname: {name}\ndescription: {description}\n---\n"
     (skill_dir / "SKILL.md").write_text(frontmatter + body, encoding="utf-8")
     return skill_dir
+
+
+def _make_registered_skill(name: str, description: str, content: str) -> Skill:
+    """Create a Skill with vfs_uri for registration tests."""
+    return Skill(
+        metadata=SkillMetadata(name=name, description=description),
+        vfs_uri=f"vfs://{name}/",
+        _content=content,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +83,7 @@ class TestSkill:
             "---\nname: my-skill\ndescription: test\n---\n\nHello world\n",
             encoding="utf-8",
         )
-        skill = Skill(
-            path=skill_dir, metadata=SkillMetadata(name="my-skill", description="test")
-        )
+        skill = Skill(path=skill_dir, metadata=SkillMetadata(name="my-skill", description="test"))
         assert skill.load_content() == "Hello world"
 
     def test_load_content_caches(self, tmp_path: Path):
@@ -84,9 +92,7 @@ class TestSkill:
         (skill_dir / "SKILL.md").write_text(
             "---\nname: cached\ndescription: d\n---\n\nBody\n", encoding="utf-8"
         )
-        skill = Skill(
-            path=skill_dir, metadata=SkillMetadata(name="cached", description="d")
-        )
+        skill = Skill(path=skill_dir, metadata=SkillMetadata(name="cached", description="d"))
         _ = skill.load_content()
         assert skill._content == "Body"
         # Overwrite file — cached content should not change
@@ -97,43 +103,75 @@ class TestSkill:
         skill_dir = tmp_path / "raw"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("Just plain text", encoding="utf-8")
-        skill = Skill(
-            path=skill_dir, metadata=SkillMetadata(name="raw", description="")
-        )
+        skill = Skill(path=skill_dir, metadata=SkillMetadata(name="raw", description=""))
         assert skill.load_content() == "Just plain text"
 
     def test_load_content_missing_file(self, tmp_path: Path):
         skill_dir = tmp_path / "missing"
         skill_dir.mkdir()
-        skill = Skill(
-            path=skill_dir, metadata=SkillMetadata(name="missing", description="")
-        )
+        skill = Skill(path=skill_dir, metadata=SkillMetadata(name="missing", description=""))
         assert skill.load_content() == ""
 
-    def test_create_with_vfs_path(self):
+    def test_create_with_vfs_uri(self):
         skill = Skill(
-            path="vfs://my-skill/",
             metadata=SkillMetadata(name="my-skill", description="desc"),
+            vfs_uri="vfs://my-skill/",
             _content="body",
-            virtual_files={"vfs://my-skill/ref.md": "ref content"},
         )
-        assert skill.path == "vfs://my-skill/"
+        assert skill.vfs_uri == "vfs://my-skill/"
+        assert skill.path is None
         assert skill.load_content() == "body"
-        assert skill.virtual_files == {"vfs://my-skill/ref.md": "ref content"}
+
+    def test_base_dir_with_vfs_uri(self):
+        skill = Skill(
+            metadata=SkillMetadata(name="x", description=""),
+            vfs_uri="vfs://x/",
+        )
+        assert skill.base_dir == "vfs://x/"
+
+    def test_base_dir_with_path(self, tmp_path: Path):
+        skill = Skill(
+            path=tmp_path,
+            metadata=SkillMetadata(name="x", description=""),
+        )
+        assert skill.base_dir == str(tmp_path)
+
+    def test_base_dir_empty(self):
+        skill = Skill(metadata=SkillMetadata(name="x", description=""))
+        assert skill.base_dir == ""
+
+
+# ---------------------------------------------------------------------------
+# make_builtin_skill
+# ---------------------------------------------------------------------------
+
+
+class TestMakeBuiltinSkill:
+    def test_creates_skill_with_both_path_and_vfs_uri(self, tmp_path: Path):
+        skill_dir = tmp_path / "my-builtin"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-builtin\ndescription: A test skill\n---\n\nBody here",
+            encoding="utf-8",
+        )
+        skill = make_builtin_skill(skill_dir)
+        assert skill.metadata.name == "my-builtin"
+        assert skill.metadata.description == "A test skill"
+        assert skill.path == skill_dir
+        assert skill.vfs_uri == "vfs://my-builtin/"
+        assert skill.load_content() == "Body here"
+
+    def test_default_name_fallback(self, tmp_path: Path):
+        skill_dir = tmp_path / "anon"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text("Just body", encoding="utf-8")
+        skill = make_builtin_skill(skill_dir, default_name="anon")
+        assert skill.metadata.name == "anon"
 
 
 # ---------------------------------------------------------------------------
 # SkillManager — built-in registration
 # ---------------------------------------------------------------------------
-
-
-def _make_registered_skill(name: str, description: str, content: str) -> Skill:
-    """Create a Skill with VFS path for registration tests."""
-    return Skill(
-        path=f"vfs://{name}/",
-        metadata=SkillMetadata(name=name, description=description),
-        _content=content,
-    )
 
 
 class TestSkillManagerRegistered:
@@ -275,6 +313,35 @@ class TestSkillManager:
 
 
 # ---------------------------------------------------------------------------
+# SkillManager VFS integration
+# ---------------------------------------------------------------------------
+
+
+class TestSkillManagerVFS:
+    def test_discover_mounts_to_vfs(self, tmp_path: Path):
+        skill_dir = _make_skill_dir(tmp_path, "my-skill", "desc")
+        (skill_dir / "ref.md").write_text("ref content", encoding="utf-8")
+
+        vfs = VirtualFS()
+        mgr = SkillManager([tmp_path], vfs=vfs)
+        assert vfs.get("vfs://my-skill/ref.md") == "ref content"
+
+    def test_register_mounts_real_path_to_vfs(self, tmp_path: Path):
+        skill_dir = _make_skill_dir(tmp_path, "builtin", "desc", "body")
+        (skill_dir / "data.md").write_text("data content", encoding="utf-8")
+
+        vfs = VirtualFS()
+        mgr = SkillManager(vfs=vfs)
+        skill = Skill(
+            path=skill_dir,
+            metadata=SkillMetadata(name="builtin", description="desc"),
+            _content="body",
+        )
+        mgr.register(skill)
+        assert vfs.get("vfs://builtin/data.md") == "data content"
+
+
+# ---------------------------------------------------------------------------
 # SkillTool
 # ---------------------------------------------------------------------------
 
@@ -309,8 +376,8 @@ class TestSkillTool:
         tool = SkillTool(mgr, name="load-skill")
         assert tool.name == "load-skill"
 
-    def test_registered_skill_returns_content_with_directory(self):
-        """Registered skills show 'Base directory' in output."""
+    def test_registered_skill_returns_content_with_vfs_uri(self):
+        """Registered skills show vfs_uri as base directory."""
         mgr = SkillManager()
         mgr.register(_make_registered_skill("reg-skill", "desc", "reg content"))
         tool = SkillTool(mgr)
@@ -340,11 +407,16 @@ class TestSkillTool:
 
 
 class TestWorkflowSkill:
-    def test_returns_skill_with_vfs_path(self):
+    def test_returns_skill_with_vfs_uri(self):
         skill = WorkflowSkill()
-        assert str(skill.path) == "vfs://workflow/"
+        assert skill.vfs_uri == "vfs://workflow/"
         assert skill.metadata.name == "workflow"
         assert "MoCode Workflows" in skill.metadata.description
+
+    def test_has_real_path(self):
+        skill = WorkflowSkill()
+        assert skill.path is not None
+        assert skill.path.is_dir()
 
     def test_content_describes_workflows(self):
         skill = WorkflowSkill()
@@ -353,22 +425,19 @@ class TestWorkflowSkill:
         assert "vfs://workflow/" in content
         assert "DAG" in content or "nodes" in content
 
-    def test_has_virtual_files(self):
-        skill = WorkflowSkill()
-        assert "vfs://workflow/yaml-reference.md" in skill.virtual_files
-        assert "vfs://workflow/cli-reference.md" in skill.virtual_files
-        assert "YAML" in skill.virtual_files["vfs://workflow/yaml-reference.md"]
-        assert "CLI" in skill.virtual_files["vfs://workflow/cli-reference.md"]
-
     def test_registers_and_resolves_via_manager(self):
-        mgr = SkillManager()
+        vfs = VirtualFS()
+        mgr = SkillManager(vfs=vfs)
         mgr.register(WorkflowSkill())
         skill = mgr.get("workflow")
         assert skill is not None
         assert "MoCode Workflows" in skill.load_content()
+        # Reference files should be mounted
+        assert vfs.glob("vfs://workflow/*.md")
 
     def test_resolves_via_skill_tool(self):
-        mgr = SkillManager()
+        vfs = VirtualFS()
+        mgr = SkillManager(vfs=vfs)
         mgr.register(WorkflowSkill())
         tool = SkillTool(mgr)
         result = tool.run({"name": "workflow"})

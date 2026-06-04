@@ -155,11 +155,9 @@ def _render_environment(
     return "\n".join(parts)
 
 
-def _render_vfs(vfs: Any) -> str:
-    """Render virtual file system guidance and available files."""
-    files = vfs.list()
-
-    guidance = (
+def _render_vfs(_vfs: Any) -> str:
+    """Render virtual file system usage guidance."""
+    return (
         "## Virtual File System (VFS)\n\n"
         "MoCode has a virtual file system that provides read-only access to embedded content. "
         "Virtual files are prefixed with ``vfs://`` and can be accessed using the ``read``, "
@@ -172,12 +170,6 @@ def _render_vfs(vfs: Any) -> str:
         "templates, and examples."
     )
 
-    if files:
-        file_list = "\n".join(f"- ``{path}``" for path in sorted(files))
-        guidance += f"\n\n### Available Virtual Files\n\n{file_list}"
-
-    return guidance
-
 
 def _render_tools(tools: Any) -> list[Section]:
     return [Section(t.name, t.description, attrs={"type": "tool"}) for t in tools.all()]
@@ -188,7 +180,7 @@ def _render_skills(skill_manager: Any) -> list[Section]:
         Section(
             s.metadata.name,
             s.metadata.description,
-            attrs={"type": "skill", "path": str(s.path)},
+            attrs={"type": "skill", "path": s.base_dir},
         )
         for s in skill_manager.all()
     ]

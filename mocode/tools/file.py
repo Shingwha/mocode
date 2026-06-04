@@ -9,23 +9,16 @@ from ..core.virtualfs import VirtualFS
 from ._helpers import read_text, require_file
 
 
-def _read_text(p: Path, offset: int, limit: int) -> str:
-    """Read text file with line numbers. offset is 1-based."""
-    # Binary detection
-    try:
-        chunk = p.read_bytes()[:8192]
-        if b"\x00" in chunk:
-            raise ToolError(f"File appears to be binary: {p}", "binary_file")
-    except OSError as e:
-        raise ToolError(f"Cannot read file: {e}", "read_error")
+def _format_lines(content: str, label: str, offset: int, limit: int) -> str:
+    """Format *content* with line numbers, matching the read tool output format.
 
-    # Read with encoding fallback
-    all_lines = read_text(p).splitlines(keepends=True)
-
+    *label* is shown in the header (file path or vfs:// URI).
+    *offset* is 1-based.  *limit* = 0 means all lines.
+    """
+    all_lines = content.splitlines(keepends=True)
     total = len(all_lines)
-    size_kb = p.stat().st_size / 1024
+    size_kb = len(content.encode("utf-8")) / 1024
 
-    # Convert 1-based offset to 0-based index, clamp to valid range
     start = max(0, offset - 1)
     end = start + limit if limit else total
     selected = all_lines[start:end]
@@ -36,7 +29,7 @@ def _read_text(p: Path, offset: int, limit: int) -> str:
             "out_of_range",
         )
 
-    header = f"[{p} | {total} lines | {size_kb:.1f} KB]"
+    header = f"[{label} | {total} lines | {size_kb:.1f} KB]"
     lines_text = "".join(
         f"{start + idx + 1:>5} | {line}" for idx, line in enumerate(selected)
     )
@@ -72,34 +65,18 @@ _READ_DESC = (
 )
 
 
-def _read_virtual(path: str, content: str, offset: int, limit: int) -> str:
-    """Format virtual file content to match _read_text output."""
-    all_lines = content.splitlines(keepends=True)
-    total = len(all_lines)
-    size_kb = len(content.encode("utf-8")) / 1024
+def _read_text(p: Path, offset: int, limit: int) -> str:
+    """Read a real file with line numbers."""
+    # Binary detection
+    try:
+        chunk = p.read_bytes()[:8192]
+        if b"\x00" in chunk:
+            raise ToolError(f"File appears to be binary: {p}", "binary_file")
+    except OSError as e:
+        raise ToolError(f"Cannot read file: {e}", "read_error")
 
-    start = max(0, offset - 1)
-    end = start + limit if limit else total
-    selected = all_lines[start:end]
-
-    if not selected:
-        raise ToolError(
-            f"Line {offset} is beyond end of file (file has {total} lines)",
-            "out_of_range",
-        )
-
-    header = f"[{path} | {total} lines | {size_kb:.1f} KB]"
-    lines_text = "".join(
-        f"{start + idx + 1:>5} | {line}" for idx, line in enumerate(selected)
-    )
-
-    end_line = start + len(selected)
-    if end_line < total:
-        footer = f"\n[Showing lines {start + 1}-{end_line} of {total}. Use offset={end_line + 1} to read more.]"
-    else:
-        footer = ""
-
-    return header + "\n" + lines_text + footer
+    content = read_text(p)
+    return _format_lines(content, str(p), offset, limit)
 
 
 def ReadTool(vfs: VirtualFS | None = None) -> Tool:
@@ -111,7 +88,7 @@ def ReadTool(vfs: VirtualFS | None = None) -> Tool:
         limit = int(args.get("limit", 0)) or 999999
 
         if vfs and vfs.exists(path):
-            return _read_virtual(path, vfs.get(path), offset, limit)
+            return _format_lines(vfs.get(path), path, offset, limit)
 
         p = require_file(Path(path))
         return _read_text(p, offset, limit)

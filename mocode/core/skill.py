@@ -3,12 +3,12 @@
 Usage:
     from mocode.core.skill import SkillManager
 
-    mgr = SkillManager([Path.home() / ".mocode" / "skills"])
+    mgr = SkillManager([Path.home() / ".mocode" / "skills"], vfs=vfs)
     skill = mgr.get("fastapi")
     content = skill.load_content()
 
 Skills can also be registered programmatically:
-    skill = Skill(path=Path("vfs://my-skill/"), metadata=..., _content="...")
+    skill = Skill(vfs_uri="vfs://my-skill/", metadata=..., _content="...")
     mgr.register(skill)
 """
 
@@ -39,16 +39,22 @@ class SkillMetadata:
 
 @dataclass
 class Skill:
-    path: Path | str
+    """A skill with instructions and optional reference files.
+
+    Exactly one of *path* (real directory) or *vfs_uri* (virtual) is set.
+    """
+
     metadata: SkillMetadata
+    path: Path | None = None
+    vfs_uri: str | None = None
     _content: str | None = None
-    virtual_files: dict[str, str] = field(default_factory=dict)
 
     @property
-    def skill_md_path(self) -> Path:
-        if isinstance(self.path, str):
-            raise ValueError(f"Cannot compute skill_md_path for virtual path: {self.path}")
-        return self.path / "SKILL.md"
+    def base_dir(self) -> str:
+        """Human-readable base directory for display."""
+        if self.vfs_uri:
+            return self.vfs_uri
+        return str(self.path) if self.path else ""
 
     def load_content(self) -> str:
         if self._content is None:
@@ -56,9 +62,9 @@ class Skill:
         return self._content
 
     def _read_body(self) -> str:
-        if isinstance(self.path, str):
+        if self.path is None:
             return ""
-        return read_skill(self.path)[1]
+        return _read_skill_body(self.path)
 
 
 def _parse_frontmatter(text: str) -> dict | None:
@@ -73,6 +79,19 @@ def _parse_frontmatter(text: str) -> dict | None:
         return yaml.safe_load(parts[1]) or {}
     except Exception:
         return None
+
+
+def _read_skill_body(skill_dir: Path) -> str:
+    """Read SKILL.md body (after frontmatter) from *skill_dir*."""
+    try:
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+    fm = _parse_frontmatter(text)
+    if fm is not None:
+        parts = text.split("---", 2)
+        return parts[2].strip() if len(parts) >= 3 else text
+    return text
 
 
 def read_skill(skill_dir: Path) -> tuple[dict, str]:
@@ -94,32 +113,21 @@ def read_skill(skill_dir: Path) -> tuple[dict, str]:
     return {}, text
 
 
-def discover_references(skill_dir: Path, skill_name: str) -> dict[str, str]:
-    """Auto-discover ALL reference files in a skill directory.
+def make_builtin_skill(pkg_dir: Path, *, default_name: str = "") -> Skill:
+    """Create a Skill from a package directory with SKILL.md.
 
-    Skips: SKILL.md, __init__.py, __pycache__/ dirs, .pyc files.
-    Returns dict mapping vfs://{skill_name}/{relative_path} → file content.
-    Text files are read as UTF-8; binary files are skipped gracefully.
+    Reads frontmatter for name/description, pre-loads body content.
+    *pkg_dir* is kept as ``path`` so ``SkillManager`` can mount references.
     """
-    result: dict[str, str] = {}
-    if not skill_dir.is_dir():
-        return result
-    for f in sorted(skill_dir.rglob("*")):
-        if not f.is_file():
-            continue
-        if f.name in ("SKILL.md", "__init__.py"):
-            continue
-        if "__pycache__" in f.parts:
-            continue
-        if f.suffix == ".pyc":
-            continue
-        try:
-            content = f.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        rel = f.relative_to(skill_dir).as_posix()
-        result[f"vfs://{skill_name}/{rel}"] = content
-    return result
+    fm, content = read_skill(pkg_dir)
+    name = fm.get("name", default_name)
+    description = fm.get("description", "")
+    return Skill(
+        metadata=SkillMetadata(name=name, description=description),
+        path=pkg_dir,
+        vfs_uri=f"vfs://{name}/",
+        _content=content,
+    )
 
 
 class SkillManager:
@@ -133,13 +141,13 @@ class SkillManager:
         self.discover()
 
     def register(self, skill: Skill) -> None:
-        """Register a skill programmatically. Skipped if a discovered skill with the same name exists."""
+        """Register a skill programmatically.  Skipped if a discovered skill with the same name exists."""
         if skill.metadata.name not in self._skills:
             self._builtin_skills[skill.metadata.name] = skill
-            self._mount_to_vfs(skill)
+            self._mount_vfs(skill)
 
     def discover(self) -> None:
-        """Re-discover directory-based skills. Registered skills are NOT cleared."""
+        """Re-discover directory-based skills.  Registered skills are NOT cleared."""
         self._skills.clear()
         for d in self._skill_dirs:
             if not d.is_dir():
@@ -151,27 +159,22 @@ class SkillManager:
                         self._skills[skill.metadata.name] = skill
 
     def _load_skill(self, path: Path) -> Skill | None:
-        skill_md = path / "SKILL.md"
-        try:
-            text = skill_md.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return None
-        fm = _parse_frontmatter(text)
+        fm, _body = read_skill(path)
         if not fm:
             return None
         meta = SkillMetadata.from_dict(fm)
         if not meta.name:
             return None
         skill = Skill(path=path, metadata=meta)
-        skill.virtual_files = discover_references(path, meta.name)
-        self._mount_to_vfs(skill)
+        self._mount_vfs(skill)
         return skill
 
-    def _mount_to_vfs(self, skill: Skill) -> None:
+    def _mount_vfs(self, skill: Skill) -> None:
+        """Mount skill reference files into VFS."""
         if self._vfs is None:
             return
-        for path, content in skill.virtual_files.items():
-            self._vfs.add(path, content)
+        if skill.path is not None:
+            self._vfs.mount_directory(skill.path, skill.metadata.name)
 
     def get(self, name: str) -> Skill | None:
         """Look up a skill by name."""

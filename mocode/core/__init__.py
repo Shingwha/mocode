@@ -8,7 +8,7 @@ from .provider import Provider, Response, ToolCall, Usage
 from .tool import Tool, ToolRegistry, ToolError
 from .hook import AgentHook, AgentHookContext, HookRunner
 from .prompt import Prompt, Section
-from .skill import Skill, SkillMetadata, SkillManager
+from .skill import Skill, SkillMetadata, SkillManager, make_builtin_skill, read_skill
 from .virtualfs import VirtualFS
 
 __all__ = [
@@ -31,5 +31,7 @@ __all__ = [
     "Skill",
     "SkillMetadata",
     "SkillManager",
+    "make_builtin_skill",
+    "read_skill",
     "VirtualFS",
 ]
