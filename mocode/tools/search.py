@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 from ..core.tool import Tool
@@ -229,6 +230,64 @@ def _glob(args: dict, vfs: VirtualFS | None = None) -> str:
 # ── grep ─────────────────────────────────────────────────────
 
 
+def _search_files(
+    pattern: re.Pattern,
+    file_iter: Iterable[tuple[str, list[str]]],
+    output_mode: str,
+    context_lines: int,
+    max_results: int,
+    not_found_msg: str,
+) -> str:
+    """Core grep logic — operates on ``(display_path, lines)`` pairs.
+
+    This is the single implementation for all grep variants (VFS, real-fs,
+    single-file).  Each variant only needs to provide an iterator that yields
+    ``(display_path, file_lines)`` tuples.
+    """
+    if output_mode == "files":
+        found: list[str] = []
+        for display_path, file_lines in file_iter:
+            if any(pattern.search(line) for line in file_lines):
+                found.append(display_path)
+                if len(found) >= max_results:
+                    break
+        return format_grep_files(found, pattern.pattern)
+
+    if output_mode == "count":
+        entries: list[str] = []
+        for display_path, file_lines in file_iter:
+            count = sum(1 for line in file_lines if pattern.search(line))
+            if count > 0:
+                entries.append(f"{display_path}:{count}")
+                if len(entries) >= max_results:
+                    break
+        return format_grep_count(entries, pattern.pattern)
+
+    # content mode
+    hits: list[str] = []
+    for display_path, file_lines in file_iter:
+        match_indices = [
+            i for i, line in enumerate(file_lines) if pattern.search(line)
+        ]
+        if not match_indices:
+            continue
+        display_indices = expand_context_indices(
+            match_indices, len(file_lines), context_lines
+        )
+        result = format_grep_content(
+            file_lines, match_indices, display_indices,
+            display_path, pattern.pattern, max_results, hits,
+        )
+        if result:
+            return result
+    if not hits:
+        return not_found_msg
+    return (
+        f"[Showing {len(hits)} match(es) for '{pattern.pattern}']\n"
+        + "\n".join(hits)
+    )
+
+
 def _grep_single_file(
     pattern: re.Pattern,
     filepath: Path,
@@ -238,39 +297,15 @@ def _grep_single_file(
 ) -> str:
     """Search a single file and return formatted results."""
     try:
-        file_lines = (
-            filepath.read_text(encoding="utf-8", errors="replace").splitlines()
-        )
+        lines = filepath.read_text(encoding="utf-8", errors="replace").splitlines()
     except Exception:
         return f"Cannot read file: {filepath}"
 
-    match_indices = [i for i, line in enumerate(file_lines) if pattern.search(line)]
-
-    if not match_indices:
-        return f"No matches for '{pattern.pattern}' in {filepath}"
-
-    if output_mode == "files":
-        return format_grep_files([str(filepath)], pattern.pattern)
-
-    if output_mode == "count":
-        return format_grep_count(
-            [f"{filepath}:{len(match_indices)}"], pattern.pattern
-        )
-
-    # content mode
-    display_indices = expand_context_indices(
-        match_indices, len(file_lines), context_lines
-    )
-    hits: list[str] = []
-    result = format_grep_content(
-        file_lines, match_indices, display_indices,
-        str(filepath), pattern.pattern, max_results, hits,
-    )
-    if result:
-        return result
-    return (
-        f"[Showing {len(hits)} match(es) for '{pattern.pattern}']\n"
-        + "\n".join(hits)
+    return _search_files(
+        pattern,
+        [(str(filepath), lines)],
+        output_mode, context_lines, max_results,
+        f"No matches for '{pattern.pattern}' in {filepath}",
     )
 
 
@@ -323,58 +358,16 @@ def _grep_vfs(
     context_lines: int,
 ) -> str:
     """Search VFS files using shared formatting utilities."""
-    if output_mode == "files":
-        found = []
-        for p in vfs.iter_files(base_path):
-            if not _match_vfs_type(p, type_filter):
-                continue
-            for line in vfs.get(p).splitlines():
-                if pattern.search(line):
-                    found.append(p)
-                    break
-            if len(found) >= max_results:
-                break
-        return format_grep_files(found, pattern.pattern)
 
-    if output_mode == "count":
-        entries = []
+    def _iter() -> Iterable[tuple[str, list[str]]]:
         for p in vfs.iter_files(base_path):
-            if not _match_vfs_type(p, type_filter):
-                continue
-            count = sum(
-                1 for line in vfs.get(p).splitlines() if pattern.search(line)
-            )
-            if count > 0:
-                entries.append(f"{p}:{count}")
-            if len(entries) >= max_results:
-                break
-        return format_grep_count(entries, pattern.pattern)
+            if _match_vfs_type(p, type_filter):
+                yield p, vfs.get(p).splitlines()
 
-    # content mode
-    hits: list[str] = []
-    for p in vfs.iter_files(base_path):
-        if not _match_vfs_type(p, type_filter):
-            continue
-        file_lines = vfs.get(p).splitlines()
-        match_indices = [
-            i for i, line in enumerate(file_lines) if pattern.search(line)
-        ]
-        if not match_indices:
-            continue
-        display_indices = expand_context_indices(
-            match_indices, len(file_lines), context_lines
-        )
-        result = format_grep_content(
-            file_lines, match_indices, display_indices,
-            p, pattern.pattern, max_results, hits,
-        )
-        if result:
-            return result
-    if not hits:
-        return f"No matches for '{pattern.pattern}' in virtual files"
-    return (
-        f"[Showing {len(hits)} match(es) for '{pattern.pattern}']\n"
-        + "\n".join(hits)
+    return _search_files(
+        pattern, _iter(),
+        output_mode, context_lines, max_results,
+        f"No matches for '{pattern.pattern}' in virtual files",
     )
 
 
@@ -389,80 +382,25 @@ def _grep_real_fs(
     """Search real filesystem using shared formatting utilities."""
     cwd = Path.cwd()
 
-    if output_mode == "files":
-        found = []
+    def _iter() -> Iterable[tuple[str, list[str]]]:
         for filepath in _walk_text_files(base_path, type_filter):
             try:
-                with open(filepath, encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        if pattern.search(line):
-                            found.append(filepath)
-                            break
+                lines = Path(filepath).read_text(
+                    encoding="utf-8", errors="replace"
+                ).splitlines()
             except Exception:
-                pass
-            if len(found) >= max_results:
-                break
-        paths = [
-            str(Path(f).relative_to(cwd)) if Path(f).is_relative_to(cwd) else f
-            for f in found
-        ]
-        return format_grep_files(paths, pattern.pattern)
-
-    if output_mode == "count":
-        entries = []
-        for filepath in _walk_text_files(base_path, type_filter):
-            try:
-                count = 0
-                with open(filepath, encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        if pattern.search(line):
-                            count += 1
-                if count > 0:
-                    entries.append(f"{filepath}:{count}")
-            except Exception:
-                pass
-            if len(entries) >= max_results:
-                break
-        return format_grep_count(entries, pattern.pattern)
-
-    # content mode
-    hits: list[str] = []
-    for filepath in _walk_text_files(base_path, type_filter):
-        try:
-            file_lines = (
-                Path(filepath)
-                .read_text(encoding="utf-8", errors="replace")
-                .splitlines()
+                continue
+            dp = (
+                str(Path(filepath).relative_to(cwd))
+                if Path(filepath).is_relative_to(cwd)
+                else filepath
             )
-        except Exception:
-            continue
+            yield dp, lines
 
-        match_indices = [
-            i for i, line in enumerate(file_lines) if pattern.search(line)
-        ]
-        if not match_indices:
-            continue
-
-        display_path = (
-            str(Path(filepath).relative_to(cwd))
-            if Path(filepath).is_relative_to(cwd)
-            else filepath
-        )
-        display_indices = expand_context_indices(
-            match_indices, len(file_lines), context_lines
-        )
-        result = format_grep_content(
-            file_lines, match_indices, display_indices,
-            display_path, pattern.pattern, max_results, hits,
-        )
-        if result:
-            return result
-
-    if not hits:
-        return f"No matches for '{pattern.pattern}' in {base_path}"
-    return (
-        f"[Showing {len(hits)} match(es) for '{pattern.pattern}']\n"
-        + "\n".join(hits)
+    return _search_files(
+        pattern, _iter(),
+        output_mode, context_lines, max_results,
+        f"No matches for '{pattern.pattern}' in {base_path}",
     )
 
 
