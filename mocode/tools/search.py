@@ -165,7 +165,8 @@ def _glob(args: dict, vfs: VirtualFS | None = None) -> str:
     if _is_vfs_path(pattern) or _is_vfs_path(base_path):
         if not vfs:
             return "No virtual file system available"
-        vfs_files = vfs.glob(pattern)
+        vfs_path = base_path if _is_vfs_path(base_path) else None
+        vfs_files = vfs.glob(pattern, path=vfs_path)
         if not vfs_files:
             return f"No virtual files matching '{pattern}'"
         return f"[Found {len(vfs_files)} virtual file(s) matching '{pattern}']\n" + "\n".join(vfs_files)
@@ -275,6 +276,7 @@ def _grep(args: dict, vfs: VirtualFS | None = None) -> str:
             output_mode=output_mode,
             max_results=max_results,
             context_lines=context_lines,
+            path=base_path,
         )
 
     # Single file search — when path points to a file, search only that file

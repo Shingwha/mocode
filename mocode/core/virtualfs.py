@@ -58,15 +58,26 @@ class VirtualFS:
 
     # ── search ────────────────────────────────────────────────
 
-    def glob(self, pattern: str) -> list[str]:
+    def _iter_files(self, path: str | None = None):
+        """Yield vfs paths, optionally filtered to those under *path*."""
+        if path:
+            prefix = _normalize(path)
+            if prefix != _VFS_PREFIX:
+                if not prefix.endswith("/"):
+                    prefix += "/"
+                return (p for p in self._files if p.startswith(prefix))
+        return iter(self._files)
+
+    def glob(self, pattern: str, *, path: str | None = None) -> list[str]:
         """Match virtual file paths against a glob pattern.
 
         *pattern* is matched against the path **after** the ``vfs://`` prefix.
+        *path* restricts the search to files under that VFS subdirectory.
         Returns matching paths **with** the ``vfs://`` prefix.
         """
         clean_pattern = _strip_prefix(pattern)
         return sorted(
-            p for p in self._files
+            p for p in self._iter_files(path)
             if fnmatch.fnmatch(_strip_prefix(p), clean_pattern)
         )
 
@@ -79,21 +90,23 @@ class VirtualFS:
         max_results: int = 100,
         context_lines: int = 0,
         ignore_case: bool = False,
+        path: str | None = None,
     ) -> str:
         """Search virtual file contents.
 
         Returns a formatted string matching the tool output conventions.
         *output_mode* is one of ``"content"``, ``"files"``, ``"count"``.
+        *path* restricts the search to files under that VFS subdirectory.
         """
         if isinstance(pattern, str):
             flags = re.IGNORECASE if ignore_case else 0
             pattern = re.compile(pattern, flags)
 
         if output_mode == "files":
-            return self._grep_files(pattern, type_filter, max_results)
+            return self._grep_files(pattern, type_filter, max_results, path)
         if output_mode == "count":
-            return self._grep_count(pattern, type_filter, max_results)
-        return self._grep_content(pattern, type_filter, max_results, context_lines)
+            return self._grep_count(pattern, type_filter, max_results, path)
+        return self._grep_content(pattern, type_filter, max_results, context_lines, path)
 
     # ── grep internals ────────────────────────────────────────
 
@@ -108,14 +121,15 @@ class VirtualFS:
         pattern: re.Pattern,
         type_filter: set[str] | None,
         max_results: int,
+        path: str | None = None,
     ) -> str:
         found: list[str] = []
-        for path, content in self._files.items():
-            if not self._match_filter(path, type_filter):
+        for p in self._iter_files(path):
+            if not self._match_filter(p, type_filter):
                 continue
-            for line in content.splitlines():
+            for line in self._files[p].splitlines():
                 if pattern.search(line):
-                    found.append(path)
+                    found.append(p)
                     break
             if len(found) >= max_results:
                 break
@@ -128,14 +142,15 @@ class VirtualFS:
         pattern: re.Pattern,
         type_filter: set[str] | None,
         max_results: int,
+        path: str | None = None,
     ) -> str:
         results: list[str] = []
-        for path, content in self._files.items():
-            if not self._match_filter(path, type_filter):
+        for p in self._iter_files(path):
+            if not self._match_filter(p, type_filter):
                 continue
-            count = sum(1 for line in content.splitlines() if pattern.search(line))
+            count = sum(1 for line in self._files[p].splitlines() if pattern.search(line))
             if count > 0:
-                results.append(f"{path}:{count}")
+                results.append(f"{p}:{count}")
             if len(results) >= max_results:
                 break
         if not results:
@@ -148,12 +163,13 @@ class VirtualFS:
         type_filter: set[str] | None,
         max_results: int,
         context_lines: int,
+        path: str | None = None,
     ) -> str:
         hits: list[str] = []
-        for path, content in self._files.items():
-            if not self._match_filter(path, type_filter):
+        for p in self._iter_files(path):
+            if not self._match_filter(p, type_filter):
                 continue
-            file_lines = content.splitlines()
+            file_lines = self._files[p].splitlines()
             match_indices = [i for i, line in enumerate(file_lines) if pattern.search(line)]
             if not match_indices:
                 continue
@@ -171,7 +187,7 @@ class VirtualFS:
             match_set = set(match_indices)
             for idx in display_indices:
                 sep = ":" if idx in match_set else "-"
-                hits.append(f"{path}{sep}{idx + 1}{sep}{file_lines[idx]}")
+                hits.append(f"{p}{sep}{idx + 1}{sep}{file_lines[idx]}")
                 if len(hits) >= max_results:
                     return (
                         f"[Showing {len(hits)} matches for '{pattern.pattern}']\n"

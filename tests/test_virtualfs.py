@@ -105,3 +105,102 @@ class TestMountDirectory:
         vfs = VirtualFS()
         mounted = vfs.mount_directory(tmp_path / "nope", "nope")
         assert mounted == {}
+
+
+class TestGlobPath:
+    """Tests for VirtualFS.glob with path (subdirectory) filtering."""
+
+    def test_glob_subdir_basic(self):
+        vfs = VirtualFS()
+        vfs.add("workflow/a.md", "A")
+        vfs.add("workflow/b.md", "B")
+        vfs.add("other/c.md", "C")
+        result = vfs.glob("*.md", path="vfs://workflow")
+        assert result == ["vfs://workflow/a.md", "vfs://workflow/b.md"]
+
+    def test_glob_subdir_root_returns_all(self):
+        """path='vfs://' should search everything."""
+        vfs = VirtualFS()
+        vfs.add("a.md", "A")
+        vfs.add("b.py", "B")
+        result = vfs.glob("vfs://*", path="vfs://")
+        assert result == ["vfs://a.md", "vfs://b.py"]
+
+    def test_glob_subdir_no_match(self):
+        vfs = VirtualFS()
+        vfs.add("other/a.md", "A")
+        assert vfs.glob("*.md", path="vfs://workflow") == []
+
+    def test_glob_subdir_deep_nested(self):
+        """Multi-level nested directory filtering."""
+        vfs = VirtualFS()
+        vfs.add("workflow/reference/example/test.md", "deep")
+        vfs.add("workflow/reference/guide.md", "guide")
+        vfs.add("workflow/overview.md", "overview")
+        result = vfs.glob("*.md", path="vfs://workflow/reference/example")
+        assert result == ["vfs://workflow/reference/example/test.md"]
+
+    def test_glob_subdir_no_prefix_leak(self):
+        """Ensure 'workflow/' does not match 'workflowish/'."""
+        vfs = VirtualFS()
+        vfs.add("workflow/a.md", "A")
+        vfs.add("workflowish/b.md", "B")
+        result = vfs.glob("*.md", path="vfs://workflow")
+        assert result == ["vfs://workflow/a.md"]
+
+    def test_glob_no_path_backward_compat(self):
+        """Omitting path should search all files (backward compatible)."""
+        vfs = VirtualFS()
+        vfs.add("skill/a.md", "A")
+        vfs.add("other/b.md", "B")
+        result = vfs.glob("vfs://*/*.md")
+        assert result == ["vfs://other/b.md", "vfs://skill/a.md"]
+
+
+class TestGrepPath:
+    """Tests for VirtualFS.grep with path (subdirectory) filtering."""
+
+    def test_grep_subdir_content(self):
+        vfs = VirtualFS()
+        vfs.add("workflow/guide.md", "run the workflow")
+        vfs.add("other/readme.md", "workflow is cool")
+        result = vfs.grep("workflow", path="vfs://workflow")
+        assert "vfs://workflow/guide.md" in result
+        assert "vfs://other/readme.md" not in result
+
+    def test_grep_root_path_returns_all(self):
+        vfs = VirtualFS()
+        vfs.add("a.md", "hello")
+        result = vfs.grep("hello", path="vfs://")
+        assert "vfs://a.md" in result
+
+    def test_grep_subdir_files_mode(self):
+        vfs = VirtualFS()
+        vfs.add("workflow/guide.md", "run the flow")
+        vfs.add("other/doc.md", "flow chart")
+        result = vfs.grep("flow", output_mode="files", path="vfs://workflow")
+        assert "vfs://workflow/guide.md" in result
+        assert "vfs://other/doc.md" not in result
+
+    def test_grep_subdir_count_mode(self):
+        vfs = VirtualFS()
+        vfs.add("workflow/guide.md", "flow\nflow\nflow")
+        vfs.add("other/doc.md", "flow")
+        result = vfs.grep("flow", output_mode="count", path="vfs://workflow")
+        assert "vfs://workflow/guide.md:3" in result
+        assert "other" not in result
+
+    def test_grep_subdir_no_match(self):
+        vfs = VirtualFS()
+        vfs.add("other/readme.md", "workflow is cool")
+        result = vfs.grep("workflow", path="vfs://workflow")
+        assert "No matches" in result
+
+    def test_grep_no_path_backward_compat(self):
+        """Omitting path should search all files (backward compatible)."""
+        vfs = VirtualFS()
+        vfs.add("a.md", "hello")
+        vfs.add("b.md", "hello")
+        result = vfs.grep("hello")
+        assert "vfs://a.md" in result
+        assert "vfs://b.md" in result

@@ -251,3 +251,103 @@ class TestGrepToolSchema:
         schema = tool.to_schema()
         required = schema["function"]["parameters"]["required"]
         assert "ignore_case" not in required
+
+
+# ── VFS subdirectory filtering ─────────────────────────────
+
+
+class TestGlobVfsSubdir:
+    def test_glob_vfs_subdir(self):
+        vfs = VirtualFS()
+        vfs.add("workflow/a.md", "A")
+        vfs.add("workflow/b.md", "B")
+        vfs.add("amesim/c.md", "C")
+        tool = GlobTool(vfs=vfs)
+        result = tool.run({"pattern": "*.md", "path": "vfs://workflow"})
+        assert "a.md" in result
+        assert "b.md" in result
+        assert "c.md" not in result
+
+    def test_glob_vfs_root(self):
+        """path='vfs://' should search all VFS files."""
+        vfs = VirtualFS()
+        vfs.add("workflow/a.md", "A")
+        vfs.add("other/b.md", "B")
+        tool = GlobTool(vfs=vfs)
+        result = tool.run({"pattern": "*.md", "path": "vfs://"})
+        assert "a.md" in result
+        assert "b.md" in result
+
+    def test_glob_vfs_deep_subdir(self):
+        vfs = VirtualFS()
+        vfs.add("workflow/ref/example/test.md", "deep")
+        vfs.add("workflow/overview.md", "top")
+        tool = GlobTool(vfs=vfs)
+        result = tool.run({"pattern": "*.md", "path": "vfs://workflow/ref/example"})
+        assert "test.md" in result
+        assert "overview.md" not in result
+
+
+class TestGrepVfsSubdir:
+    def test_grep_vfs_subdir_content(self):
+        vfs = VirtualFS()
+        vfs.add("workflow/guide.md", "run the flow")
+        vfs.add("other/doc.md", "flow chart")
+        tool = GrepTool(vfs=vfs)
+        result = tool.run({
+            "pattern": "flow",
+            "path": "vfs://workflow",
+            "output_mode": "content",
+            "limit": 100,
+            "context": 0,
+            "type": "",
+        })
+        assert "guide.md" in result
+        assert "doc.md" not in result
+
+    def test_grep_vfs_subdir_files(self):
+        vfs = VirtualFS()
+        vfs.add("workflow/guide.md", "run the flow")
+        vfs.add("other/doc.md", "flow chart")
+        tool = GrepTool(vfs=vfs)
+        result = tool.run({
+            "pattern": "flow",
+            "path": "vfs://workflow",
+            "output_mode": "files",
+            "limit": 100,
+            "context": 0,
+            "type": "",
+        })
+        assert "guide.md" in result
+        assert "doc.md" not in result
+
+    def test_grep_vfs_subdir_count(self):
+        vfs = VirtualFS()
+        vfs.add("workflow/guide.md", "flow\nflow")
+        vfs.add("other/doc.md", "flow")
+        tool = GrepTool(vfs=vfs)
+        result = tool.run({
+            "pattern": "flow",
+            "path": "vfs://workflow",
+            "output_mode": "count",
+            "limit": 100,
+            "context": 0,
+            "type": "",
+        })
+        assert "guide.md:2" in result
+        assert "other" not in result
+
+    def test_grep_vfs_root(self):
+        """path='vfs://' should search all VFS files."""
+        vfs = VirtualFS()
+        vfs.add("a.md", "hello")
+        tool = GrepTool(vfs=vfs)
+        result = tool.run({
+            "pattern": "hello",
+            "path": "vfs://",
+            "output_mode": "content",
+            "limit": 100,
+            "context": 0,
+            "type": "",
+        })
+        assert "a.md" in result
