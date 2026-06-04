@@ -1,4 +1,4 @@
-"""Tests for tools/search.py — GrepTool and GlobTool."""
+"""Tests for tools/search.py — GrepTool, GlobTool, and shared utils."""
 
 from __future__ import annotations
 
@@ -6,6 +6,12 @@ import pytest
 from pathlib import Path
 
 from mocode.tools.search import _grep, GrepTool, GlobTool
+from mocode.tools.utils import (
+    expand_context_indices,
+    format_grep_content,
+    format_grep_count,
+    format_grep_files,
+)
 from mocode.core.virtualfs import VirtualFS
 
 
@@ -351,3 +357,66 @@ class TestGrepVfsSubdir:
             "type": "",
         })
         assert "a.md" in result
+
+
+# ── shared utils ────────────────────────────────────────────
+
+
+class TestExpandContextIndices:
+    def test_no_context(self):
+        assert expand_context_indices([2, 5], 10, 0) == [2, 5]
+
+    def test_context_expands(self):
+        result = expand_context_indices([3], 10, 1)
+        assert result == [2, 3, 4]
+
+    def test_context_clamped(self):
+        result = expand_context_indices([0], 5, 2)
+        assert result == [0, 1, 2]
+
+    def test_context_merges_overlapping(self):
+        result = expand_context_indices([2, 4], 10, 1)
+        assert result == [1, 2, 3, 4, 5]
+
+
+class TestFormatGrepFiles:
+    def test_empty(self):
+        assert "No files" in format_grep_files([], "pattern")
+
+    def test_with_files(self):
+        result = format_grep_files(["a.py", "b.py"], "pattern")
+        assert "Found 2 file(s)" in result
+        assert "a.py" in result
+        assert "b.py" in result
+
+
+class TestFormatGrepCount:
+    def test_empty(self):
+        assert "No matches" in format_grep_count([], "pattern")
+
+    def test_with_entries(self):
+        result = format_grep_count(["a.py:3", "b.py:1"], "pattern")
+        assert "a.py:3" in result
+        assert "b.py:1" in result
+
+
+class TestFormatGrepContent:
+    def test_returns_empty_when_not_full(self):
+        hits: list[str] = []
+        result = format_grep_content(
+            ["line1", "match", "line3"],
+            [1], [0, 1, 2],
+            "file.py", "match", 100, hits,
+        )
+        assert result == ""  # not at max
+        assert len(hits) == 3
+
+    def test_returns_result_at_max(self):
+        hits: list[str] = []
+        result = format_grep_content(
+            ["match1", "match2"],
+            [0, 1], [0, 1],
+            "file.py", "match", 2, hits,
+        )
+        assert "Showing" in result
+        assert "matches" in result

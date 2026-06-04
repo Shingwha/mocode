@@ -58,59 +58,52 @@ class Skill:
 
     def load_content(self) -> str:
         if self._content is None:
-            self._content = self._read_body()
+            self._content = _read_skill_body(self.path)
         return self._content
 
-    def _read_body(self) -> str:
-        if self.path is None:
-            return ""
-        return _read_skill_body(self.path)
+
+# ── SKILL.md parsing ─────────────────────────────────────────
 
 
-def _parse_frontmatter(text: str) -> dict | None:
+def _parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse YAML frontmatter from SKILL.md text.
+
+    Returns ``(frontmatter_dict, body_text)``.
+    No frontmatter → ``({}, text)``.
+    """
     if not text.startswith("---"):
-        return None
+        return {}, text
     parts = text.split("---", 2)
     if len(parts) < 3:
-        return None
+        return {}, text
     try:
         import yaml
 
-        return yaml.safe_load(parts[1]) or {}
+        fm = yaml.safe_load(parts[1]) or {}
     except Exception:
-        return None
+        return {}, text
+    return fm, parts[2].strip()
 
 
-def _read_skill_body(skill_dir: Path) -> str:
-    """Read SKILL.md body (after frontmatter) from *skill_dir*."""
-    try:
-        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return ""
-    fm = _parse_frontmatter(text)
-    if fm is not None:
-        parts = text.split("---", 2)
-        return parts[2].strip() if len(parts) >= 3 else text
-    return text
+def _read_skill_md(skill_dir: Path) -> tuple[dict, str]:
+    """Read and parse SKILL.md from *skill_dir*.
 
-
-def read_skill(skill_dir: Path) -> tuple[dict, str]:
-    """Read SKILL.md from *skill_dir*.
-
-    Returns ``(frontmatter_dict, body_content)``.
-    Frontmatter parsing failure → ``({}, raw_text)``.
+    Returns ``(frontmatter_dict, body_text)``.
     File missing / unreadable → ``({}, "")``.
     """
     try:
         text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return {}, ""
-    fm = _parse_frontmatter(text)
-    if fm is not None:
-        parts = text.split("---", 2)
-        body = parts[2].strip() if len(parts) >= 3 else text
-        return fm, body
-    return {}, text
+    return _parse_frontmatter(text)
+
+
+def _read_skill_body(skill_dir: Path | None) -> str:
+    """Read SKILL.md body (after frontmatter) from *skill_dir*."""
+    if skill_dir is None:
+        return ""
+    _fm, body = _read_skill_md(skill_dir)
+    return body
 
 
 def make_builtin_skill(pkg_dir: Path, *, default_name: str = "") -> Skill:
@@ -119,7 +112,7 @@ def make_builtin_skill(pkg_dir: Path, *, default_name: str = "") -> Skill:
     Reads frontmatter for name/description, pre-loads body content.
     *pkg_dir* is kept as ``path`` so ``SkillManager`` can mount references.
     """
-    fm, content = read_skill(pkg_dir)
+    fm, content = _read_skill_md(pkg_dir)
     name = fm.get("name", default_name)
     description = fm.get("description", "")
     return Skill(
@@ -128,6 +121,9 @@ def make_builtin_skill(pkg_dir: Path, *, default_name: str = "") -> Skill:
         vfs_uri=f"vfs://{name}/",
         _content=content,
     )
+
+
+# ── SkillManager ─────────────────────────────────────────────
 
 
 class SkillManager:
@@ -144,7 +140,7 @@ class SkillManager:
         """Register a skill programmatically.  Skipped if a discovered skill with the same name exists."""
         if skill.metadata.name not in self._skills:
             self._builtin_skills[skill.metadata.name] = skill
-            self._mount_vfs(skill)
+            self._mount_to_vfs(skill)
 
     def discover(self) -> None:
         """Re-discover directory-based skills.  Registered skills are NOT cleared."""
@@ -159,20 +155,37 @@ class SkillManager:
                         self._skills[skill.metadata.name] = skill
 
     def _load_skill(self, path: Path) -> Skill | None:
-        fm, _body = read_skill(path)
+        fm, _body = _read_skill_md(path)
         if not fm:
             return None
         meta = SkillMetadata.from_dict(fm)
         if not meta.name:
             return None
-        return Skill(path=path, metadata=meta)
+        skill = Skill(path=path, metadata=meta)
+        self._mount_to_vfs(skill)
+        return skill
 
-    def _mount_vfs(self, skill: Skill) -> None:
+    def _mount_to_vfs(self, skill: Skill) -> None:
         """Mount skill reference files into VFS."""
-        if self._vfs is None:
+        if self._vfs is None or skill.path is None:
             return
-        if skill.path is not None:
-            self._vfs.mount_directory(skill.path, skill.metadata.name)
+        skill_dir = skill.path
+        if not skill_dir.is_dir():
+            return
+        skip = {"SKILL.md", "__init__.py"}
+        for f in sorted(skill_dir.rglob("*")):
+            if not f.is_file():
+                continue
+            if f.name in skip or f.suffix == ".pyc":
+                continue
+            if "__pycache__" in f.parts:
+                continue
+            try:
+                content = f.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            rel = f.relative_to(skill_dir).as_posix()
+            self._vfs.add(f"vfs://{skill.metadata.name}/{rel}", content)
 
     def get(self, name: str) -> Skill | None:
         """Look up a skill by name."""

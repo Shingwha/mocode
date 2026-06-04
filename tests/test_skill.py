@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 from mocode.core import ToolError
-from mocode.core.skill import Skill, SkillManager, SkillMetadata, make_builtin_skill
+from mocode.core.skill import (
+    Skill,
+    SkillManager,
+    SkillMetadata,
+    make_builtin_skill,
+    _parse_frontmatter,
+    _read_skill_md,
+)
 from mocode.core.virtualfs import VirtualFS
 from mocode.tools.skill import SkillTool
 
@@ -46,6 +53,54 @@ class TestSkillMetadata:
         assert meta.name == "fastapi"
         assert meta.description == "FastAPI tips"
         assert meta.attrs == {}
+
+
+# ---------------------------------------------------------------------------
+# Frontmatter parsing
+# ---------------------------------------------------------------------------
+
+
+class TestParseFrontmatter:
+    def test_valid_frontmatter(self):
+        text = "---\nname: test\ndescription: desc\n---\n\nBody here"
+        fm, body = _parse_frontmatter(text)
+        assert fm["name"] == "test"
+        assert fm["description"] == "desc"
+        assert body == "Body here"
+
+    def test_no_frontmatter(self):
+        text = "Just plain text"
+        fm, body = _parse_frontmatter(text)
+        assert fm == {}
+        assert body == "Just plain text"
+
+    def test_incomplete_frontmatter(self):
+        text = "---\nname: test"
+        fm, body = _parse_frontmatter(text)
+        assert fm == {}
+        assert body == text
+
+    def test_empty_frontmatter(self):
+        text = "---\n---\nBody"
+        fm, body = _parse_frontmatter(text)
+        assert fm == {}
+        assert body == "Body"
+
+
+class TestReadSkillMd:
+    def test_reads_and_parses(self, tmp_path: Path):
+        (tmp_path / "SKILL.md").write_text(
+            "---\nname: test\ndescription: desc\n---\n\nHello",
+            encoding="utf-8",
+        )
+        fm, body = _read_skill_md(tmp_path)
+        assert fm["name"] == "test"
+        assert body == "Hello"
+
+    def test_missing_file(self, tmp_path: Path):
+        fm, body = _read_skill_md(tmp_path)
+        assert fm == {}
+        assert body == ""
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +202,35 @@ class TestSkillManager:
         _make_skill_dir(dir_b, "skill-b", "from dir b")
         mgr = SkillManager([dir_a, dir_b])
         assert set(mgr.names()) == {"skill-a", "skill-b"}
+
+    def test_discover_mounts_references_to_vfs(self, tmp_path: Path):
+        """SkillManager mounts skill reference files into VFS."""
+        skill_dir = tmp_path / "my-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: test\n---\n\nBody",
+            encoding="utf-8",
+        )
+        (skill_dir / "ref.md").write_text("reference content", encoding="utf-8")
+        vfs = VirtualFS()
+        mgr = SkillManager([tmp_path], vfs=vfs)
+        assert vfs.exists("vfs://my-skill/ref.md")
+        assert vfs.get("vfs://my-skill/ref.md") == "reference content"
+        # SKILL.md is skipped
+        assert not vfs.exists("vfs://my-skill/SKILL.md")
+
+    def test_register_mounts_to_vfs(self):
+        """Registered skill with path gets mounted into VFS."""
+        vfs = VirtualFS()
+        mgr = SkillManager(vfs=vfs)
+        skill = Skill(
+            metadata=SkillMetadata(name="test", description="desc"),
+            path=Path("/nonexistent"),  # _mount_to_vfs checks is_dir
+            vfs_uri="vfs://test/",
+        )
+        mgr.register(skill)
+        # path doesn't exist, so nothing mounted — but registration works
+        assert mgr.get("test") is skill
 
 
 # ---------------------------------------------------------------------------

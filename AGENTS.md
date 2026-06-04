@@ -26,11 +26,13 @@ mocode/core/           ← zero deps on app/, providers/, tools/, hooks/
   ├── tool.py          Tool + ToolRegistry (instance-scoped, schema generation)
   ├── hook.py          AgentHook base class + HookRunner (per-hook error isolation)
   ├── prompt.py        Section-based Prompt builder with priority, nested sections, xml/text format
-  └── skill.py         SkillManager — directory-based skill discovery (SKILL.md + YAML frontmatter)
+  ├── skill.py         SkillManager — directory-based skill discovery (SKILL.md + YAML frontmatter)
+  └── virtualfs.py     VirtualFS — slim dict-backed VFS (add/get/remove/iter_files only)
 
 mocode/providers/      OpenAI-compatible provider implementation
 mocode/tools/          Factory functions returning Tool instances with closures
-mocode/tools/_helpers.py  Shared encoding fallback (utf-8 → gbk → cp936 → gb2312) and path validation (`require_file`, `require_dir`, `read_text`, `decode_bytes`)
+  ├── _helpers.py      Shared encoding fallback and path validation
+  └── utils.py         Shared grep output formatting (format_grep_content/files/count, expand_context_indices)
 mocode/hooks/          Built-in hooks: CompactHook (auto 80% threshold), GoalHook
 mocode/prompts/        System prompt definitions for main agent, subagent, compact
 mocode/skills/         Built-in skill factories (e.g. WorkflowSkill) — registered programmatically
@@ -90,6 +92,7 @@ The workflow engine (`mocode/app/workflow/`) executes YAML-defined DAGs:
 - `from __future__ import annotations` at the top of every module
 - Public API surface: `mocode.core` re-exports all core types; `mocode.tools` re-exports all tool factories
 - Tests import from public API only (`mocode.core`, `mocode.tools`), never from internal submodules
+- `mocode.tools.utils` is internal — shared grep formatting used by `search.py`, not exported
 
 ### Tool factories (the most important pattern)
 
