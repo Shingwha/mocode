@@ -14,7 +14,7 @@ from ...core.agent import AgentConfig
 from ...core.skill import SkillManager
 from ...core.tool import ToolRegistry
 from ...core.virtualfs import VirtualFS
-from ...skills import WorkflowSkill
+from ...skills import AmesimTunerSkill, SimulinkTunerSkill, WorkflowSkill
 from ..workflow import WorkflowRegistry
 from ..workflow.cli import make_registry as _make_workflow_registry
 from ...hooks import CompactHook, GoalHook
@@ -151,6 +151,8 @@ class CLIApp:
 
         # Register built-in skills
         self._skill_mgr.register(WorkflowSkill())
+        self._skill_mgr.register(AmesimTunerSkill())
+        self._skill_mgr.register(SimulinkTunerSkill())
 
         # Collect virtual files from all registered skills into VFS
         for skill in self._skill_mgr._builtin_skills.values():

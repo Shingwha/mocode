@@ -178,15 +178,15 @@ class TestSkillManagerBuiltin:
         names = {m.name for m in mgr.all_metadata()}
         assert names == {"a", "b"}
 
-    def test_builtin_takes_priority_over_discovered(self, tmp_path: Path):
-        """Built-in skill with same name as discovered skill wins."""
+    def test_discovered_overrides_builtin(self, tmp_path: Path):
+        """Discovered skill overrides built-in skill with the same name."""
         _make_skill_dir(tmp_path, "shared", "discovered desc", "discovered body")
         mgr = SkillManager([tmp_path])
         mgr.register(Skill.builtin("shared", "builtin desc", "builtin body"))
         skill = mgr.get("shared")
         assert skill is not None
-        assert skill.load_content() == "builtin body"
-        assert skill._builtin is True
+        assert skill.load_content() == "discovered body"
+        assert skill._builtin is False
 
     def test_discover_does_not_clear_builtins(self, tmp_path: Path):
         mgr = SkillManager()

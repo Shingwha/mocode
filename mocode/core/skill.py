@@ -102,11 +102,9 @@ class SkillManager:
         self.discover()
 
     def register(self, skill: Skill) -> None:
-        """Register a programmatic (built-in) skill.
-
-        Built-in skills take priority over discovered skills with the same name.
-        """
-        self._builtin_skills[skill.metadata.name] = skill
+        """Register a built-in skill. Skipped if a discovered skill with the same name exists."""
+        if skill.metadata.name not in self._skills:
+            self._builtin_skills[skill.metadata.name] = skill
 
     def discover(self) -> None:
         """Re-discover directory-based skills. Built-in skills are NOT cleared."""
@@ -135,19 +133,17 @@ class SkillManager:
         return Skill(path=path, metadata=meta)
 
     def get(self, name: str) -> Skill | None:
-        """Look up a skill by name. Built-in skills take priority."""
-        if name in self._builtin_skills:
-            return self._builtin_skills[name]
-        return self._skills.get(name)
+        """Look up a skill by name."""
+        if name in self._skills:
+            return self._skills[name]
+        return self._builtin_skills.get(name)
 
     def all_metadata(self) -> list[SkillMetadata]:
-        """Return metadata for all skills (built-in first, then discovered)."""
-        result = [s.metadata for s in self._builtin_skills.values()]
-        result.extend(s.metadata for s in self._skills.values())
+        """Return metadata for all skills (discovered first, then built-in)."""
+        result = [s.metadata for s in self._skills.values()]
+        result.extend(s.metadata for s in self._builtin_skills.values())
         return result
 
     def names(self) -> list[str]:
-        """Return all skill names (built-in first, then discovered)."""
-        builtin_names = list(self._builtin_skills.keys())
-        discovered = [k for k in self._skills.keys() if k not in self._builtin_skills]
-        return builtin_names + discovered
+        """Return all skill names (discovered first, then built-in)."""
+        return list(self._skills.keys()) + list(self._builtin_skills.keys())

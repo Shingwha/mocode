@@ -17,8 +17,12 @@ To add a new built-in skill:
 
 from __future__ import annotations
 
+from .amesim_tuner import AmesimTunerSkill
+from .simulink_tuner import SimulinkTunerSkill
 from .workflow import WorkflowSkill
 
 __all__ = [
+    "AmesimTunerSkill",
+    "SimulinkTunerSkill",
     "WorkflowSkill",
 ]
