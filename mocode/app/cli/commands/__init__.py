@@ -1,13 +1,17 @@
-"""Commands package — Command protocol, registry, and result types."""
+"""Commands package — Command dataclass, Subcommand, registry, and result types."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Awaitable, Callable, Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from functools import cached_property
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
     from ..app import CLIApp
     from ..display import Display
+
+
+# ── Result & Context ──────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -34,13 +38,81 @@ class CommandContext:
     display: Display
 
 
-@runtime_checkable
-class Command(Protocol):
-    name: str  # primary invoker, e.g. "/export"
-    description: str  # shown in /help and autocomplete
-    aliases: tuple[str, ...]  # e.g. ("/exit",) for /quit; ("quit","exit") bare words
+# ── Subcommand ────────────────────────────────────────────
 
-    async def run(self, ctx: CommandContext) -> CommandResult: ...
+
+@dataclass
+class Subcommand:
+    """Subcommand declaration — pure data descriptor."""
+    name: str | tuple[str, ...]    # "run" or ("run", "r")
+    description: str
+    handler: Callable[[CommandContext, str], Awaitable[CommandResult]]
+    aliases: tuple[str, ...] = ()
+
+
+# ── Command ───────────────────────────────────────────────
+
+
+@dataclass
+class Command:
+    """The only command type. Supports subcommands, leaf handlers, menu, and default."""
+    name: str                                # "/workflow"
+    description: str
+    aliases: tuple[str, ...] = ()
+    subcommands: tuple[Subcommand, ...] = () # non-empty when command has subcommands
+    handler: Callable[[CommandContext], Awaitable[CommandResult]] | None = None
+    menu: Callable[[CommandContext, Command], Awaitable[CommandResult]] | None = None
+    default: Callable[[CommandContext, str], Awaitable[CommandResult]] | None = None
+
+    async def run(self, ctx: CommandContext) -> CommandResult:
+        """Entry dispatch: subcommand routing or leaf handler."""
+        if not self.subcommands:
+            # Leaf command
+            if self.handler:
+                return await self.handler(ctx)
+            return CommandResult.CONTINUE
+
+        # Has subcommands: parse first argument
+        parts = ctx.args.split(None, 1) if ctx.args else []
+        if parts:
+            sub_name = parts[0].lower()
+            remaining = parts[1] if len(parts) > 1 else ""
+            sub = self._sub_lookup.get(sub_name)
+            if sub:
+                return await sub.handler(ctx, remaining)
+            if self.default:
+                return await self.default(ctx, ctx.args)
+            available = ", ".join(
+                s.name if isinstance(s.name, str) else s.name[0]
+                for s in self.subcommands
+            )
+            ctx.display.warn(f"Unknown subcommand '{sub_name}'. Available: {available}")
+            return CommandResult.CONTINUE
+
+        # No arguments: menu or list subcommands
+        if self.menu:
+            return await self.menu(ctx, self)
+        available = ", ".join(
+            s.name if isinstance(s.name, str) else s.name[0]
+            for s in self.subcommands
+        )
+        ctx.display.info(f"Available subcommands: {available}")
+        return CommandResult.CONTINUE
+
+    @cached_property
+    def _sub_lookup(self) -> dict[str, Subcommand]:
+        """name/alias → Subcommand lookup table, lazily built."""
+        lookup: dict[str, Subcommand] = {}
+        for sub in self.subcommands:
+            names = (sub.name,) if isinstance(sub.name, str) else sub.name
+            for n in names:
+                lookup[n] = sub
+            for a in sub.aliases:
+                lookup[a] = sub
+        return lookup
+
+
+# ── CommandRegistry ───────────────────────────────────────
 
 
 class CommandRegistry:
@@ -52,13 +124,43 @@ class CommandRegistry:
         self._order: list[Command] = []
 
     def register(self, cmd: Command) -> None:
+        """Register a command. Auto-expands subcommands as /prefix:subname."""
+        # Register the main command
         self._by_name[cmd.name] = cmd
         for a in cmd.aliases:
             self._by_alias[a] = cmd
         self._order.append(cmd)
 
+        # Auto-expand subcommands to colon-style entries
+        if cmd.subcommands:
+            prefix = cmd.name  # e.g. "/workflow"
+            for sub in cmd.subcommands:
+                primary = sub.name if isinstance(sub.name, str) else sub.name[0]
+                member_name = f"{prefix}:{primary}"
+                handler = sub.handler
+
+                async def _leaf_run(ctx: CommandContext, _h=handler) -> CommandResult:
+                    return await _h(ctx, ctx.args)
+
+                member = Command(
+                    name=member_name,
+                    description=sub.description,
+                    aliases=sub.aliases,
+                    handler=_leaf_run,
+                )
+                self._by_name[member_name] = member
+                self._order.append(member)
+                for a in sub.aliases:
+                    self._by_alias[a] = member
+
+                # Also register secondary names from tuple (e.g. "ls" from ("list", "ls"))
+                if isinstance(sub.name, tuple):
+                    for secondary in sub.name[1:]:
+                        alt_name = f"{prefix}:{secondary}"
+                        self._by_alias[alt_name] = member
+
     def get(self, text: str) -> Command | None:
-        """Match by name or alias. Prefix-strips leading '/' for bare-word matching."""
+        """Match by name or alias."""
         if text in self._by_name:
             return self._by_name[text]
         return self._by_alias.get(text)
@@ -66,118 +168,3 @@ class CommandRegistry:
     def all(self) -> list[Command]:
         """All registered commands, sorted alphabetically by name."""
         return sorted(self._order, key=lambda c: c.name)
-
-
-# ── Subcommand group support ──────────────────────────────────
-
-
-@dataclass
-class Subcommand:
-    """A handler definition inside a CommandGroup."""
-    handler: Callable[[CommandContext, str], Awaitable[CommandResult]]
-    name: str | tuple[str, ...] = ""        # "list" or ("list", "ls")
-    description: str = ""
-    aliases: tuple[str, ...] = ()
-
-
-class CommandGroup:
-    """A command that dispatches to subcommands. Satisfies Command protocol."""
-
-    def __init__(
-        self,
-        name: str,
-        description: str,
-        subcmds: list[Subcommand],
-        *,
-        aliases: tuple[str, ...] = (),
-        menu: Callable[[CommandContext, CommandGroup], Awaitable[CommandResult]] | None = None,
-        default: Callable[[CommandContext, str], Awaitable[CommandResult]] | None = None,
-    ):
-        self.name = name
-        self.description = description
-        self.aliases = aliases
-        self._menu = menu
-        self._default = default
-        # Build lookup: canonical_name → Subcommand
-        #   e.g. {"list": sub, "ls": sub, "run": sub2, ...}
-        self._subcmds: dict[str, Subcommand] = {}
-        self._subcmd_list: list[Subcommand] = []   # unique, for display
-        for sub in subcmds:
-            self._subcmd_list.append(sub)
-            names = (sub.name,) if isinstance(sub.name, str) else sub.name
-            for n in names:
-                self._subcmds[n] = sub
-            for a in sub.aliases:
-                self._subcmds[a] = sub
-
-    async def run(self, ctx: CommandContext) -> CommandResult:
-        return await self.dispatch(ctx, ctx.args)
-
-    async def dispatch(self, ctx: CommandContext, args_str: str) -> CommandResult:
-        parts = args_str.split(None, 1) if args_str else []
-        if parts:
-            sub_name = parts[0].lower()
-            remaining = parts[1] if len(parts) > 1 else ""
-            sub = self._subcmds.get(sub_name)
-            if sub:
-                return await sub.handler(ctx, remaining)
-            # Unknown subcommand — try default handler (receives full args)
-            if self._default:
-                return await self._default(ctx, args_str)
-            available = ", ".join(s.name if isinstance(s.name, str) else s.name[0]
-                                  for s in self._subcmd_list)
-            ctx.display.warn(f"Unknown subcommand '{sub_name}'. Available: {available}")
-            return CommandResult.CONTINUE
-        # No subcommand → interactive menu
-        if self._menu:
-            return await self._menu(ctx, self)
-        available = ", ".join(s.name if isinstance(s.name, str) else s.name[0]
-                              for s in self._subcmd_list)
-        ctx.display.info(f"Available subcommands: {available}")
-        return CommandResult.CONTINUE
-
-
-def register_group(registry: CommandRegistry, group: CommandGroup, *, colon: bool = True) -> None:
-    """Register a CommandGroup in the registry.
-
-    The group itself is registered only in the lookup tables (so ``/workflow list``
-    space-style dispatch works) but **not** in ``_order``, keeping it hidden from
-    help output and autocomplete.  Colon-style entries are added to ``_order``
-    so they appear in help/autocomplete.
-
-    Args:
-        registry: CommandRegistry
-        group: CommandGroup instance
-        colon: if True, also register each subcmd as /prefix:name
-    """
-    # Register group for name/alias lookup only (hidden from help/autocomplete)
-    registry._by_name[group.name] = group
-    for a in group.aliases:
-        registry._by_alias[a] = group
-
-    if not colon:
-        return
-    prefix = group.name  # e.g. "/plan"
-    for sub in group._subcmd_list:
-        primary = sub.name if isinstance(sub.name, str) else sub.name[0]
-        cmd_name = f"{prefix}:{primary}"
-        member = _make_member(cmd_name, sub.description, sub.aliases, sub.handler)
-        registry.register(member)
-
-
-def _make_member(
-    name: str,
-    description: str,
-    aliases: tuple[str, ...],
-    handler: Callable[[CommandContext, str], Awaitable[CommandResult]],
-):
-    """Create a Command from a Subcommand handler (for colon-style registration)."""
-    async def _run(ctx: CommandContext) -> CommandResult:
-        return await handler(ctx, ctx.args)
-    _run.__qualname__ = f"GroupMember({name})"
-    return type("GroupMember", (), {
-        "name": name,
-        "description": description,
-        "aliases": aliases,
-        "run": _run,
-    })()

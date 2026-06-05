@@ -34,8 +34,7 @@ from ...tools import (
     SubAgentTool,
     WriteTool,
 )
-from .commands import CommandContext, CommandRegistry, CommandResult, register_group
-from .commands.prompts import register_prompt_commands
+from .commands import CommandContext, CommandRegistry, CommandResult
 
 
 class CLIApp:
@@ -58,34 +57,14 @@ class CLIApp:
             return  # caller checks and handles
 
         self.commands = CommandRegistry()
-        register_prompt_commands(self.commands)
+        from .commands.prompts import commands as prompt_commands
+        for cmd in prompt_commands:
+            self.commands.register(cmd)
         if self.interactive:
-            from .commands.quit import QuitCommand
-            from .commands.help import HelpCommand
-            from .commands.export import ExportCommand
-            from .commands.clear import ClearCommand
-            from .commands.model import ModelCommand
-            from .commands.resume import ResumeCommand
-            from .commands.connect import ConnectCommand
-            from .commands.copy import CopyCommand
-            from .commands.workflow import WorkflowCommand
-            from .commands.compact import CompactCommand
-
-            for cmd in [
-                QuitCommand(),
-                HelpCommand(),
-                ExportCommand(),
-                ClearCommand(),
-                ModelCommand(),
-                ResumeCommand(),
-                ConnectCommand(),
-                CopyCommand(),
-                CompactCommand(),
-            ]:
+            from .commands import builtin, workflow
+            for cmd in builtin.commands:
                 self.commands.register(cmd)
-
-            # Workflow: register_group with colon=True (hybrid: space + colon entries)
-            register_group(self.commands, WorkflowCommand())
+            self.commands.register(workflow.command)
 
         if self.interactive:
             from .input import Input
@@ -208,10 +187,10 @@ class CLIApp:
             for s in self._skill_mgr.all():
                 self.commands.register(make_skill_command(s))
 
-        # Register /plan:* commands (colon-style group)
+        # Register /plan commands
         if self.interactive:
-            from .commands.plan import PlanCommand
-            register_group(self.commands, PlanCommand())
+            from .commands.plan import command as plan_command
+            self.commands.register(plan_command)
 
         return agent
 

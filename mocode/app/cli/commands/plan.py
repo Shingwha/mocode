@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import CommandContext, CommandGroup, CommandResult, Subcommand
+from . import Command, CommandContext, CommandResult, Subcommand
 
 
 # ── Standalone handler functions ──────────────────────────
@@ -92,90 +92,18 @@ async def _default_plan(ctx: CommandContext, args: str) -> CommandResult:
     return CommandResult.text(prompt)
 
 
-# ── CommandGroup definition ───────────────────────────────
+# ── Command definition ────────────────────────────────────
 
 
-class PlanCommand(CommandGroup):
-    def __init__(self):
-        super().__init__(
-            name="/plan",
-            description="Create and execute implementation plans",
-            subcmds=[
-                Subcommand(_start, "start", "Execute plan (keep context)"),
-                Subcommand(_start_clean, "start-clean", "Execute plan (clear context)"),
-                Subcommand(_status, "status", "Show active plan path"),
-                Subcommand(_clear, "clear", "Clear the active plan"),
-                Subcommand(_copy, "copy", "Copy plan to clipboard"),
-            ],
-            default=_default_plan,
-        )
-
-
-# ── Backward-compatible wrappers (tests import these) ────
-
-
-class _PlanHandler:
-    """Stub — no longer needed but kept for import compatibility."""
-
-    def __init__(self, app):
-        pass
-
-
-class PlanStartCommand:
-    name = "/plan:start"
-    description = "Execute the active plan (keep context)"
-    aliases = ()
-
-    def __init__(self, handler=None):
-        pass
-
-    async def run(self, ctx):
-        return await _start(ctx, ctx.args)
-
-
-class PlanStartCleanCommand:
-    name = "/plan:start-clean"
-    description = "Execute the active plan (clear context first)"
-    aliases = ()
-
-    def __init__(self, handler=None):
-        pass
-
-    async def run(self, ctx):
-        return await _start_clean(ctx, ctx.args)
-
-
-class PlanStatusCommand:
-    name = "/plan:status"
-    description = "Show the active plan path"
-    aliases = ()
-
-    def __init__(self, handler=None):
-        pass
-
-    async def run(self, ctx):
-        return await _status(ctx, ctx.args)
-
-
-class PlanClearCommand:
-    name = "/plan:clear"
-    description = "Clear the active plan"
-    aliases = ()
-
-    def __init__(self, handler=None):
-        pass
-
-    async def run(self, ctx):
-        return await _clear(ctx, ctx.args)
-
-
-class PlanCopyCommand:
-    name = "/plan:copy"
-    description = "Copy the active plan to clipboard"
-    aliases = ()
-
-    def __init__(self, handler=None):
-        pass
-
-    async def run(self, ctx):
-        return await _copy(ctx, ctx.args)
+command = Command(
+    name="/plan",
+    description="Create and execute implementation plans",
+    subcommands=(
+        Subcommand("start", "Execute plan (keep context)", _start),
+        Subcommand("start-clean", "Execute plan (clear context)", _start_clean),
+        Subcommand("status", "Show active plan path", _status),
+        Subcommand("clear", "Clear the active plan", _clear),
+        Subcommand("copy", "Copy plan to clipboard", _copy),
+    ),
+    default=_default_plan,
+)

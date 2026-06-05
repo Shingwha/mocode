@@ -1,4 +1,4 @@
-"""Tests for /connect command — ConnectCommand with mock CLIApp."""
+"""Tests for /connect command — connect functions with mock CLIApp."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6,7 +6,7 @@ import pytest
 
 from mocode.app.cli.app import CLIApp
 from mocode.app.cli.commands import CommandContext, CommandResult
-from mocode.app.cli.commands.connect import ConnectCommand
+from mocode.app.cli.commands.builtin import _connect, _connect_add, _connect_edit
 from mocode.app.config import Config, ProviderEntry, ModelEntry
 from mocode.app.session import SessionManager
 
@@ -62,10 +62,9 @@ class TestConnectAdd:
     @pytest.mark.asyncio
     async def test_happy_path(self):
         app = _make_app()
-        cmd = ConnectCommand()
         with (
             patch(
-                "mocode.app.cli.commands.connect.text_input",
+                "mocode.app.cli.commands.builtin.text_input",
                 new_callable=AsyncMock,
                 side_effect=[
                     "openai",  # key
@@ -76,7 +75,7 @@ class TestConnectAdd:
                 ],
             ),
         ):
-            await cmd._add(_make_ctx(app))
+            await _connect_add(_make_ctx(app))
 
         assert "openai" in app.config.providers
         entry = app.config.providers["openai"]
@@ -91,20 +90,19 @@ class TestConnectEdit:
     @pytest.mark.asyncio
     async def test_rename_display_name(self):
         app = _make_app()
-        cmd = ConnectCommand()
         with (
             patch(
-                "mocode.app.cli.commands.connect.select",
+                "mocode.app.cli.commands.builtin.select",
                 new_callable=AsyncMock,
                 side_effect=["name", "back"],
             ),
             patch(
-                "mocode.app.cli.commands.connect.text_input",
+                "mocode.app.cli.commands.builtin.text_input",
                 new_callable=AsyncMock,
                 return_value="DeepSeek Renamed",
             ),
         ):
-            await cmd._edit(_make_ctx(app), "deepseek")
+            await _connect_edit(_make_ctx(app), "deepseek")
 
         assert app.config.providers["deepseek"].name == "DeepSeek Renamed"
         app.config.save.assert_called()
@@ -112,19 +110,18 @@ class TestConnectEdit:
     @pytest.mark.asyncio
     async def test_delete_inactive_provider(self):
         app = _make_app()
-        cmd = ConnectCommand()
         with (
             patch(
-                "mocode.app.cli.commands.connect.select",
+                "mocode.app.cli.commands.builtin.select",
                 new_callable=AsyncMock,
                 side_effect=["delete"],
             ),
             patch(
-                "mocode.app.cli.commands.connect.confirm",
+                "mocode.app.cli.commands.builtin.confirm",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
         ):
-            await cmd._edit(_make_ctx(app), "zhipu")
+            await _connect_edit(_make_ctx(app), "zhipu")
 
         assert "zhipu" not in app.config.providers

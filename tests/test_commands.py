@@ -5,12 +5,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mocode.app.cli.commands import CommandContext, CommandRegistry, CommandResult
-from mocode.app.cli.commands.quit import QuitCommand
-from mocode.app.cli.commands.help import HelpCommand
-from mocode.app.cli.commands.export import ExportCommand
-from mocode.app.cli.commands.clear import ClearCommand
-from mocode.app.cli.commands.resume import ResumeCommand
+from mocode.app.cli.commands import Command, CommandContext, CommandRegistry, CommandResult
+from mocode.app.cli.commands.builtin import (
+    commands as builtin_commands,
+    _quit, _help, _clear, _copy, _export, _compact, _model, _resume, _connect,
+)
 from mocode.app.cli.commands.skill import make_skill_command
 from mocode.app.session import Session
 
@@ -23,16 +22,24 @@ def _make_ctx(app=None, display=None, args=""):
     )
 
 
+def _get_builtin_cmd(name: str) -> Command:
+    """Get a builtin command by name."""
+    for cmd in builtin_commands:
+        if cmd.name == name:
+            return cmd
+    raise ValueError(f"Builtin command '{name}' not found")
+
+
 class TestCommandRegistry:
     def test_register_and_get_by_name(self):
         reg = CommandRegistry()
-        cmd = QuitCommand()
+        cmd = _get_builtin_cmd("/quit")
         reg.register(cmd)
         assert reg.get("/quit") is cmd
 
     def test_get_by_alias(self):
         reg = CommandRegistry()
-        cmd = QuitCommand()
+        cmd = _get_builtin_cmd("/quit")
         reg.register(cmd)
         assert reg.get("/exit") is cmd
         assert reg.get("quit") is cmd
@@ -42,11 +49,40 @@ class TestCommandRegistry:
         reg = CommandRegistry()
         assert reg.get("/nonexistent") is None
 
+    def test_register_subcommand_expands(self):
+        """Registering a command with subcommands auto-creates colon entries."""
+        sub1 = Subcommand("run", "Run it", _mock_handler("run"))
+        sub2 = Subcommand(("list", "ls"), "List items", _mock_handler("list"))
+        cmd = Command(
+            name="/test",
+            description="Test command",
+            subcommands=(sub1, sub2),
+        )
+        reg = CommandRegistry()
+        reg.register(cmd)
+
+        # Main command registered
+        assert reg.get("/test") is cmd
+        # Colon-style subcommands registered
+        assert reg.get("/test:run") is not None
+        assert reg.get("/test:list") is not None
+        assert reg.get("/test:ls") is not None
+
+
+def _mock_handler(label: str):
+    async def _h(ctx, args=""):
+        return CommandResult.CONTINUE
+    return _h
+
+
+# Import Subcommand for the test above
+from mocode.app.cli.commands import Subcommand
+
 
 class TestQuitCommand:
     @pytest.mark.asyncio
     async def test_returns_exit(self):
-        cmd = QuitCommand()
+        cmd = _get_builtin_cmd("/quit")
         result = await cmd.run(_make_ctx())
         assert result == CommandResult.EXIT
 
@@ -55,7 +91,7 @@ class TestClearCommand:
     @pytest.mark.asyncio
     async def test_calls_clear_conversation(self):
         app = MagicMock()
-        cmd = ClearCommand()
+        cmd = _get_builtin_cmd("/clear")
         result = await cmd.run(_make_ctx(app=app))
         assert result == CommandResult.CONTINUE
         app.clear_conversation.assert_called_once()
@@ -77,7 +113,7 @@ class TestExportCommand:
         display = MagicMock()
 
         monkeypatch.chdir(tmp_path)
-        cmd = ExportCommand()
+        cmd = _get_builtin_cmd("/export")
         result = await cmd.run(_make_ctx(app=app, display=display))
 
         assert result == CommandResult.CONTINUE
@@ -93,7 +129,7 @@ class TestExportCommand:
         app.session_mgr.get_active.return_value = None
         display = MagicMock()
 
-        cmd = ExportCommand()
+        cmd = _get_builtin_cmd("/export")
         result = await cmd.run(_make_ctx(app=app, display=display))
 
         assert result == CommandResult.CONTINUE
@@ -114,7 +150,7 @@ class TestExportCommand:
         display = MagicMock()
 
         monkeypatch.chdir(tmp_path)
-        cmd = ExportCommand()
+        cmd = _get_builtin_cmd("/export")
         result = await cmd.run(_make_ctx(app=app, display=display, args="md"))
 
         assert result == CommandResult.CONTINUE
@@ -139,7 +175,7 @@ class TestExportCommand:
         display = MagicMock()
 
         monkeypatch.chdir(tmp_path)
-        cmd = ExportCommand()
+        cmd = _get_builtin_cmd("/export")
         result = await cmd.run(_make_ctx(app=app, display=display, args="json"))
 
         assert result == CommandResult.CONTINUE
@@ -165,7 +201,7 @@ class TestResumeCommand:
 
         app = MagicMock()
         display = MagicMock()
-        cmd = ResumeCommand()
+        cmd = _get_builtin_cmd("/resume")
         result = await cmd.run(_make_ctx(app=app, display=display, args=str(path)))
 
         assert result == CommandResult.CONTINUE
@@ -178,7 +214,7 @@ class TestResumeCommand:
 
         app = MagicMock()
         display = MagicMock()
-        cmd = ResumeCommand()
+        cmd = _get_builtin_cmd("/resume")
         result = await cmd.run(_make_ctx(app=app, display=display, args=str(path)))
 
         assert result == CommandResult.CONTINUE

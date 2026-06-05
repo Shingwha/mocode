@@ -11,7 +11,7 @@ from ...workflow.runner import DAGRunner
 from ...workflow.run_store import WorkflowRunStore
 from ..prompts import Choice, select
 from ..spinner import Priority, Truncate
-from . import CommandContext, CommandGroup, CommandResult, Subcommand
+from . import Command, CommandContext, CommandResult, Subcommand
 
 
 # ── Standalone handler functions ────────────────────────────
@@ -236,7 +236,7 @@ async def _runs(ctx: CommandContext, args_str: str) -> CommandResult:
 # ── Interactive menu ──────────────────────────────────────
 
 
-async def _interactive_menu(ctx: CommandContext, group: CommandGroup) -> CommandResult:
+async def _interactive_menu(ctx: CommandContext, group: Command) -> CommandResult:
     registry = ctx.app.workflow_registry
     workflows = registry.list()
     if not workflows:
@@ -312,23 +312,21 @@ def _resolve_run_id(store: WorkflowRunStore, raw: str) -> str | None:
     return store.resolve_run_id(None)
 
 
-# ── CommandGroup definition ───────────────────────────────
+# ── Command definition ────────────────────────────────────
 
 
-class WorkflowCommand(CommandGroup):
-    def __init__(self):
-        super().__init__(
-            name="/workflow",
-            description="Manage and run YAML workflows",
-            aliases=("workflow",),
-            subcmds=[
-                Subcommand(_list, ("list", "ls"), "List available workflows"),
-                Subcommand(_show, "show", "Show workflow details"),
-                Subcommand(_run, "run", "Run a workflow"),
-                Subcommand(_run_bg, ("run-bg", "run_bg"), "Run in background"),
-                Subcommand(_status, "status", "Check run status"),
-                Subcommand(_result, "result", "View run results"),
-                Subcommand(_runs, "runs", "List recent runs"),
-            ],
-            menu=_interactive_menu,
-        )
+command = Command(
+    name="/workflow",
+    description="Manage and run YAML workflows",
+    aliases=("workflow",),
+    subcommands=(
+        Subcommand(("list", "ls"), "List available workflows", _list),
+        Subcommand("show", "Show workflow details", _show),
+        Subcommand("run", "Run a workflow", _run),
+        Subcommand(("run-bg", "run_bg"), "Run in background", _run_bg),
+        Subcommand("status", "Check run status", _status),
+        Subcommand("result", "View run results", _result),
+        Subcommand("runs", "List recent runs", _runs),
+    ),
+    menu=_interactive_menu,
+)

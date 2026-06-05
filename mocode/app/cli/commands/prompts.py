@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-from . import CommandContext, CommandResult
-
-if TYPE_CHECKING:
-    from ..commands import CommandRegistry
+from . import Command, CommandContext, CommandResult
 
 
 # name -> (template, description)
 # Templates: {args} is replaced with user input. If no {args} but user
 # provides input, it is appended as "The user has the following additional requirements: ...".
+
+
+def _make_prompt_handler(template: str):
+    """Create a handler function for a prompt template."""
+    async def _handle(ctx: CommandContext) -> CommandResult:
+        if "{args}" in template:
+            prompt = template.replace("{args}", ctx.args)
+        elif ctx.args:
+            prompt = f"{template}\n\nThe user has the following additional requirements: {ctx.args}"
+        else:
+            prompt = template
+        return CommandResult.text(prompt)
+    return _handle
+
+
 PROMPTS: dict[str, tuple[str, str]] = {
     "/init": (
         "Analyze this codebase and create an AGENTS.md file.\n\n"
@@ -50,43 +60,20 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "- If the fix is ambiguous, explain the options before proceeding.",
         "Fix a bug or issue",
     ),
-    "/plan": (
-        "=== READ-ONLY PLANNING MODE ===\n"
-        "Do NOT create, modify, or delete project files. Do NOT run state-changing commands.\n"
-        "Your role is to explore the codebase and design an implementation plan.\n\n"
-        "## Process\n\n"
-        "1. **Understand** — restate the goal in your own words. If no specific goal was given, ask the user.\n"
-        "2. **Explore** — use glob, grep, read to understand the codebase.\n"
-        "3. **Design** — consider trade-offs. Follow existing patterns.\n"
-        "4. **Write the plan** — use write() to save it as markdown:\n"
-        "   write(path='~/.mocode/plans/<name>.md', content='# Title\\n\\n## Steps\\n...')\n"
-        "5. **Register** — call plan(action='done', path='~/.mocode/plans/<name>.md')\n\n"
-        "After registering, tell the user they can run /plan:start to execute.\n",
-        "Create an implementation plan",
-    ),
 }
 
 
-class PromptCommand:
-    """A command that injects a prompt template into the agent chat."""
-
-    def __init__(self, name: str, template: str, description: str) -> None:
-        self.name = name
-        self.template = template
-        self.description = description
-        self.aliases: tuple[str, ...] = ()
-
-    async def run(self, ctx: CommandContext) -> CommandResult:
-        if "{args}" in self.template:
-            prompt = self.template.replace("{args}", ctx.args)
-        elif ctx.args:
-            prompt = f"{self.template}\n\nThe user has the following additional requirements: {ctx.args}"
-        else:
-            prompt = self.template
-        return CommandResult.text(prompt)
+def _build_commands() -> list[Command]:
+    """Build Command instances from the PROMPTS dict."""
+    return [
+        Command(
+            name=name,
+            description=desc,
+            handler=_make_prompt_handler(template),
+        )
+        for name, (template, desc) in PROMPTS.items()
+    ]
 
 
-def register_prompt_commands(registry: CommandRegistry) -> None:
-    """Register all prompt commands from the PROMPTS dict."""
-    for name, (template, desc) in PROMPTS.items():
-        registry.register(PromptCommand(name, template, desc))
+# Module-level commands list for bulk registration
+commands: list[Command] = _build_commands()
