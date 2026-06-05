@@ -36,14 +36,14 @@ class SlashCompleter:
     def __init__(self, registry: CommandRegistry):
         self._registry = registry
 
-    def get_completions(self, document, complete_event):
+    async def get_completions_async(self, document, complete_event):
         text = document.text
         if not text.startswith("/") or " " in text:
             return
+        from prompt_toolkit.completion import Completion
+
         for cmd in self._registry.all():
             if cmd.name.startswith(text):
-                from prompt_toolkit.completion import Completion
-
                 yield Completion(
                     cmd.name,
                     start_position=-len(text),
