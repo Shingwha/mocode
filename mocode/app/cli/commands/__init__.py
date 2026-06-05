@@ -64,5 +64,5 @@ class CommandRegistry:
         return self._by_alias.get(text)
 
     def all(self) -> list[Command]:
-        """All registered commands, in registration order."""
-        return list(self._order)
+        """All registered commands, sorted alphabetically by name."""
+        return sorted(self._order, key=lambda c: c.name)
