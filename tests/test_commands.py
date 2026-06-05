@@ -98,6 +98,54 @@ class TestExportCommand:
         assert result == CommandResult.CONTINUE
         display.warn.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_export_md_format(self, tmp_path, monkeypatch):
+        session = Session(
+            id="session_test",
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+            workdir="/tmp",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        app = MagicMock()
+        app.session_mgr.get_active.return_value = session
+        app.agent.system_prompt = "You are helpful."
+        display = MagicMock()
+
+        monkeypatch.chdir(tmp_path)
+        cmd = ExportCommand()
+        result = await cmd.run(_make_ctx(app=app, display=display, args="md"))
+
+        assert result == CommandResult.CONTINUE
+        app.session_mgr.export_to_md.assert_called_once()
+        call_args = app.session_mgr.export_to_md.call_args
+        assert call_args[0][1].suffix == ".md"
+        display.info.assert_called_once()
+        assert ".md" in display.info.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_export_json_explicit(self, tmp_path, monkeypatch):
+        session = Session(
+            id="session_test",
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+            workdir="/tmp",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        app = MagicMock()
+        app.session_mgr.get_active.return_value = session
+        app.agent.system_prompt = "You are helpful."
+        display = MagicMock()
+
+        monkeypatch.chdir(tmp_path)
+        cmd = ExportCommand()
+        result = await cmd.run(_make_ctx(app=app, display=display, args="json"))
+
+        assert result == CommandResult.CONTINUE
+        app.session_mgr.export_to_file.assert_called_once()
+        call_args = app.session_mgr.export_to_file.call_args
+        assert call_args[0][1].suffix == ".json"
+
 
 class TestResumeCommand:
     @pytest.mark.asyncio

@@ -157,3 +157,95 @@ class TestSessionManager:
 
     def test_import_nonexistent(self, manager, tmp_path):
         assert SessionManager.import_from_file(tmp_path / "nope.json") is None
+
+    def test_export_to_md_basic(self, manager, tmp_path):
+        sid = manager.create()
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        manager.save(messages, model="gpt-4o", provider="openai")
+        session = manager.get_active()
+
+        path = tmp_path / "export.md"
+        manager.export_to_md(session, path, system_prompt="You are helpful.")
+        assert path.exists()
+
+        md = path.read_text(encoding="utf-8")
+        # Frontmatter
+        assert md.startswith("---")
+        assert "session_id:" in md
+        assert "model: gpt-4o" in md
+        # System prompt
+        assert "## System Prompt" in md
+        assert "You are helpful." in md
+        # Content
+        assert "## Turn 1" in md
+        assert "### User" in md
+        assert "hello" in md
+        assert "### Assistant" in md
+        assert "hi there" in md
+
+    def test_export_to_md_with_tool_calls(self, manager, tmp_path):
+        sid = manager.create()
+        messages = [
+            {"role": "user", "content": "read file"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "read", "arguments": '{"path": "test.py"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "print('hello')"},
+            {"role": "assistant", "content": "Here is the file content."},
+        ]
+        manager.save(messages)
+        session = manager.get_active()
+
+        path = tmp_path / "export.md"
+        manager.export_to_md(session, path, system_prompt="")
+        md = path.read_text(encoding="utf-8")
+
+        assert "#### Tool Call: read" in md
+        assert "call_1" in md
+        assert "Tool Result: read" in md
+        assert "print('hello')" in md
+        assert "Here is the file content." in md
+
+    def test_export_to_md_with_reasoning(self, manager, tmp_path):
+        sid = manager.create()
+        messages = [
+            {"role": "user", "content": "think about this"},
+            {
+                "role": "assistant",
+                "content": "The answer is 42.",
+                "reasoning_content": "Let me think step by step...",
+            },
+        ]
+        manager.save(messages)
+        session = manager.get_active()
+
+        path = tmp_path / "export.md"
+        manager.export_to_md(session, path)
+        md = path.read_text(encoding="utf-8")
+
+        assert "<details><summary>Thinking</summary>" in md
+        assert "Let me think step by step..." in md
+        assert "The answer is 42." in md
+
+    def test_export_to_md_empty_session(self, manager, tmp_path):
+        sid = manager.create()
+        session = manager.get_active()
+
+        path = tmp_path / "export.md"
+        manager.export_to_md(session, path, system_prompt="Be brief.")
+        md = path.read_text(encoding="utf-8")
+
+        assert md.startswith("---")
+        assert "## System Prompt" in md
+        assert "## Turn" not in md
