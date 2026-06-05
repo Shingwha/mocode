@@ -192,6 +192,13 @@ class CLIApp:
         )
         self._tools.register(GoalTool(goal_hook))
 
+        # Register /skill:<name> commands for each discovered skill
+        if self.interactive:
+            from .commands.skill import make_skill_command
+
+            for s in self._skill_mgr.all():
+                self.commands.register(make_skill_command(s))
+
         return agent
 
     def _build_prompt(self) -> str:

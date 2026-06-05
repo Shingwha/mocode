@@ -10,6 +10,7 @@ uv run pytest tests/test_builder.py -xvs                               # Single 
 uv run pytest tests/test_builder.py::TestBuilder::test_minimal_build   # Single test
 uv run pytest -k "test_tool" -xvs                                      # Pattern match
 uv run mocode              # Launch interactive CLI
+uv run python -c ""        # Run code without Python file
 ```
 
 Build system: hatchling. Dependency manager: uv. Python >= 3.12. No linter configured.

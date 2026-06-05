@@ -11,6 +11,7 @@ from mocode.app.cli.commands.help import HelpCommand
 from mocode.app.cli.commands.export import ExportCommand
 from mocode.app.cli.commands.clear import ClearCommand
 from mocode.app.cli.commands.resume import ResumeCommand
+from mocode.app.cli.commands.skill import make_skill_command
 from mocode.app.session import Session
 
 
@@ -183,3 +184,64 @@ class TestResumeCommand:
         assert result == CommandResult.CONTINUE
         app.resume_from_file.assert_not_called()
         display.warn.assert_called_once()
+
+
+class TestSkillCommand:
+    @pytest.mark.asyncio
+    async def test_basic_load(self):
+        skill = MagicMock()
+        skill.metadata.name = "workflow"
+        skill.metadata.description = "DAG orchestration"
+        skill.load_content.return_value = "instructions here"
+        cmd = make_skill_command(skill)
+        assert cmd.name == "/skill:workflow"
+        assert cmd.description == "DAG orchestration"
+        result = await cmd.run(_make_ctx())
+        assert result.kind == "prompt"
+        assert "[Skill:workflow" in result.prompt
+        assert "do NOT call the skill tool" in result.prompt
+        assert "instructions here" in result.prompt
+        assert "User request:" not in result.prompt
+
+    @pytest.mark.asyncio
+    async def test_with_user_request(self):
+        skill = MagicMock()
+        skill.metadata.name = "kami"
+        skill.metadata.description = "PDF typesetting"
+        skill.load_content.return_value = "typeset instructions"
+        cmd = make_skill_command(skill)
+        result = await cmd.run(_make_ctx(args="帮我做一份简历"))
+        assert "User request: 帮我做一份简历" in result.prompt
+        assert "typeset instructions" in result.prompt
+        assert "do NOT call the skill tool" in result.prompt
+
+    @pytest.mark.asyncio
+    async def test_empty_content_warns(self):
+        skill = MagicMock()
+        skill.metadata.name = "empty"
+        skill.metadata.description = "Empty skill"
+        skill.load_content.return_value = ""
+        cmd = make_skill_command(skill)
+        display = MagicMock()
+        result = await cmd.run(_make_ctx(display=display))
+        assert result == CommandResult.CONTINUE
+        display.warn.assert_called_once()
+
+    def test_registered_in_registry(self):
+        """Verify skill commands can be registered and looked up."""
+        skill = MagicMock()
+        skill.metadata.name = "test-skill"
+        skill.metadata.description = "A test"
+        skill.load_content.return_value = "body"
+        cmd = make_skill_command(skill)
+        reg = CommandRegistry()
+        reg.register(cmd)
+        assert reg.get("/skill:test-skill") is cmd
+
+    def test_no_aliases(self):
+        skill = MagicMock()
+        skill.metadata.name = "foo"
+        skill.metadata.description = ""
+        skill.load_content.return_value = "x"
+        cmd = make_skill_command(skill)
+        assert cmd.aliases == ()
