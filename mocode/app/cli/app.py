@@ -50,6 +50,7 @@ class CLIApp:
     ):
         self.home = home or Path.home() / ".mocode"
         self.interactive = interactive
+        self.active_plan_path: str | None = None
         _fix_console()
 
         self.config = config or Config.load()
@@ -195,12 +196,30 @@ class CLIApp:
         )
         self._tools.register(GoalTool(goal_hook))
 
+        from ...tools.plan import PlanTool
+        self._tools.register(PlanTool(self))
+
         # Register /skill:<name> commands for each discovered skill
         if self.interactive:
             from .commands.skill import make_skill_command
 
             for s in self._skill_mgr.all():
                 self.commands.register(make_skill_command(s))
+
+        # Register /plan:* commands
+        if self.interactive:
+            from .commands.plan import (
+                _PlanHandler,
+                PlanStartCommand,
+                PlanStartCleanCommand,
+                PlanStatusCommand,
+                PlanClearCommand,
+            )
+            handler = _PlanHandler(self)
+            self.commands.register(PlanStartCommand(handler))
+            self.commands.register(PlanStartCleanCommand(handler))
+            self.commands.register(PlanStatusCommand(handler))
+            self.commands.register(PlanClearCommand(handler))
 
         return agent
 

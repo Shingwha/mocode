@@ -51,34 +51,17 @@ PROMPTS: dict[str, tuple[str, str]] = {
         "Fix a bug or issue",
     ),
     "/plan": (
-        "Create an implementation plan for: {args}\n\n"
         "=== READ-ONLY PLANNING MODE ===\n"
-        "Do NOT create, modify, or delete any files. Do NOT run state-changing commands.\n"
+        "Do NOT create, modify, or delete project files. Do NOT run state-changing commands.\n"
         "Your role is to explore the codebase and design an implementation plan.\n\n"
         "## Process\n\n"
-        "1. **Understand** — restate the goal in your own words.\n"
-        "2. **Explore**:\n"
-        "   - Use `glob` to find relevant files and understand project structure.\n"
-        "   - Use `grep` to locate patterns, conventions, and similar features.\n"
-        "   - Use `read` to examine key files in detail.\n"
-        "   - Use `bash` for read-only commands only (ls, git log, git diff).\n"
-        "   - Understand the architecture and identify reference implementations.\n"
-        "3. **Design** — consider trade-offs. Follow existing patterns where appropriate.\n"
-        "4. **Plan**:\n"
-        "   - Break into concrete, ordered steps.\n"
-        "   - Each step: what to do, which files, how to verify.\n"
-        "   - Identify dependencies and sequencing.\n\n"
-        "## Output Format\n\n"
-        "### Goal\n"
-        "1-2 sentences.\n\n"
-        "### Affected Files\n"
-        "Files to create or modify.\n\n"
-        "### Steps\n"
-        "Numbered steps, each with: what, which files, how to verify.\n\n"
-        "### Risks / Open Questions\n"
-        "Potential issues or decisions needed.\n\n"
-        "### Critical Files\n"
-        "3-5 files most critical for implementation.",
+        "1. **Understand** — restate the goal in your own words. If no specific goal was given, ask the user.\n"
+        "2. **Explore** — use glob, grep, read to understand the codebase.\n"
+        "3. **Design** — consider trade-offs. Follow existing patterns.\n"
+        "4. **Write the plan** — use write() to save it as markdown:\n"
+        "   write(path='~/.mocode/plans/<name>.md', content='# Title\\n\\n## Steps\\n...')\n"
+        "5. **Register** — call plan(action='done', path='~/.mocode/plans/<name>.md')\n\n"
+        "After registering, tell the user they can run /plan:start to execute.\n",
         "Create an implementation plan",
     ),
 }
