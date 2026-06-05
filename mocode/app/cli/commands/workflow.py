@@ -197,24 +197,21 @@ class WorkflowCommand:
             if record and record.get("status") == "running":
                 store.update(run_id, [], "failed", datetime.now().isoformat())
 
-    async def _status(self, ctx: CommandContext, args_str: str) -> CommandResult:
-        store = WorkflowRunStore()
-
-        # If args_str looks like a workflow name (not a run_id), find latest for that workflow
-        raw = args_str.strip()
-        run_id: str | None = None
+    @staticmethod
+    def _resolve_run_id(store: WorkflowRunStore, raw: str) -> str | None:
+        """Resolve a run_id from user input — handles run_id, workflow name, or empty."""
         if raw.startswith("wf_"):
-            run_id = raw
-        elif raw:
+            return raw
+        if raw:
             record = store.find_latest(workflow_name=raw)
             if record:
-                run_id = record["run_id"]
-            else:
-                # Fall back to resolving as a run_id
-                run_id = store.resolve_run_id(raw or None)
-        else:
-            run_id = store.resolve_run_id(None)
+                return record["run_id"]
+            return store.resolve_run_id(raw)
+        return store.resolve_run_id(None)
 
+    async def _status(self, ctx: CommandContext, args_str: str) -> CommandResult:
+        store = WorkflowRunStore()
+        run_id = self._resolve_run_id(store, args_str.strip())
         if run_id is None:
             ctx.display.warn("No workflow runs found.")
             return CommandResult.CONTINUE
@@ -267,20 +264,7 @@ class WorkflowCommand:
 
     async def _result(self, ctx: CommandContext, args_str: str) -> CommandResult:
         store = WorkflowRunStore()
-
-        raw = args_str.strip()
-        run_id: str | None = None
-        if raw.startswith("wf_"):
-            run_id = raw
-        elif raw:
-            record = store.find_latest(workflow_name=raw)
-            if record:
-                run_id = record["run_id"]
-            else:
-                run_id = store.resolve_run_id(raw or None)
-        else:
-            run_id = store.resolve_run_id(None)
-
+        run_id = self._resolve_run_id(store, args_str.strip())
         if run_id is None:
             ctx.display.warn("No workflow runs found.")
             return CommandResult.CONTINUE

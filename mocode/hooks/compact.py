@@ -36,4 +36,4 @@ class CompactHook(AgentHook):
             ctx.compact_old = old_count
             ctx.compact_new = len(ctx.messages)
             self._last_prompt_tokens = 0
-            await self.on_compact(ctx)
+

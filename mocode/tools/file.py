@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ..core.tool import Tool, ToolError
 from ..core.virtualfs import VirtualFS
-from ._helpers import read_text, require_file
+from ._helpers import read_bytes, require_file
 
 
 def _format_lines(content: str, label: str, offset: int, limit: int) -> str:
@@ -67,15 +67,13 @@ _READ_DESC = (
 
 def _read_text(p: Path, offset: int, limit: int) -> str:
     """Read a real file with line numbers."""
-    # Binary detection
     try:
-        chunk = p.read_bytes()[:8192]
-        if b"\x00" in chunk:
-            raise ToolError(f"File appears to be binary: {p}", "binary_file")
+        raw = p.read_bytes()
     except OSError as e:
         raise ToolError(f"Cannot read file: {e}", "read_error")
-
-    content = read_text(p)
+    if b"\x00" in raw[:8192]:
+        raise ToolError(f"File appears to be binary: {p}", "binary_file")
+    content = read_bytes(raw)
     return _format_lines(content, str(p), offset, limit)
 
 

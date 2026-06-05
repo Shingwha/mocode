@@ -84,36 +84,39 @@ _MERGE_TOOLS = frozenset({"read", "write", "append", "edit", "glob", "grep"})
 _MERGE_LIMIT = 100
 
 
-def _group_tool_calls(tool_calls) -> list[tuple[str, list[str]]]:
-    """Group ToolCall objects. Mergeable tools are grouped; others stay individual."""
+def _group_items(
+    items: list,
+    get_name,
+    get_args,
+) -> list[tuple[str, list[str]]]:
+    """Group items by tool name. Mergeable tools are grouped; others stay individual."""
     merged: dict[str, list[str]] = {}
     singles: list[tuple[str, list[str]]] = []
-    for tc in tool_calls:
-        args = (
-            json.loads(tc.arguments)
-            if isinstance(tc.arguments, str)
-            else (tc.arguments or {})
-        )
-        summary = _tool_summary(tc.name, args)
-        if tc.name in _MERGE_TOOLS:
-            merged.setdefault(tc.name, []).append(summary)
-        else:
-            singles.append((tc.name, [summary]))
-    return list(merged.items()) + singles
-
-
-def _group_tool_call_dicts(tcs: list[dict]) -> list[tuple[str, list[str]]]:
-    """Group raw tool_call dicts. Mergeable tools are grouped; others stay individual."""
-    merged: dict[str, list[str]] = {}
-    singles: list[tuple[str, list[str]]] = []
-    for tc in tcs:
-        name, args = _parse_tool_call(tc)
+    for item in items:
+        name = get_name(item)
+        args = get_args(item)
         summary = _tool_summary(name, args)
         if name in _MERGE_TOOLS:
             merged.setdefault(name, []).append(summary)
         else:
             singles.append((name, [summary]))
     return list(merged.items()) + singles
+
+
+def _group_tool_calls(tool_calls) -> list[tuple[str, list[str]]]:
+    return _group_items(
+        tool_calls,
+        get_name=lambda tc: tc.name,
+        get_args=lambda tc: json.loads(tc.arguments) if isinstance(tc.arguments, str) else (tc.arguments or {}),
+    )
+
+
+def _group_tool_call_dicts(tcs: list[dict]) -> list[tuple[str, list[str]]]:
+    return _group_items(
+        tcs,
+        get_name=lambda tc: _parse_tool_call(tc)[0],
+        get_args=lambda tc: _parse_tool_call(tc)[1],
+    )
 
 
 def _merge_summaries(summaries: list[str]) -> str:

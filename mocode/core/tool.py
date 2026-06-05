@@ -99,12 +99,17 @@ class ToolRegistry:
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
+        self._schema_cache: list[dict] | None = None
 
     def register(self, tool: Tool) -> None:
         self._tools[tool.name] = tool
+        self._schema_cache = None
 
     def unregister(self, name: str) -> Tool | None:
-        return self._tools.pop(name, None)
+        result = self._tools.pop(name, None)
+        if result:
+            self._schema_cache = None
+        return result
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
@@ -113,7 +118,9 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def all_schemas(self) -> list[dict]:
-        return [t.to_schema() for t in self._tools.values()]
+        if self._schema_cache is None:
+            self._schema_cache = [t.to_schema() for t in self._tools.values()]
+        return self._schema_cache
 
     def derived(self, exclude: set[str] | None = None) -> ToolRegistry:
         new = ToolRegistry()

@@ -109,9 +109,11 @@ class HookRunner:
 
     def __init__(self, hooks: list[AgentHook] | None = None):
         self._hooks: list[AgentHook] = list(hooks or [])
+        self._method_cache: dict[str, Callable] = {}
 
     def add(self, hook: AgentHook) -> None:
         self._hooks.append(hook)
+        self._method_cache.clear()
 
     async def _dispatch(self, method: str, ctx: AgentHookContext) -> None:
         for h in self._hooks:
@@ -124,9 +126,12 @@ class HookRunner:
 
     def __getattr__(self, name: str):
         if name in self._METHODS:
+            if name in self._method_cache:
+                return self._method_cache[name]
 
             async def method(ctx: AgentHookContext) -> None:
                 await self._dispatch(name, ctx)
 
+            self._method_cache[name] = method
             return method
         raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")

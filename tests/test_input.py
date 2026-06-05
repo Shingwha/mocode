@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from unittest.mock import MagicMock
 
@@ -11,6 +13,11 @@ from prompt_toolkit.keys import Keys
 
 from mocode.app.cli.commands import CommandRegistry
 from mocode.app.cli.input import SlashCompleter, build_keybindings
+
+
+async def _collect(completer, doc, event):
+    """Collect completions from the async generator."""
+    return [c async for c in completer.get_completions_async(doc, event)]
 
 # prompt_toolkit normalises key names: "enter" → Keys.ControlM, "tab" → Keys.ControlI
 _KEY_ALIASES: dict[str, tuple] = {
@@ -85,7 +92,7 @@ class TestSlashCompleter:
         )
         completer = SlashCompleter(reg)
         doc = Document("/he")
-        completions = list(completer.get_completions(doc, MagicMock()))
+        completions = asyncio.run(_collect(completer, doc, MagicMock()))
         assert len(completions) == 1
         assert completions[0].text == "/help"
         assert completions[0].display_meta[0][1] == "Show help"
@@ -94,14 +101,14 @@ class TestSlashCompleter:
         reg = _make_registry(_make_command("/help"))
         completer = SlashCompleter(reg)
         doc = Document("hello")
-        completions = list(completer.get_completions(doc, MagicMock()))
+        completions = asyncio.run(_collect(completer, doc, MagicMock()))
         assert completions == []
 
     def test_no_match_with_space(self):
         reg = _make_registry(_make_command("/help"))
         completer = SlashCompleter(reg)
         doc = Document("/help foo")
-        completions = list(completer.get_completions(doc, MagicMock()))
+        completions = asyncio.run(_collect(completer, doc, MagicMock()))
         assert completions == []
 
     def test_multiple_matches(self):
@@ -112,7 +119,7 @@ class TestSlashCompleter:
         )
         completer = SlashCompleter(reg)
         doc = Document("/e")
-        completions = list(completer.get_completions(doc, MagicMock()))
+        completions = asyncio.run(_collect(completer, doc, MagicMock()))
         names = [c.text for c in completions]
         assert "/export" in names
         assert "/exit" in names
@@ -122,14 +129,14 @@ class TestSlashCompleter:
         reg = _make_registry()
         completer = SlashCompleter(reg)
         doc = Document("/h")
-        completions = list(completer.get_completions(doc, MagicMock()))
+        completions = asyncio.run(_collect(completer, doc, MagicMock()))
         assert completions == []
 
     def test_start_position_replaces_full_text(self):
         reg = _make_registry(_make_command("/help"))
         completer = SlashCompleter(reg)
         doc = Document("/he")
-        completions = list(completer.get_completions(doc, MagicMock()))
+        completions = asyncio.run(_collect(completer, doc, MagicMock()))
         assert completions[0].start_position == -3  # -len("/he")
 
 

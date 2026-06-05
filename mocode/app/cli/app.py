@@ -68,6 +68,7 @@ class CLIApp:
             from .commands.connect import ConnectCommand
             from .commands.copy import CopyCommand
             from .commands.workflow import WorkflowCommand
+            from .commands.compact import CompactCommand
 
             for cmd in [
                 QuitCommand(),
@@ -79,6 +80,7 @@ class CLIApp:
                 ConnectCommand(),
                 WorkflowCommand(),
                 CopyCommand(),
+                CompactCommand(),
             ]:
                 self.commands.register(cmd)
 
