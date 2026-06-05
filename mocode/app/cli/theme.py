@@ -1,7 +1,6 @@
 """CLI visual configuration — ANSI styles, Spinner presets, Theme."""
 
 from dataclasses import dataclass, field
-from wcwidth import wcswidth
 
 # ── ANSI constants ───────────────────────────────────────
 
@@ -33,11 +32,6 @@ class Spinner:
     frames: tuple[str, ...]
     speed: float = 0.08
     show_text: bool = True
-
-    def __post_init__(self):
-        max_w = max(max(wcswidth(f), 0) for f in self.frames)
-        padded = tuple(f + " " * (max_w - max(wcswidth(f), 0)) for f in self.frames)
-        object.__setattr__(self, "frames", padded)
 
     @staticmethod
     def from_list(
@@ -105,6 +99,25 @@ _PRESETS: dict[str, Spinner] = {
     "clock": Spinner(
         frames=("🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"),
         speed=0.15,
+    ),
+    # --- Variable-width spinners ---
+    "grow": Spinner.from_list(
+        _ping_pong(["·", "··", "···", "····", "·····", "······", "·······"]), 0.18
+    ),
+    "typewriter": Spinner.from_list(
+        _ping_pong(["▌", "思▌", "思考▌", "思考中▌", "思考中…▌", "思考中… ▌"]), 0.20
+    ),
+    "train": Spinner.from_list(
+        _ping_pong(["🚂", "🚂🚃", "🚂🚃🚃", "🚂🚃🚃🚃"]), 0.25
+    ),
+    "snake": Spinner.from_list(
+        _ping_pong(["●", "○●", "○○●", "○○○●", "○○○○●", "○○○○○●"]), 0.18
+    ),
+    "progress": Spinner.from_list(
+        _ping_pong(["[    ]", "[-   ]", "[--  ]", "[--- ]", "[----]"]), 0.20
+    ),
+    "poem": Spinner.from_list(
+        _ping_pong(["床前明月光，疑是地上霜"[: i + 1] for i in range(11)]), 0.20
     ),
 }
 
