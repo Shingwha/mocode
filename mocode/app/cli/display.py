@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import time
 from typing import TYPE_CHECKING
 
@@ -193,16 +192,7 @@ class Display:
 
     def _print(self, *args, **kwargs):
         if self._spinner.active:
-            prefix = self._spinner._build_clear_seq()
-            if prefix:
-                self._spinner._visual_lines = 0
-                # Batch clear + content in a single write to avoid blank-gap
-                sep = kwargs.get("sep", " ")
-                end = kwargs.get("end", "\n")
-                content = sep.join(str(a) for a in args) + end
-                sys.stdout.write(prefix + content)
-                sys.stdout.flush()
-                return
+            self._spinner._clear()
         print(*args, **kwargs)
 
     def _styled(self, icon: str, text: str, color: str, icon_color: str = ""):

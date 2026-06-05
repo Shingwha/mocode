@@ -4,43 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import random
-import re
-import shutil
 import time
 from contextlib import asynccontextmanager
-from math import ceil
-
-from wcwidth import wcswidth
 
 from .theme import DIM, RST, SOFT_CYAN, Spinner, _PRESETS
-
-_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
-
-
-def _strip_ansi(text: str) -> str:
-    """Remove ANSI SGR escape sequences for plain-text width measurement."""
-    return _ANSI_RE.sub("", text)
-
-
-def _visual_line_count(text: str) -> int:
-    """Count how many terminal lines *text* occupies.
-
-    Accounts for terminal width, line wrapping, and CJK double-width
-    characters.  ANSI escape codes in *text* are stripped before
-    measurement so styled output is measured correctly.
-    """
-    stripped = _strip_ansi(text)
-    term_width = shutil.get_terminal_size((80, 24)).columns
-    if term_width <= 0:
-        term_width = 80
-    total = 0
-    for line in stripped.split("\n"):
-        w = wcswidth(line) if line else 0
-        if w <= 0:
-            total += 1
-        else:
-            total += ceil(w / term_width)
-    return max(total, 1)
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -63,7 +30,6 @@ class SpinnerRunner:
         self._text = ""
         self._start: float = 0.0
         self._detail: str = ""
-        self._visual_lines: int = 0
 
     @property
     def active(self) -> bool:
@@ -113,12 +79,7 @@ class SpinnerRunner:
             while not stop.is_set():
                 frame = spinner.frames[idx % len(spinner.frames)]
                 suffix = _get_suffix()
-                line = f"{DIM}{frame}{suffix}{RST}"
-                # Batch: clear previous frame + draw new frame in one write
-                buf = self._build_clear_seq()
-                buf += f"\r{line}\033[K"
-                print(buf, end="", flush=True)
-                self._visual_lines = _visual_line_count(line)
+                print(f"\r{DIM}{frame}{suffix}{RST}\033[K", end="", flush=True)
                 idx += 1
                 await asyncio.sleep(spinner.speed)
 
@@ -135,23 +96,5 @@ class SpinnerRunner:
             self._clear()
             self._active = False
 
-    def _build_clear_seq(self) -> str:
-        """Build ANSI sequence to clear all spinner visual lines.
-
-        Returns the escape string without printing it, so callers can
-        batch it with other output in a single write.
-        """
-        n = self._visual_lines
-        if n <= 0:
-            return ""
-        # Bottom-to-top: clear last line, then move-up + clear each preceding
-        parts = ["\r\033[K"]
-        for _ in range(n - 1):
-            parts.append("\033[A\r\033[K")
-        return "".join(parts)
-
     def _clear(self):
-        seq = self._build_clear_seq()
-        if seq:
-            print(seq, end="", flush=True)
-        self._visual_lines = 0
+        print("\r\033[K", end="", flush=True)
