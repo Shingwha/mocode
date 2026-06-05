@@ -552,21 +552,6 @@ class TestParseItems:
     def test_lines_strips(self):
         assert parse_items("  a  \n  b  ") == ["a", "b"]
 
-    def test_csv_mode(self):
-        assert parse_items("a,b,c", "csv") == ["a", "b", "c"]
-
-    def test_csv_strips(self):
-        assert parse_items(" a , b , c ", "csv") == ["a", "b", "c"]
-
-    def test_json_mode(self):
-        assert parse_items('["a", "b", "c"]', "json") == ["a", "b", "c"]
-
-    def test_json_numbers(self):
-        assert parse_items("[1, 2, 3]", "json") == ["1", "2", "3"]
-
-    def test_json_invalid_falls_back_to_lines(self):
-        assert parse_items("not json", "json") == ["not json"]
-
     def test_empty_input(self):
         assert parse_items("") == []
 
@@ -590,7 +575,6 @@ class TestMapNodeModel:
         )
         assert n.type == "map"
         assert n.items == "{nodes.gen.output}"
-        assert n.parse == "lines"
         assert n.item_key == "keyword"
         assert n.task == "Search {{keyword}}"
 
@@ -619,7 +603,6 @@ class TestMapNodeModel:
 
     def test_map_default_fields(self):
         n = Node(id="m", type="map", items="{args.x}", task="Do {{item}}")
-        assert n.parse == "lines"
         assert n.item_key == "item"
 
 
@@ -674,25 +657,6 @@ class TestMapNodeValidation:
         with pytest.raises(ValueError, match="must not have 'routes'"):
             Workflow.from_yaml(path)
 
-    def test_map_invalid_parse_rejected(self, tmp_path: Path):
-        path = _write_yaml(
-            tmp_path / "bad_parse.yaml",
-            {
-                "name": "t",
-                "nodes": [
-                    {
-                        "id": "m",
-                        "type": "map",
-                        "items": "{args.x}",
-                        "parse": "xml",
-                        "task": "Do {{item}}",
-                    },
-                ],
-            },
-        )
-        with pytest.raises(ValueError, match="invalid parse"):
-            Workflow.from_yaml(path)
-
 
 # ===========================================================================
 # 13. Workflow concurrency field tests
@@ -734,7 +698,6 @@ class TestRunnerMapNode:
                     id="search",
                     type="map",
                     items="{nodes.gen.output}",
-                    parse="lines",
                     item_key="kw",
                     task="Search for {{kw}}",
                     depends=["gen"],
@@ -779,71 +742,6 @@ class TestRunnerMapNode:
         # report received the concatenated map output
         report_result = next(r for r in results if r.node_id == "report")
         assert "result-alpha" in report_result.task
-
-    @pytest.mark.asyncio
-    async def test_map_with_csv_parse(self):
-        """Map node with csv parse splits comma-separated items."""
-        wf = Workflow(
-            name="t",
-            nodes=[
-                Node(id="gen", task="Generate"),
-                Node(
-                    id="m",
-                    type="map",
-                    items="{nodes.gen.output}",
-                    parse="csv",
-                    item_key="x",
-                    task="Process {{x}}",
-                    depends=["gen"],
-                ),
-            ],
-        )
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"a,b,c"),
-                _make_subprocess_mock(b"r1"),
-                _make_subprocess_mock(b"r2"),
-                _make_subprocess_mock(b"r3"),
-            ]
-            results = await runner.run()
-
-        child_ids = [r.node_id for r in results if "::" in r.node_id]
-        assert len(child_ids) == 3
-
-    @pytest.mark.asyncio
-    async def test_map_with_json_parse(self):
-        """Map node with json parse handles JSON arrays."""
-        wf = Workflow(
-            name="t",
-            nodes=[
-                Node(id="gen", task="Generate"),
-                Node(
-                    id="m",
-                    type="map",
-                    items="{nodes.gen.output}",
-                    parse="json",
-                    item_key="x",
-                    task="Process {{x}}",
-                    depends=["gen"],
-                ),
-            ],
-        )
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b'["one", "two"]'),
-                _make_subprocess_mock(b"r1"),
-                _make_subprocess_mock(b"r2"),
-            ]
-            results = await runner.run()
-
-        child_ids = [r.node_id for r in results if "::" in r.node_id]
-        assert len(child_ids) == 2
 
     @pytest.mark.asyncio
     async def test_map_empty_items(self):
@@ -956,7 +854,6 @@ class TestRunnerMapNode:
                         "id": "search",
                         "type": "map",
                         "items": "{nodes.gen.output}",
-                        "parse": "lines",
                         "item_key": "kw",
                         "task": "Search {{kw}}",
                         "depends": ["gen"],

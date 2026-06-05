@@ -91,6 +91,7 @@ class MapItemDoneEvent(WorkflowEvent):
 
     map_id: str
     item_index: int
+    total_count: int
     item_value: str
     duration: float
 

@@ -57,7 +57,6 @@ class Node:
     routes: list[Route] = field(default_factory=list)
     # map node fields
     items: str = ""  # template resolving to a list source
-    parse: str = "lines"  # "lines" | "json" | "csv"
     item_key: str = "item"  # variable name in task template
 
     def __post_init__(self) -> None:
@@ -85,7 +84,6 @@ class Node:
             depends=list(data.get("depends", [])),
             routes=[Route.from_dict(r) for r in routes_raw],
             items=data.get("items", ""),
-            parse=data.get("parse", "lines"),
             item_key=data.get("item_key", "item"),
         )
 
@@ -164,30 +162,8 @@ def _dot_lookup(obj: dict, path: str, default: str) -> str:
 # ── Items parsing (for map nodes) ─────────────────────────────
 
 
-def parse_items(raw: str, mode: str = "lines") -> list[str]:
-    """Parse a string into a list of items based on mode.
-
-    modes:
-      "lines" — split by non-empty lines (stripped)
-      "json"  — parse as JSON array of strings
-      "csv"   — split by comma (stripped)
-    """
-    if mode == "json":
-        import json
-
-        try:
-            items = json.loads(raw)
-            if isinstance(items, list):
-                return [str(x) for x in items]
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # fallback: treat as lines
-        mode = "lines"
-
-    if mode == "csv":
-        return [s.strip() for s in raw.split(",") if s.strip()]
-
-    # default: lines
+def parse_items(raw: str) -> list[str]:
+    """Split raw text into non-empty stripped lines."""
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 

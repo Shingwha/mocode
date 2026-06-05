@@ -370,7 +370,8 @@ class Display:
         dur = f"{event.duration:.1f}s"
         val = event.item_value[:30] + ("…" if len(event.item_value) > 30 else "")
         self._print(
-            f"     {_s('·', GRAY)} [{event.item_index}] {_s(val, DIM)}  {_s(dur, DIM)}"
+            f"     {_s('▪', GRAY)} [{event.item_index + 1}/{event.total_count}] "
+            f"{_s(val, DIM)}  {_s(dur, DIM)}"
         )
 
     def _on_progress(self, event: ProgressEvent) -> None:

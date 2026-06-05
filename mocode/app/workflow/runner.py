@@ -363,64 +363,67 @@ class DAGRunner:
 
     async def _run_map_node(self, node: Node, state: RunState) -> None:
         """Fan-out: parse items, run a child task for each, concatenate results."""
-        wf = self.workflow
         self._emit(NodeStartEvent(node_id=node.id, description=node.description))
 
-        # Resolve items template
         items_raw = fill_template(node.items, state.context)
-        items = parse_items(items_raw, node.parse)
+        items = parse_items(items_raw)
 
         if not items:
-            # Empty items — map produces empty output
-            empty_result = NodeResult(
-                node_id=node.id,
-                task=node.task,
-                output="",
-                exit_code=0,
-                duration=0,
-            )
-            state.results.append(empty_result)
-            state.total_executions += 1
-            state.context["nodes"][node.id] = {
-                "output": "",
-                "exit_code": 0,
-                "duration": 0,
-                "error": "",
-            }
-            state.context["previous"] = ""
-            state.completed.add(node.id)
-            self._emit(
-                NodeDoneEvent(
-                    node_id=node.id,
-                    description=node.description,
-                    result=empty_result,
-                    wave_idx=state.node_wave.get(node.id, 0),
-                )
-            )
-            self._activate_downstream(node.id, wf, state)
+            self._finalize_empty_map(node, state)
             return
 
+        child_results = await self._fan_out_children(node, items, state)
+        self._finalize_map(node, items, child_results, state)
+
+    def _finalize_empty_map(self, node: Node, state: RunState) -> None:
+        """Handle a map node with no items — produce empty output."""
+        wf = self.workflow
+        empty_result = NodeResult(
+            node_id=node.id,
+            task=node.task,
+            output="",
+            exit_code=0,
+            duration=0,
+        )
+        state.results.append(empty_result)
+        state.total_executions += 1
+        state.context["nodes"][node.id] = {
+            "output": "",
+            "exit_code": 0,
+            "duration": 0,
+            "error": "",
+        }
+        state.context["previous"] = ""
+        state.completed.add(node.id)
+        self._emit(
+            NodeDoneEvent(
+                node_id=node.id,
+                description=node.description,
+                result=empty_result,
+                wave_idx=state.node_wave.get(node.id, 0),
+            )
+        )
+        self._activate_downstream(node.id, wf, state)
+
+    async def _fan_out_children(
+        self, node: Node, items: list[str], state: RunState
+    ) -> list[NodeResult]:
+        """Create and run child tasks concurrently, return their results."""
+        wf = self.workflow
         wave_idx = state.node_wave.get(node.id, 0)
         self._emit(
             MapFanOutEvent(map_id=node.id, item_count=len(items), wave_idx=wave_idx)
         )
 
-        # Build child tasks
         child_ids: list[str] = []
         child_tasks: list[asyncio.Task[NodeResult]] = []
-
         for idx, item_val in enumerate(items):
             child_id = f"{node.id}::{idx}"
             child_ids.append(child_id)
-
-            # Render task template with item substituted
             child_task_text = node.task.replace(f"{{{{{node.item_key}}}}}", item_val)
-
             context_header = (
                 self._build_node_context_header(node, wf) if self.node_context else None
             )
-
-            # Schedule each child as an async task (semaphore controls concurrency)
             child_tasks.append(
                 asyncio.create_task(
                     self._run_map_child(child_id, child_task_text, context_header)
@@ -428,27 +431,37 @@ class DAGRunner:
             )
 
         state.map_children[node.id] = child_ids
-
-        # Wait for all children to finish
         child_results: list[NodeResult] = list(await asyncio.gather(*child_tasks))
 
-        # Record child results
-        total_duration = 0.0
-        for idx, (child_id, nr) in enumerate(zip(child_ids, child_results)):
-            state.total_executions += 1
-            state.results.append(nr)
-            total_duration += nr.duration
+        # Emit per-item events
+        for idx, nr in enumerate(child_results):
             self._emit(
                 MapItemDoneEvent(
                     map_id=node.id,
                     item_index=idx,
+                    total_count=len(items),
                     item_value=items[idx][:80],
                     duration=nr.duration,
                 )
             )
 
-        # Concatenate all child outputs as the map node's output
+        return child_results
+
+    def _finalize_map(
+        self,
+        node: Node,
+        items: list[str],
+        child_results: list[NodeResult],
+        state: RunState,
+    ) -> None:
+        """Merge child outputs, record result, activate downstream."""
+        wf = self.workflow
+        total_duration = sum(nr.duration for nr in child_results)
         merged_output = "\n---\n".join(nr.output for nr in child_results)
+
+        for nr in child_results:
+            state.total_executions += 1
+            state.results.append(nr)
 
         map_result = NodeResult(
             node_id=node.id,
@@ -470,6 +483,7 @@ class DAGRunner:
         state.completed.add(node.id)
         self._persist(state.results, "running")
 
+        wave_idx = state.node_wave.get(node.id, 0)
         self._emit(
             NodeDoneEvent(
                 node_id=node.id,
@@ -483,7 +497,6 @@ class DAGRunner:
                 message=f"Map '{node.id}' done — {len(items)} items ({total_duration:.1f}s)"
             )
         )
-
         self._activate_downstream(node.id, wf, state)
 
     async def _run_map_child(
