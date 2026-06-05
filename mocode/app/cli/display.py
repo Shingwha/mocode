@@ -149,7 +149,8 @@ class Display:
         print(*args, **kwargs)
 
     def render_line(self, style: Style, text: str, *,
-                    suffix: str = "", elapsed: float = -1) -> None:
+                    suffix: str = "", elapsed: float = -1,
+                    error: str = "") -> None:
         """Render a single styled line — the core output primitive.
 
         Args:
@@ -157,6 +158,7 @@ class Display:
             text: Main text content
             suffix: Optional dimmed context (e.g. tool args)
             elapsed: Optional elapsed seconds (shown if >= 0.1)
+            error: Optional error text (rendered in icon color)
         """
         parts = []
 
@@ -174,6 +176,10 @@ class Display:
         # Suffix (dimmed)
         if suffix:
             parts.append(_s(suffix, DIM))
+
+        # Error (icon color, typically red)
+        if error:
+            parts.append(_s(error, style.icon_color or style.text_color))
 
         # Elapsed time (dimmed)
         if elapsed >= 0.1:
@@ -202,16 +208,12 @@ class Display:
         self.render_line(self.theme.style_tool_done, name,
                          suffix=f"({merged})", elapsed=elapsed)
 
-    def tool_fail(self, name: str, merged: str, error: str) -> None:
-        """Print a failed tool line — ✗ with name, args, and error."""
-        t = self.theme
-        # Combine suffix and error on one line
-        self.print(
-            f"{_s('✗', t.style_tool_fail.icon_color or t.style_tool_fail.text_color)} "
-            f"{_s(name, t.style_tool_fail.text_color)}"
-            f"{_s(f'({merged}): ', t.style_tool_fail.text_color)}"
-            f"{_s(error, t.style_tool_fail.icon_color or t.style_tool_fail.text_color)}"
-        )
+    def tool_fail(self, name: str, merged: str, error: str,
+                  elapsed: float = -1) -> None:
+        """Print a failed tool line — ✗ with name, args, error, and optional elapsed."""
+        self.render_line(self.theme.style_tool_fail, name,
+                         suffix=f"({merged})" if merged else "",
+                         error=error, elapsed=elapsed)
 
     # ── Output: model response ────────────────────────────
 

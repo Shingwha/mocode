@@ -69,7 +69,7 @@ class CLIDisplayHook(AgentHook):
             merged = merge_summaries(summaries)
             elapsed = self._tool_elapsed.get(name, 0)
             if name in self._tool_errors:
-                self._d.tool_fail(name, merged, self._tool_errors[name])
+                self._d.tool_fail(name, merged, self._tool_errors[name], elapsed)
             else:
                 self._d.tool_done(name, merged, elapsed)
 
