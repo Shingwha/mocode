@@ -197,7 +197,6 @@ class CLIApp:
         return build_system_prompt(
             tools=self._tools,
             skill_manager=self._skill_mgr,
-            workflow_registry=self._workflow_registry,
             vfs=self._vfs,
             cwd=str(Path.cwd()),
             home=str(self.home),
