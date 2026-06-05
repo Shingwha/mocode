@@ -19,7 +19,7 @@ async def _start(ctx: CommandContext, args: str) -> CommandResult:
     prompt = (
         f"[Plan Mode — Read the plan file and execute step by step]\n\n"
         f"Read the plan file at: {path}\n"
-        f"Then execute each step, using edit/write/bash as needed.\n"
+        f"Then execute each step, using the appropriate tools as needed.\n"
         f"After each step, verify the result before moving on."
     )
     if args:
@@ -85,9 +85,11 @@ async def _default_plan(ctx: CommandContext, args: str) -> CommandResult:
     prompt = (
         f"The user wants to create an implementation plan for:\n\n"
         f"{args}\n\n"
-        f"Write the plan to a file under ~/.mocode/plans/ (create the directory if needed),\n"
-        f"then call the plan tool with action='done' and the file path.\n"
-        f"After that, tell the user to run /plan:start to execute."
+        f"Save the plan as a Markdown file under .mocode/plans/ (project-local) or\n"
+        f"~/.mocode/plans/ (global). Create the directory if needed.\n"
+        f"Then call the plan tool with action='done' and the file path.\n"
+        f"After that, tell the user to run /plan:start or /plan:start-clean to execute. "
+        f"If the user has feedback, revise the plan accordingly."
     )
     return CommandResult.text(prompt)
 

@@ -27,6 +27,7 @@ _TOOL_KEY = {
     "skill": "name",
     "goal": "action",
     "image": "prompt",
+    "plan": "action",
 }
 
 
@@ -34,7 +35,10 @@ def tool_summary(name: str, args: dict) -> str:
     """Extract a short summary string from tool arguments."""
     key = _TOOL_KEY.get(name)
     if not key:
-        return ""
+        # Fallback: show the first available argument
+        if not args:
+            return ""
+        key = next(iter(args))
     val = str(args.get(key, ""))
     return val[:60] + ("..." if len(val) > 60 else "")
 

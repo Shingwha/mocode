@@ -18,7 +18,8 @@ def PlanTool(app) -> Tool:
             app.active_plan_path = path
             return (
                 f"Plan registered: {path}\n"
-                f"Tell the user: /plan:start (keep context) or /plan:start-clean (clear context)"
+                f"Tell the user the plan file is at {path}, "
+                f"and they can run /plan:start (keep context) or /plan:start-clean (clear context) to execute."
             )
 
         if action == "status":
