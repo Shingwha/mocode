@@ -214,12 +214,14 @@ class CLIApp:
                 PlanStartCleanCommand,
                 PlanStatusCommand,
                 PlanClearCommand,
+                PlanCopyCommand,
             )
             handler = _PlanHandler(self)
             self.commands.register(PlanStartCommand(handler))
             self.commands.register(PlanStartCleanCommand(handler))
             self.commands.register(PlanStatusCommand(handler))
             self.commands.register(PlanClearCommand(handler))
+            self.commands.register(PlanCopyCommand(handler))
 
         return agent
 

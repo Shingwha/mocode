@@ -12,6 +12,7 @@ from mocode.app.cli.commands.plan import (
     PlanStartCleanCommand,
     PlanStatusCommand,
     PlanClearCommand,
+    PlanCopyCommand,
 )
 
 
@@ -160,3 +161,42 @@ class TestPlanCommands:
         result = await cmd.run(_make_ctx(app=app))
         assert app.active_plan_path is None
         assert result == CommandResult.CONTINUE
+
+    @pytest.mark.asyncio
+    async def test_copy_no_plan_warns(self):
+        app = MagicMock()
+        app.active_plan_path = None
+        display = MagicMock()
+        handler = _PlanHandler(app)
+        cmd = PlanCopyCommand(handler)
+        result = await cmd.run(_make_ctx(app=app, display=display))
+        assert result == CommandResult.CONTINUE
+        display.warn.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_copy_reads_and_copies(self, tmp_path):
+        pyperclip = pytest.importorskip("pyperclip")
+
+        plan_file = tmp_path / "plan.md"
+        plan_file.write_text("# My Plan\n\nDo stuff.", encoding="utf-8")
+
+        app = MagicMock()
+        app.active_plan_path = str(plan_file)
+        display = MagicMock()
+        handler = _PlanHandler(app)
+        cmd = PlanCopyCommand(handler)
+        result = await cmd.run(_make_ctx(app=app, display=display))
+        assert result == CommandResult.CONTINUE
+        assert pyperclip.paste() == "# My Plan\n\nDo stuff."
+        display.info.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_copy_file_not_found(self, tmp_path):
+        app = MagicMock()
+        app.active_plan_path = str(tmp_path / "nonexistent.md")
+        display = MagicMock()
+        handler = _PlanHandler(app)
+        cmd = PlanCopyCommand(handler)
+        result = await cmd.run(_make_ctx(app=app, display=display))
+        assert result == CommandResult.CONTINUE
+        display.error.assert_called_once()

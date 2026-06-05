@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from . import CommandContext, CommandResult
 
 
@@ -49,6 +51,30 @@ class _PlanHandler:
     def clear(self, ctx: CommandContext) -> CommandResult:
         self._app.active_plan_path = None
         ctx.display.info("Active plan cleared.")
+        return CommandResult.CONTINUE
+
+    def copy(self, ctx: CommandContext) -> CommandResult:
+        path = self._app.active_plan_path
+        if not path:
+            ctx.display.warn("No active plan. Use /plan <description> to create one.")
+            return CommandResult.CONTINUE
+
+        try:
+            content = Path(path).expanduser().read_text(encoding="utf-8")
+        except Exception as e:
+            ctx.display.error(f"Failed to read plan: {e}")
+            return CommandResult.CONTINUE
+
+        try:
+            import pyperclip
+
+            pyperclip.copy(content)
+            preview = content[:60].replace("\n", " ").strip()
+            suffix = "…" if len(content) > 60 else ""
+            ctx.display.info(f"Copied: {preview}{suffix}")
+        except Exception as e:
+            ctx.display.error(f"Clipboard error: {e}")
+
         return CommandResult.CONTINUE
 
 
@@ -100,3 +126,15 @@ class PlanClearCommand:
 
     async def run(self, ctx: CommandContext) -> CommandResult:
         return self._handler.clear(ctx)
+
+
+class PlanCopyCommand:
+    name = "/plan:copy"
+    description = "Copy the active plan to clipboard"
+    aliases = ()
+
+    def __init__(self, handler: _PlanHandler):
+        self._handler = handler
+
+    async def run(self, ctx: CommandContext) -> CommandResult:
+        return self._handler.copy(ctx)
