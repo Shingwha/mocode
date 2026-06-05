@@ -210,23 +210,8 @@ class Display:
 
     # ── Output: tool lifecycle ────────────────────────────
 
-    def tool_start(self, name: str, summary: str):
-        t = self.theme
-        self._print(
-            f"{_s(t.icon_tool, DIM)} {_s(name, t.color_tool)}{_s(f'({summary})', DIM)}"
-        )
-
-    def tool_start_batched(self, groups: list[tuple[str, list[str]]]):
-        """Print merged tool call lines — one per tool type."""
-        t = self.theme
-        for name, summaries in groups:
-            merged = _merge_summaries(summaries)
-            self._print(
-                f"{_s(t.icon_tool, DIM)} {_s(name, t.color_tool)}{_s(f'({merged})', DIM)}"
-            )
-
     def tool_done(self, name: str, merged: str, elapsed: float):
-        """Print a successful tool line — same layout as tool_start but with ✓."""
+        """Print a successful tool line — ✓ with name, args, and optional elapsed."""
         t = self.theme
         elapsed_str = f" {_s(f'{elapsed:.1f}s', DIM)}" if elapsed >= 0.1 else ""
         self._print(
@@ -235,19 +220,11 @@ class Display:
         )
 
     def tool_fail(self, name: str, merged: str, error: str):
-        """Print a failed tool line — same layout as tool_start but with ✗."""
+        """Print a failed tool line — ✗ with name, args, and error."""
         t = self.theme
         self._print(
             f"{_s('✗', RED)} {_s(name, t.color_tool)}"
             f"{_s(f'({merged}): ', DIM)}{_s(error, RED)}"
-        )
-
-    def tool_error(self, msg: str):
-        self._styled(self.theme.icon_error, msg, self.theme.color_error)
-
-    def tool_timeout(self, seconds: int):
-        self._styled(
-            self.theme.icon_error, f"timeout: {seconds}s", self.theme.color_error
         )
 
     # ── Output: model response ────────────────────────────
@@ -528,8 +505,14 @@ class Display:
     # ── Resume rendering ──────────────────────────────────
 
     def render_messages(self, messages: list[dict]):
-        """Re-render a message history as if it were live output."""
-        for msg in messages:
+        """Re-render a message history as if it were live output.
+
+        Uses the same ✓/✗ status lines as live execution (tool_done / tool_fail).
+        Elapsed time is not available from stored messages so is omitted.
+        """
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
             role = msg.get("role")
             if role == "user":
                 content = msg.get("content", "")
@@ -538,6 +521,7 @@ class Display:
                         p.get("text", "[image]") for p in content if isinstance(p, dict)
                     )
                 self.user_message(content)
+                i += 1
             elif role == "assistant":
                 if msg.get("reasoning_content"):
                     self.reasoning(msg["reasoning_content"])
@@ -547,9 +531,35 @@ class Display:
                     self.text_response(msg["content"])
                 tcs = msg.get("tool_calls", [])
                 if tcs:
+                    # Look ahead: collect tool results for this batch
+                    id_to_name = {}
+                    for tc in tcs:
+                        fn = tc.get("function", {})
+                        id_to_name[tc.get("id", "")] = fn.get("name", "?")
+
+                    name_errors: dict[str, str] = {}
+                    j = i + 1
+                    while j < len(messages) and messages[j].get("role") == "tool":
+                        tcid = messages[j].get("tool_call_id", "")
+                        content = messages[j].get("content", "")
+                        if content.startswith("error:") or content.startswith(
+                            "timeout:"
+                        ):
+                            tname = id_to_name.get(tcid, "?")
+                            name_errors.setdefault(tname, content[:80])
+                        j += 1
+
+                    # Display tool groups with final status (matches live output)
                     groups = _group_tool_call_dicts(tcs)
-                    self.tool_start_batched(groups)
-            elif role == "tool":
-                content = msg.get("content", "")
-                if content.startswith("error:") or content.startswith("timeout:"):
-                    self.tool_error(content[:80])
+                    for name, summaries in groups:
+                        merged = _merge_summaries(summaries)
+                        if name in name_errors:
+                            self.tool_fail(name, merged, name_errors[name])
+                        else:
+                            self.tool_done(name, merged, 0)
+                    i = j  # skip past consumed tool messages
+                else:
+                    i += 1
+            else:
+                # tool messages already consumed by look-ahead above
+                i += 1
