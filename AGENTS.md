@@ -53,7 +53,7 @@ mocode/app/            Application layer: Config, Session, CLI (CLIApp, Display,
 
 **Two agent layers.** SubAgent is NOT a separate process — it creates an isolated AgentLoop sharing the parent's provider, with a filtered ToolRegistry (blocks `sub_agent` and `compact` tools to prevent recursion).
 
-**Workflow engine is external.** The workflow system (mocode/app/workflow/) is a separate concern from the agent loop. It spawns `mocode -p` subprocesses per step, with its own control flow (goto, lanes, phases). Not part of core/.
+**Workflow engine is external.** The workflow system (mocode/app/workflow/) is a separate concern from the agent loop. It spawns `mocode -p` subprocesses per step, with its own control flow (goto, lanes, phases). Not part of core/. Managed via the `/workflow` REPL command (not CLI).
 
 **Prompt is rebuilt on every `/resume`/`/clear`.** `_build_prompt()` re-reads AGENTS.md files each time, so changes take effect immediately without restart.
 

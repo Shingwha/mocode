@@ -18,11 +18,6 @@ def build_parser() -> argparse.ArgumentParser:
         "Pipe stdin to provide context.",
     )
 
-    # Workflow subparser — delegated to workflow module
-    from .app.workflow.args import attach_workflow_parser
-
-    attach_workflow_parser(parser)
-
     return parser
 
 

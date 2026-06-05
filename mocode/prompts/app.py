@@ -193,12 +193,14 @@ def _render_workflows(registry: Any, cwd: str = "") -> list[Section] | None:
         return None
 
     usage_guide = (
-        "MoCode Workflows are DAG-based multi-step task orchestrations. "
-        "CLI commands (run in bash):\n"
-        "- mocode workflow list              — list all available workflows\n"
-        "- mocode workflow show <name>       — show workflow details\n"
-        "- mocode workflow run <name>        — execute a workflow\n\n"
-        "Full reference: read vfs://workflow/cli-reference.md"
+        "Use the /workflow command in the REPL to manage workflows:\n"
+        "- /workflow list                — list available workflows\n"
+        "- /workflow show <name>         — show DAG details\n"
+        "- /workflow run <name>          — execute a workflow (foreground)\n"
+        "- /workflow run-bg <name>       — execute a workflow (background)\n"
+        "- /workflow status [run_id]     — check run status\n"
+        "- /workflow result [run_id]     — view full results\n"
+        "- /workflow runs                — list recent runs"
     )
 
     sections: list[Section] = [

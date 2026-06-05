@@ -10,7 +10,7 @@ graph). Each node is a self-contained LLM prompt. Nodes can fan-out (parallel),
 fan-in (converge), branch conditionally (router), map over lists, and loop
 with safety limits.
 
-Defined as YAML files in `.mocode/workflows/`, run via `mocode workflow` CLI.
+Defined as YAML files in `.mocode/workflows/`, run via `/workflow` command in the REPL.
 
 ---
 
@@ -104,12 +104,13 @@ Back-edge routes (router pointing upstream) create loops. **Always set
 
 - Each node runs as an independent `mocode -p` subprocess — tool access and
   config are inherited, but state is not shared between nodes.
-- Background runs survive shell exit; foreground runs are killed on Ctrl+C.
-- `status` detects crashed processes (PID dead but status stuck at "running").
-- Use `mocode workflow result <run_id> --json` for programmatic consumption.
+- Use `/workflow run-bg <name>` to run in the background (returns immediately).
+  Then use `/workflow status` to check progress and `/workflow result` for full output.
+- Foreground runs (`/workflow run`) block until completion and show the summary inline.
+- Results persist automatically to `~/.mocode/workflow_runs/<run_id>.json`.
+- Use `/workflow runs` to list recent runs with status and timestamps.
 
 ---
 
 Detailed reference:
 - YAML format and examples: `read vfs://workflow/yaml-reference.md`
-- CLI command manual: `read vfs://workflow/cli-reference.md`

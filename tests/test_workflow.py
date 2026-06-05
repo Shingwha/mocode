@@ -495,10 +495,18 @@ class TestRunnerErrorHandling:
 class TestWorkflowMenuPendingInput:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "action,expect_pending_input,expect_show",
-        [("run", True, False), ("show", False, True), ("back", False, False)],
+        "action,expect_pending_input,expect_show,expect_pending_value",
+        [
+            ("run", True, False, "/workflow run test-wf"),
+            ("run-bg", True, False, "/workflow run-bg test-wf"),
+            ("show", False, True, None),
+            ("status", True, False, "/workflow status test-wf"),
+            ("back", False, False, None),
+        ],
     )
-    async def test_menu_action(self, action, expect_pending_input, expect_show):
+    async def test_menu_action(
+        self, action, expect_pending_input, expect_show, expect_pending_value
+    ):
         """Menu actions: run sets pending input, show displays details, back returns."""
         from mocode.app.cli.commands import CommandResult
         from mocode.app.cli.commands.workflow import WorkflowCommand
@@ -528,7 +536,7 @@ class TestWorkflowMenuPendingInput:
 
         assert result == CommandResult.CONTINUE
         if expect_pending_input:
-            display.set_pending_input.assert_called_once_with("/workflow run test-wf")
+            display.set_pending_input.assert_called_once_with(expect_pending_value)
         else:
             display.set_pending_input.assert_not_called()
         if expect_show:
@@ -895,3 +903,403 @@ class TestRunnerMapNode:
         # Verify template filling for gen node
         gen_result = next(r for r in results if r.node_id == "gen")
         assert "technology" in gen_result.task
+
+
+
+# ===========================================================================
+# 15. WorkflowCommand — persistence in _run
+# ===========================================================================
+
+
+class TestWorkflowCommandRunPersistence:
+    """_run should create a WorkflowRunStore record."""
+
+    @pytest.mark.asyncio
+    async def test_run_creates_store_record(self):
+        """_run creates a store record and passes run_id + run_store to DAGRunner."""
+        from mocode.app.cli.commands import CommandResult
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        wf = Workflow(
+            name="persist-wf",
+            nodes=[Node(id="a", task="Do stuff")],
+        )
+        registry = MagicMock()
+        registry.get.return_value = wf
+
+        app = MagicMock()
+        app.workflow_registry = registry
+        display = MagicMock()
+        ctx = _make_ctx(app=app, display=display, args="run persist-wf")
+
+        cmd = WorkflowCommand()
+
+        with (
+            patch(
+                "mocode.app.cli.commands.workflow.WorkflowRunStore"
+            ) as MockStore,
+            patch(
+                "mocode.app.cli.commands.workflow.DAGRunner"
+            ) as MockRunner,
+        ):
+            mock_store = MagicMock()
+            mock_store.create.return_value = "wf_test123"
+            MockStore.return_value = mock_store
+
+            mock_runner = AsyncMock()
+            mock_runner.run = AsyncMock(
+                return_value=[
+                    NodeResult(
+                        node_id="a", task="Do stuff", output="ok", exit_code=0, duration=1.0
+                    )
+                ]
+            )
+            MockRunner.return_value = mock_runner
+
+            result = await cmd.run(ctx)
+
+        assert result == CommandResult.CONTINUE
+        mock_store.create.assert_called_once_with(
+            workflow_name="persist-wf",
+            workflow_path=str(wf.path),
+            args={},
+        )
+        MockRunner.assert_called_once()
+        _, kwargs = MockRunner.call_args
+        assert kwargs.get("run_id") == "wf_test123"
+        assert kwargs.get("run_store") is mock_store
+
+
+# ===========================================================================
+# 16. WorkflowCommand — status subcommand
+# ===========================================================================
+
+
+class TestWorkflowCommandStatus:
+    """status subcommand reads from WorkflowRunStore."""
+
+    @pytest.mark.asyncio
+    async def test_status_with_run_id(self):
+        from mocode.app.cli.commands import CommandResult
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        app = MagicMock()
+        display = MagicMock()
+        ctx = _make_ctx(app=app, display=display, args="status wf_abc123")
+
+        cmd = WorkflowCommand()
+
+        with patch(
+            "mocode.app.cli.commands.workflow.WorkflowRunStore"
+        ) as MockStore:
+            mock_store = MagicMock()
+            mock_store.resolve_run_id.return_value = "wf_abc123"
+            mock_store.load.return_value = {
+                "run_id": "wf_abc123",
+                "workflow_name": "my-workflow",
+                "status": "completed",
+                "started_at": "2025-01-01T00:00:00",
+                "finished_at": "2025-01-01T00:01:00",
+                "wall_duration": 60.0,
+                "results": [],
+            }
+            MockStore.return_value = mock_store
+
+            result = await cmd.run(ctx)
+
+        assert result == CommandResult.CONTINUE
+        display.info.assert_called()
+        info_text = display.info.call_args[0][0]
+        assert "wf_abc123" in info_text
+        assert "completed" in info_text
+
+    @pytest.mark.asyncio
+    async def test_status_no_runs(self):
+        from mocode.app.cli.commands import CommandResult
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        app = MagicMock()
+        display = MagicMock()
+        ctx = _make_ctx(app=app, display=display, args="status")
+
+        cmd = WorkflowCommand()
+
+        with patch(
+            "mocode.app.cli.commands.workflow.WorkflowRunStore"
+        ) as MockStore:
+            mock_store = MagicMock()
+            mock_store.resolve_run_id.return_value = None
+            MockStore.return_value = mock_store
+
+            result = await cmd.run(ctx)
+
+        assert result == CommandResult.CONTINUE
+        display.warn.assert_called()
+
+
+# ===========================================================================
+# 17. WorkflowCommand — result subcommand
+# ===========================================================================
+
+
+class TestWorkflowCommandResult:
+    """result subcommand reads from WorkflowRunStore."""
+
+    @pytest.mark.asyncio
+    async def test_result_with_run_id(self):
+        from mocode.app.cli.commands import CommandResult
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        app = MagicMock()
+        display = MagicMock()
+        ctx = _make_ctx(app=app, display=display, args="result wf_abc123")
+
+        cmd = WorkflowCommand()
+
+        with patch(
+            "mocode.app.cli.commands.workflow.WorkflowRunStore"
+        ) as MockStore:
+            mock_store = MagicMock()
+            mock_store.resolve_run_id.return_value = "wf_abc123"
+            mock_store.load.return_value = {
+                "run_id": "wf_abc123",
+                "workflow_name": "my-workflow",
+                "status": "completed",
+                "wall_duration": 30.5,
+                "results": [
+                    {
+                        "node_id": "a",
+                        "task": "Do thing",
+                        "output": "ok",
+                        "exit_code": 0,
+                        "duration": 30.5,
+                        "error": None,
+                        "status": "done",
+                        "iteration": 1,
+                    }
+                ],
+            }
+            MockStore.return_value = mock_store
+
+            result = await cmd.run(ctx)
+
+        assert result == CommandResult.CONTINUE
+        display._print.assert_called()
+        info_text = display._print.call_args[0][0]
+        assert "wf_abc123" in info_text
+        assert "completed" in info_text
+
+    @pytest.mark.asyncio
+    async def test_result_no_runs(self):
+        from mocode.app.cli.commands import CommandResult
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        app = MagicMock()
+        display = MagicMock()
+        ctx = _make_ctx(app=app, display=display, args="result")
+
+        cmd = WorkflowCommand()
+
+        with patch(
+            "mocode.app.cli.commands.workflow.WorkflowRunStore"
+        ) as MockStore:
+            mock_store = MagicMock()
+            mock_store.resolve_run_id.return_value = None
+            MockStore.return_value = mock_store
+
+            result = await cmd.run(ctx)
+
+        assert result == CommandResult.CONTINUE
+        display.warn.assert_called()
+
+
+# ===========================================================================
+# 18. WorkflowCommand — runs subcommand
+# ===========================================================================
+
+
+class TestWorkflowCommandRuns:
+    """runs subcommand lists recent runs."""
+
+    @pytest.mark.asyncio
+    async def test_runs_empty(self):
+        from mocode.app.cli.commands import CommandResult
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        app = MagicMock()
+        display = MagicMock()
+        ctx = _make_ctx(app=app, display=display, args="runs")
+
+        cmd = WorkflowCommand()
+
+        with patch(
+            "mocode.app.cli.commands.workflow.WorkflowRunStore"
+        ) as MockStore:
+            mock_store = MagicMock()
+            mock_store.list_recent.return_value = []
+            MockStore.return_value = mock_store
+
+            result = await cmd.run(ctx)
+
+        assert result == CommandResult.CONTINUE
+        display.warn.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_runs_with_records(self):
+        from mocode.app.cli.commands import CommandResult
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        app = MagicMock()
+        display = MagicMock()
+        ctx = _make_ctx(app=app, display=display, args="runs")
+
+        cmd = WorkflowCommand()
+
+        with patch(
+            "mocode.app.cli.commands.workflow.WorkflowRunStore"
+        ) as MockStore:
+            mock_store = MagicMock()
+            mock_store.list_recent.return_value = [
+                {
+                    "run_id": "wf_aaa",
+                    "workflow_name": "wf1",
+                    "status": "completed",
+                    "started_at": "2025-01-01T00:00:00",
+                },
+                {
+                    "run_id": "wf_bbb",
+                    "workflow_name": "wf2",
+                    "status": "running",
+                    "started_at": "2025-01-01T00:05:00",
+                    "pid": 12345,
+                },
+            ]
+            mock_store.is_alive.return_value = True
+            MockStore.return_value = mock_store
+
+            result = await cmd.run(ctx)
+
+        assert result == CommandResult.CONTINUE
+        display.info.assert_called()
+        info_text = display.info.call_args[0][0]
+        assert "wf_aaa" in info_text
+        assert "wf_bbb" in info_text
+        assert "completed" in info_text
+        assert "running" in info_text
+
+
+
+# ===========================================================================
+# 19. WorkflowCommand — background run (--bg)
+# ===========================================================================
+
+
+class TestWorkflowCommandRunBackground:
+    """--bg flag should fire-and-forget the workflow."""
+
+    @pytest.mark.asyncio
+    async def test_run_bg_returns_immediately(self):
+        """--bg starts an asyncio task and returns immediately."""
+        from mocode.app.cli.commands import CommandResult
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        wf = Workflow(
+            name="bg-wf",
+            nodes=[Node(id="a", task="Do stuff")],
+        )
+        registry = MagicMock()
+        registry.get.return_value = wf
+
+        app = MagicMock()
+        app.workflow_registry = registry
+        display = MagicMock()
+        ctx = _make_ctx(app=app, display=display, args="run-bg bg-wf key=val")
+
+        cmd = WorkflowCommand()
+
+        with (
+            patch(
+                "mocode.app.cli.commands.workflow.WorkflowRunStore"
+            ) as MockStore,
+            patch(
+                "mocode.app.cli.commands.workflow.DAGRunner"
+            ) as MockRunner,
+        ):
+            mock_store = MagicMock()
+            mock_store.create.return_value = "wf_bg123"
+            MockStore.return_value = mock_store
+
+            mock_runner_instance = MagicMock()
+            mock_runner_instance.run = AsyncMock(return_value=[])
+            MockRunner.return_value = mock_runner_instance
+
+            result = await cmd.run(ctx)
+
+        assert result == CommandResult.CONTINUE
+        # Should have created a store record
+        mock_store.create.assert_called_once_with(
+            workflow_name="bg-wf",
+            workflow_path=str(wf.path),
+            args={"key": "val"},
+        )
+        # Should NOT have called runner.run synchronously (it's in a task)
+        mock_runner_instance.run.assert_not_called()
+        # Should have informed the user
+        info_text = display.info.call_args[0][0]
+        assert "bg-wf" in info_text
+        assert "wf_bg123" in info_text
+        assert "background" in info_text
+
+    @pytest.mark.asyncio
+    async def test_run_fg_blocks(self):
+        """Without --bg, _run blocks until completion."""
+        from mocode.app.cli.commands import CommandResult
+        from mocode.app.cli.commands.workflow import WorkflowCommand
+
+        wf = Workflow(
+            name="fg-wf",
+            nodes=[Node(id="a", task="Do stuff")],
+        )
+        registry = MagicMock()
+        registry.get.return_value = wf
+
+        app = MagicMock()
+        app.workflow_registry = registry
+        display = MagicMock()
+        ctx = _make_ctx(app=app, display=display, args="run fg-wf")
+
+        cmd = WorkflowCommand()
+
+        with (
+            patch(
+                "mocode.app.cli.commands.workflow.WorkflowRunStore"
+            ) as MockStore,
+            patch(
+                "mocode.app.cli.commands.workflow.DAGRunner"
+            ) as MockRunner,
+        ):
+            mock_store = MagicMock()
+            mock_store.create.return_value = "wf_fg123"
+            MockStore.return_value = mock_store
+
+            mock_runner_instance = AsyncMock()
+            mock_runner_instance.run = AsyncMock(
+                return_value=[
+                    NodeResult(
+                        node_id="a",
+                        task="Do stuff",
+                        output="ok",
+                        exit_code=0,
+                        duration=1.0,
+                    )
+                ]
+            )
+            MockRunner.return_value = mock_runner_instance
+
+            result = await cmd.run(ctx)
+
+        assert result == CommandResult.CONTINUE
+        # Should have called runner.run synchronously
+        mock_runner_instance.run.assert_called_once()
+        # Should show summary
+        display.workflow_summary.assert_called_once()
