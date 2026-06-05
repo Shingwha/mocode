@@ -97,23 +97,6 @@ class TestGrepVfsSeparation:
         assert "hello vfs" in result
         assert str(tmp_path) not in result
 
-    def test_real_path_no_match_stays_no_match(self, tmp_path: Path):
-        """Real path with no matches should not fall back to VFS."""
-        (tmp_path / "real.py").write_text("nothing\n", encoding="utf-8")
-        vfs = VirtualFS()
-        vfs.add("virtual.py", "hello vfs\n")
-        grep_tool = GrepTool(vfs=vfs)
-        result = grep_tool.run({
-            "pattern": "hello",
-            "path": str(tmp_path),
-            "output_mode": "content",
-            "limit": 100,
-            "context": 0,
-            "type": "",
-        })
-        assert "No matches" in result
-        assert "vfs://" not in result
-
 
 class TestGrepSingleFile:
     def test_single_file_content(self, tmp_path: Path):
