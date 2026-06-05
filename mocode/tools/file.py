@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ..core.tool import Tool, ToolError
 from ..core.virtualfs import VirtualFS
-from ._helpers import read_bytes, require_file
+from .utils import decode_bytes, require_file
 
 
 def _format_lines(content: str, label: str, offset: int, limit: int) -> str:
@@ -73,7 +73,7 @@ def _read_text(p: Path, offset: int, limit: int) -> str:
         raise ToolError(f"Cannot read file: {e}", "read_error")
     if b"\x00" in raw[:8192]:
         raise ToolError(f"File appears to be binary: {p}", "binary_file")
-    content = read_bytes(raw)
+    content = decode_bytes(raw)
     return _format_lines(content, str(p), offset, limit)
 
 

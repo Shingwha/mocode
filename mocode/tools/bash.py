@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..core.tool import Tool
-from ._helpers import decode_bytes
+from .utils import decode_bytes
 
 
 def _is_wsl_path(path: Path) -> bool:

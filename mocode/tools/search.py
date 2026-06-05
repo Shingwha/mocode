@@ -10,7 +10,7 @@ from pathlib import Path
 
 from ..core.tool import Tool
 from ..core.virtualfs import VirtualFS, _strip_prefix
-from ._helpers import require_dir
+from .utils import require_dir
 from .utils import (
     expand_context_indices,
     format_grep_content,
