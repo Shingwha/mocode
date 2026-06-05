@@ -12,7 +12,6 @@ from dataclasses import dataclass, field
 from ..core.agent import AgentConfig, AgentLoop
 from ..core.hook import AgentHook, HookRunner
 from ..core.tool import Tool, ToolRegistry
-from ..prompts.subagent import subagent_system_prompt
 
 
 @dataclass(frozen=True)
@@ -91,6 +90,8 @@ def SubAgentTool(
     """Create a tool that lets the LLM delegate tasks to a sub-agent."""
 
     async def _sub_agent(args: dict) -> str:
+        from ..prompts.subagent import subagent_system_prompt
+
         task = args["task"]
 
         # All filtering happens here: exclude blocked tools first

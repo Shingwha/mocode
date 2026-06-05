@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import httpx
-
 from ..core.tool import Tool, ToolError
 
 
@@ -25,6 +23,7 @@ def FetchTool(result_limit: int = 50000) -> Tool:
         timeout = args.get("timeout", 30)
         base = "https://markdown.new/"
         fetch_url = base + url.lstrip("/")
+        import httpx
 
         try:
             async with httpx.AsyncClient() as client:
