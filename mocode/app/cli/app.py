@@ -87,11 +87,14 @@ class CLIApp:
         if self.interactive:
             from .input import Input
             from .display import Display
+            from .workflow_renderer import WorkflowRenderer
 
             _input = Input(self.commands, ps1="❯")
             self.display = display or Display(input_=_input)
+            self.wf_renderer = WorkflowRenderer(self.display)
         else:
             self.display = display  # may be None in non-interactive
+            self.wf_renderer = None  # type: ignore[assignment]
 
         self._workflow_registry = _make_workflow_registry()
 

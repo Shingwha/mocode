@@ -660,8 +660,9 @@ class TestWorkflowMenuPendingInput:
 
         app = MagicMock()
         app.workflow_registry = registry
+        app.wf_renderer = MagicMock()
+        app.wf_renderer.show.return_value = "tree view"
         display = MagicMock()
-        display.workflow_show.return_value = "tree view"
         ctx = _make_ctx(app=app, display=display)
 
         cmd = WorkflowCommand()
@@ -678,9 +679,9 @@ class TestWorkflowMenuPendingInput:
         else:
             display.set_pending_input.assert_not_called()
         if expect_show:
-            display.workflow_show.assert_called_once_with(wf)
+            app.wf_renderer.show.assert_called_once_with(wf)
         else:
-            display.workflow_show.assert_not_called()
+            app.wf_renderer.show.assert_not_called()
 
 
 # ===========================================================================
@@ -799,7 +800,7 @@ class TestWorkflowCommandRun:
 
         assert result == CommandResult.CONTINUE
         mock_runner_instance.run.assert_called_once()
-        display.workflow_summary.assert_called_once()
+        app.wf_renderer.summary.assert_called_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("subcommand,args_str", [

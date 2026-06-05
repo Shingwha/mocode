@@ -92,7 +92,7 @@ class WorkflowCommand:
             ctx.display.info("No workflows found.")
             return CommandResult.CONTINUE
 
-        text = ctx.display.workflow_list(workflows)
+        text = ctx.app.wf_renderer.list_workflows(workflows)
         ctx.display.info("Workflows:\n" + text)
         return CommandResult.CONTINUE
 
@@ -104,7 +104,7 @@ class WorkflowCommand:
             ctx.display.warn(f"Workflow '{name}' not found.")
             return CommandResult.CONTINUE
 
-        text = ctx.display.workflow_show(wf)
+        text = ctx.app.wf_renderer.show(wf)
         ctx.display.info(text)
         return CommandResult.CONTINUE
 
@@ -131,11 +131,11 @@ class WorkflowCommand:
             args=user_args,
         )
 
-        ctx.display.workflow_start(wf)
+        ctx.app.wf_renderer.start(wf)
 
         runner = DAGRunner(
             wf,
-            on_event=ctx.display.handle_event,
+            on_event=ctx.app.wf_renderer.handle_event,
             run_id=run_id,
             run_store=store,
         )
@@ -148,7 +148,7 @@ class WorkflowCommand:
             ctx.display.error(f"Workflow failed: {e}")
             return CommandResult.CONTINUE
 
-        ctx.display.workflow_summary(wf, results)
+        ctx.app.wf_renderer.summary(wf, results)
         ctx.display.info(f"Run ID: {run_id}")
         return CommandResult.CONTINUE
 
