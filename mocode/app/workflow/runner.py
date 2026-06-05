@@ -354,7 +354,13 @@ class DAGRunner:
                 wave_idx=wave_idx,
             )
         )
-        self._emit(ProgressEvent(message=f"Node '{node.id}' done ({nr.duration:.1f}s)"))
+        self._emit(
+            ProgressEvent(
+                message=f"Node '{node.id}' done ({nr.duration:.1f}s)",
+                node_id=node.id,
+                detail=f"done ({nr.duration:.1f}s)",
+            )
+        )
 
         # Activate downstream dependents
         self._activate_downstream(node.id, wf, state)
@@ -494,7 +500,9 @@ class DAGRunner:
         )
         self._emit(
             ProgressEvent(
-                message=f"Map '{node.id}' done — {len(items)} items ({total_duration:.1f}s)"
+                message=f"Map '{node.id}' done — {len(items)} items ({total_duration:.1f}s)",
+                node_id=node.id,
+                detail=f"done · {len(items)} items ({total_duration:.1f}s)",
             )
         )
         self._activate_downstream(node.id, wf, state)

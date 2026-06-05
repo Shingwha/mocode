@@ -16,6 +16,15 @@ def visible_width(text: str) -> int:
     return wcswidth(_ANSI_RE.sub("", text))
 
 
+def ellipsize_tail(text: str, max_width: int) -> str:
+    """Truncate at the end: ``'abcdefghij'`` → ``'abcdef...'``."""
+    if visible_width(text) <= max_width:
+        return text
+    if max_width < 4:
+        return text[:max_width]
+    return text[: max_width - 3] + "..."
+
+
 def ellipsize_middle(text: str, max_width: int) -> str:
     """Truncate *text* in the middle: ``'abcdefghij'`` → ``'abcde...hij'``."""
     if visible_width(text) <= max_width:

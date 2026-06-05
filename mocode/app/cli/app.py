@@ -303,7 +303,8 @@ class CLIApp:
 
         original_handler = signal.signal(signal.SIGINT, _on_sigint)
         try:
-            async with self.display.spinner("Thinking"):
+            async with self.display.spinner():
+                self.display.spinner_set("thinking", "Thinking")
                 result = await task
         except asyncio.CancelledError:
             self.display.warn("\nResponse interrupted.\n")

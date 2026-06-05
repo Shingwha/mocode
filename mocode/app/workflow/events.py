@@ -101,3 +101,5 @@ class ProgressEvent(WorkflowEvent):
     """Emitted for progress updates during execution."""
 
     message: str
+    node_id: str
+    detail: str

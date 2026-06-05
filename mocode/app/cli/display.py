@@ -6,7 +6,7 @@ import json
 import time
 from typing import TYPE_CHECKING
 
-from .spinner import SpinnerRunner
+from .spinner import Priority, SpinnerRunner, Truncate
 from .theme import (
     BG_USER,
     BOLD,
@@ -179,20 +179,24 @@ class Display:
 
     # ── Spinner delegation ────────────────────────────────
 
-    def set_spinner_text(self, text: str):
-        self._spinner.set_text(text)
+    def spinner_set(self, id: str, text: str = "",
+                    priority: int | Priority = Priority.NORMAL,
+                    truncate: Truncate | str = Truncate.TAIL) -> None:
+        """Add or update a spinner segment."""
+        self._spinner.set(id, text, priority, truncate)
 
-    def set_spinner_detail(self, detail: str):
-        self._spinner.set_detail(detail)
+    def spinner_remove(self, id: str) -> None:
+        """Remove a spinner segment."""
+        self._spinner.remove(id)
 
-    def spinner(self, text: str = "Thinking", style=None):
-        return self._spinner.spin(text, style)
+    def spinner(self, style=None):
+        return self._spinner.spin(style)
 
     # ── Output core ───────────────────────────────────────
 
     def _print(self, *args, **kwargs):
         if self._spinner.active:
-            self._spinner._clear()
+            self._spinner._clear_line()
         print(*args, **kwargs)
 
     def _styled(self, icon: str, text: str, color: str, icon_color: str = ""):
@@ -324,14 +328,17 @@ class Display:
         )
 
     def _on_node_start(self, event: NodeStartEvent) -> None:
-        """Update spinner detail to show the currently running node."""
+        """Update spinner segments to show the currently running node."""
+        self.spinner_set("wf_tag", event.node_id,
+                         priority=Priority.NORMAL, truncate=Truncate.TAIL)
         if event.description:
-            self.set_spinner_detail(f"{event.node_id}: {event.description}")
+            self.spinner_set("wf_detail", event.description,
+                             priority=Priority.LOW, truncate=Truncate.MIDDLE)
         else:
-            self.set_spinner_detail(event.node_id)
+            self.spinner_remove("wf_detail")
 
     def _on_node_done(self, event: NodeDoneEvent) -> None:
-        """Print a completed node result line."""
+        """Print a completed node result line and clear spinner segments."""
         dur = f"{event.result.duration:.1f}s"
         icon = _s("✓", GREEN) if event.result.exit_code == 0 else _s("✗", RED)
         desc = event.description or (
@@ -343,6 +350,8 @@ class Display:
         self._print(
             f"  └─ {icon} {_s(event.node_id, BOLD)} · {desc}{iter_suffix}  {_s(dur, DIM)}"
         )
+        self.spinner_remove("wf_tag")
+        self.spinner_remove("wf_detail")
 
     def _on_loop_iter(self, event: LoopIterEvent) -> None:
         """Print a loop iteration line."""
@@ -372,8 +381,15 @@ class Display:
         )
 
     def _on_progress(self, event: ProgressEvent) -> None:
-        """Update spinner detail with progress message."""
-        self.set_spinner_detail(event.message)
+        """Update spinner segments with progress message."""
+        if event.node_id:
+            self.spinner_set("wf_tag", event.node_id,
+                             priority=Priority.NORMAL, truncate=Truncate.TAIL)
+            self.spinner_set("wf_detail", event.detail or event.message,
+                             priority=Priority.LOW, truncate=Truncate.MIDDLE)
+        else:
+            self.spinner_set("wf_detail", event.message,
+                             priority=Priority.LOW, truncate=Truncate.MIDDLE)
 
     _SKIP_STYLES: dict[str, tuple[str, str]] = {
         "not activated by router": ("○", "routed elsewhere"),

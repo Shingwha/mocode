@@ -9,6 +9,7 @@ from ...workflow.models import NodeResult, detailed_summarize
 from ...workflow.runner import DAGRunner
 from ...workflow.run_store import WorkflowRunStore
 from ..prompts import Choice, select
+from ..spinner import Priority, Truncate
 from . import CommandContext, CommandResult
 
 
@@ -139,7 +140,9 @@ class WorkflowCommand:
             run_store=store,
         )
         try:
-            async with ctx.display.spinner("running workflow"):
+            async with ctx.display.spinner():
+                ctx.display.spinner_set("wf_tag", "running workflow",
+                                        priority=Priority.NORMAL, truncate=Truncate.TAIL)
                 results = await runner.run(args=user_args)
         except Exception as e:
             ctx.display.error(f"Workflow failed: {e}")

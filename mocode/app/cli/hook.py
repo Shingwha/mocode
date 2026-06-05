@@ -6,6 +6,7 @@ import time
 
 from ...core.hook import AgentHook
 from .display import _group_tool_calls, _merge_summaries
+from .spinner import Priority, Truncate
 
 
 class CLIDisplayHook(AgentHook):
@@ -73,23 +74,27 @@ class CLIDisplayHook(AgentHook):
                 self._d.tool_done(name, merged, elapsed)
 
         # Reset spinner for next LLM call
-        self._d.set_spinner_text("Thinking")
-        self._d.set_spinner_detail("")
+        self._d.spinner_remove("tools_tag")
+        self._d.spinner_remove("tools_detail")
+        self._d.spinner_set("thinking", "Thinking",
+                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
         self._tool_groups = []
         self._tool_errors = {}
         self._tool_call_start = {}
         self._tool_elapsed = {}
 
     async def on_compact(self, ctx):
-        self._d.set_spinner_text("Compacting")
+        self._d.spinner_remove("thinking")
+        self._d.spinner_set("compact", "Compacting",
+                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
         self._d.compact(ctx.compact_old, ctx.compact_new)
 
     # ── Internal ───────────────────────────────────────────
 
     def _update_spinner_for_tools(self, groups):
-        """Update spinner text/detail to show running tools.
+        """Update spinner segments to show running tools.
 
-        Format: ``{count} tool(s) ({elapsed} · {detail})``
+        Format: ``{count} tool(s) · {detail}``
         - detail for single tool: ``read(src/main.py)``
         - detail for multiple:   ``read×2, bash``
         """
@@ -107,5 +112,8 @@ class CLIDisplayHook(AgentHook):
             else:
                 parts.append(name)
 
-        self._d.set_spinner_text(label)
-        self._d.set_spinner_detail(", ".join(parts))
+        self._d.spinner_remove("thinking")
+        self._d.spinner_set("tools_tag", label,
+                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
+        self._d.spinner_set("tools_detail", ", ".join(parts),
+                            priority=Priority.LOW, truncate=Truncate.MIDDLE)
