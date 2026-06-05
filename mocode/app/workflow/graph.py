@@ -29,7 +29,9 @@ def validate_workflow(nodes: list[Node], node_map: dict[str, Node]) -> None:
             if dep not in node_map:
                 raise ValueError(f"Node '{n.id}' depends on unknown node '{dep}'")
 
-    # All route.to IDs must exist
+    # All route.to IDs must exist + node-type-specific validation
+    _VALID_PARSE = {"lines", "json", "csv"}
+
     for n in nodes:
         if n.type == "router":
             if not n.routes:
@@ -42,6 +44,18 @@ def validate_workflow(nodes: list[Node], node_map: dict[str, Node]) -> None:
                         raise ValueError(
                             f"Router '{n.id}' route targets unknown node '{target}'"
                         )
+        elif n.type == "map":
+            if not n.items:
+                raise ValueError(f"Map node '{n.id}' must have 'items'")
+            if not n.task:
+                raise ValueError(f"Map node '{n.id}' must have 'task'")
+            if n.routes:
+                raise ValueError(f"Map node '{n.id}' must not have 'routes'")
+            if n.parse not in _VALID_PARSE:
+                raise ValueError(
+                    f"Map node '{n.id}' has invalid parse '{n.parse}', "
+                    f"must be one of {sorted(_VALID_PARSE)}"
+                )
         else:
             if not n.task:
                 raise ValueError(f"Task node '{n.id}' must have 'task'")

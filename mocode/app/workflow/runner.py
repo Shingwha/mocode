@@ -19,6 +19,8 @@ if TYPE_CHECKING:
 
 from .events import (
     LoopIterEvent,
+    MapFanOutEvent,
+    MapItemDoneEvent,
     NodeDoneEvent,
     NodeSkippedEvent,
     NodeStartEvent,
@@ -27,12 +29,17 @@ from .events import (
     WaveReadyEvent,
     WorkflowEvent,
 )
-from .models import NodeResult, fill_template
+from .models import NodeResult, fill_template, parse_items
 from .state import RunState
 
 
 class DAGRunner:
-    """Executes a Workflow DAG by spawning mocode -p for each task node."""
+    """Executes a Workflow DAG by spawning mocode -p for each task node.
+
+    Supports three node types: task, router, and map.
+    Map nodes fan out to N child tasks and run them concurrently.
+    ``concurrency`` controls max parallel execution (default 1 = serial).
+    """
 
     def __init__(
         self,
@@ -51,6 +58,7 @@ class DAGRunner:
         self._on_event = on_event
         self.run_id = run_id
         self.run_store = run_store
+        self._semaphore = asyncio.Semaphore(workflow.concurrency)
 
     # ── Event dispatch ────────────────────────────────────────
 
@@ -77,14 +85,26 @@ class DAGRunner:
             while state.ready_queue and not state.should_stop():
                 self._announce_waves(state)
 
-                nid = state.ready_queue.pop(0)
-                node = wf.node_map[nid]
-                state.iteration[nid] += 1
+                # Collect all ready nodes at once for potential parallelism
+                batch = list(state.ready_queue)
+                state.ready_queue.clear()
 
-                if node.type == "router":
-                    self._evaluate_router(node, state)
-                else:
-                    await self._run_task_node(node, state)
+                # Run the batch concurrently
+                tasks = []
+                for nid in batch:
+                    node = wf.node_map[nid]
+                    state.iteration[nid] += 1
+
+                    if node.type == "router":
+                        # Routers are sync — run inline, add to batch of 1
+                        self._evaluate_router(node, state)
+                    elif node.type == "map":
+                        tasks.append(self._run_map_node(node, state))
+                    else:
+                        tasks.append(self._run_task_node(node, state))
+
+                if tasks:
+                    await asyncio.gather(*tasks)
 
                 if state.should_stop():
                     break
@@ -310,7 +330,8 @@ class DAGRunner:
         context_header = (
             self._build_node_context_header(node, wf) if self.node_context else None
         )
-        nr = await self._exec_node(node.id, task_text, context_header)
+        async with self._semaphore:
+            nr = await self._exec_node(node.id, task_text, context_header)
         state.total_executions += 1
 
         state.results.append(nr)
@@ -336,7 +357,148 @@ class DAGRunner:
         self._emit(ProgressEvent(message=f"Node '{node.id}' done ({nr.duration:.1f}s)"))
 
         # Activate downstream dependents
-        for dep_id in wf.dependents.get(node.id, []):
+        self._activate_downstream(node.id, wf, state)
+
+    # ── Map node execution ────────────────────────────────────
+
+    async def _run_map_node(self, node: Node, state: RunState) -> None:
+        """Fan-out: parse items, run a child task for each, concatenate results."""
+        wf = self.workflow
+        self._emit(NodeStartEvent(node_id=node.id, description=node.description))
+
+        # Resolve items template
+        items_raw = fill_template(node.items, state.context)
+        items = parse_items(items_raw, node.parse)
+
+        if not items:
+            # Empty items — map produces empty output
+            empty_result = NodeResult(
+                node_id=node.id,
+                task=node.task,
+                output="",
+                exit_code=0,
+                duration=0,
+            )
+            state.results.append(empty_result)
+            state.total_executions += 1
+            state.context["nodes"][node.id] = {
+                "output": "",
+                "exit_code": 0,
+                "duration": 0,
+                "error": "",
+            }
+            state.context["previous"] = ""
+            state.completed.add(node.id)
+            self._emit(
+                NodeDoneEvent(
+                    node_id=node.id,
+                    description=node.description,
+                    result=empty_result,
+                    wave_idx=state.node_wave.get(node.id, 0),
+                )
+            )
+            self._activate_downstream(node.id, wf, state)
+            return
+
+        wave_idx = state.node_wave.get(node.id, 0)
+        self._emit(
+            MapFanOutEvent(map_id=node.id, item_count=len(items), wave_idx=wave_idx)
+        )
+
+        # Build child tasks
+        child_ids: list[str] = []
+        child_tasks: list[asyncio.Task[NodeResult]] = []
+
+        for idx, item_val in enumerate(items):
+            child_id = f"{node.id}::{idx}"
+            child_ids.append(child_id)
+
+            # Render task template with item substituted
+            child_task_text = node.task.replace(f"{{{{{node.item_key}}}}}", item_val)
+
+            context_header = (
+                self._build_node_context_header(node, wf) if self.node_context else None
+            )
+
+            # Schedule each child as an async task (semaphore controls concurrency)
+            child_tasks.append(
+                asyncio.create_task(
+                    self._run_map_child(child_id, child_task_text, context_header)
+                )
+            )
+
+        state.map_children[node.id] = child_ids
+
+        # Wait for all children to finish
+        child_results: list[NodeResult] = list(await asyncio.gather(*child_tasks))
+
+        # Record child results
+        total_duration = 0.0
+        for idx, (child_id, nr) in enumerate(zip(child_ids, child_results)):
+            state.total_executions += 1
+            state.results.append(nr)
+            total_duration += nr.duration
+            self._emit(
+                MapItemDoneEvent(
+                    map_id=node.id,
+                    item_index=idx,
+                    item_value=items[idx][:80],
+                    duration=nr.duration,
+                )
+            )
+
+        # Concatenate all child outputs as the map node's output
+        merged_output = "\n---\n".join(nr.output for nr in child_results)
+
+        map_result = NodeResult(
+            node_id=node.id,
+            task=node.task,
+            output=merged_output,
+            exit_code=0,
+            duration=total_duration,
+        )
+        state.results.append(map_result)
+        state.total_executions += 1
+
+        state.context["nodes"][node.id] = {
+            "output": merged_output,
+            "exit_code": 0,
+            "duration": total_duration,
+            "error": "",
+        }
+        state.context["previous"] = merged_output
+        state.completed.add(node.id)
+        self._persist(state.results, "running")
+
+        self._emit(
+            NodeDoneEvent(
+                node_id=node.id,
+                description=node.description,
+                result=map_result,
+                wave_idx=wave_idx,
+            )
+        )
+        self._emit(
+            ProgressEvent(
+                message=f"Map '{node.id}' done — {len(items)} items ({total_duration:.1f}s)"
+            )
+        )
+
+        self._activate_downstream(node.id, wf, state)
+
+    async def _run_map_child(
+        self, child_id: str, task: str, context_header: str | None
+    ) -> NodeResult:
+        """Run a single map child task under the semaphore."""
+        async with self._semaphore:
+            return await self._exec_node(child_id, task, context_header)
+
+    # ── Downstream activation helper ──────────────────────────
+
+    @staticmethod
+    def _activate_downstream(node_id: str, wf: Workflow, state: RunState) -> None:
+        """Decrement pending_deps for dependents and enqueue ready ones."""
+        for dep_id in wf.dependents.get(node_id, []):
             if dep_id in state.skipped:
                 continue
             state.pending_deps[dep_id] = state.pending_deps.get(dep_id, 0) - 1

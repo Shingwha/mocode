@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from .events import (
     LoopIterEvent,
+    MapFanOutEvent,
+    MapItemDoneEvent,
     NodeDoneEvent,
     NodeSkippedEvent,
     NodeStartEvent,
@@ -19,6 +21,7 @@ from .models import (
     Route,
     Workflow,
     fill_template,
+    parse_items,
     summarize,
     detailed_summarize,
 )
@@ -37,6 +40,7 @@ __all__ = [
     "WorkflowRunStore",
     "compute_waves",
     "fill_template",
+    "parse_items",
     "summarize",
     "detailed_summarize",
     "make_registry",
@@ -48,5 +52,7 @@ __all__ = [
     "NodeStartEvent",
     "NodeDoneEvent",
     "LoopIterEvent",
+    "MapFanOutEvent",
+    "MapItemDoneEvent",
     "ProgressEvent",
 ]

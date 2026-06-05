@@ -77,6 +77,25 @@ class LoopIterEvent(WorkflowEvent):
 
 
 @dataclass
+class MapFanOutEvent(WorkflowEvent):
+    """Emitted when a map node expands items into child tasks."""
+
+    map_id: str
+    item_count: int
+    wave_idx: int
+
+
+@dataclass
+class MapItemDoneEvent(WorkflowEvent):
+    """Emitted when a single map child task completes."""
+
+    map_id: str
+    item_index: int
+    item_value: str
+    duration: float
+
+
+@dataclass
 class ProgressEvent(WorkflowEvent):
     """Emitted for progress updates during execution."""
 

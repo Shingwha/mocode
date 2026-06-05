@@ -10,6 +10,8 @@ import pytest
 
 from mocode.app.workflow import (
     LoopIterEvent,
+    MapFanOutEvent,
+    MapItemDoneEvent,
     Node,
     NodeDoneEvent,
     NodeResult,
@@ -20,6 +22,7 @@ from mocode.app.workflow import (
     WorkflowRegistry,
     compute_waves,
     fill_template,
+    parse_items,
     summarize,
     detailed_summarize,
 )
@@ -532,3 +535,466 @@ class TestWorkflowMenuPendingInput:
             display.workflow_show.assert_called_once_with(wf)
         else:
             display.workflow_show.assert_not_called()
+
+
+# ===========================================================================
+# 10. parse_items tests
+# ===========================================================================
+
+
+class TestParseItems:
+    def test_lines_mode(self):
+        assert parse_items("alpha\nbeta\ngamma") == ["alpha", "beta", "gamma"]
+
+    def test_lines_skips_empty(self):
+        assert parse_items("a\n\nb\n\nc") == ["a", "b", "c"]
+
+    def test_lines_strips(self):
+        assert parse_items("  a  \n  b  ") == ["a", "b"]
+
+    def test_csv_mode(self):
+        assert parse_items("a,b,c", "csv") == ["a", "b", "c"]
+
+    def test_csv_strips(self):
+        assert parse_items(" a , b , c ", "csv") == ["a", "b", "c"]
+
+    def test_json_mode(self):
+        assert parse_items('["a", "b", "c"]', "json") == ["a", "b", "c"]
+
+    def test_json_numbers(self):
+        assert parse_items("[1, 2, 3]", "json") == ["1", "2", "3"]
+
+    def test_json_invalid_falls_back_to_lines(self):
+        assert parse_items("not json", "json") == ["not json"]
+
+    def test_empty_input(self):
+        assert parse_items("") == []
+
+
+# ===========================================================================
+# 11. Map node model tests
+# ===========================================================================
+
+
+class TestMapNodeModel:
+    def test_from_dict_map(self):
+        n = Node.from_dict(
+            {
+                "id": "search",
+                "type": "map",
+                "items": "{nodes.gen.output}",
+                "parse": "lines",
+                "item_key": "keyword",
+                "task": "Search {{keyword}}",
+            }
+        )
+        assert n.type == "map"
+        assert n.items == "{nodes.gen.output}"
+        assert n.parse == "lines"
+        assert n.item_key == "keyword"
+        assert n.task == "Search {{keyword}}"
+
+    def test_map_auto_infers_depends_from_items(self):
+        n = Node.from_dict(
+            {
+                "id": "m",
+                "type": "map",
+                "items": "{nodes.gen.output}",
+                "task": "Process {{item}}",
+            }
+        )
+        assert "gen" in n.depends
+
+    def test_map_auto_infers_depends_from_both_templates(self):
+        n = Node.from_dict(
+            {
+                "id": "m",
+                "type": "map",
+                "items": "{nodes.a.output}",
+                "task": "Use {nodes.b.output} and {{item}}",
+            }
+        )
+        assert "a" in n.depends
+        assert "b" in n.depends
+
+    def test_map_default_fields(self):
+        n = Node(id="m", type="map", items="{args.x}", task="Do {{item}}")
+        assert n.parse == "lines"
+        assert n.item_key == "item"
+
+
+# ===========================================================================
+# 12. Map node validation tests
+# ===========================================================================
+
+
+class TestMapNodeValidation:
+    def test_map_missing_items_rejected(self, tmp_path: Path):
+        path = _write_yaml(
+            tmp_path / "no_items.yaml",
+            {
+                "name": "t",
+                "nodes": [
+                    {"id": "m", "type": "map", "task": "Do {{item}}"},
+                ],
+            },
+        )
+        with pytest.raises(ValueError, match="must have 'items'"):
+            Workflow.from_yaml(path)
+
+    def test_map_missing_task_rejected(self, tmp_path: Path):
+        path = _write_yaml(
+            tmp_path / "no_task.yaml",
+            {
+                "name": "t",
+                "nodes": [
+                    {"id": "m", "type": "map", "items": "{args.x}"},
+                ],
+            },
+        )
+        with pytest.raises(ValueError, match="must have 'task'"):
+            Workflow.from_yaml(path)
+
+    def test_map_with_routes_rejected(self, tmp_path: Path):
+        path = _write_yaml(
+            tmp_path / "routes.yaml",
+            {
+                "name": "t",
+                "nodes": [
+                    {
+                        "id": "m",
+                        "type": "map",
+                        "items": "{args.x}",
+                        "task": "Do {{item}}",
+                        "routes": [{"match": "x", "to": ["y"]}],
+                    },
+                ],
+            },
+        )
+        with pytest.raises(ValueError, match="must not have 'routes'"):
+            Workflow.from_yaml(path)
+
+    def test_map_invalid_parse_rejected(self, tmp_path: Path):
+        path = _write_yaml(
+            tmp_path / "bad_parse.yaml",
+            {
+                "name": "t",
+                "nodes": [
+                    {
+                        "id": "m",
+                        "type": "map",
+                        "items": "{args.x}",
+                        "parse": "xml",
+                        "task": "Do {{item}}",
+                    },
+                ],
+            },
+        )
+        with pytest.raises(ValueError, match="invalid parse"):
+            Workflow.from_yaml(path)
+
+
+# ===========================================================================
+# 13. Workflow concurrency field tests
+# ===========================================================================
+
+
+class TestWorkflowConcurrency:
+    def test_default_concurrency(self):
+        wf = Workflow(name="t", nodes=[])
+        assert wf.concurrency == 1
+
+    def test_concurrency_from_yaml(self, tmp_path: Path):
+        path = _write_yaml(
+            tmp_path / "conc.yaml",
+            {
+                "name": "t",
+                "concurrency": 3,
+                "nodes": [{"id": "a", "task": "A"}],
+            },
+        )
+        wf = Workflow.from_yaml(path)
+        assert wf.concurrency == 3
+
+
+# ===========================================================================
+# 14. Runner — Map node
+# ===========================================================================
+
+
+class TestRunnerMapNode:
+    @pytest.mark.asyncio
+    async def test_map_fan_out_three_items(self):
+        """Map node expands 3 items, runs each as a subprocess, concatenates output."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="gen", task="Generate keywords"),
+                Node(
+                    id="search",
+                    type="map",
+                    items="{nodes.gen.output}",
+                    parse="lines",
+                    item_key="kw",
+                    task="Search for {{kw}}",
+                    depends=["gen"],
+                ),
+                Node(
+                    id="report",
+                    task="Report: {nodes.search.output}",
+                    depends=["search"],
+                ),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            # gen outputs 3 keywords, each map child returns a result, report summarizes
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"alpha\nbeta\ngamma"),  # gen
+                _make_subprocess_mock(b"result-alpha"),  # search::0
+                _make_subprocess_mock(b"result-beta"),  # search::1
+                _make_subprocess_mock(b"result-gamma"),  # search::2
+                _make_subprocess_mock(b"final report"),  # report
+            ]
+            results = await runner.run()
+
+        # gen + 3 map children + map node itself + report = 5 results
+        node_ids = [r.node_id for r in results]
+        assert "gen" in node_ids
+        assert "search::0" in node_ids
+        assert "search::1" in node_ids
+        assert "search::2" in node_ids
+        assert "search" in node_ids
+        assert "report" in node_ids
+
+        # map node output should be concatenation of children
+        map_result = next(r for r in results if r.node_id == "search")
+        assert "result-alpha" in map_result.output
+        assert "result-beta" in map_result.output
+        assert "result-gamma" in map_result.output
+        assert "---" in map_result.output  # separator
+
+        # report received the concatenated map output
+        report_result = next(r for r in results if r.node_id == "report")
+        assert "result-alpha" in report_result.task
+
+    @pytest.mark.asyncio
+    async def test_map_with_csv_parse(self):
+        """Map node with csv parse splits comma-separated items."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="gen", task="Generate"),
+                Node(
+                    id="m",
+                    type="map",
+                    items="{nodes.gen.output}",
+                    parse="csv",
+                    item_key="x",
+                    task="Process {{x}}",
+                    depends=["gen"],
+                ),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"a,b,c"),
+                _make_subprocess_mock(b"r1"),
+                _make_subprocess_mock(b"r2"),
+                _make_subprocess_mock(b"r3"),
+            ]
+            results = await runner.run()
+
+        child_ids = [r.node_id for r in results if "::" in r.node_id]
+        assert len(child_ids) == 3
+
+    @pytest.mark.asyncio
+    async def test_map_with_json_parse(self):
+        """Map node with json parse handles JSON arrays."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="gen", task="Generate"),
+                Node(
+                    id="m",
+                    type="map",
+                    items="{nodes.gen.output}",
+                    parse="json",
+                    item_key="x",
+                    task="Process {{x}}",
+                    depends=["gen"],
+                ),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b'["one", "two"]'),
+                _make_subprocess_mock(b"r1"),
+                _make_subprocess_mock(b"r2"),
+            ]
+            results = await runner.run()
+
+        child_ids = [r.node_id for r in results if "::" in r.node_id]
+        assert len(child_ids) == 2
+
+    @pytest.mark.asyncio
+    async def test_map_empty_items(self):
+        """Map node with empty items produces empty output without spawning."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="gen", task="Generate"),
+                Node(
+                    id="m",
+                    type="map",
+                    items="{nodes.gen.output}",
+                    task="Process {{item}}",
+                    depends=["gen"],
+                ),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b""),  # gen outputs empty
+            ]
+            results = await runner.run()
+
+        # Only gen + map (empty) results, no children
+        assert len(results) == 2
+        map_result = next(r for r in results if r.node_id == "m")
+        assert map_result.output == ""
+
+    @pytest.mark.asyncio
+    async def test_map_events_emitted(self):
+        """Map node emits MapFanOutEvent and MapItemDoneEvent."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="gen", task="Generate"),
+                Node(
+                    id="m",
+                    type="map",
+                    items="{nodes.gen.output}",
+                    task="Process {{item}}",
+                    depends=["gen"],
+                ),
+            ],
+        )
+        events: list = []
+        runner = DAGRunner(wf, on_event=events.append)
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"x\ny"),
+                _make_subprocess_mock(b"r1"),
+                _make_subprocess_mock(b"r2"),
+            ]
+            await runner.run()
+
+        fan_out = [e for e in events if isinstance(e, MapFanOutEvent)]
+        item_done = [e for e in events if isinstance(e, MapItemDoneEvent)]
+        assert len(fan_out) == 1
+        assert fan_out[0].item_count == 2
+        assert len(item_done) == 2
+
+    @pytest.mark.asyncio
+    async def test_map_with_concurrency(self):
+        """Map node respects workflow concurrency via semaphore."""
+        wf = Workflow(
+            name="t",
+            concurrency=2,
+            nodes=[
+                Node(id="gen", task="Generate"),
+                Node(
+                    id="m",
+                    type="map",
+                    items="{nodes.gen.output}",
+                    task="Process {{item}}",
+                    depends=["gen"],
+                ),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"a\nb\nc"),
+                _make_subprocess_mock(b"r1"),
+                _make_subprocess_mock(b"r2"),
+                _make_subprocess_mock(b"r3"),
+            ]
+            results = await runner.run()
+
+        child_ids = [r.node_id for r in results if "::" in r.node_id]
+        assert len(child_ids) == 3
+
+    @pytest.mark.asyncio
+    async def test_map_yaml_round_trip(self, tmp_path: Path):
+        """Full YAML → Workflow → runner round trip for a map workflow."""
+        path = _write_yaml(
+            tmp_path / "map_wf.yaml",
+            {
+                "name": "multi-search",
+                "description": "Multi-keyword search",
+                "concurrency": 2,
+                "nodes": [
+                    {"id": "gen", "task": "Generate 3 keywords for {args.topic}"},
+                    {
+                        "id": "search",
+                        "type": "map",
+                        "items": "{nodes.gen.output}",
+                        "parse": "lines",
+                        "item_key": "kw",
+                        "task": "Search {{kw}}",
+                        "depends": ["gen"],
+                    },
+                    {
+                        "id": "report",
+                        "task": "Summarize:\n{nodes.search.output}",
+                        "depends": ["search"],
+                    },
+                ],
+            },
+        )
+        wf = Workflow.from_yaml(path)
+        assert wf.concurrency == 2
+        assert wf.nodes[1].type == "map"
+        assert wf.nodes[1].item_key == "kw"
+
+        runner = DAGRunner(wf)
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"ai\nml\ndl"),
+                _make_subprocess_mock(b"ai-results"),
+                _make_subprocess_mock(b"ml-results"),
+                _make_subprocess_mock(b"dl-results"),
+                _make_subprocess_mock(b"summary"),
+            ]
+            results = await runner.run(args={"topic": "technology"})
+
+        node_ids = [r.node_id for r in results]
+        assert "gen" in node_ids
+        assert "search::0" in node_ids
+        assert "search::1" in node_ids
+        assert "search::2" in node_ids
+        assert "search" in node_ids
+        assert "report" in node_ids
+
+        # Verify template filling for gen node
+        gen_result = next(r for r in results if r.node_id == "gen")
+        assert "technology" in gen_result.task

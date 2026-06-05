@@ -42,6 +42,7 @@ class RunState:
     node_wave: dict[str, int] = field(default_factory=dict)
     router_dep_extra: dict[str, int] = field(default_factory=dict)
     router_gates: dict[str, set[str]] = field(default_factory=dict)
+    map_children: dict[str, list[str]] = field(default_factory=dict)  # map_id → [child_id, ...]
 
     # ── Factory ──────────────────────────────────────────────
 

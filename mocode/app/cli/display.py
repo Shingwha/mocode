@@ -22,6 +22,8 @@ from .theme import (
 
 from ..workflow.events import (
     LoopIterEvent,
+    MapFanOutEvent,
+    MapItemDoneEvent,
     NodeDoneEvent,
     NodeSkippedEvent,
     NodeStartEvent,
@@ -282,6 +284,10 @@ class Display:
             self._on_node_start(event)
         elif isinstance(event, NodeDoneEvent):
             self._on_node_done(event)
+        elif isinstance(event, MapFanOutEvent):
+            self._on_map_fan_out(event)
+        elif isinstance(event, MapItemDoneEvent):
+            self._on_map_item_done(event)
         elif isinstance(event, LoopIterEvent):
             self._on_loop_iter(event)
         elif isinstance(event, ProgressEvent):
@@ -350,6 +356,21 @@ class Display:
         max_str = str(event.max_iter) if event.max_iter > 0 else "∞"
         self._print(
             f"  └─ {_s('↻', YELLOW)} {_s(event.node_id, BOLD)} [{event.iteration}/{max_str}] · {desc}  {_s(dur, DIM)}"
+        )
+
+    def _on_map_fan_out(self, event: MapFanOutEvent) -> None:
+        """Print map fan-out: N items expanded."""
+        self._print(
+            f"  └─ {_s('⊞', SOFT_CYAN)} {_s(event.map_id, BOLD)} · "
+            f"{_s(f'{event.item_count} items', DIM)}"
+        )
+
+    def _on_map_item_done(self, event: MapItemDoneEvent) -> None:
+        """Print a single map child completion."""
+        dur = f"{event.duration:.1f}s"
+        val = event.item_value[:30] + ("…" if len(event.item_value) > 30 else "")
+        self._print(
+            f"     {_s('·', GRAY)} [{event.item_index}] {_s(val, DIM)}  {_s(dur, DIM)}"
         )
 
     def _on_progress(self, event: ProgressEvent) -> None:

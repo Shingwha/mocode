@@ -40,24 +40,36 @@ class Route:
 class Node:
     """A node in the workflow graph.
 
-    type "task"  — has a ``task`` template, runs via mocode -p.
+    type "task"   — has a ``task`` template, runs via mocode -p.
     type "router" — has ``routes``, no ``task``; evaluates conditions.
+    type "map"    — has ``items`` + ``task``; fans out to N child tasks.
 
     ``depends`` is auto-inferred from ``{nodes.<id>.*}`` references in the
-    ``task`` template and merged with any explicit ``depends``.
+    ``task`` template (and ``items`` template for map nodes) and merged with
+    any explicit ``depends``.
     """
 
     id: str = ""
-    type: str = "task"  # "task" | "router"
+    type: str = "task"  # "task" | "router" | "map"
     description: str = ""  # brief human-readable label
     task: str = ""  # template string (empty for router)
     depends: list[str] = field(default_factory=list)
     routes: list[Route] = field(default_factory=list)
+    # map node fields
+    items: str = ""  # template resolving to a list source
+    parse: str = "lines"  # "lines" | "json" | "csv"
+    item_key: str = "item"  # variable name in task template
 
     def __post_init__(self) -> None:
         """Auto-infer depends from {nodes.X.*} refs, merged with explicit depends."""
-        if self.task and self.type == "task":
-            inferred = infer_depends_from_task(self.task)
+        templates = []
+        if self.task and self.type in ("task", "map"):
+            templates.append(self.task)
+        if self.items and self.type == "map":
+            templates.append(self.items)
+        if templates:
+            combined = "\n".join(templates)
+            inferred = infer_depends_from_task(combined)
             if inferred:
                 seen = set(self.depends)
                 self.depends.extend(nid for nid in inferred if nid not in seen)
@@ -72,6 +84,9 @@ class Node:
             task=data.get("task", ""),
             depends=list(data.get("depends", [])),
             routes=[Route.from_dict(r) for r in routes_raw],
+            items=data.get("items", ""),
+            parse=data.get("parse", "lines"),
+            item_key=data.get("item_key", "item"),
         )
 
 
@@ -146,6 +161,36 @@ def _dot_lookup(obj: dict, path: str, default: str) -> str:
     return str(obj) if obj is not None else default
 
 
+# ── Items parsing (for map nodes) ─────────────────────────────
+
+
+def parse_items(raw: str, mode: str = "lines") -> list[str]:
+    """Parse a string into a list of items based on mode.
+
+    modes:
+      "lines" — split by non-empty lines (stripped)
+      "json"  — parse as JSON array of strings
+      "csv"   — split by comma (stripped)
+    """
+    if mode == "json":
+        import json
+
+        try:
+            items = json.loads(raw)
+            if isinstance(items, list):
+                return [str(x) for x in items]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # fallback: treat as lines
+        mode = "lines"
+
+    if mode == "csv":
+        return [s.strip() for s in raw.split(",") if s.strip()]
+
+    # default: lines
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
 # ── Workflow ─────────────────────────────────────────────────
 
 
@@ -158,6 +203,7 @@ class Workflow:
     nodes: list[Node] = field(default_factory=list)
     path: Path | None = None
     max_iterations: int = 100
+    concurrency: int = 1  # max parallel node execution (1 = serial)
 
     def __post_init__(self) -> None:
         # Pre-compute and cache graph lookups (nodes list is immutable after construction)
@@ -198,6 +244,7 @@ class Workflow:
             nodes=nodes,
             path=path,
             max_iterations=data.get("max_iterations", 100),
+            concurrency=data.get("concurrency", 1),
         )
 
         validate_workflow(nodes, wf._node_map)
