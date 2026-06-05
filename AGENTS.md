@@ -79,11 +79,11 @@ Sections are ordered by priority (stable → dynamic) to maximize prefix cache h
 
 The workflow engine (`mocode/app/workflow/`) executes YAML-defined DAGs:
 
-- **Node types**: `task` (runs `mocode -p` subprocess) and `router` (evaluates regex conditions on dependency output)
-- **Waves**: Nodes are grouped into waves by topological order. All nodes in a wave can execute in parallel (though currently serial at `max_concurrency=1`).
+- **Node types**: `task` (runs `mocode -p` subprocess), `router` (evaluates regex conditions on dependency output), and `map` (fans out a task over a list of items, each spawning a child subprocess; results concatenated with `\n---\n`).
+- **Waves**: Nodes are grouped into waves by topological order. All nodes in a wave can execute in parallel, bounded by workflow-level `concurrency` (default 1 = serial).
 - **Back-edges**: Router `route.to` can target already-completed nodes, creating loops. `route.max` limits iterations (0 = unlimited). Workflow-level `max_iterations` caps total executions.
-- **Template filling**: Task strings use `{nodes.<id>.output}`, `{args.<key>}`, `{env.<VAR>}`, `{previous}` placeholders. Dependencies are auto-inferred from `{nodes.X.*}` refs.
-- **Events**: `DAGRunner` emits typed events (`WaveReadyEvent`, `NodeStartEvent`, `NodeDoneEvent`, `RouterConditionEvent`, `LoopIterEvent`, `NodeSkippedEvent`, `ProgressEvent`) for consumer rendering.
+- **Template filling**: Task strings use `{nodes.<id>.output}`, `{args.<key>}`, `{env.<VAR>}`, `{previous}` placeholders. Dependencies are auto-inferred from `{nodes.X.*}` refs but explicit `depends` is recommended.
+- **Events**: `DAGRunner` emits typed events (`WaveReadyEvent`, `NodeStartEvent`, `NodeDoneEvent`, `RouterConditionEvent`, `LoopIterEvent`, `NodeSkippedEvent`, `MapFanOutEvent`, `MapItemDoneEvent`, `ProgressEvent`) for consumer rendering.
 
 ## Code Conventions
 

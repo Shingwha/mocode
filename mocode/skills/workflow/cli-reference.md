@@ -26,6 +26,17 @@ Results persist to `~/.mocode/workflow_runs/<run_id>.json`.
 4. mocode workflow result <run_id>               → get full output when done
 ```
 
+## Execution Model
+
+- Each **task** node spawns a `mocode -p` subprocess. Tools and config are
+  inherited; state is not shared between nodes.
+- **Map** nodes fan out: each item spawns its own subprocess. All children run
+  concurrently, bounded by the workflow's `concurrency` setting (default 1).
+- **Router** nodes are synchronous — they regex-match upstream output and
+  activate target nodes.
+- `concurrency` in the YAML controls max parallel subprocesses across the
+  entire workflow (both regular task nodes and map children).
+
 ## Guiding Users
 
 1. Clarify steps and dependencies → write `.mocode/workflows/<name>.yaml`
@@ -39,3 +50,4 @@ Results persist to `~/.mocode/workflow_runs/<run_id>.json`.
 - **Data pipeline**: extract → transform → validate → load
 - **Research**: search → read → summarize → synthesize
 - **Document generation**: outline → draft → review → polish
+- **Batch processing**: list items → map over items → aggregate results
