@@ -4,31 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import random
-import re
 import time
 from contextlib import asynccontextmanager
-from shutil import get_terminal_size
-from wcwidth import wcswidth
 
+from .textutils import ellipsize_middle, terminal_width, visible_width
 from .theme import DIM, RST, SOFT_CYAN, Spinner, _PRESETS
-
-_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
-
-
-def _visible_width(text: str) -> int:
-    """Return display width of *text*, ignoring ANSI escape sequences."""
-    return wcswidth(_ANSI_RE.sub("", text))
-
-
-def _ellipsize_middle(text: str, max_width: int) -> str:
-    """Truncate *text* in the middle: ``'abcdefghij'`` → ``'abcde...hij'``."""
-    if _visible_width(text) <= max_width:
-        return text
-    if max_width < 7:  # too narrow for "a...b" — hard truncate
-        return text[:max_width]
-    head = max_width // 2 - 1
-    tail = max_width - head - 3
-    return text[:head] + "..." + text[-tail:]
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -96,17 +76,17 @@ class SpinnerRunner:
             if self._detail:
                 # Fixed: " " + " · " + " " + elapsed = 5 + elapsed_vis
                 fixed = 5 + elapsed_vis
-                text_vis = _visible_width(self._text)
+                text_vis = visible_width(self._text)
                 remaining = max_suffix_width - fixed - text_vis
-                if remaining < _visible_width(self._detail):
-                    detail = _ellipsize_middle(self._detail, max(4, remaining))
+                if remaining < visible_width(self._detail):
+                    detail = ellipsize_middle(self._detail, max(4, remaining))
                 else:
                     detail = self._detail
                 return f" {self._text}{DIM} · {SOFT_CYAN}{detail}{RST} {elapsed_str}"
 
             avail = max_suffix_width - elapsed_vis - 1
-            if _visible_width(self._text) > avail:
-                text = _ellipsize_middle(self._text, max(4, avail))
+            if visible_width(self._text) > avail:
+                text = ellipsize_middle(self._text, max(4, avail))
             else:
                 text = self._text
             return f" {text} {elapsed_str}"
@@ -125,8 +105,7 @@ class SpinnerRunner:
                     frame = spinner.frames[idx % len(spinner.frames)]
                     last_frame = now
 
-                frame_vis = _visible_width(frame)
-                term_w = get_terminal_size((80, 24)).columns
+                term_w = terminal_width()
                 max_suffix = max(10, int(term_w * 0.9) - 15)
                 suffix = _get_suffix(max_suffix)
                 print(f"\r{DIM}{frame}{suffix}{RST}\033[K", end="", flush=True)

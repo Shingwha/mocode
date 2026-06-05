@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import re
-import shutil
-from math import ceil
 from typing import TYPE_CHECKING
 
-from wcwidth import wcswidth
+from .textutils import count_visual_lines
 
 if TYPE_CHECKING:
     from .commands import CommandRegistry
@@ -97,32 +95,6 @@ def build_keybindings(paste_handler=None):
     return bindings
 
 
-# ── Visual line counting ─────────────────────────────────
-
-
-def _count_visual_lines(text: str, prompt_width: int) -> int:
-    """Count total visual terminal lines the *text* occupies.
-
-    Accounts for line wrapping (lines wider than the terminal) and
-    double-width CJK characters.  ``prompt_width`` is the column width
-    of the prompt prefix on the *first* line (e.g. ``"❯ "`` → 2).
-    """
-    term_width = shutil.get_terminal_size((80, 24)).columns
-    if term_width <= 0:
-        term_width = 80
-
-    total = 0
-    for i, line in enumerate(text.split("\n")):
-        prefix = prompt_width if i == 0 else 0
-        line_width = wcswidth(line) if line else 0
-        visual = line_width + prefix
-        if visual <= 0:
-            total += 1  # empty line still occupies one visual row
-        else:
-            total += ceil(visual / term_width)
-    return total
-
-
 # ── Input ───────────────────────────────────────────────
 
 
@@ -176,7 +148,7 @@ class Input:
         self._paste_counter = 0
         raw = await self._session.prompt_async(f"{self._ps1} ", default=default)
         # Clear the prompt_toolkit input lines from the terminal
-        lines = _count_visual_lines(raw, len(self._ps1) + 1)  # +1 for trailing space
+        lines = count_visual_lines(raw, len(self._ps1) + 1)  # +1 for trailing space
         for _ in range(lines):
             print("\033[A\033[2K", end="", flush=True)
         text = self._resolve_paste_markers(raw).strip()
