@@ -836,9 +836,9 @@ class TestWorkflowCommandRun:
 
         assert result == CommandResult.CONTINUE
         assert "wf_abc123" in (display.info.call_args[0][0] if display.info.called
-                               else display._print.call_args[0][0])
+                               else display.print.call_args[0][0])
         assert "completed" in (display.info.call_args[0][0] if display.info.called
-                               else display._print.call_args[0][0])
+                               else display.print.call_args[0][0])
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("subcommand", ["status", "result", "runs"])

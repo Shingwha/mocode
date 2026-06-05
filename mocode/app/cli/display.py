@@ -5,12 +5,10 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from .display_helpers import group_items, merge_summaries
 from .spinner import Priority, SpinnerRunner, Truncate
 from .theme import (
-    BG_USER,
-    DIM,
-    GREEN,
-    RED,
+    Style,
     Theme,
     _s,
 )
@@ -19,95 +17,17 @@ if TYPE_CHECKING:
     from .input import Input
 
 
-# ── Tool display helpers ────────────────────────────────
-
-
-_TOOL_KEY = {
-    "read": "path",
-    "write": "path",
-    "append": "path",
-    "edit": "path",
-    "bash": "command",
-    "glob": "pattern",
-    "grep": "pattern",
-    "fetch": "url",
-    "sub_agent": "task",
-    "skill": "name",
-    "goal": "action",
-    "image": "prompt",
-}
-
-
-def _tool_summary(name, args):
-    key = _TOOL_KEY.get(name)
-    if not key:
-        return ""
-    val = str(args.get(key, ""))
-    return val[:60] + ("..." if len(val) > 60 else "")
-
-
-# ── Tool call batching helpers ─────────────────────────
-
-
-_MERGE_TOOLS = frozenset({"read", "write", "append", "edit", "glob", "grep"})
-_MERGE_LIMIT = 100
-
-
-def _group_items(
-    items: list,
-    get_name,
-    get_args,
-) -> list[tuple[str, list[str]]]:
-    """Group items by tool name. Mergeable tools are grouped; others stay individual."""
-    merged: dict[str, list[str]] = {}
-    singles: list[tuple[str, list[str]]] = []
-    for item in items:
-        name = get_name(item)
-        args = get_args(item)
-        summary = _tool_summary(name, args)
-        if name in _MERGE_TOOLS:
-            merged.setdefault(name, []).append(summary)
-        else:
-            singles.append((name, [summary]))
-    return list(merged.items()) + singles
-
-
-def _group_tool_calls(tool_calls) -> list[tuple[str, list[str]]]:
-    return _group_items(
-        tool_calls,
-        get_name=lambda tc: tc.name,
-        get_args=lambda tc: json.loads(tc.arguments) if isinstance(tc.arguments, str) else (tc.arguments or {}),
-    )
-
-
-def _merge_summaries(summaries: list[str]) -> str:
-    """Join summaries with ', ', truncate at _MERGE_LIMIT with '… +N' suffix."""
-    if not summaries:
-        return ""
-    joined = ", ".join(summaries)
-    if len(joined) <= _MERGE_LIMIT:
-        return joined
-    # Fit as many as possible, reserve space for suffix
-    total = 0
-    count = 0
-    for s in summaries:
-        add = len(s) + (2 if count > 0 else 0)
-        if total + add > _MERGE_LIMIT - 10:
-            break
-        total += add
-        count += 1
-    if count == 0:
-        count = 1
-    shown = ", ".join(summaries[:count])
-    remaining = len(summaries) - count
-    return shown + f"… +{remaining}" if remaining else shown
-
-
 # ── Display ─────────────────────────────────────────────
 
 
 class Display:
-    """CLI display — output rendering. Input and spinner are delegated."""
+    """CLI display — output rendering. Input and spinner are delegated.
+
+    Core rendering pipeline::
+
+        Display.print()        — raw output with spinner line-clearing
+        Display.render_line()  — styled output using Style instances
+    """
 
     def __init__(self, input_: Input, theme: Theme | None = None):
         self.theme = theme or Theme()
@@ -143,93 +63,116 @@ class Display:
 
     # ── Output core ───────────────────────────────────────
 
-    def _print(self, *args, **kwargs):
+    def print(self, *args, **kwargs) -> None:
+        """Raw print with spinner line-clearing. Public API."""
         if self._spinner.active:
             self._spinner._clear_line()
         print(*args, **kwargs)
 
-    def _styled(self, icon: str, text: str, color: str, icon_color: str = ""):
-        """Format a line with icon + text + color."""
-        ic = icon_color or color
-        self._print(f"{_s(icon, ic)} {_s(text, color)}")
+    def render_line(self, style: Style, text: str, *,
+                    suffix: str = "", elapsed: float = -1) -> None:
+        """Render a single styled line — the core output primitive.
+
+        Args:
+            style: Visual style (icon, colors)
+            text: Main text content
+            suffix: Optional dimmed context (e.g. tool args)
+            elapsed: Optional elapsed seconds (shown if >= 0.1)
+        """
+        parts = []
+
+        # Icon
+        if style.icon:
+            ic = style.icon_color or style.text_color
+            parts.append(_s(style.icon, ic))
+
+        # Text (with optional background)
+        if style.bg:
+            parts.append(_s(text, style.bg, style.text_color))
+        else:
+            parts.append(_s(text, style.text_color))
+
+        # Suffix (dimmed)
+        if suffix:
+            from .theme import DIM
+            parts.append(_s(suffix, DIM))
+
+        # Elapsed time (dimmed)
+        if elapsed >= 0.1:
+            from .theme import DIM
+            parts.append(_s(f"{elapsed:.1f}s", DIM))
+
+        self.print(" ".join(parts))
 
     # ── Output: user message ──────────────────────────────
 
-    def user_message(self, content: str):
+    def user_message(self, content: str) -> None:
         """Render a user message with dark background."""
         t = self.theme
-        self._print(_s(f"{t.icon_input} {content.strip()}", BG_USER, *t.color_user_fg))
-        self._print()
+        # Icon and text share the same background — combine them
+        self.print(_s(f"{t.style_user.icon} {content.strip()}", t.style_user.bg, t.style_user.text_color))
+        self.print()
 
     # ── Output: tool lifecycle ────────────────────────────
 
-    def tool_done(self, name: str, merged: str, elapsed: float):
+    def tool_done(self, name: str, merged: str, elapsed: float) -> None:
         """Print a successful tool line — ✓ with name, args, and optional elapsed."""
-        t = self.theme
-        elapsed_str = f" {_s(f'{elapsed:.1f}s', DIM)}" if elapsed >= 0.1 else ""
-        self._print(
-            f"{_s('✓', GREEN)} {_s(name, t.color_tool)}"
-            f"{_s(f'({merged})', DIM)}{elapsed_str}"
-        )
+        self.render_line(self.theme.style_tool_done, name,
+                         suffix=f"({merged})", elapsed=elapsed)
 
-    def tool_fail(self, name: str, merged: str, error: str):
+    def tool_fail(self, name: str, merged: str, error: str) -> None:
         """Print a failed tool line — ✗ with name, args, and error."""
         t = self.theme
-        self._print(
-            f"{_s('✗', RED)} {_s(name, t.color_tool)}"
-            f"{_s(f'({merged}): ', DIM)}{_s(error, RED)}"
+        # Combine suffix and error on one line
+        self.print(
+            f"{_s('✗', t.style_tool_fail.icon_color or t.style_tool_fail.text_color)} "
+            f"{_s(name, t.style_tool_fail.text_color)}"
+            f"{_s(f'({merged}): ', t.style_tool_fail.text_color)}"
+            f"{_s(error, t.style_tool_fail.icon_color or t.style_tool_fail.text_color)}"
         )
 
     # ── Output: model response ────────────────────────────
 
-    def reasoning(self, content: str):
-        t = self.theme
+    def reasoning(self, content: str) -> None:
+        """Render reasoning content (thinking)."""
         for line in content.splitlines():
-            self._styled(t.icon_reasoning, line, t.color_reasoning)
+            self.render_line(self.theme.style_reasoning, line)
 
-    def text_response(self, content: str):
-        t = self.theme
+    def text_response(self, content: str) -> None:
+        """Render text response with line-by-line styling."""
         for line in content.strip().splitlines():
-            self._print(f"{_s(f'{t.icon_text} {line}', *t.color_text)}")
+            self.render_line(self.theme.style_text, line)
 
-    def response(self, text: str):
-        self._print(f"\n{text}\n")
+    def response(self, text: str) -> None:
+        """Render final response (raw text)."""
+        self.print(f"\n{text}\n")
 
     # ── Output: status ────────────────────────────────────
 
-    def usage(self, prompt_tokens: int, completion_tokens: int):
-        self._styled(
-            self.theme.icon_usage,
-            f"↑{prompt_tokens:,} ↓{completion_tokens:,}",
-            self.theme.color_usage,
-        )
+    def usage(self, prompt_tokens: int, completion_tokens: int) -> None:
+        self.render_line(self.theme.style_usage, f"↑{prompt_tokens:,} ↓{completion_tokens:,}")
 
-    def compact(self, old: int, new: int):
-        self._styled(
-            self.theme.icon_compact,
-            f"Compacted: {old} → {new} msgs",
-            self.theme.color_compact,
-        )
+    def compact(self, old: int, new: int) -> None:
+        self.render_line(self.theme.style_compact, f"Compacted: {old} → {new} msgs")
 
-    def info(self, text: str):
-        self._styled("", text, self.theme.color_info)
+    def info(self, text: str) -> None:
+        self.render_line(self.theme.style_info, text)
 
-    def warn(self, text: str):
-        self._styled("", text, self.theme.color_warn)
+    def warn(self, text: str) -> None:
+        self.render_line(self.theme.style_warn, text)
 
-    def error(self, text: str):
-        self._styled("", text, self.theme.color_error)
+    def error(self, text: str) -> None:
+        self.render_line(self.theme.style_error, text)
 
     # ── Screen ────────────────────────────────────────────
 
-    def clear_screen(self):
+    def clear_screen(self) -> None:
         import os
-
         os.system("cls" if os.name == "nt" else "clear")
 
     # ── Resume rendering ──────────────────────────────────
 
-    def render_messages(self, messages: list[dict]):
+    def render_messages(self, messages: list[dict]) -> None:
         """Re-render a message history as if it were live output."""
         i = 0
         while i < len(messages):
@@ -266,7 +209,7 @@ class Display:
                         j += 1
 
                     # Group and display (matches live output format)
-                    groups = _group_items(
+                    groups = group_items(
                         tcs,
                         get_name=lambda tc: tc.get("function", {}).get("name", "?"),
                         get_args=lambda tc: (
@@ -276,7 +219,7 @@ class Display:
                         ),
                     )
                     for name, summaries in groups:
-                        merged = _merge_summaries(summaries)
+                        merged = merge_summaries(summaries)
                         if name in errors:
                             self.tool_fail(name, merged, errors[name])
                         else:

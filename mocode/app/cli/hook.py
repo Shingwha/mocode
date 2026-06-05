@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from ...core.hook import AgentHook
-from .display import _group_tool_calls, _merge_summaries
+from .display_helpers import group_tool_calls, merge_summaries
 from .spinner import Priority, Truncate
 
 
@@ -35,7 +35,7 @@ class CLIDisplayHook(AgentHook):
             self._completion += ctx.usage.completion_tokens
         # Update spinner with tool info instead of printing immediately
         if ctx.response and ctx.response.tool_calls:
-            groups = _group_tool_calls(ctx.response.tool_calls)
+            groups = group_tool_calls(ctx.response.tool_calls)
             self._tool_groups = groups
             self._tool_errors = {}
             self._tool_call_start = {}
@@ -66,7 +66,7 @@ class CLIDisplayHook(AgentHook):
 
     async def after_tools(self, ctx):
         for name, summaries in self._tool_groups:
-            merged = _merge_summaries(summaries)
+            merged = merge_summaries(summaries)
             elapsed = self._tool_elapsed.get(name, 0)
             if name in self._tool_errors:
                 self._d.tool_fail(name, merged, self._tool_errors[name])
@@ -106,7 +106,7 @@ class CLIDisplayHook(AgentHook):
             count = len(summaries)
             if total == 1:
                 # Single tool: show name + merged args
-                parts.append(f"{name}({_merge_summaries(summaries)})")
+                parts.append(f"{name}({merge_summaries(summaries)})")
             elif count > 1:
                 parts.append(f"{name}×{count}")
             else:

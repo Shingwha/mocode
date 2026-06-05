@@ -133,10 +133,10 @@ class TestResumeSession:
 
 
 def _make_display(capture: list | None = None):
-    """Create a real Display that captures _print output."""
+    """Create a real Display that captures print output."""
     lines = capture if capture is not None else []
     d = Display(input_=MagicMock())
-    d._print = lambda *a, **kw: lines.append(
+    d.print = lambda *a, **kw: lines.append(
         " ".join(str(x) for x in a)
     )
     return d
@@ -307,3 +307,95 @@ class TestRenderMessages:
         assert any("read the file" in l for l in captured)
         assert any("✓" in l and "read" in l for l in captured)
         assert any("print('hello')" in l for l in captured)
+
+
+
+# ── Style tests ─────────────────────────────────────────
+
+
+class TestStyle:
+    def test_frozen(self):
+        from mocode.app.cli.theme import Style, GREEN, CYAN
+        s = Style(icon="✓", icon_color=GREEN, text_color=CYAN)
+        assert s.icon == "✓"
+        assert s.icon_color == GREEN
+        assert s.text_color == CYAN
+
+    def test_defaults(self):
+        from mocode.app.cli.theme import Style
+        s = Style()
+        assert s.icon == ""
+        assert s.icon_color == ""
+        assert s.text_color == ""
+        assert s.bg == ""
+
+    def test_hashable(self):
+        from mocode.app.cli.theme import Style, GREEN
+        s1 = Style(icon="✓", text_color=GREEN)
+        s2 = Style(icon="✓", text_color=GREEN)
+        assert s1 == s2
+        assert hash(s1) == hash(s2)
+
+
+# ── Display.render_line tests ───────────────────────────
+
+
+class TestRenderLine:
+    def test_basic_line(self):
+        from mocode.app.cli.theme import Style, GREEN
+        captured = []
+        d = _make_display(captured)
+        style = Style(icon="✓", icon_color=GREEN, text_color=GREEN)
+        d.render_line(style, "hello")
+        assert len(captured) == 1
+        assert "✓" in captured[0]
+        assert "hello" in captured[0]
+
+    def test_with_suffix(self):
+        from mocode.app.cli.theme import Style, CYAN, DIM
+        captured = []
+        d = _make_display(captured)
+        style = Style(text_color=CYAN)
+        d.render_line(style, "read", suffix="(main.py)")
+        assert len(captured) == 1
+        assert "read" in captured[0]
+        assert "(main.py)" in captured[0]
+
+    def test_with_elapsed(self):
+        from mocode.app.cli.theme import Style, CYAN
+        captured = []
+        d = _make_display(captured)
+        style = Style(text_color=CYAN)
+        d.render_line(style, "bash", elapsed=1.5)
+        assert len(captured) == 1
+        assert "bash" in captured[0]
+        assert "1.5s" in captured[0]
+
+    def test_elapsed_below_threshold(self):
+        from mocode.app.cli.theme import Style, CYAN
+        captured = []
+        d = _make_display(captured)
+        style = Style(text_color=CYAN)
+        d.render_line(style, "bash", elapsed=0.05)
+        assert len(captured) == 1
+        assert "bash" in captured[0]
+        assert "0.05s" not in captured[0]
+
+    def test_no_icon(self):
+        from mocode.app.cli.theme import Style, SOFT_CYAN
+        captured = []
+        d = _make_display(captured)
+        style = Style(text_color=SOFT_CYAN)
+        d.render_line(style, "info message")
+        assert len(captured) == 1
+        assert "info message" in captured[0]
+
+    def test_icon_defaults_to_text_color(self):
+        from mocode.app.cli.theme import Style, GREEN
+        captured = []
+        d = _make_display(captured)
+        # icon_color empty, should use text_color
+        style = Style(icon="✓", text_color=GREEN)
+        d.render_line(style, "test")
+        assert len(captured) == 1
+        assert "✓" in captured[0]

@@ -299,7 +299,7 @@ class WorkflowCommand:
         else:
             header.append("No node results yet.")
 
-        ctx.display._print("\n".join(header))
+        ctx.display.print("\n".join(header))
         return CommandResult.CONTINUE
 
     async def _runs(self, ctx: CommandContext) -> CommandResult:

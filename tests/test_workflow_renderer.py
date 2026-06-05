@@ -21,10 +21,10 @@ from mocode.app.workflow.models import NodeResult
 
 
 def _make_renderer(capture: list | None = None):
-    """Create a WorkflowRenderer with a mock Display that captures _print output."""
+    """Create a WorkflowRenderer with a mock Display that captures print output."""
     lines = capture if capture is not None else []
     display = MagicMock()
-    display._print = lambda *a, **kw: lines.append(" ".join(str(x) for x in a))
+    display.print = lambda *a, **kw: lines.append(" ".join(str(x) for x in a))
     display.spinner_set = MagicMock()
     display.spinner_remove = MagicMock()
     return WorkflowRenderer(display), lines

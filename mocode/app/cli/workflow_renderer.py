@@ -95,31 +95,31 @@ class WorkflowRenderer:
 
     def _on_wave_ready(self, event: WaveReadyEvent) -> None:
         if event.wave_idx > 0:
-            self._d._print()
+            self._d.print()
         node_ids = event.node_ids
         if len(node_ids) <= 4:
             node_str = _s(", ".join(node_ids), DIM)
         else:
             shown = ", ".join(node_ids[:3])
             node_str = _s(f"{shown} +{len(node_ids) - 3} more", DIM)
-        self._d._print(
+        self._d.print(
             f"{_s('◇', YELLOW)} Wave {event.wave_idx + 1}/{event.total_waves}  {node_str}"
         )
 
     def _on_router_condition(self, event: RouterConditionEvent) -> None:
         if event.matched and event.targets:
             target_str = ", ".join(event.targets)
-            self._d._print(
+            self._d.print(
                 f"  └─ {_s('▸', SOFT_CYAN)} {_s(event.router_id, SOFT_CYAN)} → {_s(target_str, DIM)}"
             )
         else:
-            self._d._print(
+            self._d.print(
                 f"  └─ {_s('▹', GRAY)} {_s(event.router_id, GRAY)} · {_s('no match', DIM)}"
             )
 
     def _on_node_skipped(self, event: NodeSkippedEvent) -> None:
         icon, label = _SKIP_STYLES.get(event.reason, ("∘", event.reason))
-        self._d._print(
+        self._d.print(
             f"  │  {_s(icon, GRAY)} {_s(event.node_id, GRAY)}  {_s(label, DIM)}"
         )
 
@@ -141,7 +141,7 @@ class WorkflowRenderer:
         iter_suffix = (
             f" (iter {event.result.iteration})" if event.result.iteration > 1 else ""
         )
-        self._d._print(
+        self._d.print(
             f"  └─ {icon} {_s(event.node_id, BOLD)} · {desc}{iter_suffix}  {_s(dur, DIM)}"
         )
         self._d.spinner_remove("wf_tag")
@@ -153,12 +153,12 @@ class WorkflowRenderer:
             event.result.task[:40] if event.result.task else ""
         )
         max_str = str(event.max_iter) if event.max_iter > 0 else "∞"
-        self._d._print(
+        self._d.print(
             f"  └─ {_s('↻', YELLOW)} {_s(event.node_id, BOLD)} [{event.iteration}/{max_str}] · {desc}  {_s(dur, DIM)}"
         )
 
     def _on_map_fan_out(self, event: MapFanOutEvent) -> None:
-        self._d._print(
+        self._d.print(
             f"  └─ {_s('⊞', SOFT_CYAN)} {_s(event.map_id, BOLD)} · "
             f"{_s(f'{event.item_count} items', DIM)}"
         )
@@ -166,7 +166,7 @@ class WorkflowRenderer:
     def _on_map_item_done(self, event: MapItemDoneEvent) -> None:
         dur = f"{event.duration:.1f}s"
         val = event.item_value[:30] + ("…" if len(event.item_value) > 30 else "")
-        self._d._print(
+        self._d.print(
             f"     {_s('▪', GRAY)} [{event.item_index + 1}/{event.total_count}] "
             f"{_s(val, DIM)}  {_s(dur, DIM)}"
         )
@@ -187,10 +187,10 @@ class WorkflowRenderer:
         """Print workflow header before execution."""
         node_count = wf.total_nodes()
         self._start_time = time.monotonic()
-        self._d._print(
+        self._d.print(
             f"{_s('●', YELLOW)} {_s(wf.name, BOLD)}  {_s(f'{node_count} nodes', DIM)}"
         )
-        self._d._print()
+        self._d.print()
 
     def summary(self, wf: Workflow, results: list | None = None) -> None:
         """Print final output and summary."""
@@ -210,19 +210,19 @@ class WorkflowRenderer:
                 last_output_result = r
                 break
         if last_output_result:
-            self._d._print(_s("─" * 48, YELLOW))
+            self._d.print(_s("─" * 48, YELLOW))
             for ol in last_output_result.output.splitlines():
-                self._d._print(ol)
+                self._d.print(ol)
         # Show errors from any failed result
         for r in results:
             if r.error and r.exit_code != 0:
                 if not last_output_result:
-                    self._d._print(_s("─" * 48, YELLOW))
+                    self._d.print(_s("─" * 48, YELLOW))
                     last_output_result = r
-                self._d._print(_s(f"Error: {r.error}", RED))
+                self._d.print(_s(f"Error: {r.error}", RED))
 
         # Summary
-        self._d._print()
+        self._d.print()
         time_str = _s(f"{wall_time:.1f}s", DIM)
         summary_icon_color = GREEN if failed == 0 else RED
         parts = []
@@ -234,7 +234,7 @@ class WorkflowRenderer:
             parts.append(_s(f"{skipped_count} skipped", DIM))
         stat_str = " · ".join(parts)
 
-        self._d._print(
+        self._d.print(
             f"{_s('■', summary_icon_color)} {_s(wf.name, BOLD)}  {stat_str}  {time_str}"
         )
 
