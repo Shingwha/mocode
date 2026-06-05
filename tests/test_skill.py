@@ -203,8 +203,8 @@ class TestSkillManager:
         mgr = SkillManager([dir_a, dir_b])
         assert set(mgr.names()) == {"skill-a", "skill-b"}
 
-    def test_discover_mounts_references_to_vfs(self, tmp_path: Path):
-        """SkillManager mounts skill reference files into VFS."""
+    def test_discover_does_not_mount_to_vfs(self, tmp_path: Path):
+        """Discovered (external) skills are NOT mounted into VFS."""
         skill_dir = tmp_path / "my-skill"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text(
@@ -214,10 +214,11 @@ class TestSkillManager:
         (skill_dir / "ref.md").write_text("reference content", encoding="utf-8")
         vfs = VirtualFS()
         mgr = SkillManager([tmp_path], vfs=vfs)
-        assert vfs.exists("vfs://my-skill/ref.md")
-        assert vfs.get("vfs://my-skill/ref.md") == "reference content"
-        # SKILL.md is skipped
+        # Only built-in (registered) skills are mounted; discovered ones are not
+        assert not vfs.exists("vfs://my-skill/ref.md")
         assert not vfs.exists("vfs://my-skill/SKILL.md")
+        # But the skill is still discoverable
+        assert mgr.get("my-skill") is not None
 
     def test_register_mounts_to_vfs(self):
         """Registered skill with path gets mounted into VFS."""

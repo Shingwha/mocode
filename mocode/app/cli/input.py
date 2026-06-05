@@ -4,11 +4,6 @@ from __future__ import annotations
 
 import re
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.keys import Keys
-
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -31,8 +26,12 @@ def _apply_best_completion(buf) -> None:
     buf.apply_completion(completion)
 
 
-class SlashCompleter(Completer):
-    """Prefix-match /commands from a CommandRegistry."""
+class SlashCompleter:
+    """Prefix-match /commands from a CommandRegistry.
+
+    Uses duck-typing (``get_completions`` method) to satisfy
+    ``prompt_toolkit`` without importing it at module level.
+    """
 
     def __init__(self, registry: CommandRegistry):
         self._registry = registry
@@ -43,8 +42,12 @@ class SlashCompleter(Completer):
             return
         for cmd in self._registry.all():
             if cmd.name.startswith(text):
+                from prompt_toolkit.completion import Completion
+
                 yield Completion(
-                    cmd.name, start_position=-len(text), display_meta=cmd.description
+                    cmd.name,
+                    start_position=-len(text),
+                    display_meta=cmd.description,
                 )
 
 
@@ -53,6 +56,9 @@ class SlashCompleter(Completer):
 
 def build_keybindings(paste_handler=None):
     """Tab and Enter accept completion when menu is visible; Enter submits otherwise."""
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.keys import Keys
+
     bindings = KeyBindings()
 
     @bindings.add("tab")
@@ -99,10 +105,12 @@ class Input:
         self._paste_store: dict[int, str] = {}
         self._paste_counter: int = 0
         self._registry = registry
-        self._session: PromptSession | None = None
+        self._session = None
 
     def _ensure_session(self):
         if self._session is None:
+            from prompt_toolkit import PromptSession
+
             self._session = PromptSession(
                 completer=SlashCompleter(self._registry),
                 complete_while_typing=True,

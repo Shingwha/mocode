@@ -35,19 +35,7 @@ from ...tools import (
     WriteTool,
 )
 from .commands import CommandContext, CommandRegistry, CommandResult
-from .commands.quit import QuitCommand
-from .commands.help import HelpCommand
-from .commands.export import ExportCommand
-from .commands.clear import ClearCommand
-from .commands.model import ModelCommand
-from .commands.resume import ResumeCommand
-from .commands.connect import ConnectCommand
-from .commands.copy import CopyCommand
 from .commands.prompts import register_prompt_commands
-from .commands.workflow import WorkflowCommand
-from .display import Display
-from .hook import CLIDisplayHook
-from .input import Input
 
 
 class CLIApp:
@@ -71,6 +59,16 @@ class CLIApp:
         self.commands = CommandRegistry()
         register_prompt_commands(self.commands)
         if self.interactive:
+            from .commands.quit import QuitCommand
+            from .commands.help import HelpCommand
+            from .commands.export import ExportCommand
+            from .commands.clear import ClearCommand
+            from .commands.model import ModelCommand
+            from .commands.resume import ResumeCommand
+            from .commands.connect import ConnectCommand
+            from .commands.copy import CopyCommand
+            from .commands.workflow import WorkflowCommand
+
             for cmd in [
                 QuitCommand(),
                 HelpCommand(),
@@ -84,8 +82,14 @@ class CLIApp:
             ]:
                 self.commands.register(cmd)
 
-        _input = Input(self.commands, ps1="❯")
-        self.display = display or Display(input_=_input)
+        if self.interactive:
+            from .input import Input
+            from .display import Display
+
+            _input = Input(self.commands, ps1="❯")
+            self.display = display or Display(input_=_input)
+        else:
+            self.display = display  # may be None in non-interactive
 
         self._workflow_registry = _make_workflow_registry()
 
@@ -163,6 +167,8 @@ class CLIApp:
 
         hooks = []
         if self.interactive:
+            from .hook import CLIDisplayHook
+
             hooks.append(CLIDisplayHook(self.display))
         hooks.append(goal_hook)
 

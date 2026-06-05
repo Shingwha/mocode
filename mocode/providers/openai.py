@@ -8,8 +8,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from openai import AsyncOpenAI
-
 from ..core.provider import Response, ToolCall, Usage
 
 
@@ -23,9 +21,18 @@ class OpenAIProvider:
         base_url: str | None = None,
         extra_body: dict[str, Any] | None = None,
     ):
-        self._client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self._api_key = api_key
+        self._base_url = base_url
+        self._client = None  # lazy — created on first call
         self._model = model
         self._extra_body = extra_body
+
+    def _ensure_client(self):
+        if self._client is None:
+            from openai import AsyncOpenAI
+
+            self._client = AsyncOpenAI(api_key=self._api_key, base_url=self._base_url)
+        return self._client
 
     @property
     def model(self) -> str:
@@ -43,7 +50,7 @@ class OpenAIProvider:
             *self._normalize_messages(messages),
         ]
 
-        raw = await self._client.chat.completions.create(
+        raw = await self._ensure_client().chat.completions.create(
             model=self._model,
             messages=openai_messages,
             tools=tools or None,  # type: ignore[arg-type]

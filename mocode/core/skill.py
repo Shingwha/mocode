@@ -161,9 +161,7 @@ class SkillManager:
         meta = SkillMetadata.from_dict(fm)
         if not meta.name:
             return None
-        skill = Skill(path=path, metadata=meta)
-        self._mount_to_vfs(skill)
-        return skill
+        return Skill(path=path, metadata=meta)
 
     def _mount_to_vfs(self, skill: Skill) -> None:
         """Mount skill reference files into VFS."""
