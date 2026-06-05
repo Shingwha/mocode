@@ -85,39 +85,47 @@ def build_system_prompt(
     return Prompt(sections).context(**ctx).build(fmt="xml")
 
 
-def _render_agents(home: str, cwd: str) -> str:
+def _render_agents(home: str, cwd: str) -> list[Section]:
     """Read AGENTS.md files and render the agents section."""
-    parts = []
-    for p in (
-        Path(home) / "AGENTS.md" if home else None,
-        Path(cwd) / "AGENTS.md" if cwd else None,
-    ):
-        if p is not None and p.exists():
-            content = p.read_text(encoding="utf-8").strip()
-            if content:
-                parts.append(content)
-    content = "\n\n".join(parts)
-
-    sources = []
-    if home:
-        sources.append(f"  - {home}/AGENTS.md  (global, applies to all projects)")
-    if cwd:
-        sources.append(f"  - {cwd}/AGENTS.md  (project, specific to this project)")
     header = (
         "The following instructions are loaded from AGENTS.md files — a place for "
         "project-specific and user-specific guidance that helps you work effectively. "
         "Treat them as rules from the project owner: follow build steps, respect code "
         "conventions, and heed any warnings listed below."
     )
-    if sources:
-        header += "\n\nSources (edit these files to customize):\n" + "\n".join(sources)
-    if not content:
-        header += (
-            "\n\nNo AGENTS.md files found yet. You can create them to provide persistent "
+
+    agent_sections = []
+
+    # Global AGENTS.md
+    if home:
+        global_path = Path(home) / "AGENTS.md"
+        if global_path.exists():
+            content = global_path.read_text(encoding="utf-8").strip()
+            if content:
+                agent_sections.append(
+                    Section("agent", content, attrs={"source": "global", "path": str(global_path)})
+                )
+
+    # Project AGENTS.md
+    if cwd:
+        project_path = Path(cwd) / "AGENTS.md"
+        if project_path.exists():
+            content = project_path.read_text(encoding="utf-8").strip()
+            if content:
+                agent_sections.append(
+                    Section("agent", content, attrs={"source": "project", "path": str(project_path)})
+                )
+
+    # If no AGENTS.md found, add hint
+    if not agent_sections:
+        hint = (
+            "No AGENTS.md files found yet. You can create them to provide persistent "
             "instructions. Common sections: project overview, build/test commands, code style, "
             "testing instructions, security considerations."
         )
-    return f"{header}\n\n{content}" if content else header
+        agent_sections.append(Section("agent", hint, attrs={"source": "hint"}))
+
+    return [Section("header", header)] + agent_sections
 
 
 def _render_guidelines(_ctx: dict[str, Any]) -> str:
@@ -167,15 +175,15 @@ def _render_vfs(_vfs: Any) -> str:
 
 
 def _render_tools(tools: Any) -> list[Section]:
-    return [Section(t.name, t.description, attrs={"type": "tool"}) for t in tools.all()]
+    return [Section("tool", t.description, attrs={"name": t.name}) for t in tools.all()]
 
 
 def _render_skills(skill_manager: Any) -> list[Section]:
     return [
         Section(
-            s.metadata.name,
+            "skill",
             s.metadata.description,
-            attrs={"type": "skill", "path": s.base_dir},
+            attrs={"name": s.metadata.name, "path": s.base_dir},
         )
         for s in skill_manager.all()
     ]
