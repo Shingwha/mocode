@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 
 from ...core.hook import AgentHook
-from .display_helpers import group_tool_calls, merge_summaries
+from .display import group_tool_calls, merge_summaries
 from .spinner import Priority, Truncate
 
 

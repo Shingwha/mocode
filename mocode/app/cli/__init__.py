@@ -22,7 +22,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "Display": (".display", "Display"),
     "CLIDisplayHook": (".hook", "CLIDisplayHook"),
     "WorkflowRenderer": (".workflow_renderer", "WorkflowRenderer"),
-    "Spinner": (".theme", "Spinner"),
+    "Spinner": (".spinner", "Spinner"),
     "Style": (".theme", "Style"),
     "Theme": (".theme", "Theme"),
     "Choice": (".prompts", "Choice"),
