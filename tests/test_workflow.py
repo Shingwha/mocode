@@ -671,7 +671,7 @@ class TestWorkflowMenuPendingInput:
             new_callable=AsyncMock,
         ) as mock_select:
             mock_select.side_effect = ["test-wf", action]
-            result = await cmd._menu(ctx)
+            result = await cmd._menu(ctx, cmd)
 
         assert result == CommandResult.CONTINUE
         if expect_pending_input:

@@ -34,7 +34,7 @@ from ...tools import (
     SubAgentTool,
     WriteTool,
 )
-from .commands import CommandContext, CommandRegistry, CommandResult
+from .commands import CommandContext, CommandRegistry, CommandResult, register_group
 from .commands.prompts import register_prompt_commands
 
 
@@ -79,11 +79,13 @@ class CLIApp:
                 ModelCommand(),
                 ResumeCommand(),
                 ConnectCommand(),
-                WorkflowCommand(),
                 CopyCommand(),
                 CompactCommand(),
             ]:
                 self.commands.register(cmd)
+
+            # Workflow: register_group with colon=True (hybrid: space + colon entries)
+            register_group(self.commands, WorkflowCommand())
 
         if self.interactive:
             from .input import Input
@@ -206,22 +208,10 @@ class CLIApp:
             for s in self._skill_mgr.all():
                 self.commands.register(make_skill_command(s))
 
-        # Register /plan:* commands
+        # Register /plan:* commands (colon-style group)
         if self.interactive:
-            from .commands.plan import (
-                _PlanHandler,
-                PlanStartCommand,
-                PlanStartCleanCommand,
-                PlanStatusCommand,
-                PlanClearCommand,
-                PlanCopyCommand,
-            )
-            handler = _PlanHandler(self)
-            self.commands.register(PlanStartCommand(handler))
-            self.commands.register(PlanStartCleanCommand(handler))
-            self.commands.register(PlanStatusCommand(handler))
-            self.commands.register(PlanClearCommand(handler))
-            self.commands.register(PlanCopyCommand(handler))
+            from .commands.plan import PlanCommand
+            register_group(self.commands, PlanCommand())
 
         return agent
 
