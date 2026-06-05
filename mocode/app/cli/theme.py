@@ -116,9 +116,6 @@ _PRESETS: dict[str, Spinner] = {
     "progress": Spinner.from_list(
         _ping_pong(["[    ]", "[-   ]", "[--  ]", "[--- ]", "[----]"]), 0.20
     ),
-    "poem": Spinner.from_list(
-        _ping_pong(["床前明月光，疑是地上霜"[: i + 1] for i in range(11)]), 0.20
-    ),
 }
 
 
