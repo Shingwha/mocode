@@ -139,7 +139,7 @@ class WorkflowCommand:
             run_store=store,
         )
         try:
-            async with ctx.display.spinner(f"Workflow: {wf.name}"):
+            async with ctx.display.spinner("running workflow"):
                 results = await runner.run(args=user_args)
         except Exception as e:
             ctx.display.error(f"Workflow failed: {e}")

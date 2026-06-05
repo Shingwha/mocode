@@ -71,8 +71,8 @@ class SpinnerRunner:
             elapsed = _format_elapsed(time.monotonic() - self._start)
             elapsed_str = f"{SOFT_CYAN}{elapsed}{RST}"
             if self._detail:
-                return f" {self._text} ({elapsed_str}{DIM} · {SOFT_CYAN}{self._detail}{RST})"
-            return f" {self._text} ({elapsed_str}{RST})"
+                return f" {self._text}{DIM} · {SOFT_CYAN}{self._detail}{RST} {elapsed_str}"
+            return f" {self._text} {elapsed_str}"
 
         async def _spin():
             nonlocal idx

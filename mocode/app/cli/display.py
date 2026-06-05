@@ -225,6 +225,23 @@ class Display:
                 f"{_s(t.icon_tool, DIM)} {_s(name, t.color_tool)}{_s(f'({merged})', DIM)}"
             )
 
+    def tool_done(self, name: str, merged: str, elapsed: float):
+        """Print a successful tool line — same layout as tool_start but with ✓."""
+        t = self.theme
+        elapsed_str = f" {_s(f'{elapsed:.1f}s', DIM)}" if elapsed >= 0.1 else ""
+        self._print(
+            f"{_s('✓', GREEN)} {_s(name, t.color_tool)}"
+            f"{_s(f'({merged})', DIM)}{elapsed_str}"
+        )
+
+    def tool_fail(self, name: str, merged: str, error: str):
+        """Print a failed tool line — same layout as tool_start but with ✗."""
+        t = self.theme
+        self._print(
+            f"{_s('✗', RED)} {_s(name, t.color_tool)}"
+            f"{_s(f'({merged}): ', DIM)}{_s(error, RED)}"
+        )
+
     def tool_error(self, msg: str):
         self._styled(self.theme.icon_error, msg, self.theme.color_error)
 
@@ -334,7 +351,7 @@ class Display:
         if event.description:
             self.set_spinner_detail(f"{event.node_id}: {event.description}")
         else:
-            self.set_spinner_detail(f"running: {event.node_id}")
+            self.set_spinner_detail(event.node_id)
 
     def _on_node_done(self, event: NodeDoneEvent) -> None:
         """Print a completed node result line."""
