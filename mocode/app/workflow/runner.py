@@ -111,7 +111,7 @@ class DAGRunner:
 
             # Remaining unactivated nodes → skipped
             for n in wf.nodes:
-                if n.id not in state.completed and n.id not in state.skip_recorded:
+                if n.id not in state.completed and n.id not in state.skipped:
                     state.skip(n.id, "not activated")
                     wave = state.node_wave.get(n.id, 0)
                     self._emit(
@@ -150,7 +150,7 @@ class DAGRunner:
             node_ids = [
                 n.id
                 for n in state.waves[w]
-                if n.id not in state.skip_recorded and n.id not in state.completed
+                if n.id not in state.skipped and n.id not in state.completed
             ]
             if node_ids:
                 self._emit(
@@ -250,25 +250,10 @@ class DAGRunner:
         """Handle a back-edge: reset downstream, re-enqueue target, emit loop event."""
         wf = self.workflow
 
-        # Collect all nodes downstream of target (BFS)
+        # Collect and reset all downstream nodes
         downstream = self._collect_downstream(target_id, wf)
         downstream.add(target_id)
-
-        # Reset all of them — two passes to avoid order-dependent pending_deps
-        for nid in downstream:
-            state.completed.discard(nid)
-            state.skipped.discard(nid)
-            state.skip_recorded.discard(nid)
-            state.activated.discard(nid)
-
-        for nid in downstream:
-            node = wf.node_map.get(nid)
-            if node:
-                base = len(node.depends)
-                extra = state.router_dep_extra.get(nid, 0)
-                state.pending_deps[nid] = base + extra
-                completed_deps = sum(1 for d in node.depends if d in state.completed)
-                state.pending_deps[nid] -= completed_deps
+        self._reset_downstream(downstream, wf, state)
 
         # Re-announce waves from target's wave onward
         target_wave = state.node_wave.get(target_id)
@@ -305,6 +290,25 @@ class DAGRunner:
                 result=iter_result,
             )
         )
+
+    @staticmethod
+    def _reset_downstream(
+        downstream: set[str], wf: Workflow, state: RunState
+    ) -> None:
+        """Reset all downstream nodes: clear completion state and recompute pending deps."""
+        for nid in downstream:
+            state.completed.discard(nid)
+            state.skipped.pop(nid, None)
+            state.activated.discard(nid)
+
+        for nid in downstream:
+            node = wf.node_map.get(nid)
+            if node:
+                base = len(node.depends)
+                extra = state.router_dep_extra.get(nid, 0)
+                state.pending_deps[nid] = base + extra
+                completed_deps = sum(1 for d in node.depends if d in state.completed)
+                state.pending_deps[nid] -= completed_deps
 
     @staticmethod
     def _collect_downstream(node_id: str, wf: Workflow) -> set[str]:
@@ -421,20 +425,27 @@ class DAGRunner:
             MapFanOutEvent(map_id=node.id, item_count=len(items), wave_idx=wave_idx)
         )
 
+        # Build context header once (same for all children)
+        context_header = (
+            self._build_node_context_header(node, wf) if self.node_context else None
+        )
+
         child_ids: list[str] = []
         child_tasks: list[asyncio.Task[NodeResult]] = []
         for idx, item_val in enumerate(items):
             child_id = f"{node.id}::{idx}"
             child_ids.append(child_id)
-            child_task_text = node.task.replace(f"{{{{{node.item_key}}}}}", item_val)
-            context_header = (
-                self._build_node_context_header(node, wf) if self.node_context else None
-            )
+            # Inject item into context top level, fill_template handles {item_key}
+            state.context[node.item_key] = item_val
+            child_task_text = fill_template(node.task, state.context)
             child_tasks.append(
                 asyncio.create_task(
                     self._run_map_child(child_id, child_task_text, context_header)
                 )
             )
+
+        # Clean up injected item
+        state.context.pop(node.item_key, None)
 
         state.map_children[node.id] = child_ids
         child_results: list[NodeResult] = list(await asyncio.gather(*child_tasks))
@@ -560,19 +571,20 @@ class DAGRunner:
         task: str,
         context_header: str | None = None,
     ) -> NodeResult:
-        """Spawn mocode -p with the filled task template."""
+        """Spawn mocode -p with the filled task template via stdin."""
         prompt = f"{context_header}\n\n---\nTask: {task}" if context_header else task
         start = time.monotonic()
         try:
             proc = await asyncio.create_subprocess_exec(
                 self.mocode_cmd,
                 "-p",
-                prompt,
+                "-",
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(),
+                proc.communicate(input=prompt.encode("utf-8")),
                 timeout=self.timeout,
             )
             duration = time.monotonic() - start

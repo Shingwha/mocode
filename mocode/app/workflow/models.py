@@ -128,22 +128,25 @@ _BUCKET_ALIASES = {
 def fill_template(template: str, context: dict) -> str:
     """Replace {a.b.c} placeholders by dot-path lookup in context dict.
 
-    Supports: {args.key}, {env.VAR}, {previous}, {nodes.id.output},
-    {nodes.id.exit_code}, {nodes.id.error}, {nodes.id.duration}.
-    Also accepts {node.id.*} as alias for {nodes.id.*}.
+    Single-segment paths (``{direction}``, ``{previous}``, ``{item}``) look up
+    directly in the context top level.
+
+    Multi-segment paths (``{env.VAR}``, ``{nodes.id.output}``) walk into nested
+    dicts. ``{node.id.*}`` is accepted as alias for ``{nodes.id.*}``.
     """
 
     def _replace(m: re.Match) -> str:
         path = m.group(1)
-        if path == "previous":
-            prev = context.get("previous")
-            return str(prev) if prev is not None else m.group(0)
         parts = path.split(".", 1)
-        if len(parts) == 2:
-            bucket, rest = parts
-            obj = context.get(bucket) or context.get(_BUCKET_ALIASES.get(bucket, ""))
-            if isinstance(obj, dict):
-                return _dot_lookup(obj, rest, m.group(0))
+        if len(parts) == 1:
+            # Single segment: {direction}, {previous}, {item}
+            val = context.get(path)
+            return str(val) if val is not None else m.group(0)
+        # Multi-segment: {env.HOME}, {nodes.scan.output}, {node.scan.output}
+        bucket, rest = parts
+        obj = context.get(bucket) or context.get(_BUCKET_ALIASES.get(bucket, ""))
+        if isinstance(obj, dict):
+            return _dot_lookup(obj, rest, m.group(0))
         return m.group(0)
 
     return _RE_PLACEHOLDER.sub(_replace, template)
@@ -157,6 +160,75 @@ def _dot_lookup(obj: dict, path: str, default: str) -> str:
         else:
             return default
     return str(obj) if obj is not None else default
+
+
+# ── Params parsing ────────────────────────────────────────────
+
+
+@dataclass
+class ParamDef:
+    """A workflow parameter definition — name, optional default, and required flag."""
+
+    name: str
+    default: str | None = None
+    required: bool = True
+
+
+def _parse_params(raw: list) -> list[ParamDef]:
+    """Parse params from YAML data.
+
+    Supports two formats:
+      - Pure string: ``direction`` → required, no default
+      - Dict: ``{name: depth, default: "deep"}`` or ``{depth: "deep"}`` → optional with default
+    """
+    params: list[ParamDef] = []
+    for item in raw:
+        if isinstance(item, str):
+            params.append(ParamDef(name=item, default=None, required=True))
+        elif isinstance(item, dict):
+            if "name" in item:
+                # Explicit dict: {name: depth, default: "deep"}
+                params.append(ParamDef(
+                    name=item["name"],
+                    default=item.get("default"),
+                    required="default" not in item,
+                ))
+            else:
+                # Shorthand: {depth: "deep"} → name=depth, default="deep"
+                for k, v in item.items():
+                    params.append(ParamDef(name=k, default=v, required=False))
+    return params
+
+
+def parse_args(params: list[ParamDef], raw_args: list[str]) -> dict[str, str]:
+    """Parse positional + key=value arguments against a param definition.
+
+    Positional args are mapped in order. ``key=value`` args override by name.
+    Raises ValueError if required params are missing.
+    """
+    result: dict[str, str] = {}
+    positional_idx = 0
+    for arg in raw_args:
+        if "=" in arg:
+            k, v = arg.split("=", 1)
+            result[k.strip()] = v.strip()
+        else:
+            if positional_idx < len(params):
+                result[params[positional_idx].name] = arg
+                positional_idx += 1
+            else:
+                # Extra positional — ignore or could raise
+                pass
+
+    # Apply defaults for params not yet set
+    for p in params:
+        if p.name not in result:
+            if p.default is not None:
+                result[p.name] = p.default
+            elif p.required:
+                raise ValueError(f"Missing required parameter: {p.name}")
+
+    return result
 
 
 # ── Items parsing (for map nodes) ─────────────────────────────
@@ -177,6 +249,7 @@ class Workflow:
     name: str
     description: str = ""
     nodes: list[Node] = field(default_factory=list)
+    params: list[ParamDef] = field(default_factory=list)
     path: Path | None = None
     max_iterations: int = 100
     concurrency: int = 1  # max parallel node execution (1 = serial)
@@ -213,11 +286,13 @@ class Workflow:
 
         nodes_data = data.get("nodes", [])
         nodes = [Node.from_dict(n) for n in nodes_data]
+        params = _parse_params(data.get("params", []))
 
         wf = cls(
             name=data.get("name", path.stem),
             description=data.get("description", ""),
             nodes=nodes,
+            params=params,
             path=path,
             max_iterations=data.get("max_iterations", 100),
             concurrency=data.get("concurrency", 1),
@@ -244,42 +319,3 @@ class Workflow:
 
     def total_nodes(self) -> int:
         return len(self.nodes)
-
-
-# ── Summary helpers (standalone, operate on results lists) ──
-
-
-def summarize(name: str, results: list[NodeResult]) -> str:
-    """Compact one-line-per-result summary."""
-    lines = [f"Workflow: {name}"]
-    for r in results:
-        status = "OK" if r.exit_code == 0 else "FAIL"
-        task_preview = r.task[:40] if r.task else "(empty)"
-        iter_suffix = f" (iter {r.iteration})" if r.iteration > 1 else ""
-        lines.append(
-            f"  [{status}] {r.node_id}{iter_suffix} · {task_preview}: {r.duration:.1f}s"
-        )
-    return "\n".join(lines)
-
-
-def detailed_summarize(
-    name: str, results: list[NodeResult], max_lines: int = 10
-) -> str:
-    """Multi-line summary with output and error excerpts."""
-    lines = [f"Workflow: {name}"]
-    for r in results:
-        status = "OK" if r.exit_code == 0 else "FAIL"
-        task_preview = r.task[:60] if r.task else "(empty)"
-        iter_suffix = f" (iter {r.iteration})" if r.iteration > 1 else ""
-        lines.append(
-            f"  [{status}] {r.node_id}{iter_suffix} · {task_preview} ({r.duration:.1f}s)"
-        )
-        if r.output:
-            output_lines = r.output.splitlines()
-            for ol in output_lines[:max_lines]:
-                lines.append(f"      {ol}")
-            if len(output_lines) > max_lines:
-                lines.append(f"      ... ({len(output_lines) - max_lines} more lines)")
-        if r.error:
-            lines.append(f"      Error: {r.error[:100]}")
-    return "\n".join(lines)

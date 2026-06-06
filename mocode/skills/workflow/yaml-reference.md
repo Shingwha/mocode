@@ -1,64 +1,64 @@
-# Workflow YAML Format Reference
+# Workflow YAML Reference
 
 ## Full Example
 
 ```yaml
-name: my-workflow
-description: What this workflow does
-max_iterations: 100          # optional, default 100
-concurrency: 3               # optional, default 1 (max parallel nodes)
+name: code-review
+description: Automated code review pipeline
+max_iterations: 100           # optional, default 100
+concurrency: 3                # optional, default 1 (max parallel nodes)
+
+params:                       # optional — positional parameters
+  - path                      # required, position 1
+  - focus: "general"          # optional, position 2, default "general"
 
 nodes:
-  # ── Task node (root) ──────────────────────────────
-  - id: overview
-    description: Analyze project structure
-    task: Analyze project structure in {args.path}
-    depends: []              # root node — no dependencies
+  # ── Task (root) ────────────────────────────────────
+  - id: scan
+    description: Scan project for issues
+    task: Scan {path} for {focus} issues.
+    depends: []
 
-  # ── Parallel fan-out (explicit depends) ───────────
-  - id: check_security
-    description: Security review
-    task: Review security issues in {nodes.overview.output}
-    depends: [overview]
+  # ── Parallel fan-out ───────────────────────────────
+  - id: security
+    task: Review security in {nodes.scan.output}
+    depends: [scan]
 
-  - id: check_style
-    description: Style review
-    task: Review style issues in {nodes.overview.output}
-    depends: [overview]
+  - id: style
+    task: Review style in {nodes.scan.output}
+    depends: [scan]
 
-  # ── Map node (fan-out over list) ──────────────────
+  # ── Map (fan-out over list) ────────────────────────
   - id: list_modules
-    task: |
-      List the top-level modules in the project, one per line.
-    depends: [overview]
+    task: List top-level modules, one per line.
+    depends: [scan]
 
-  - id: audit_modules
-    description: Audit each module
+  - id: audit
     type: map
     items: "{nodes.list_modules.output}"
     item_key: module
-    task: Audit module {module} for issues.
+    task: Audit {module} for {focus} issues.     # ← single braces
     depends: [list_modules]
 
-  # ── Converge ──────────────────────────────────────
+  # ── Converge ───────────────────────────────────────
   - id: summary
     task: |
-      Security: {nodes.check_security.output}
-      Style: {nodes.check_style.output}
-      Module audits: {nodes.audit_modules.output}
-    depends: [check_security, check_style, audit_modules]
+      Security: {nodes.security.output}
+      Style: {nodes.style.output}
+      Audits: {nodes.audit.output}
+    depends: [security, style, audit]
 
-  # ── Router (conditional branching) ────────────────
+  # ── Router (conditional branch) ────────────────────
   - id: decide
     type: router
     depends: [summary]
     routes:
       - match: "critical"
         to: [fix]
-      - match: null          # fallback
+      - match: null              # fallback
         to: [done]
 
-  # ── Loop with back-edge ───────────────────────────
+  # ── Loop with back-edge ────────────────────────────
   - id: fix
     task: Fix issues from {nodes.summary.output}
     depends: [decide]
@@ -69,141 +69,181 @@ nodes:
     routes:
       - match: "FAIL"
         to: [fix]
-        max: 3               # prevent infinite loop
+        max: 3                   # prevent infinite loop
       - match: null
         to: [done]
 
-  # ── Terminal ──────────────────────────────────────
+  # ── Terminal ───────────────────────────────────────
   - id: done
-    task: Generate final report from {nodes.summary.output}
-    depends: [decide, verify]   # explicit gate on routers
+    task: Final report from {nodes.summary.output}
+    depends: [decide, verify]    # explicit gate on both routers
 ```
 
-## Field Reference
+---
 
-### Top-level fields
+## Top-level Fields
 
 | Field            | Required | Default | Description |
 |------------------|----------|---------|-------------|
-| `name`           | yes      | —       | Workflow identifier (used in CLI) |
-| `description`    | yes      | —       | One-line description |
-| `max_iterations` | no       | 100     | Global safety limit on total node executions |
-| `concurrency`    | no       | 1       | Max parallel node execution. `1` = serial. Map child tasks also respect this limit. |
+| `name`           | ✓        | —       | Workflow identifier |
+| `description`    |          | `""`    | One-line description |
+| `params`         |          | `[]`    | Positional parameters (see below) |
+| `nodes`          | ✓        | `[]`    | Node definitions |
+| `max_iterations` |          | `100`   | Global safety limit on total executions |
+| `concurrency`    |          | `1`     | Max parallel nodes (`1` = serial) |
 
-### Node fields
+---
 
-| Field         | Required     | Default  | Description |
-|---------------|-------------|----------|-------------|
-| `id`          | yes         | —        | Unique node identifier |
-| `type`        | no          | `"task"` | `"task"`, `"router"`, or `"map"` |
-| `description` | no          | `""`     | Human-readable label |
-| `task`        | task, map   | `""`     | Prompt template with `{}` variables |
-| `depends`     | recommended | `[]`     | List of upstream node IDs. **Always add explicitly.** |
-| `routes`      | router      | `[]`     | List of route rules (see below) |
-| `items`       | map         | `""`     | Template resolving to newline-separated list |
-| `item_key`    | no          | `"item"` | Variable name in `task` replaced per item value |
+## Params
 
-### Route fields
+Define positional parameters. Users pass them in order or as `key=value`.
+
+```yaml
+params:
+  - direction              # string → required, position 1
+  - requirement            # required, position 2
+  - depth: "deep"          # dict → optional with default, position 3
+```
+
+Also accepts explicit dict form:
+
+```yaml
+params:
+  - name: direction
+  - name: depth
+    default: "deep"
+```
+
+**User invocation**:
+
+```bash
+/workflow run plan 做CLI 好用           # direction=做CLI, requirement=好用, depth=deep
+/workflow run plan 做CLI 好用 shallow   # depth=shallow (override)
+/workflow run plan 做CLI depth=deep     # key=value also works
+```
+
+Params are available in templates as `{direction}`, `{depth}` — no prefix needed.
+
+---
+
+## Node Fields
+
+| Field         | task | router | map | Default  | Description |
+|---------------|------|--------|-----|----------|-------------|
+| `id`          | ✓    | ✓      | ✓   | —        | Unique identifier |
+| `type`        |      |        |     | `"task"` | `"task"`, `"router"`, `"map"` |
+| `description` |      |        |     | `""`     | Human-readable label |
+| `task`        | ✓    | ✗      | ✓   | `""`     | Prompt template |
+| `depends`     | rec  | **req**| rec | `[]`     | Upstream node IDs |
+| `routes`      | ✗    | ✓      | ✗   | `[]`     | Route rules |
+| `items`       | ✗    | ✗      | ✓   | `""`     | Template → newline-separated list |
+| `item_key`    | ✗    | ✗      |     | `"item"` | Variable name per item |
+
+---
+
+## Route Fields
 
 | Field   | Required | Description |
 |---------|----------|-------------|
-| `match` | yes      | Regex tested against concatenated dependency output. `null` = unconditional fallback. |
-| `to`    | yes      | Target node ID(s). String or list. |
-| `max`   | no       | Max times this route can fire (for back-edge loops). `0` = unlimited. |
+| `match` | ✓        | Regex on concatenated dependency output. `null` = fallback. |
+| `to`    | ✓        | Target node ID(s). String or list. |
+| `max`   |          | Max fires (for back-edge loops). `0` = unlimited. |
 
-## Node Types in Detail
+---
 
-### Task Node
+## Template Variables
 
-The default type. Has a `task` template that is filled and sent to the LLM.
+Single-segment `{name}` → context top level. Multi-segment `{a.b}` → nested dict.
+
+| Variable | Source |
+|----------|--------|
+| `{param}` | Workflow parameter |
+| `{nodes.<id>.output}` | Node output |
+| `{nodes.<id>.exit_code}` | Exit code |
+| `{nodes.<id>.error}` | Error text |
+| `{nodes.<id>.duration}` | Seconds |
+| `{previous}` | Last completed output |
+| `{env.VAR}` | Environment variable |
+| `{item}` | Current map item (in map tasks) |
+
+> `{node.X.*}` works as alias for `{nodes.X.*}`.
+
+---
+
+## Node Type Details
+
+### Task
+
+Default type. Template filled, sent to LLM.
 
 ```yaml
 - id: analyze
-  description: Analyze code quality
   task: |
-    Analyze the code in {args.path}.
+    Analyze {path}.
     Focus on: {nodes.scan.output}
   depends: [scan]
 ```
 
-### Router Node
+### Router
 
-Evaluates regex conditions against the concatenated output of its `dependencies`.
-No `task` field. First matching route wins. Unmatched nodes downstream are skipped.
+Regex conditions on upstream output. First match wins.
 
 ```yaml
-- id: route_quality
+- id: decide
   type: router
   depends: [analyze]
   routes:
-    - match: "严重问题"
+    - match: "严重"
       to: [deep_fix]
     - match: "需改进"
       to: [improve]
-    - match: null           # fallback — always matches
+    - match: null            # fallback — always last
       to: [done]
 ```
 
-**Rules:**
-- Must have `routes`, must NOT have `task`
-- Must have explicit `depends` (no task to infer from)
-- `match: null` is the unconditional fallback (put last)
-- First match wins — order matters
-- Back-edge routes (targeting upstream nodes) create loops; always set `max`
+**Rules**: must have `routes`, must NOT have `task`, must have explicit `depends`.
 
-### Map Node
+### Map
 
-Fans out a task over a list. Each item spawns a child `mocode -p` subprocess.
+Fan out over list. Each item → child subprocess.
 
 ```yaml
-- id: list_topics
-  task: List 3 research topics, one per line.
-  depends: []
+- id: topics
+  task: List 3 topics, one per line.
 
 - id: research
   type: map
-  items: "{nodes.list_topics.output}"
+  items: "{nodes.topics.output}"
   item_key: topic
-  task: Research "{topic}" and summarize in 3 sentences.
-  depends: [list_topics]
+  task: Summarize {topic} in 2 sentences.    # single braces
+  depends: [topics]
 ```
 
-**How it works:**
-1. `items` template is filled, then split by newlines into a list
-2. Each non-empty line becomes one child task
-3. `{item_key}` (default `"item"`) in `task` is replaced with the line value
-4. All children run concurrently (governed by `concurrency`)
-5. Child outputs are concatenated with `\n---\n` into `{nodes.<id>.output}`
-6. If `items` resolves to empty, the node produces empty output
+**How it works**:
+1. `items` template fills → split by newlines
+2. Each line → one child task with `{item_key}` substituted
+3. Children run concurrently (bounded by `concurrency`)
+4. Outputs joined with `\n---\n` into `{nodes.<id>.output}`
 
-**Rules:**
-- Must have both `items` and `task`
-- Must NOT have `routes`
-- `depends` is auto-inferred from both `task` and `items` templates, but always add explicit `depends` for clarity
+**Rules**: must have `items` + `task`, must NOT have `routes`.
 
-## Depends Best Practices
+---
 
-1. **Always add explicit `depends`** — even when auto-inference would work.
-   Explicit dependencies make the DAG structure readable and prevent subtle
-   ordering issues.
+## Depends Rules
 
-2. **Router nodes require explicit `depends`** — they have no `task` to infer from.
+1. **Always add explicit `depends`** — even when auto-inference works
+2. **Router nodes**: must specify `depends` (no task to infer from)
+3. **Router-gated targets**: add router as dependency
+4. **Terminal nodes**: depend on all routers that can activate them
 
-3. **Map nodes**: add `depends` for the `items` source, even though auto-inference
-   catches `{nodes.X.*}` in the `items` template.
+```yaml
+# Router-gated target
+- id: fix
+  task: Fix issues
+  depends: [route_q]         # gate dependency
 
-4. **Router-gated targets**: if a node is only activated via a router's `route.to`
-   (not via a data dependency), add the router as an explicit dependency:
-   ```yaml
-   - id: fix
-     task: Fix {nodes.report.output}
-     depends: [route_severity]   # gate dependency
-   ```
-
-5. **Terminal nodes in branching workflows**: depend on all routers that can
-   activate them:
-   ```yaml
-   - id: done
-     task: Generate report
-     depends: [route_a, route_b]  # both routers can activate this
-   ```
+# Terminal node
+- id: done
+  task: Final report
+  depends: [route_a, route_b]  # both routers can activate
+```

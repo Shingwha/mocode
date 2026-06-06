@@ -16,12 +16,14 @@ from mocode.app.workflow import (
     NodeDoneEvent,
     NodeResult,
     NodeSkippedEvent,
+    ParamDef,
     Route,
     WaveReadyEvent,
     Workflow,
     WorkflowRegistry,
     compute_waves,
     fill_template,
+    parse_args,
     parse_items,
     summarize,
     detailed_summarize,
@@ -32,6 +34,7 @@ from mocode.app.workflow.events import (
 )
 from mocode.app.workflow.models import infer_depends_from_task
 from mocode.app.workflow.runner import DAGRunner
+from mocode.app.workflow.state import RunState
 
 
 # ---------------------------------------------------------------------------
@@ -259,30 +262,30 @@ class TestMapNode:
         n = Node.from_dict({
             "id": "search", "type": "map",
             "items": "{nodes.gen.output}", "parse": "lines",
-            "item_key": "keyword", "task": "Search {{keyword}}",
+            "item_key": "keyword", "task": "Search {keyword}",
         })
         assert n.type == "map"
         assert n.items == "{nodes.gen.output}"
         assert n.item_key == "keyword"
-        assert n.task == "Search {{keyword}}"
+        assert n.task == "Search {keyword}"
 
     def test_auto_infers_depends(self):
         n = Node.from_dict({
             "id": "m", "type": "map",
             "items": "{nodes.a.output}",
-            "task": "Use {nodes.b.output} and {{item}}",
+            "task": "Use {nodes.b.output} and {item}",
         })
         assert "a" in n.depends
         assert "b" in n.depends
 
     def test_default_item_key(self):
-        n = Node(id="m", type="map", items="{args.x}", task="Do {{item}}")
+        n = Node(id="m", type="map", items="{args.x}", task="Do {item}")
         assert n.item_key == "item"
 
     def test_missing_items_rejected(self, tmp_path: Path):
         path = _write_yaml(tmp_path / "no_items.yaml", {
             "name": "t",
-            "nodes": [{"id": "m", "type": "map", "task": "Do {{item}}"}],
+            "nodes": [{"id": "m", "type": "map", "task": "Do {item}"}],
         })
         with pytest.raises(ValueError, match="must have 'items'"):
             Workflow.from_yaml(path)
@@ -300,7 +303,7 @@ class TestMapNode:
             "name": "t",
             "nodes": [{
                 "id": "m", "type": "map", "items": "{args.x}",
-                "task": "Do {{item}}",
+                "task": "Do {item}",
                 "routes": [{"match": "x", "to": ["y"]}],
             }],
         })
@@ -508,7 +511,7 @@ class TestRunnerMapNode:
                 Node(
                     id="search", type="map",
                     items="{nodes.gen.output}", item_key="kw",
-                    task="Search for {{kw}}", depends=["gen"],
+                    task="Search for {kw}", depends=["gen"],
                 ),
                 Node(id="report", task="Report: {nodes.search.output}", depends=["search"]),
             ],
@@ -551,7 +554,7 @@ class TestRunnerMapNode:
                 Node(id="gen", task="Generate"),
                 Node(
                     id="m", type="map",
-                    items="{nodes.gen.output}", task="Process {{item}}",
+                    items="{nodes.gen.output}", task="Process {item}",
                     depends=["gen"],
                 ),
             ],
@@ -576,7 +579,7 @@ class TestRunnerMapNode:
                 Node(id="gen", task="Generate"),
                 Node(
                     id="m", type="map",
-                    items="{nodes.gen.output}", task="Process {{item}}",
+                    items="{nodes.gen.output}", task="Process {item}",
                     depends=["gen"],
                 ),
             ],
@@ -608,7 +611,7 @@ class TestRunnerMapNode:
                 Node(id="gen", task="Generate"),
                 Node(
                     id="m", type="map",
-                    items="{nodes.gen.output}", task="Process {{item}}",
+                    items="{nodes.gen.output}", task="Process {item}",
                     depends=["gen"],
                 ),
             ],
@@ -891,3 +894,220 @@ class TestWorkflowCommandRun:
         assert "wf_bbb" in info_text
         assert "completed" in info_text
         assert "running" in info_text
+
+
+# ===========================================================================
+# 14. parse_args — positional mapping, key=value, defaults
+# ===========================================================================
+
+
+class TestParseArgs:
+    def test_positional_mapping(self):
+        params = [
+            ParamDef(name="direction", required=True),
+            ParamDef(name="requirement", required=True),
+        ]
+        result = parse_args(params, ["做CLI", "好用"])
+        assert result == {"direction": "做CLI", "requirement": "好用"}
+
+    def test_positional_with_default(self):
+        params = [
+            ParamDef(name="direction", required=True),
+            ParamDef(name="requirement", required=True),
+            ParamDef(name="depth", default="deep", required=False),
+        ]
+        result = parse_args(params, ["做CLI", "好用"])
+        assert result == {"direction": "做CLI", "requirement": "好用", "depth": "deep"}
+
+    def test_positional_override_default(self):
+        params = [
+            ParamDef(name="direction", required=True),
+            ParamDef(name="requirement", required=True),
+            ParamDef(name="depth", default="deep", required=False),
+        ]
+        result = parse_args(params, ["做CLI", "好用", "shallow"])
+        assert result == {"direction": "做CLI", "requirement": "好用", "depth": "shallow"}
+
+    def test_key_value_override(self):
+        params = [
+            ParamDef(name="direction", required=True),
+            ParamDef(name="requirement", required=True),
+        ]
+        result = parse_args(params, ["做CLI", "requirement=自定义"])
+        assert result == {"direction": "做CLI", "requirement": "自定义"}
+
+    def test_missing_required_raises(self):
+        params = [
+            ParamDef(name="direction", required=True),
+            ParamDef(name="requirement", required=True),
+        ]
+        with pytest.raises(ValueError, match="Missing required parameter: requirement"):
+            parse_args(params, ["做CLI"])
+
+    def test_extra_positional_ignored(self):
+        params = [ParamDef(name="a", required=True)]
+        result = parse_args(params, ["val1", "extra"])
+        assert result == {"a": "val1"}
+
+    def test_empty_params_empty_args(self):
+        result = parse_args([], ["anything=123"])
+        assert result == {"anything": "123"}
+
+
+# ===========================================================================
+# 15. Workflow params — YAML parsing
+# ===========================================================================
+
+
+class TestWorkflowParams:
+    def test_params_from_yaml_string(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "params.yaml", {
+            "name": "plan",
+            "params": ["direction", "requirement"],
+            "nodes": [
+                {"id": "t", "task": "方向: {direction}, 要求: {requirement}"},
+            ],
+        })
+        wf = Workflow.from_yaml(path)
+        assert len(wf.params) == 2
+        assert wf.params[0].name == "direction"
+        assert wf.params[0].required is True
+        assert wf.params[1].name == "requirement"
+
+    def test_params_from_yaml_with_default(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "params_default.yaml", {
+            "name": "plan",
+            "params": [
+                "direction",
+                {"depth": "deep"},
+            ],
+            "nodes": [
+                {"id": "t", "task": "方向: {direction}, 深度: {depth}"},
+            ],
+        })
+        wf = Workflow.from_yaml(path)
+        assert len(wf.params) == 2
+        assert wf.params[0].name == "direction"
+        assert wf.params[0].required is True
+        assert wf.params[1].name == "depth"
+        assert wf.params[1].default == "deep"
+        assert wf.params[1].required is False
+
+    def test_params_from_yaml_explicit_dict(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "params_explicit.yaml", {
+            "name": "plan",
+            "params": [
+                {"name": "direction"},
+                {"name": "depth", "default": "deep"},
+            ],
+            "nodes": [
+                {"id": "t", "task": "方向: {direction}, 深度: {depth}"},
+            ],
+        })
+        wf = Workflow.from_yaml(path)
+        assert wf.params[0].name == "direction"
+        assert wf.params[0].required is True
+        assert wf.params[1].name == "depth"
+        assert wf.params[1].default == "deep"
+        assert wf.params[1].required is False
+
+
+# ===========================================================================
+# 16. Map node — unified {item} template syntax regression
+# ===========================================================================
+
+
+class TestMapTemplateUnified:
+    @pytest.mark.asyncio
+    async def test_single_brace_item_in_map(self):
+        """Map node uses {item} (single brace) and it works via fill_template."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="gen", task="Generate"),
+                Node(
+                    id="search", type="map",
+                    items="{nodes.gen.output}", item_key="kw",
+                    task="Search for {kw}", depends=["gen"],
+                ),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"alpha\nbeta"),
+                _make_subprocess_mock(b"r-alpha"),
+                _make_subprocess_mock(b"r-beta"),
+            ]
+            results = await runner.run()
+
+        # Verify child tasks got the item value substituted
+        child_results = [r for r in results if "::" in r.node_id]
+        assert len(child_results) == 2
+        assert child_results[0].task == "Search for alpha"
+        assert child_results[1].task == "Search for beta"
+
+    @pytest.mark.asyncio
+    async def test_mixed_item_and_node_ref_in_map(self):
+        """Map task can mix {item} and {nodes.X.output} in the same template."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="ctx", task="context data"),
+                Node(id="gen", task="items source"),
+                Node(
+                    id="m", type="map",
+                    items="{nodes.gen.output}", item_key="item",
+                    task="Use {nodes.ctx.output} with {item}", depends=["ctx", "gen"],
+                ),
+            ],
+        )
+        runner = DAGRunner(wf)
+        with patch(
+            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
+        ) as mock_exec:
+            mock_exec.side_effect = [
+                _make_subprocess_mock(b"context-info"),
+                _make_subprocess_mock(b"x\ny"),
+                _make_subprocess_mock(b"r1"),
+                _make_subprocess_mock(b"r2"),
+            ]
+            results = await runner.run()
+
+        child_results = [r for r in results if "::" in r.node_id]
+        assert child_results[0].task == "Use context-info with x"
+        assert child_results[1].task == "Use context-info with y"
+
+
+# ===========================================================================
+# 17. RunState — unified skipped dict
+# ===========================================================================
+
+
+class TestRunStateSkipped:
+    def test_skip_records_reason(self):
+        """Unified skipped dict stores node_id → reason."""
+        wf = _simple_linear_wf(2)
+        state = RunState.from_workflow(wf)
+        state.skip("n1", "not activated by router")
+        assert "n1" in state.skipped
+        assert state.skipped["n1"] == "not activated by router"
+
+    def test_skip_idempotent(self):
+        """Calling skip twice on same node keeps first reason."""
+        wf = _simple_linear_wf(2)
+        state = RunState.from_workflow(wf)
+        state.skip("n1", "first reason")
+        state.skip("n1", "second reason")
+        assert state.skipped["n1"] == "first reason"
+
+    def test_activate_removes_from_skipped(self):
+        """Activating a skipped node removes it from skipped dict."""
+        wf = _simple_linear_wf(2)
+        state = RunState.from_workflow(wf)
+        state.skip("n1", "not activated")
+        assert "n1" in state.skipped
+        state.activate("n1")
+        assert "n1" not in state.skipped

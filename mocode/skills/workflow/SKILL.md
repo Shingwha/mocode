@@ -5,40 +5,82 @@ description: Design, create, and run MoCode Workflows — DAG-based multi-step t
 
 # MoCode Workflows
 
-MoCode Workflows orchestrate multi-step tasks as a **DAG** (directed acyclic
-graph). Each node is a self-contained LLM prompt. Nodes can fan-out (parallel),
-fan-in (converge), branch conditionally (router), map over lists, and loop
-with safety limits.
+Multi-step task orchestration as a **DAG**. Each node is an independent LLM prompt
+(`mocode -p`). Supports fan-out/fan-in, conditional routing, map-over-list, and loops.
 
-Defined as YAML files in `.mocode/workflows/`, run via `/workflow` command in the REPL.
+YAML files live in `.mocode/workflows/`. Run via `/workflow` in the REPL.
+
+---
+
+## Quick Start
+
+```yaml
+name: code-review
+params:                         # ← positional parameters
+  - path                        # required, position 1
+  - focus: "general"            # optional, position 2, default "general"
+
+nodes:
+  - id: scan
+    task: Scan {path} for issues, focus on {focus}.
+    depends: []
+
+  - id: report
+    task: Summarize: {nodes.scan.output}
+    depends: [scan]
+```
+
+```bash
+/workflow run code-review ./src security     # path=./src, focus=security
+/workflow run code-review ./src              # path=./src, focus=general (default)
+/workflow run code-review focus=deep ./src   # key=value overrides positional
+```
 
 ---
 
 ## Node Types
 
-| Type     | Description                                                            |
-|----------|------------------------------------------------------------------------|
-| `task`   | Has a `task` template. Sent to the LLM as a prompt via `mocode -p`.    |
-| `router` | No `task`. Regex-matches `routes` against upstream output. First match wins. |
-| `map`    | Has `items` + `task`. Fans out to N child tasks (one per item). Results are concatenated with `\n---\n`. |
+| Type     | Has `task` | Has `routes` | Has `items` | Behavior |
+|----------|-----------|-------------|------------|----------|
+| `task`   | ✓         | ✗           | ✗          | Fill template → send to LLM |
+| `router` | ✗         | ✓           | ✗          | Regex match on upstream output → activate targets |
+| `map`    | ✓         | ✗           | ✓          | Fan out task over list items, concatenate results |
 
-## Dependencies (`depends`)
+---
 
-**Always add explicit `depends` on every node.** Auto-inference is a convenience
-fallback, not a substitute for clear intent. Explicit `depends` makes the DAG
-readable, prevents subtle ordering bugs, and is required in some cases.
+## Template Variables
 
-| Node Type | Auto-inference | Explicit `depends` required? |
-|-----------|---------------|------------------------------|
-| `task`    | From `{nodes.X.*}` in `task` | **Recommended** — add even when auto-inference works |
-| `router`  | None (no `task` to infer from) | **Required** — always specify `depends` |
-| `map`     | From `{nodes.X.*}` in `task` and `items` | **Recommended** — especially for the `items` source |
+All `{name}` placeholders are resolved from a flat context:
 
-**Router-gated targets**: When a downstream node is only activated by a router
-(not via `depends`), add the router as an explicit dependency on that target:
+| Syntax | Source | Example |
+|--------|--------|---------|
+| `{param_name}` | Workflow parameter | `{path}`, `{focus}` |
+| `{nodes.<id>.output}` | Node output | `{nodes.scan.output}` |
+| `{nodes.<id>.exit_code}` | Exit code (0 = OK) | `{nodes.scan.exit_code}` |
+| `{nodes.<id>.error}` | Error message | `{nodes.scan.error}` |
+| `{nodes.<id>.duration}` | Seconds | `{nodes.scan.duration}` |
+| `{previous}` | Last completed node's output | `{previous}` |
+| `{env.VAR}` | Environment variable | `{env.HOME}` |
+| `{item_key}` | Map item value (in map tasks only) | `{topic}`, `{item}` |
+
+> `{node.X.output}` also works as alias for `{nodes.X.output}`.
+
+**Key rule**: single-segment `{name}` looks up from context top level.
+Multi-segment `{a.b}` walks into nested dicts.
+
+---
+
+## Dependencies
+
+**Always add explicit `depends`** — auto-inference is a fallback, not a substitute.
+
+- `task` nodes: inferred from `{nodes.X.*}` in `task`, but add explicitly
+- `router` nodes: **must** specify `depends` (no task to infer from)
+- `map` nodes: inferred from `task` and `items`, but add explicitly
+- Router-gated targets: add the router as a dependency
 
 ```yaml
-- id: route_quality
+- id: route_q
   type: router
   depends: [analyze]          # required
   routes:
@@ -49,68 +91,78 @@ readable, prevents subtle ordering bugs, and is required in some cases.
 
 - id: fix
   task: Fix {nodes.analyze.output}
-  depends: [route_quality]    # gate dependency on router
+  depends: [route_q]          # gate dependency on router
 ```
 
-## Template Variables
-
-| Variable                    | Resolves To                                |
-|-----------------------------|--------------------------------------------|
-| `{args.key}`                | CLI argument at run time (`key=value`)     |
-| `{nodes.<id>.output}`      | Full output of node `<id>`                 |
-| `{nodes.<id>.exit_code}`   | Exit code (0 = OK)                         |
-| `{nodes.<id>.error}`       | Error message                              |
-| `{nodes.<id>.duration}`    | Seconds elapsed                            |
-| `{previous}`                | Output of the just-completed node          |
-| `{env.VAR}`                 | Environment variable                       |
-
-> `{node.X.*}` also works as an alias for `{nodes.X.*}`.
+---
 
 ## Map Nodes
 
-Map nodes fan out a task over a list of items. Each item spawns an independent
-`mocode -p` child process (concurrency controlled by workflow-level `concurrency`).
-
-| Field      | Required | Default  | Description |
-|------------|----------|----------|-------------|
-| `items`    | yes      | —        | Template resolving to newline-separated list |
-| `item_key` | no       | `"item"` | Variable name in `task` replaced per item |
-
-Child outputs are concatenated with `\n---\n` into a single
-`{nodes.<map_id>.output}`.
-
 ```yaml
 - id: topics
-  task: |
-    List 3 topics about AI, one per line.
+  task: List 3 topics about AI, one per line.
 
 - id: explore
   type: map
-  items: "{nodes.topics.output}"
-  item_key: topic
-  task: Write 2 sentences about {topic}.
+  items: "{nodes.topics.output}"   # template → newline-separated list
+  item_key: topic                  # default: "item"
+  task: Write about {topic}.       # ← single braces, same as other vars
   depends: [topics]
 ```
 
-## Loops & Safety
+**How it works**:
+1. `items` template fills → split by newlines → each line is one item
+2. `{item_key}` in `task` is replaced per item (via `fill_template`)
+3. All children run concurrently (bounded by `concurrency`)
+4. Outputs concatenated with `\n---\n` into `{nodes.<id>.output}`
 
-Back-edge routes (router pointing upstream) create loops. **Always set
-`max: <N>`** on back-edge routes. Workflow-level `max_iterations` (default
-100) is the global safety net.
+**Rules**: must have `items` + `task`, must NOT have `routes`.
+
+---
+
+## Routers & Loops
+
+```yaml
+- id: decide
+  type: router
+  depends: [summary]
+  routes:
+    - match: "FAIL"
+      to: [fix]
+      max: 3                  # ← prevents infinite loop
+    - match: null             # fallback (put last)
+      to: [done]
+```
+
+- First matching route wins — order matters
+- `match: null` = unconditional fallback
+- Back-edge routes (target upstream) create loops — **always set `max`**
+- Workflow-level `max_iterations` (default 100) is the global safety net
+
+---
+
+## REPL Commands
+
+| Command | Description |
+|---------|-------------|
+| `/workflow list` | List available workflows |
+| `/workflow show <name>` | Show DAG structure |
+| `/workflow run <name> [args...]` | Run foreground (blocks) |
+| `/workflow run-bg <name> [args...]` | Run background (returns immediately) |
+| `/workflow status [run_id]` | Check run status |
+| `/workflow result [run_id]` | View full results |
+| `/workflow runs` | List recent runs |
 
 ---
 
 ## Notes
 
-- Each node runs as an independent `mocode -p` subprocess — tool access and
-  config are inherited, but state is not shared between nodes.
-- Use `/workflow run-bg <name>` to run in the background (returns immediately).
-  Then use `/workflow status` to check progress and `/workflow result` for full output.
-- Foreground runs (`/workflow run`) block until completion and show the summary inline.
-- Results persist automatically to `~/.mocode/workflow_runs/<run_id>.json`.
-- Use `/workflow runs` to list recent runs with status and timestamps.
+- Each node runs as independent `mocode -p` subprocess — no shared state between nodes
+- Prompt passed via stdin (no command-line length limit)
+- Results persist to `~/.mocode/workflow_runs/<run_id>.json`
+- `concurrency` controls max parallel nodes (default 1 = serial)
+- Map child tasks also respect the `concurrency` limit
 
 ---
 
-Detailed reference:
-- YAML format and examples: `read vfs://workflow/yaml-reference.md`
+Detailed YAML reference: `read vfs://workflow/yaml-reference.md`

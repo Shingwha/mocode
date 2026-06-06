@@ -16,9 +16,13 @@ def main():
     args = parse_args()
 
     if args.prompt is not None:
-        _run_app(
-            interactive=False, prompt=args.prompt, stdin_text=read_stdin_if_piped()
-        )
+        stdin_text = read_stdin_if_piped()
+        prompt = args.prompt
+        if prompt == "-" and stdin_text:
+            # Special marker: read prompt from stdin
+            prompt = stdin_text.rstrip()
+            stdin_text = None
+        _run_app(interactive=False, prompt=prompt, stdin_text=stdin_text)
     else:
         _run_app(interactive=True)
 

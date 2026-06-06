@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 
-from ...workflow.cli import parse_kv_args
-from ...workflow.models import NodeResult, detailed_summarize
+from ...workflow.models import NodeResult, parse_args
+from ..workflow_renderer import detailed_summarize
 from ...workflow.runner import DAGRunner
 from ...workflow.run_store import WorkflowRunStore
 from ..prompts import Choice, select
@@ -45,16 +45,21 @@ async def _show(ctx: CommandContext, args_str: str) -> CommandResult:
 async def _run(ctx: CommandContext, args_str: str) -> CommandResult:
     parts = args_str.split()
     if not parts:
-        ctx.display.warn("Usage: /workflow run <name> [key=value...]")
+        ctx.display.warn("Usage: /workflow run <name> [positional...] [key=value...]")
         return CommandResult.CONTINUE
 
     name = parts[0]
-    user_args = parse_kv_args(parts[1:])
 
     registry = ctx.app.workflow_registry
     wf = registry.get(name)
     if wf is None:
         ctx.display.warn(f"Workflow '{name}' not found.")
+        return CommandResult.CONTINUE
+
+    try:
+        user_args = parse_args(wf.params, parts[1:])
+    except ValueError as e:
+        ctx.display.warn(str(e))
         return CommandResult.CONTINUE
 
     # Persist run
@@ -90,16 +95,21 @@ async def _run(ctx: CommandContext, args_str: str) -> CommandResult:
 async def _run_bg(ctx: CommandContext, args_str: str) -> CommandResult:
     parts = args_str.split()
     if not parts:
-        ctx.display.warn("Usage: /workflow run-bg <name> [key=value...]")
+        ctx.display.warn("Usage: /workflow run-bg <name> [positional...] [key=value...]")
         return CommandResult.CONTINUE
 
     name = parts[0]
-    user_args = parse_kv_args(parts[1:])
 
     registry = ctx.app.workflow_registry
     wf = registry.get(name)
     if wf is None:
         ctx.display.warn(f"Workflow '{name}' not found.")
+        return CommandResult.CONTINUE
+
+    try:
+        user_args = parse_args(wf.params, parts[1:])
+    except ValueError as e:
+        ctx.display.warn(str(e))
         return CommandResult.CONTINUE
 
     store = WorkflowRunStore()

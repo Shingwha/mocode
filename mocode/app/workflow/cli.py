@@ -20,13 +20,3 @@ def make_registry() -> WorkflowRegistry:
         dirs.append(local_dir)
 
     return WorkflowRegistry(dirs=dirs)
-
-
-def parse_kv_args(kv_args: list[str] | None) -> dict[str, str]:
-    """Parse ``key=value`` pairs from positional args."""
-    result: dict[str, str] = {}
-    for p in kv_args or []:
-        if "=" in p:
-            k, v = p.split("=", 1)
-            result[k.strip()] = v.strip()
-    return result

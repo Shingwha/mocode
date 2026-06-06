@@ -28,9 +28,7 @@ class RunState:
     pending_deps: dict[str, int] = field(default_factory=dict)
     activated: set[str] = field(default_factory=set)
     completed: set[str] = field(default_factory=set)
-    skipped: set[str] = field(default_factory=set)
-    skip_recorded: set[str] = field(default_factory=set)
-    skip_reasons: dict[str, str] = field(default_factory=dict)
+    skipped: dict[str, str] = field(default_factory=dict)  # node_id → reason
     announced_waves: set[int] = field(default_factory=set)
     route_counter: dict[str, int] = field(default_factory=dict)
     iteration: dict[str, int] = field(default_factory=dict)
@@ -58,7 +56,7 @@ class RunState:
         state = cls(
             context={
                 "args": args or {},
-                "env": dict(os.environ),
+                "env": os.environ,
                 "nodes": {},
                 "previous": "",
             },
@@ -110,19 +108,16 @@ class RunState:
     def activate(self, nid: str) -> None:
         """Mark a node as activated, decrement deps, optionally enqueue."""
         self.activated.add(nid)
-        self.skipped.discard(nid)
-        self.skip_recorded.discard(nid)
+        self.skipped.pop(nid, None)
         self.pending_deps[nid] = self.pending_deps.get(nid, 0) - 1
         if self.is_ready(nid) and nid not in self.ready_queue:
             self.ready_queue.append(nid)
 
     def skip(self, nid: str, reason: str) -> None:
         """Record a skip (deferred — emitted on wave announce)."""
-        if nid in self.skip_recorded:
+        if nid in self.skipped:
             return
-        self.skip_recorded.add(nid)
-        self.skip_reasons[nid] = reason
-        self.skipped.add(nid)
+        self.skipped[nid] = reason
 
     def propagate_skip(self, nid: str, wf: Workflow) -> None:
         """Skip node and all downstream nodes not yet activated."""
@@ -135,11 +130,11 @@ class RunState:
         """Emit skip events for all skipped nodes in this wave. Returns events."""
         events = []
         for n in self.waves[wave_idx]:
-            if n.id in self.skip_recorded and n.id not in self.completed:
+            if n.id in self.skipped and n.id not in self.completed:
                 events.append(
                     NodeSkippedEvent(
                         node_id=n.id,
-                        reason=self.skip_reasons[n.id],
+                        reason=self.skipped[n.id],
                         wave_idx=wave_idx,
                     )
                 )

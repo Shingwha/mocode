@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from .models import Workflow
+
+logger = logging.getLogger(__name__)
 
 
 class WorkflowRegistry:
@@ -41,7 +44,8 @@ class WorkflowRegistry:
     def _load(self, path: Path) -> Workflow | None:
         try:
             return Workflow.from_yaml(path)
-        except Exception:
+        except Exception as e:
+            logger.debug("Failed to load workflow %s: %s", path, e)
             return None
 
     def list(self) -> list[Workflow]:
