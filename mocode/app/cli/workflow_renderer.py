@@ -71,6 +71,7 @@ class WorkflowRenderer:
     def __init__(self, display: Display) -> None:
         self._d = display
         self._start_time: float = 0.0
+        self._pending_tool_batch = False
 
     # ── Event dispatch ─────────────────────────────────────
 
@@ -145,29 +146,32 @@ class WorkflowRenderer:
                             priority=Priority.LOW, truncate=Truncate.TAIL)
 
     def _on_tool_call(self, event: NodeToolCallEvent) -> None:
-        from .display import tool_summary
-        summary = tool_summary(event.tool_name, event.tool_args)
-        node_prefix = f"{event.node_id}:{event.tool_name}"
-        if event.error:
-            self._d.render_line(
-                self._d.theme.style_tool_fail, node_prefix,
-                suffix=f"({summary})" if summary else "",
-                error=event.error, elapsed=event.elapsed,
-            )
-        else:
-            self._d.render_line(
-                self._d.theme.style_tool_done, node_prefix,
-                suffix=f"({summary})" if summary else "",
-                elapsed=event.elapsed,
-            )
+        # On first tool call of a batch, update spinner to show running status
+        if not self._pending_tool_batch:
+            self._pending_tool_batch = True
+            self._d.spinner_remove("wf_thinking")
+            self._d.spinner_set("wf_tools_tag", f"{event.node_id}:running tools",
+                                priority=Priority.NORMAL, truncate=Truncate.TAIL)
+        # Individual calls are displayed grouped in _on_tool_batch_done
 
     def _on_tool_batch_done(self, event: NodeToolBatchDoneEvent) -> None:
+        from .display import merge_summaries
         # Clear tool spinner segments
         self._d.spinner_remove("wf_tools_tag")
         self._d.spinner_remove("wf_tools_detail")
         # Restore Thinking spinner
         self._d.spinner_set("wf_thinking", "Thinking",
                             priority=Priority.LOW, truncate=Truncate.TAIL)
+        self._pending_tool_batch = False
+        # Render grouped tool calls (matches CLI batch display)
+        for name, summaries in event.groups:
+            merged = merge_summaries(summaries)
+            elapsed = event.elapsed.get(name, 0)
+            node_prefix = f"{event.node_id}:{name}"
+            if name in event.errors:
+                self._d.tool_fail(node_prefix, merged, event.errors[name], elapsed)
+            else:
+                self._d.tool_done(node_prefix, merged, elapsed)
 
     def _on_node_done(self, event: NodeDoneEvent) -> None:
         dur = f"{event.result.duration:.1f}s"
