@@ -24,6 +24,8 @@ from ..workflow.events import (
     NodeDoneEvent,
     NodeSkippedEvent,
     NodeStartEvent,
+    NodeToolBatchDoneEvent,
+    NodeToolCallEvent,
     ProgressEvent,
     RouterConditionEvent,
     WaveReadyEvent,
@@ -82,6 +84,10 @@ class WorkflowRenderer:
             self._on_node_skipped(event)
         elif isinstance(event, NodeStartEvent):
             self._on_node_start(event)
+        elif isinstance(event, NodeToolCallEvent):
+            self._on_tool_call(event)
+        elif isinstance(event, NodeToolBatchDoneEvent):
+            self._on_tool_batch_done(event)
         elif isinstance(event, NodeDoneEvent):
             self._on_node_done(event)
         elif isinstance(event, MapFanOutEvent):
@@ -126,28 +132,61 @@ class WorkflowRenderer:
         )
 
     def _on_node_start(self, event: NodeStartEvent) -> None:
-        self._d.spinner_set("wf_tag", event.node_id,
-                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
-        if event.description:
-            self._d.spinner_set("wf_detail", event.description,
-                                priority=Priority.LOW, truncate=Truncate.MIDDLE)
+        desc = event.description or ""
+        node_prefix = _s(event.node_id, BOLD)
+        if desc:
+            self._d.print(f"{_s('▸', BOLD)} {node_prefix}:start ({desc})")
         else:
-            self._d.spinner_remove("wf_detail")
+            self._d.print(f"{_s('▸', BOLD)} {node_prefix}:start")
+        # Spinner: node_id · Thinking
+        self._d.spinner_set("wf_node", event.node_id,
+                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
+        self._d.spinner_set("wf_thinking", "Thinking",
+                            priority=Priority.LOW, truncate=Truncate.TAIL)
+
+    def _on_tool_call(self, event: NodeToolCallEvent) -> None:
+        from .display import tool_summary
+        summary = tool_summary(event.tool_name, event.tool_args)
+        node_prefix = f"{event.node_id}:{event.tool_name}"
+        if event.error:
+            self._d.render_line(
+                self._d.theme.style_tool_fail, node_prefix,
+                suffix=f"({summary})" if summary else "",
+                error=event.error, elapsed=event.elapsed,
+            )
+        else:
+            self._d.render_line(
+                self._d.theme.style_tool_done, node_prefix,
+                suffix=f"({summary})" if summary else "",
+                elapsed=event.elapsed,
+            )
+
+    def _on_tool_batch_done(self, event: NodeToolBatchDoneEvent) -> None:
+        # Clear tool spinner segments
+        self._d.spinner_remove("wf_tools_tag")
+        self._d.spinner_remove("wf_tools_detail")
+        # Restore Thinking spinner
+        self._d.spinner_set("wf_thinking", "Thinking",
+                            priority=Priority.LOW, truncate=Truncate.TAIL)
 
     def _on_node_done(self, event: NodeDoneEvent) -> None:
         dur = f"{event.result.duration:.1f}s"
-        icon = _s("✓", GREEN) if event.result.exit_code == 0 else _s("✗", RED)
-        desc = event.description or (
-            event.result.task[:40] if event.result.task else ""
-        )
-        iter_suffix = (
-            f" (iter {event.result.iteration})" if event.result.iteration > 1 else ""
-        )
-        self._d.print(
-            f"  └─ {icon} {_s(event.node_id, BOLD)} · {desc}{iter_suffix}  {_s(dur, DIM)}"
-        )
-        self._d.spinner_remove("wf_tag")
-        self._d.spinner_remove("wf_detail")
+        icon = _s("■", GREEN) if event.result.exit_code == 0 else _s("■", RED)
+        node_prefix = _s(event.node_id, BOLD)
+        desc = event.description or (event.result.task[:40] if event.result.task else "")
+        # Build detail inside parentheses
+        parts = [desc]
+        if event.result.iteration > 1:
+            parts.append(f"iter {event.result.iteration}")
+        if event.result.error and event.result.exit_code != 0:
+            parts.append(f"{_s('ERROR', RED)} {event.result.error[:30]}")
+        detail = ", ".join(parts)
+        self._d.print(f"{icon} {node_prefix}:done ({detail})  {_s(dur, DIM)}")
+        # Clear all spinner segments
+        self._d.spinner_remove("wf_node")
+        self._d.spinner_remove("wf_thinking")
+        self._d.spinner_remove("wf_tools_tag")
+        self._d.spinner_remove("wf_tools_detail")
 
     def _on_loop_iter(self, event: LoopIterEvent) -> None:
         dur = f"{event.result.duration:.1f}s"
@@ -175,13 +214,13 @@ class WorkflowRenderer:
 
     def _on_progress(self, event: ProgressEvent) -> None:
         if event.node_id:
-            self._d.spinner_set("wf_tag", event.node_id,
+            self._d.spinner_set("wf_node", event.node_id,
                                 priority=Priority.NORMAL, truncate=Truncate.TAIL)
-            self._d.spinner_set("wf_detail", event.detail or event.message,
-                                priority=Priority.LOW, truncate=Truncate.MIDDLE)
+            self._d.spinner_set("wf_thinking", event.detail or event.message,
+                                priority=Priority.LOW, truncate=Truncate.TAIL)
         else:
-            self._d.spinner_set("wf_detail", event.message,
-                                priority=Priority.LOW, truncate=Truncate.MIDDLE)
+            self._d.spinner_set("wf_thinking", event.message,
+                                priority=Priority.LOW, truncate=Truncate.TAIL)
 
     # ── Lifecycle rendering ────────────────────────────────
 

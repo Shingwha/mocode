@@ -411,3 +411,29 @@ class TestAgentHook:
         ctx.tool_result = "file1\nfile2"
         await runner.on_tool_complete(ctx)
         assert events == [("start", "bash"), ("complete", "bash", "file1\nfile2")]
+
+
+# ---------------------------------------------------------------------------
+# AgentLoop properties
+# ---------------------------------------------------------------------------
+
+
+class TestAgentLoopProperties:
+    def test_tool_registry_property(self):
+        """AgentLoop.tool_registry is the public accessor for the internal registry."""
+        reg = ToolRegistry()
+        reg.register(Tool("test", "desc", {}, lambda a: "ok"))
+        agent = AgentLoop(
+            provider=MockProvider(), system_prompt="test",
+            tools=reg, hooks=HookRunner(), config=AgentConfig(),
+        )
+        assert agent.tool_registry is reg
+        assert agent.tool_registry.get("test") is not None
+
+    def test_iteration_property(self):
+        """AgentLoop.iteration starts at 0 and is exposed."""
+        agent = AgentLoop(
+            provider=MockProvider(), system_prompt="test",
+            tools=ToolRegistry(), hooks=HookRunner(), config=AgentConfig(),
+        )
+        assert agent.iteration == 0

@@ -74,6 +74,7 @@ async def _run(ctx: CommandContext, args_str: str) -> CommandResult:
 
     runner = DAGRunner(
         wf,
+        parent_agent=ctx.app.agent,
         on_event=ctx.app.wf_renderer.handle_event,
         run_id=run_id,
         run_store=store,
@@ -119,7 +120,7 @@ async def _run_bg(ctx: CommandContext, args_str: str) -> CommandResult:
         args=user_args,
     )
 
-    asyncio.create_task(_bg_task(wf, run_id, store, user_args))
+    asyncio.create_task(_bg_task(wf, run_id, store, user_args, ctx.app.agent))
     ctx.display.info(
         f"Workflow '{name}' started in background (run_id: {run_id})"
     )
@@ -297,11 +298,12 @@ async def _bg_task(
     run_id: str,
     store: WorkflowRunStore,
     user_args: dict[str, str],
+    parent_agent: object,
 ) -> None:
     """Background asyncio task — runs the DAG and persists results."""
     from datetime import datetime
 
-    runner = DAGRunner(wf, run_id=run_id, run_store=store)
+    runner = DAGRunner(wf, parent_agent=parent_agent, run_id=run_id, run_store=store)
     try:
         await runner.run(args=user_args)
     except Exception:

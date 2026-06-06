@@ -13,6 +13,8 @@ from mocode.app.workflow.events import (
     NodeDoneEvent,
     NodeSkippedEvent,
     NodeStartEvent,
+    NodeToolBatchDoneEvent,
+    NodeToolCallEvent,
     ProgressEvent,
     RouterConditionEvent,
     WaveReadyEvent,
@@ -24,7 +26,19 @@ def _make_renderer(capture: list | None = None):
     """Create a WorkflowRenderer with a mock Display that captures print output."""
     lines = capture if capture is not None else []
     display = MagicMock()
-    display.print = lambda *a, **kw: lines.append(" ".join(str(x) for x in a))
+
+    def _capture_print(*a, **kw):
+        lines.append(" ".join(str(x) for x in a))
+
+    def _capture_render(*a, **kw):
+        parts = [str(x) for x in a]
+        if kw:
+            for k, v in kw.items():
+                parts.append(f"{k}={v}")
+        lines.append(" ".join(parts))
+
+    display.print = _capture_print
+    display.render_line = _capture_render
     display.spinner_set = MagicMock()
     display.spinner_remove = MagicMock()
     return WorkflowRenderer(display), lines
@@ -132,26 +146,28 @@ class TestOnNodeStart:
         event = NodeStartEvent(node_id="analyze", description="Analyze code")
         renderer.handle_event(event)
         renderer._d.spinner_set.assert_any_call(
-            "wf_tag", "analyze", priority=Priority.NORMAL, truncate=Truncate.TAIL,
+            "wf_node", "analyze", priority=Priority.NORMAL, truncate=Truncate.TAIL,
         )
 
-    def test_with_description_sets_detail(self):
+    def test_with_description_sets_thinking(self):
         renderer, _ = _make_renderer()
         event = NodeStartEvent(node_id="a", description="Do stuff")
         renderer.handle_event(event)
         renderer._d.spinner_set.assert_any_call(
-            "wf_detail", "Do stuff", priority=Priority.LOW, truncate=Truncate.MIDDLE,
+            "wf_thinking", "Thinking", priority=Priority.LOW, truncate=Truncate.TAIL,
         )
 
-    def test_without_description_removes_detail(self):
+    def test_without_description_sets_thinking(self):
         renderer, _ = _make_renderer()
         event = NodeStartEvent(node_id="a", description="")
         renderer.handle_event(event)
-        renderer._d.spinner_remove.assert_called_with("wf_detail")
+        renderer._d.spinner_set.assert_any_call(
+            "wf_thinking", "Thinking", priority=Priority.LOW, truncate=Truncate.TAIL,
+        )
 
 
 class TestOnNodeDone:
-    def test_success_prints_checkmark(self):
+    def test_success_prints_square(self):
         renderer, lines = _make_renderer()
         result = NodeResult(
             node_id="a", task="Do stuff", output="ok",
@@ -161,9 +177,9 @@ class TestOnNodeDone:
             node_id="a", result=result, description="Do stuff", wave_idx=0,
         )
         renderer.handle_event(event)
-        assert any("✓" in l and "a" in l for l in lines)
+        assert any("■" in l and "a" in l for l in lines)
 
-    def test_failure_prints_cross(self):
+    def test_failure_prints_square_red(self):
         renderer, lines = _make_renderer()
         result = NodeResult(
             node_id="a", task="Do stuff", output="",
@@ -173,7 +189,7 @@ class TestOnNodeDone:
             node_id="a", result=result, description="", wave_idx=0,
         )
         renderer.handle_event(event)
-        assert any("✗" in l for l in lines)
+        assert any("■" in l for l in lines)
 
     def test_clears_spinner_segments(self):
         renderer, _ = _make_renderer()
@@ -185,8 +201,10 @@ class TestOnNodeDone:
             node_id="a", result=result, description="", wave_idx=0,
         )
         renderer.handle_event(event)
-        renderer._d.spinner_remove.assert_any_call("wf_tag")
-        renderer._d.spinner_remove.assert_any_call("wf_detail")
+        renderer._d.spinner_remove.assert_any_call("wf_node")
+        renderer._d.spinner_remove.assert_any_call("wf_thinking")
+        renderer._d.spinner_remove.assert_any_call("wf_tools_tag")
+        renderer._d.spinner_remove.assert_any_call("wf_tools_detail")
 
 
 class TestOnLoopIter:
@@ -229,15 +247,15 @@ class TestOnProgress:
         event = ProgressEvent(message="working", node_id="a", detail="Analyzing")
         renderer.handle_event(event)
         renderer._d.spinner_set.assert_any_call(
-            "wf_tag", "a", priority=Priority.NORMAL, truncate=Truncate.TAIL,
+            "wf_node", "a", priority=Priority.NORMAL, truncate=Truncate.TAIL,
         )
 
-    def test_without_node_id_only_sets_detail(self):
+    def test_without_node_id_only_sets_thinking(self):
         renderer, _ = _make_renderer()
         event = ProgressEvent(message="Starting", node_id="", detail="")
         renderer.handle_event(event)
         renderer._d.spinner_set.assert_called_with(
-            "wf_detail", "Starting", priority=Priority.LOW, truncate=Truncate.MIDDLE,
+            "wf_thinking", "Starting", priority=Priority.LOW, truncate=Truncate.TAIL,
         )
 
 
@@ -340,3 +358,75 @@ class TestWorkflowList:
         assert "alpha" in result
         assert "First workflow" in result
         assert "beta" in result
+
+
+# ── New tool call event handlers ────────────────────────────
+
+
+class TestOnToolCall:
+    def test_success_prints_tool_name(self):
+        renderer, lines = _make_renderer()
+        event = NodeToolCallEvent(
+            node_id="diff", tool_name="bash",
+            tool_args={"command": "git log --oneline -20"},
+            elapsed=0.8,
+        )
+        renderer.handle_event(event)
+        assert any("diff:bash" in l for l in lines)
+        assert any("git log" in l for l in lines)
+
+    def test_failure_prints_error(self):
+        renderer, lines = _make_renderer()
+        event = NodeToolCallEvent(
+            node_id="review", tool_name="bash",
+            tool_args={"command": "python setup.py install"},
+            error="subprocess error", elapsed=3.2,
+        )
+        renderer.handle_event(event)
+        assert any("review:bash" in l for l in lines)
+        assert any("subprocess error" in l for l in lines)
+
+    def test_elapsed_shown_when_significant(self):
+        renderer, lines = _make_renderer()
+        event = NodeToolCallEvent(
+            node_id="a", tool_name="read",
+            tool_args={"path": "file.txt"}, elapsed=0.5,
+        )
+        renderer.handle_event(event)
+        assert any("elapsed=0.5" in l for l in lines)
+
+
+class TestOnToolBatchDone:
+    def test_clears_tool_spinner_segments(self):
+        renderer, _ = _make_renderer()
+        event = NodeToolBatchDoneEvent(
+            node_id="diff",
+            groups=[("bash", ["git log"])],
+            errors={}, elapsed={"bash": 0.8},
+        )
+        renderer.handle_event(event)
+        renderer._d.spinner_remove.assert_any_call("wf_tools_tag")
+        renderer._d.spinner_remove.assert_any_call("wf_tools_detail")
+        renderer._d.spinner_set.assert_any_call(
+            "wf_thinking", "Thinking", priority=Priority.LOW, truncate=Truncate.TAIL,
+        )
+
+
+class TestHandleEventDispatch:
+    def test_dispatches_tool_call_event(self):
+        renderer, lines = _make_renderer()
+        event = NodeToolCallEvent(
+            node_id="n1", tool_name="read",
+            tool_args={"path": "test.py"}, elapsed=0.3,
+        )
+        renderer.handle_event(event)
+        assert any("n1:read" in l for l in lines)
+
+    def test_dispatches_tool_batch_done_event(self):
+        renderer, _ = _make_renderer()
+        event = NodeToolBatchDoneEvent(
+            node_id="n1", groups=[("read", ["test.py"])],
+            errors={}, elapsed={"read": 0.3},
+        )
+        renderer.handle_event(event)
+        renderer._d.spinner_remove.assert_any_call("wf_tools_tag")

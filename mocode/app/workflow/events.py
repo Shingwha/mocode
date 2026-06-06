@@ -103,3 +103,24 @@ class ProgressEvent(WorkflowEvent):
     message: str
     node_id: str
     detail: str
+
+
+@dataclass
+class NodeToolCallEvent(WorkflowEvent):
+    """A single tool call completed within a node."""
+
+    node_id: str
+    tool_name: str
+    tool_args: dict
+    error: str | None = None
+    elapsed: float = 0.0
+
+
+@dataclass
+class NodeToolBatchDoneEvent(WorkflowEvent):
+    """All tool calls from one LLM response completed for a node."""
+
+    node_id: str
+    groups: list[tuple[str, list[str]]]  # [(tool_name, [summaries])]
+    errors: dict[str, str]               # tool_name → error message
+    elapsed: dict[str, float]            # tool_name → max elapsed

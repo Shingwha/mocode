@@ -316,5 +316,19 @@ class AgentLoop:
         return f"call_{self._call_seq}"
 
     @property
+    def tool_registry(self) -> ToolRegistry:
+        """Public access to the agent's tool registry."""
+        return self._tools
+
+    @property
+    def iteration(self) -> int:
+        """Number of LLM iterations completed in the last chat() loop.
+
+        Returns tool-call batches + 1 (the final no-tool-call response).
+        Minimum 1 after a chat() call.
+        """
+        return self._iteration_count + 1 if self._iteration_count else 0
+
+    @property
     def last_usage(self) -> Usage | None:
         return self._last_usage

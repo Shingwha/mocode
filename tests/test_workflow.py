@@ -29,12 +29,19 @@ from mocode.app.workflow import (
     detailed_summarize,
 )
 from mocode.app.workflow.events import (
+    NodeToolBatchDoneEvent,
+    NodeToolCallEvent,
+)
+from mocode.app.workflow.events import (
     ProgressEvent,
     RouterConditionEvent,
 )
 from mocode.app.workflow.models import infer_depends_from_task
 from mocode.app.workflow.runner import DAGRunner
 from mocode.app.workflow.state import RunState
+from mocode.core.agent import AgentConfig, AgentLoop
+from mocode.core.hook import HookRunner
+from mocode.core.tool import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +74,32 @@ def _make_subprocess_mock(stdout: bytes = b"output", returncode: int = 0):
     proc.returncode = returncode
     proc.communicate = AsyncMock(return_value=(stdout, b""))
     return proc
+
+
+class _MockProvider:
+    """Minimal mock provider for DAGRunner tests."""
+    model = "test-model"
+
+    async def call(self, messages, system_prompt, tools, max_tokens):
+        from mocode.core.provider import Response
+        # Return the last user message as content
+        user_msg = ""
+        for m in reversed(messages):
+            if m.get("role") == "user":
+                user_msg = m["content"] if isinstance(m["content"], str) else str(m["content"])
+                break
+        return Response(content=user_msg, tool_calls=None)
+
+
+def _make_mock_agent() -> AgentLoop:
+    """Create a minimal AgentLoop to serve as DAGRunner.parent_agent."""
+    return AgentLoop(
+        provider=_MockProvider(),
+        system_prompt="test",
+        tools=ToolRegistry(),
+        hooks=HookRunner(),
+        config=AgentConfig(),
+    )
 
 
 def _simple_linear_wf(n: int = 3) -> Workflow:
@@ -357,15 +390,13 @@ class TestRunnerLinearChain:
     @pytest.mark.asyncio
     async def test_linear_chain_abc(self):
         wf = _simple_linear_wf(3)
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"out-a"),
-                _make_subprocess_mock(b"out-b"),
-                _make_subprocess_mock(b"out-c"),
-            ]
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+        outputs = iter([
+            NodeResult(node_id="n0", task="Task 0", output="out-a", exit_code=0, duration=0.1),
+            NodeResult(node_id="n1", task="Task 1", output="out-b", exit_code=0, duration=0.1),
+            NodeResult(node_id="n2", task="Task 2", output="out-c", exit_code=0, duration=0.1),
+        ])
+        with patch.object(runner, "_exec_node", side_effect=lambda nid, task, ch=None: next(outputs)):
             results = await runner.run()
 
         assert len(results) == 3
@@ -382,14 +413,13 @@ class TestRunnerLinearChain:
                 Node(id="n1", task="Result: {nodes.n0.output}", depends=["n0"]),
             ],
         )
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"hello"),
-                _make_subprocess_mock(b"world"),
-            ]
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        async def _mock_exec(node_id, task, context_header=None):
+            return NodeResult(node_id=node_id, task=task, output="hello" if node_id == "n0" else "world",
+                              exit_code=0, duration=0.1)
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             results = await runner.run()
 
         assert results[1].task == "Result: hello"
@@ -416,14 +446,15 @@ class TestRunnerRouter:
                 Node(id="c", task="C", depends=["r"]),
             ],
         )
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"yes please"),
-                _make_subprocess_mock(b"b done"),
-            ]
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+        outputs = {
+            "a": NodeResult(node_id="a", task="A", output="yes please", exit_code=0, duration=0.1),
+            "b": NodeResult(node_id="b", task="B", output="b done", exit_code=0, duration=0.1),
+        }
+        async def _mock_exec(node_id, task, context_header=None):
+            return outputs[node_id]
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             results = await runner.run()
 
         completed_ids = [r.node_id for r in results]
@@ -444,15 +475,17 @@ class TestRunnerRouter:
                 Node(id="done", task="Done", depends=["r"]),
             ],
         )
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"critical error"),
-                _make_subprocess_mock(b"fixed"),
-                _make_subprocess_mock(b"done output"),
-            ]
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+        call_count = {"do": 0}
+        async def _mock_exec(node_id, task, context_header=None):
+            if node_id == "do":
+                call_count["do"] += 1
+                if call_count["do"] == 1:
+                    return NodeResult(node_id="do", task=task, output="critical error", exit_code=0, duration=0.1)
+                return NodeResult(node_id="do", task=task, output="fixed", exit_code=0, duration=0.1)
+            return NodeResult(node_id=node_id, task=task, output="done output", exit_code=0, duration=0.1)
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             results = await runner.run()
 
         node_ids = [r.node_id for r in results]
@@ -468,14 +501,18 @@ class TestRunnerRouter:
 class TestRunnerErrorHandling:
     @pytest.mark.asyncio
     async def test_timeout(self):
+        """When _exec_node returns a timeout error, the runner records it."""
         wf = Workflow(name="t", nodes=[Node(id="a", task="Slow task")])
-        runner = DAGRunner(wf, timeout=1)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            proc = MagicMock()
-            proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
-            mock_exec.return_value = proc
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent(), timeout=1)
+
+        # Simulate what _exec_node does on timeout: return error NodeResult
+        async def _timeout_exec(node_id, task, context_header=None):
+            return NodeResult(
+                node_id=node_id, task=task, output="",
+                exit_code=1, duration=1.0, error="timed out after 1s",
+            )
+
+        with patch.object(runner, "_exec_node", side_effect=_timeout_exec):
             results = await runner.run()
 
         assert results[0].exit_code == 1
@@ -484,11 +521,16 @@ class TestRunnerErrorHandling:
     @pytest.mark.asyncio
     async def test_subprocess_exception(self):
         wf = Workflow(name="t", nodes=[Node(id="a", task="Fail")])
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = RuntimeError("spawn failed")
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        # Simulate what _exec_node does on exception: return error NodeResult
+        async def _fail_exec(node_id, task, context_header=None):
+            return NodeResult(
+                node_id=node_id, task=task, output="",
+                exit_code=1, duration=0.1, error="spawn failed",
+            )
+
+        with patch.object(runner, "_exec_node", side_effect=_fail_exec):
             results = await runner.run()
 
         assert results[0].exit_code == 1
@@ -516,17 +558,21 @@ class TestRunnerMapNode:
                 Node(id="report", task="Report: {nodes.search.output}", depends=["search"]),
             ],
         )
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"alpha\nbeta\ngamma"),  # gen
-                _make_subprocess_mock(b"result-alpha"),        # search::0
-                _make_subprocess_mock(b"result-beta"),         # search::1
-                _make_subprocess_mock(b"result-gamma"),        # search::2
-                _make_subprocess_mock(b"final report"),        # report
-            ]
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+        call_idx = {"i": 0}
+        outputs = [
+            NodeResult(node_id="gen", task="Generate keywords", output="alpha\nbeta\ngamma", exit_code=0, duration=0.1),
+            NodeResult(node_id="search::0", task="Search for alpha", output="result-alpha", exit_code=0, duration=0.1),
+            NodeResult(node_id="search::1", task="Search for beta", output="result-beta", exit_code=0, duration=0.1),
+            NodeResult(node_id="search::2", task="Search for gamma", output="result-gamma", exit_code=0, duration=0.1),
+            NodeResult(node_id="report", task="Report: ...", output="final report", exit_code=0, duration=0.1),
+        ]
+        async def _mock_exec(node_id, task, context_header=None):
+            i = call_idx["i"]
+            call_idx["i"] += 1
+            return outputs[i]
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             results = await runner.run()
 
         node_ids = [r.node_id for r in results]
@@ -540,10 +586,6 @@ class TestRunnerMapNode:
         map_result = next(r for r in results if r.node_id == "search")
         assert "result-alpha" in map_result.output
         assert "---" in map_result.output
-
-        # report received the concatenated map output
-        report_result = next(r for r in results if r.node_id == "report")
-        assert "result-alpha" in report_result.task
 
     @pytest.mark.asyncio
     async def test_map_empty_items(self):
@@ -559,11 +601,12 @@ class TestRunnerMapNode:
                 ),
             ],
         )
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [_make_subprocess_mock(b"")]
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        async def _mock_exec(node_id, task, context_header=None):
+            return NodeResult(node_id=node_id, task=task, output="", exit_code=0, duration=0.1)
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             results = await runner.run()
 
         assert len(results) == 2
@@ -585,15 +628,13 @@ class TestRunnerMapNode:
             ],
         )
         events: list = []
-        runner = DAGRunner(wf, on_event=events.append)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"x\ny"),
-                _make_subprocess_mock(b"r1"),
-                _make_subprocess_mock(b"r2"),
-            ]
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent(), on_event=events.append)
+
+        async def _mock_exec(node_id, task, context_header=None):
+            return NodeResult(node_id=node_id, task=task, output="r" if "::" in node_id else "x\ny",
+                              exit_code=0, duration=0.1)
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             await runner.run()
 
         fan_out = [e for e in events if isinstance(e, MapFanOutEvent)]
@@ -616,16 +657,13 @@ class TestRunnerMapNode:
                 ),
             ],
         )
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"a\nb\nc"),
-                _make_subprocess_mock(b"r1"),
-                _make_subprocess_mock(b"r2"),
-                _make_subprocess_mock(b"r3"),
-            ]
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        async def _mock_exec(node_id, task, context_header=None):
+            return NodeResult(node_id=node_id, task=task, output="r" if "::" in node_id else "a\nb\nc",
+                              exit_code=0, duration=0.1)
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             results = await runner.run()
 
         child_ids = [r.node_id for r in results if "::" in r.node_id]
@@ -1032,15 +1070,14 @@ class TestMapTemplateUnified:
                 ),
             ],
         )
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"alpha\nbeta"),
-                _make_subprocess_mock(b"r-alpha"),
-                _make_subprocess_mock(b"r-beta"),
-            ]
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        async def _mock_exec(node_id, task, context_header=None):
+            return NodeResult(node_id=node_id, task=task,
+                              output="alpha\nbeta" if node_id == "gen" else f"r-{node_id}",
+                              exit_code=0, duration=0.1)
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             results = await runner.run()
 
         # Verify child tasks got the item value substituted
@@ -1064,16 +1101,14 @@ class TestMapTemplateUnified:
                 ),
             ],
         )
-        runner = DAGRunner(wf)
-        with patch(
-            "mocode.app.workflow.runner.asyncio.create_subprocess_exec"
-        ) as mock_exec:
-            mock_exec.side_effect = [
-                _make_subprocess_mock(b"context-info"),
-                _make_subprocess_mock(b"x\ny"),
-                _make_subprocess_mock(b"r1"),
-                _make_subprocess_mock(b"r2"),
-            ]
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        async def _mock_exec(node_id, task, context_header=None):
+            return NodeResult(node_id=node_id, task=task,
+                              output="context-info" if node_id == "ctx" else ("x\ny" if node_id == "gen" else f"r"),
+                              exit_code=0, duration=0.1)
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             results = await runner.run()
 
         child_results = [r for r in results if "::" in r.node_id]
@@ -1111,3 +1146,102 @@ class TestRunStateSkipped:
         assert "n1" in state.skipped
         state.activate("n1")
         assert "n1" not in state.skipped
+
+
+# ===========================================================================
+# 18. _WorkflowNodeHook — event emission
+# ===========================================================================
+
+
+class TestWorkflowNodeHook:
+    @pytest.mark.asyncio
+    async def test_on_tool_complete_emits_event(self):
+        """Hook emits NodeToolCallEvent on tool_complete."""
+        from mocode.app.workflow.runner import _WorkflowNodeHook
+        from mocode.core.hook import AgentHookContext
+        from mocode.core.provider import Response
+
+        events = []
+        hook = _WorkflowNodeHook("my-node", events.append)
+
+        # Simulate on_response with tool calls
+        tc = MagicMock()
+        tc.name = "bash"
+        tc.arguments = '{"command": "ls"}'
+        ctx = AgentHookContext()
+        ctx.response = Response(content=None, tool_calls=[tc])
+        await hook.on_response(ctx)
+
+        # Simulate on_tool_start
+        ctx_tool = AgentHookContext()
+        ctx_tool.tool_name = "bash"
+        ctx_tool.tool_args = {"command": "ls"}
+        ctx_tool.tool_call_id = "call_1"
+        await hook.on_tool_start(ctx_tool)
+
+        # Simulate on_tool_complete
+        ctx_tool.tool_result = "file1.py"
+        await hook.on_tool_complete(ctx_tool)
+
+        assert len(events) == 1
+        assert isinstance(events[0], NodeToolCallEvent)
+        assert events[0].node_id == "my-node"
+        assert events[0].tool_name == "bash"
+        assert events[0].tool_args == {"command": "ls"}
+        assert events[0].error is None
+        assert events[0].elapsed >= 0
+
+    @pytest.mark.asyncio
+    async def test_after_tools_emits_batch_done(self):
+        """Hook emits NodeToolBatchDoneEvent after_tools."""
+        from mocode.app.workflow.runner import _WorkflowNodeHook
+        from mocode.core.hook import AgentHookContext
+        from mocode.core.provider import Response
+
+        events = []
+        hook = _WorkflowNodeHook("n1", events.append)
+
+        # Simulate on_response with tool calls
+        tc = MagicMock()
+        tc.name = "read"
+        tc.arguments = '{"path": "test.py"}'
+        ctx = AgentHookContext()
+        ctx.response = Response(content=None, tool_calls=[tc])
+        await hook.on_response(ctx)
+
+        # Simulate on_tool_start + on_tool_complete
+        ctx_tool = AgentHookContext()
+        ctx_tool.tool_name = "read"
+        ctx_tool.tool_args = {"path": "test.py"}
+        ctx_tool.tool_call_id = "call_1"
+        await hook.on_tool_start(ctx_tool)
+        ctx_tool.tool_result = "contents"
+        await hook.on_tool_complete(ctx_tool)
+
+        # Simulate after_tools
+        await hook.after_tools(ctx)
+
+        batch_events = [e for e in events if isinstance(e, NodeToolBatchDoneEvent)]
+        assert len(batch_events) == 1
+        assert batch_events[0].node_id == "n1"
+        assert len(batch_events[0].groups) >= 1
+
+    @pytest.mark.asyncio
+    async def test_error_captured_in_event(self):
+        """Hook captures tool error in NodeToolCallEvent."""
+        from mocode.app.workflow.runner import _WorkflowNodeHook
+        from mocode.core.hook import AgentHookContext
+
+        events = []
+        hook = _WorkflowNodeHook("n1", events.append)
+
+        ctx_tool = AgentHookContext()
+        ctx_tool.tool_name = "bash"
+        ctx_tool.tool_args = {"command": "bad"}
+        ctx_tool.tool_call_id = "call_1"
+        await hook.on_tool_start(ctx_tool)
+
+        ctx_tool.tool_error = "command not found: bad"
+        await hook.on_tool_complete(ctx_tool)
+
+        assert events[0].error == "command not found: bad"

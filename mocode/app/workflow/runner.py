@@ -1,8 +1,8 @@
 """DAGRunner — async event-driven execution engine for Workflow DAGs.
 
-Each task node spawns a ``mocode -p`` subprocess. Router nodes evaluate
-conditions. Back-edges from routers enable loops. Nodes execute serially
-(max_concurrency=1) to avoid overloading LLM APIs.
+Each task node runs as an in-process AgentLoop (no subprocess).
+Router nodes evaluate conditions. Back-edges from routers enable loops.
+Nodes execute serially (max_concurrency=1) to avoid overloading LLM APIs.
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from .models import Node, NodeResult, Workflow
     from .run_store import WorkflowRunStore
 
+    from ..core.agent import AgentLoop
+
 from .events import (
     LoopIterEvent,
     MapFanOutEvent,
@@ -24,6 +26,8 @@ from .events import (
     NodeDoneEvent,
     NodeSkippedEvent,
     NodeStartEvent,
+    NodeToolBatchDoneEvent,
+    NodeToolCallEvent,
     ProgressEvent,
     RouterConditionEvent,
     WaveReadyEvent,
@@ -33,8 +37,61 @@ from .models import NodeResult, fill_template, parse_items
 from .state import RunState
 
 
+class _WorkflowNodeHook:
+    """Lightweight hook that captures tool calls within a node agent
+    and emits NodeToolCallEvent / NodeToolBatchDoneEvent via on_event."""
+
+    def __init__(self, node_id: str, on_event):
+        self._node_id = node_id
+        self._on_event = on_event
+        # Per-batch tracking (reset on each on_response)
+        self._groups: list[tuple[str, list[str]]] = []
+        self._errors: dict[str, str] = {}
+        self._call_start: dict[str, float] = {}
+        self._elapsed: dict[str, float] = {}
+
+    async def on_response(self, ctx) -> None:
+        if ctx.response and ctx.response.tool_calls:
+            from ..cli.display import group_tool_calls
+            self._groups = group_tool_calls(ctx.response.tool_calls)
+            self._errors = {}
+            self._call_start = {}
+            self._elapsed = {}
+
+    async def on_tool_start(self, ctx) -> None:
+        self._call_start[ctx.tool_call_id] = time.monotonic()
+
+    async def on_tool_complete(self, ctx) -> None:
+        elapsed = 0.0
+        if ctx.tool_call_id in self._call_start:
+            elapsed = time.monotonic() - self._call_start[ctx.tool_call_id]
+            prev = self._elapsed.get(ctx.tool_name, 0.0)
+            self._elapsed[ctx.tool_name] = max(prev, elapsed)
+
+        if ctx.tool_timeout is not None:
+            self._errors.setdefault(ctx.tool_name, f"timeout {ctx.tool_timeout}s")
+        elif ctx.tool_error:
+            self._errors.setdefault(ctx.tool_name, ctx.tool_error[:80])
+
+        self._on_event(NodeToolCallEvent(
+            node_id=self._node_id,
+            tool_name=ctx.tool_name,
+            tool_args=ctx.tool_args,
+            error=self._errors.get(ctx.tool_name),
+            elapsed=elapsed,
+        ))
+
+    async def after_tools(self, ctx) -> None:
+        self._on_event(NodeToolBatchDoneEvent(
+            node_id=self._node_id,
+            groups=list(self._groups),
+            errors=dict(self._errors),
+            elapsed=dict(self._elapsed),
+        ))
+
+
 class DAGRunner:
-    """Executes a Workflow DAG by spawning mocode -p for each task node.
+    """Executes a Workflow DAG by running each task node as an in-process AgentLoop.
 
     Supports three node types: task, router, and map.
     Map nodes fan out to N child tasks and run them concurrently.
@@ -44,7 +101,7 @@ class DAGRunner:
     def __init__(
         self,
         workflow: Workflow,
-        mocode_cmd: str = "mocode",
+        parent_agent: AgentLoop,
         timeout: int = 300,
         node_context: bool = True,
         on_event: Callable[[WorkflowEvent], None] | None = None,
@@ -52,7 +109,7 @@ class DAGRunner:
         run_store: WorkflowRunStore | None = None,
     ):
         self.workflow = workflow
-        self.mocode_cmd = mocode_cmd
+        self._parent_agent = parent_agent
         self.timeout = timeout
         self.node_context = node_context
         self._on_event = on_event
@@ -563,7 +620,7 @@ class DAGRunner:
 
         return "\n".join(lines)
 
-    # ── Subprocess execution ──────────────────────────────────
+    # ── AgentLoop execution ──────────────────────────────────
 
     async def _exec_node(
         self,
@@ -571,48 +628,57 @@ class DAGRunner:
         task: str,
         context_header: str | None = None,
     ) -> NodeResult:
-        """Spawn mocode -p with the filled task template via stdin."""
-        prompt = f"{context_header}\n\n---\nTask: {task}" if context_header else task
-        start = time.monotonic()
+        """Execute a task node using an in-process AgentLoop."""
+        from ...core.builder import Agent
+
+        full_prompt = f"{context_header}\n\n---\nTask: {task}" if context_header else task
+
+        tools = self._parent_agent.tool_registry.derived(
+            exclude={"sub_agent", "compact"}
+        )
+        hook = _WorkflowNodeHook(node_id, self._emit)
+
+        temp_agent = (
+            Agent()
+            .provider(self._parent_agent.provider)
+            .prompt(self._parent_agent.system_prompt)
+            .tools(tools)
+            .hooks([hook])
+            .config(self._parent_agent.config)
+            .build()
+        )
+
+        t0 = time.monotonic()
         try:
-            proc = await asyncio.create_subprocess_exec(
-                self.mocode_cmd,
-                "-p",
-                "-",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=prompt.encode("utf-8")),
+            result = await asyncio.wait_for(
+                temp_agent.chat(full_prompt),
                 timeout=self.timeout,
             )
-            duration = time.monotonic() - start
             return NodeResult(
                 node_id=node_id,
                 task=task,
-                output=stdout.decode("utf-8", errors="replace").strip(),
-                exit_code=proc.returncode or 0,
-                duration=duration,
-                error=stderr.decode("utf-8", errors="replace").strip() or None,
+                output=result or "",
+                exit_code=0,
+                duration=time.monotonic() - t0,
+                iteration=temp_agent.iteration,
             )
         except asyncio.TimeoutError:
-            duration = time.monotonic() - start
             return NodeResult(
                 node_id=node_id,
                 task=task,
                 output="",
                 exit_code=1,
-                duration=duration,
+                duration=time.monotonic() - t0,
                 error=f"timed out after {self.timeout}s",
+                iteration=getattr(temp_agent, 'iteration', 1),
             )
         except Exception as e:
-            duration = time.monotonic() - start
             return NodeResult(
                 node_id=node_id,
                 task=task,
                 output="",
                 exit_code=1,
-                duration=duration,
+                duration=time.monotonic() - t0,
                 error=str(e),
+                iteration=getattr(temp_agent, 'iteration', 1),
             )
