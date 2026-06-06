@@ -44,7 +44,7 @@ class SlashCompleter:
         from prompt_toolkit.completion import Completion
 
         for cmd in self._registry.all():
-            if cmd.name.startswith(text):
+            if cmd.name.startswith(text) and cmd.name != text:
                 yield Completion(
                     cmd.name,
                     start_position=-len(text),
