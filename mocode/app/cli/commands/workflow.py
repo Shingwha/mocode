@@ -78,6 +78,7 @@ async def _run(ctx: CommandContext, args_str: str) -> CommandResult:
         on_event=ctx.app.wf_renderer.handle_event,
         run_id=run_id,
         run_store=store,
+        timeout=wf.timeout,
     )
     try:
         async with ctx.display.spinner():
@@ -303,7 +304,7 @@ async def _bg_task(
     """Background asyncio task — runs the DAG and persists results."""
     from datetime import datetime
 
-    runner = DAGRunner(wf, parent_agent=parent_agent, run_id=run_id, run_store=store)
+    runner = DAGRunner(wf, parent_agent=parent_agent, run_id=run_id, run_store=store, timeout=wf.timeout)
     try:
         await runner.run(args=user_args)
     except Exception:

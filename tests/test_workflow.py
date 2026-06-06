@@ -29,6 +29,7 @@ from mocode.app.workflow import (
     detailed_summarize,
 )
 from mocode.app.workflow.events import (
+    NodeStartEvent,
     NodeToolBatchDoneEvent,
     NodeToolCallEvent,
 )
@@ -668,6 +669,106 @@ class TestRunnerMapNode:
 
         child_ids = [r.node_id for r in results if "::" in r.node_id]
         assert len(child_ids) == 3
+
+
+# ===========================================================================
+# 11b. Runner — NodeStartEvent ordering with concurrency
+# ===========================================================================
+
+
+class TestRunnerStartEventOrdering:
+    @pytest.mark.asyncio
+    async def test_start_event_deferred_by_concurrency(self):
+        """NodeStartEvent should only fire when the node actually starts executing,
+        not when the wave is announced. With concurrency=1, the second node's
+        start event must arrive AFTER the first node's done event."""
+        import time as _time
+
+        wf = Workflow(
+            name="t",
+            concurrency=1,
+            nodes=[
+                Node(id="root", task="Root"),
+                Node(id="a", task="A", depends=["root"]),
+                Node(id="b", task="B", depends=["root"]),
+            ],
+        )
+        events: list = []
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent(), on_event=events.append)
+
+        first_done_time: float | None = None
+        second_start_time: float | None = None
+
+        async def _mock_exec(node_id, task, context_header=None):
+            nonlocal first_done_time, second_start_time
+            if node_id == "a":
+                await asyncio.sleep(0.05)  # simulate work
+                first_done_time = _time.monotonic()
+            elif node_id == "b":
+                second_start_time = _time.monotonic()
+            return NodeResult(
+                node_id=node_id, task=task, output="ok",
+                exit_code=0, duration=0.05,
+            )
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
+            await runner.run()
+
+        # All 3 nodes should have start events
+        start_events = [e for e in events if isinstance(e, NodeStartEvent)]
+        assert len(start_events) == 3
+
+        # All 3 nodes should have done events
+        done_events = [e for e in events if isinstance(e, NodeDoneEvent)]
+        assert len(done_events) == 3
+
+        # Key assertion: b's start must come after a's done
+        assert first_done_time is not None
+        assert second_start_time is not None
+        assert second_start_time >= first_done_time, (
+            f"Node 'b' started at {second_start_time} but node 'a' finished at {first_done_time}. "
+            "NodeStartEvent should be deferred until the semaphore is acquired."
+        )
+
+    @pytest.mark.asyncio
+    async def test_start_event_order_in_events_list(self):
+        """With concurrency=1, event list order should be:
+        [root_start, root_done, a_start, ..., a_done, b_start, ..., b_done]
+        Not: [root_start, root_done, a_start, b_start, ...]"""
+        wf = Workflow(
+            name="t",
+            concurrency=1,
+            nodes=[
+                Node(id="root", task="Root"),
+                Node(id="a", task="A", depends=["root"]),
+                Node(id="b", task="B", depends=["root"]),
+            ],
+        )
+        events: list = []
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent(), on_event=events.append)
+
+        async def _mock_exec(node_id, task, context_header=None):
+            return NodeResult(
+                node_id=node_id, task=task, output="ok",
+                exit_code=0, duration=0.01,
+            )
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
+            await runner.run()
+
+        # Extract the sequence of start/done events
+        relevant = [
+            (type(e).__name__, e.node_id)
+            for e in events
+            if isinstance(e, (NodeStartEvent, NodeDoneEvent))
+        ]
+        # Expected: start(root), done(root), start(a), done(a), start(b), done(b)
+        # With concurrency=1, 'a' must finish before 'b' starts
+        a_done_idx = next(i for i, (t, nid) in enumerate(relevant) if t == "NodeDoneEvent" and nid == "a")
+        b_start_idx = next(i for i, (t, nid) in enumerate(relevant) if t == "NodeStartEvent" and nid == "b")
+        assert b_start_idx > a_done_idx, (
+            f"Event order: {relevant}. 'b' start (idx {b_start_idx}) should come after 'a' done (idx {a_done_idx})."
+        )
 
 
 # ===========================================================================

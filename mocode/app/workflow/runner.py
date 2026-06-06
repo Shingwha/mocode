@@ -386,12 +386,12 @@ class DAGRunner:
         """Fill template, execute via subprocess, record result."""
         wf = self.workflow
         task_text = fill_template(node.task, state.context)
-        self._emit(NodeStartEvent(node_id=node.id, description=node.description))
 
         context_header = (
             self._build_node_context_header(node, wf) if self.node_context else None
         )
         async with self._semaphore:
+            self._emit(NodeStartEvent(node_id=node.id, description=node.description))
             nr = await self._exec_node(node.id, task_text, context_header)
         state.total_executions += 1
 
@@ -430,14 +430,15 @@ class DAGRunner:
 
     async def _run_map_node(self, node: Node, state: RunState) -> None:
         """Fan-out: parse items, run a child task for each, concatenate results."""
-        self._emit(NodeStartEvent(node_id=node.id, description=node.description))
-
         items_raw = fill_template(node.items, state.context)
         items = parse_items(items_raw)
 
         if not items:
             self._finalize_empty_map(node, state)
             return
+
+        async with self._semaphore:
+            self._emit(NodeStartEvent(node_id=node.id, description=node.description))
 
         child_results = await self._fan_out_children(node, items, state)
         self._finalize_map(node, items, child_results, state)

@@ -253,6 +253,7 @@ class Workflow:
     path: Path | None = None
     max_iterations: int = 100
     concurrency: int = 1  # max parallel node execution (1 = serial)
+    timeout: int = 1800   # per-node timeout in seconds (30 min default)
 
     def __post_init__(self) -> None:
         # Pre-compute and cache graph lookups (nodes list is immutable after construction)
@@ -296,6 +297,7 @@ class Workflow:
             path=path,
             max_iterations=data.get("max_iterations", 100),
             concurrency=data.get("concurrency", 1),
+            timeout=data.get("timeout", 1800),
         )
 
         validate_workflow(nodes, wf._node_map)

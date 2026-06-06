@@ -5,8 +5,8 @@ description: Design, create, and run MoCode Workflows — DAG-based multi-step t
 
 # MoCode Workflows
 
-Multi-step task orchestration as a **DAG**. Each node is an independent LLM prompt
-(`mocode -p`). Supports fan-out/fan-in, conditional routing, map-over-list, and loops.
+Multi-step task orchestration as a **DAG**. Each node runs an independent LLM session.
+Supports fan-out/fan-in, conditional routing, map-over-list, and loops.
 
 YAML files live in `.mocode/workflows/`. Run via `/workflow` in the REPL.
 
@@ -16,9 +16,9 @@ YAML files live in `.mocode/workflows/`. Run via `/workflow` in the REPL.
 
 ```yaml
 name: code-review
-params:                         # ← positional parameters
-  - path                        # required, position 1
-  - focus: "general"            # optional, position 2, default "general"
+params:
+  - path                      # required, position 1
+  - focus: "general"          # optional, default "general"
 
 nodes:
   - id: scan
@@ -32,41 +32,64 @@ nodes:
 
 ```bash
 /workflow run code-review ./src security     # path=./src, focus=security
-/workflow run code-review ./src              # path=./src, focus=general (default)
+/workflow run code-review ./src              # focus=general (default)
 /workflow run code-review focus=deep ./src   # key=value overrides positional
 ```
 
 ---
 
+## Top-level Fields
+
+| Field            | Default | Description |
+|------------------|---------|-------------|
+| `name`           | —       | Workflow identifier (required) |
+| `description`    | `""`    | One-line description |
+| `params`         | `[]`    | Positional parameters |
+| `nodes`          | `[]`    | Node definitions (required) |
+| `concurrency`    | `1`     | Max parallel nodes |
+| `max_iterations` | `100`   | Global safety limit on total node executions |
+| `timeout`        | `1800`  | Per-node timeout in seconds (30 min) |
+
+---
+
 ## Node Types
 
-| Type     | Has `task` | Has `routes` | Has `items` | Behavior |
-|----------|-----------|-------------|------------|----------|
-| `task`   | ✓         | ✗           | ✗          | Fill template → send to LLM |
-| `router` | ✗         | ✓           | ✗          | Regex match on upstream output → activate targets |
-| `map`    | ✓         | ✗           | ✓          | Fan out task over list items, concatenate results |
+| Type     | `task` | `routes` | `items` | Behavior |
+|----------|--------|----------|---------|----------|
+| `task`   | ✓      | ✗        | ✗       | Fill template → LLM |
+| `router` | ✗      | ✓        | ✗       | Regex on upstream output → activate targets |
+| `map`    | ✓      | ✗        | ✓       | Fan-out over list, concatenate results |
+
+### Node Fields
+
+| Field         | task | router | map | Default  | Description |
+|---------------|------|--------|-----|----------|-------------|
+| `id`          | ✓    | ✓      | ✓   | —        | Unique identifier |
+| `type`        |      |        |     | `"task"` | `"task"`, `"router"`, `"map"` |
+| `description` |      |        |     | `""`     | Human-readable label |
+| `task`        | ✓    | ✗      | ✓   | `""`     | Prompt template |
+| `depends`     | rec  | **req**| rec | `[]`     | Upstream node IDs |
+| `routes`      | ✗    | ✓      | ✗   | `[]`     | Route rules |
+| `items`       | ✗    | ✗      | ✓   | `""`     | Template → newline-separated list |
+| `item_key`    | ✗    | ✗      |     | `"item"` | Variable name per item |
 
 ---
 
 ## Template Variables
 
-All `{name}` placeholders are resolved from a flat context:
-
 | Syntax | Source | Example |
 |--------|--------|---------|
-| `{param_name}` | Workflow parameter | `{path}`, `{focus}` |
+| `{param}` | Workflow parameter | `{path}`, `{focus}` |
 | `{nodes.<id>.output}` | Node output | `{nodes.scan.output}` |
 | `{nodes.<id>.exit_code}` | Exit code (0 = OK) | `{nodes.scan.exit_code}` |
 | `{nodes.<id>.error}` | Error message | `{nodes.scan.error}` |
 | `{nodes.<id>.duration}` | Seconds | `{nodes.scan.duration}` |
-| `{previous}` | Last completed node's output | `{previous}` |
+| `{previous}` | Last completed output | `{previous}` |
 | `{env.VAR}` | Environment variable | `{env.HOME}` |
-| `{item_key}` | Map item value (in map tasks only) | `{topic}`, `{item}` |
+| `{item_key}` | Map item value (map tasks only) | `{topic}`, `{item}` |
 
-> `{node.X.output}` also works as alias for `{nodes.X.output}`.
-
-**Key rule**: single-segment `{name}` looks up from context top level.
-Multi-segment `{a.b}` walks into nested dicts.
+> `{node.X.output}` works as alias for `{nodes.X.output}`.
+> Single-segment `{name}` → context top level. Multi-segment `{a.b}` → nested dict.
 
 ---
 
@@ -78,11 +101,12 @@ Multi-segment `{a.b}` walks into nested dicts.
 - `router` nodes: **must** specify `depends` (no task to infer from)
 - `map` nodes: inferred from `task` and `items`, but add explicitly
 - Router-gated targets: add the router as a dependency
+- Terminal nodes: depend on **all** routers that can activate them
 
 ```yaml
 - id: route_q
   type: router
-  depends: [analyze]          # required
+  depends: [analyze]            # required
   routes:
     - match: "critical"
       to: [fix]
@@ -91,7 +115,11 @@ Multi-segment `{a.b}` walks into nested dicts.
 
 - id: fix
   task: Fix {nodes.analyze.output}
-  depends: [route_q]          # gate dependency on router
+  depends: [route_q]            # gate dependency on router
+
+- id: done
+  task: Final report
+  depends: [route_q]            # terminal must depend on router
 ```
 
 ---
@@ -106,15 +134,15 @@ Multi-segment `{a.b}` walks into nested dicts.
   type: map
   items: "{nodes.topics.output}"   # template → newline-separated list
   item_key: topic                  # default: "item"
-  task: Write about {topic}.       # ← single braces, same as other vars
+  task: Write about {topic}.       # single braces
   depends: [topics]
 ```
 
-**How it works**:
+**Mechanics**:
 1. `items` template fills → split by newlines → each line is one item
-2. `{item_key}` in `task` is replaced per item (via `fill_template`)
-3. All children run concurrently (bounded by `concurrency`)
-4. Outputs concatenated with `\n---\n` into `{nodes.<id>.output}`
+2. `{item_key}` replaced per item in `task`
+3. Children run concurrently (bounded by `concurrency`)
+4. Outputs joined with `\n---\n` into `{nodes.<id>.output}`
 
 **Rules**: must have `items` + `task`, must NOT have `routes`.
 
@@ -129,8 +157,8 @@ Multi-segment `{a.b}` walks into nested dicts.
   routes:
     - match: "FAIL"
       to: [fix]
-      max: 3                  # ← prevents infinite loop
-    - match: null             # fallback (put last)
+      max: 3                    # prevents infinite loop
+    - match: null               # fallback (put last)
       to: [done]
 ```
 
@@ -138,6 +166,14 @@ Multi-segment `{a.b}` walks into nested dicts.
 - `match: null` = unconditional fallback
 - Back-edge routes (target upstream) create loops — **always set `max`**
 - Workflow-level `max_iterations` (default 100) is the global safety net
+
+### Route Fields
+
+| Field   | Required | Description |
+|---------|----------|-------------|
+| `match` | ✓        | Regex on concatenated dependency output. `null` = fallback. |
+| `to`    | ✓        | Target node ID(s). String or list. |
+| `max`   |          | Max fires (for back-edge loops). `0` = unlimited. |
 
 ---
 
@@ -157,11 +193,11 @@ Multi-segment `{a.b}` walks into nested dicts.
 
 ## Notes
 
-- Each node runs as independent `mocode -p` subprocess — no shared state between nodes
-- Prompt passed via stdin (no command-line length limit)
+- Each node runs as an independent LLM session — no shared state between nodes
 - Results persist to `~/.mocode/workflow_runs/<run_id>.json`
 - `concurrency` controls max parallel nodes (default 1 = serial)
 - Map child tasks also respect the `concurrency` limit
+- Per-node `timeout` defaults to 30 minutes; override via top-level `timeout` field
 
 ---
 

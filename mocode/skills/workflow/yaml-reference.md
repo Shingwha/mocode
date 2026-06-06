@@ -7,6 +7,7 @@ name: code-review
 description: Automated code review pipeline
 max_iterations: 100           # optional, default 100
 concurrency: 3                # optional, default 1 (max parallel nodes)
+timeout: 1800                 # optional, default 1800 (per-node seconds)
 
 params:                       # optional — positional parameters
   - path                      # required, position 1
@@ -89,8 +90,9 @@ nodes:
 | `description`    |          | `""`    | One-line description |
 | `params`         |          | `[]`    | Positional parameters (see below) |
 | `nodes`          | ✓        | `[]`    | Node definitions |
-| `max_iterations` |          | `100`   | Global safety limit on total executions |
 | `concurrency`    |          | `1`     | Max parallel nodes (`1` = serial) |
+| `max_iterations` |          | `100`   | Global safety limit on total executions |
+| `timeout`        |          | `1800`  | Per-node timeout in seconds (30 min) |
 
 ---
 
@@ -205,7 +207,7 @@ Regex conditions on upstream output. First match wins.
 
 ### Map
 
-Fan out over list. Each item → child subprocess.
+Fan out over list. Each item → child task.
 
 ```yaml
 - id: topics
