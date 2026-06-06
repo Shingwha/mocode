@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from ..core.tool import Tool
-from ..core.virtualfs import VirtualFS, _strip_prefix
+from ..core.virtualfs import VirtualFS, _strip_prefix, _VFS_PREFIX
 from .utils import require_dir
 from .utils import (
     expand_context_indices,
@@ -162,7 +162,7 @@ def _walk_text_files(base_path: Path, type_filter: set[str] | None):
 
 
 def _is_vfs_path(path: str) -> bool:
-    return path.startswith("vfs://")
+    return path.startswith(_VFS_PREFIX)
 
 
 def _match_vfs_type(path: str, type_filter: set[str] | None) -> bool:
