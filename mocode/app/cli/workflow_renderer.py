@@ -143,9 +143,9 @@ class WorkflowRenderer:
             self._d.print(f"{_s('▸', BOLD)} {node_prefix}:start")
         # Spinner: node_id · Thinking
         self._d.spinner_set("wf_node", event.node_id,
-                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
+                            priority=Priority.HIGH, truncate=Truncate.NONE)
         self._d.spinner_set("wf_thinking", "Thinking",
-                            priority=Priority.LOW, truncate=Truncate.TAIL)
+                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
 
     def _on_tool_call(self, event: NodeToolCallEvent) -> None:
         # On first tool call of a batch, switch spinner from Thinking to tools
@@ -164,7 +164,7 @@ class WorkflowRenderer:
         self._d.spinner_remove("wf_tools_detail")
         # Restore Thinking spinner
         self._d.spinner_set("wf_thinking", "Thinking",
-                            priority=Priority.LOW, truncate=Truncate.TAIL)
+                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
         self._pending_tool_batch = False
         self._batch_tool_groups = {}
         # Render grouped tool calls (matches CLI batch display)
@@ -213,7 +213,7 @@ class WorkflowRenderer:
                 parts.append(name)
 
         self._d.spinner_set("wf_tools_tag", f"{node_id}: {label}",
-                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
+                            priority=Priority.HIGH, truncate=Truncate.TAIL)
         self._d.spinner_set("wf_tools_detail", ", ".join(parts),
                             priority=Priority.LOW, truncate=Truncate.MIDDLE)
 
@@ -244,12 +244,12 @@ class WorkflowRenderer:
     def _on_progress(self, event: ProgressEvent) -> None:
         if event.node_id:
             self._d.spinner_set("wf_node", event.node_id,
-                                priority=Priority.NORMAL, truncate=Truncate.TAIL)
+                                priority=Priority.HIGH, truncate=Truncate.NONE)
             self._d.spinner_set("wf_thinking", event.detail or event.message,
-                                priority=Priority.LOW, truncate=Truncate.TAIL)
+                                priority=Priority.NORMAL, truncate=Truncate.TAIL)
         else:
             self._d.spinner_set("wf_thinking", event.message,
-                                priority=Priority.LOW, truncate=Truncate.TAIL)
+                                priority=Priority.NORMAL, truncate=Truncate.TAIL)
 
     # ── Lifecycle rendering ────────────────────────────────
 

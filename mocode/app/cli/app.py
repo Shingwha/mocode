@@ -35,6 +35,7 @@ from ...tools import (
     WriteTool,
 )
 from .commands import CommandContext, CommandRegistry, CommandResult
+from .spinner import Priority, Truncate
 
 
 class CLIApp:
@@ -297,7 +298,8 @@ class CLIApp:
         original_handler = signal.signal(signal.SIGINT, _on_sigint)
         try:
             async with self.display.spinner():
-                self.display.spinner_set("thinking", "Thinking")
+                self.display.spinner_set("thinking", "Thinking",
+                                        priority=Priority.NORMAL, truncate=Truncate.TAIL)
                 result = await task
         except asyncio.CancelledError:
             self.display.warn("\nResponse interrupted.\n")

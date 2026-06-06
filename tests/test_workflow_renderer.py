@@ -146,7 +146,7 @@ class TestOnNodeStart:
         event = NodeStartEvent(node_id="analyze", description="Analyze code")
         renderer.handle_event(event)
         renderer._d.spinner_set.assert_any_call(
-            "wf_node", "analyze", priority=Priority.NORMAL, truncate=Truncate.TAIL,
+            "wf_node", "analyze", priority=Priority.HIGH, truncate=Truncate.NONE,
         )
 
     def test_with_description_sets_thinking(self):
@@ -154,7 +154,7 @@ class TestOnNodeStart:
         event = NodeStartEvent(node_id="a", description="Do stuff")
         renderer.handle_event(event)
         renderer._d.spinner_set.assert_any_call(
-            "wf_thinking", "Thinking", priority=Priority.LOW, truncate=Truncate.TAIL,
+            "wf_thinking", "Thinking", priority=Priority.NORMAL, truncate=Truncate.TAIL,
         )
 
     def test_without_description_sets_thinking(self):
@@ -162,7 +162,7 @@ class TestOnNodeStart:
         event = NodeStartEvent(node_id="a", description="")
         renderer.handle_event(event)
         renderer._d.spinner_set.assert_any_call(
-            "wf_thinking", "Thinking", priority=Priority.LOW, truncate=Truncate.TAIL,
+            "wf_thinking", "Thinking", priority=Priority.NORMAL, truncate=Truncate.TAIL,
         )
 
 
@@ -247,7 +247,7 @@ class TestOnProgress:
         event = ProgressEvent(message="working", node_id="a", detail="Analyzing")
         renderer.handle_event(event)
         renderer._d.spinner_set.assert_any_call(
-            "wf_node", "a", priority=Priority.NORMAL, truncate=Truncate.TAIL,
+            "wf_node", "a", priority=Priority.HIGH, truncate=Truncate.NONE,
         )
 
     def test_without_node_id_only_sets_thinking(self):
@@ -255,7 +255,7 @@ class TestOnProgress:
         event = ProgressEvent(message="Starting", node_id="", detail="")
         renderer.handle_event(event)
         renderer._d.spinner_set.assert_called_with(
-            "wf_thinking", "Starting", priority=Priority.LOW, truncate=Truncate.TAIL,
+            "wf_thinking", "Starting", priority=Priority.NORMAL, truncate=Truncate.TAIL,
         )
 
 
@@ -376,7 +376,7 @@ class TestOnToolCall:
         renderer._d.spinner_remove.assert_any_call("wf_thinking")
         renderer._d.spinner_set.assert_any_call(
             "wf_tools_tag", "diff: running 1 tool",
-            priority=Priority.NORMAL, truncate=Truncate.TAIL,
+            priority=Priority.HIGH, truncate=Truncate.TAIL,
         )
         renderer._d.spinner_set.assert_any_call(
             "wf_tools_detail", "bash(git log --oneline -20)",
@@ -400,7 +400,7 @@ class TestOnToolCall:
         # Should show running 3 tools with deduplicated detail
         renderer._d.spinner_set.assert_any_call(
             "wf_tools_tag", "build: running 3 tools",
-            priority=Priority.NORMAL, truncate=Truncate.TAIL,
+            priority=Priority.HIGH, truncate=Truncate.TAIL,
         )
         renderer._d.spinner_set.assert_any_call(
             "wf_tools_detail", "read×2, bash",
@@ -420,7 +420,7 @@ class TestOnToolBatchDone:
         renderer._d.spinner_remove.assert_any_call("wf_tools_tag")
         renderer._d.spinner_remove.assert_any_call("wf_tools_detail")
         renderer._d.spinner_set.assert_any_call(
-            "wf_thinking", "Thinking", priority=Priority.LOW, truncate=Truncate.TAIL,
+            "wf_thinking", "Thinking", priority=Priority.NORMAL, truncate=Truncate.TAIL,
         )
 
 
@@ -435,7 +435,7 @@ class TestHandleEventDispatch:
         # Tool calls update spinner, not print
         renderer._d.spinner_set.assert_any_call(
             "wf_tools_tag", "n1: running 1 tool",
-            priority=Priority.NORMAL, truncate=Truncate.TAIL,
+            priority=Priority.HIGH, truncate=Truncate.TAIL,
         )
 
     def test_dispatches_tool_batch_done_event(self):

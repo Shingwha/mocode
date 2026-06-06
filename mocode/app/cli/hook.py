@@ -114,6 +114,6 @@ class CLIDisplayHook(AgentHook):
 
         self._d.spinner_remove("thinking")
         self._d.spinner_set("tools_tag", label,
-                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
+                            priority=Priority.HIGH, truncate=Truncate.TAIL)
         self._d.spinner_set("tools_detail", ", ".join(parts),
                             priority=Priority.LOW, truncate=Truncate.MIDDLE)
