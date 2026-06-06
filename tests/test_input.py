@@ -139,6 +139,43 @@ class TestSlashCompleter:
         completions = asyncio.run(_collect(completer, doc, MagicMock()))
         assert completions[0].start_position == -3  # -len("/he")
 
+    def test_exact_match_yields_self_and_children(self):
+        """Exact match yields itself plus subcommands (Tab-triggered)."""
+        reg = _make_registry(
+            _make_command("/plan", "Create plans"),
+            _make_command("/plan:start", "Start plan"),
+            _make_command("/plan:clear", "Clear plan"),
+        )
+        completer = SlashCompleter(reg)
+        doc = Document("/plan")
+        completions = asyncio.run(_collect(completer, doc, MagicMock()))
+        names = [c.text for c in completions]
+        assert "/plan" in names
+        assert "/plan:start" in names
+        assert "/plan:clear" in names
+
+    def test_exact_match_leaf_command_yields_self(self):
+        """Exact match of a leaf command yields itself."""
+        reg = _make_registry(_make_command("/help", "Show help"))
+        completer = SlashCompleter(reg)
+        doc = Document("/help")
+        completions = asyncio.run(_collect(completer, doc, MagicMock()))
+        assert len(completions) == 1
+        assert completions[0].text == "/help"
+
+    def test_partial_match_yields_parent_and_children(self):
+        """Partial match like /pl → yields /plan and /plan:start."""
+        reg = _make_registry(
+            _make_command("/plan", "Create plans"),
+            _make_command("/plan:start", "Start plan"),
+        )
+        completer = SlashCompleter(reg)
+        doc = Document("/pl")
+        completions = asyncio.run(_collect(completer, doc, MagicMock()))
+        names = [c.text for c in completions]
+        assert "/plan" in names
+        assert "/plan:start" in names
+
 
 # ---------------------------------------------------------------------------
 # Keybinding tests — Enter

@@ -44,7 +44,7 @@ class SlashCompleter:
         from prompt_toolkit.completion import Completion
 
         for cmd in self._registry.all():
-            if cmd.name.startswith(text) and cmd.name != text:
+            if cmd.name.startswith(text):
                 yield Completion(
                     cmd.name,
                     start_position=-len(text),
@@ -114,7 +114,7 @@ class Input:
 
             self._session = PromptSession(
                 completer=SlashCompleter(self._registry),
-                complete_while_typing=True,
+                complete_while_typing=False,
                 key_bindings=build_keybindings(self._handle_paste),
             )
 
