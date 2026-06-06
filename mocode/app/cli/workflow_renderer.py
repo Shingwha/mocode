@@ -309,6 +309,12 @@ class WorkflowRenderer:
             f"{_s('■', summary_icon_color)} {_s(wf.name, BOLD)}  {stat_str}  {time_str}"
         )
 
+    def cancelled(self, wf: Workflow, results: list | None = None) -> None:
+        """Display cancellation message with partial results summary."""
+        self._d.warn(f"Workflow '{wf.name}' cancelled by user.")
+        if results:
+            self.summary(wf, results)
+
     # ── Static views ───────────────────────────────────────
 
     def show(self, wf: Workflow) -> str:

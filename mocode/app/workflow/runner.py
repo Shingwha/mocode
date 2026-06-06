@@ -116,6 +116,7 @@ class DAGRunner:
         self.run_id = run_id
         self.run_store = run_store
         self._semaphore = asyncio.Semaphore(workflow.concurrency)
+        self.partial_results: list[NodeResult] = []  # populated on cancellation
 
     # ── Event dispatch ────────────────────────────────────────
 
@@ -182,6 +183,10 @@ class DAGRunner:
             self._persist(state.results, "completed")
             return state.results
 
+        except asyncio.CancelledError:
+            self.partial_results = list(state.results)
+            self._persist(state.results, "cancelled")
+            raise
         except Exception:
             self._persist(state.results, "failed")
             raise

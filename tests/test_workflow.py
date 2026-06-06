@@ -1333,3 +1333,142 @@ class TestWorkflowNodeHook:
         await hook.on_tool_complete(ctx_tool)
 
         assert events[0].error == "command not found: bad"
+
+
+# ===========================================================================
+# 16. Cancellation — Ctrl+C cancels workflow, not app
+# ===========================================================================
+
+
+class TestWorkflowCancellation:
+    @pytest.mark.asyncio
+    async def test_runner_persists_cancelled_on_cancel(self):
+        """DAGRunner.run() persists 'cancelled' status when task is cancelled."""
+        wf = _simple_linear_wf(2)
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        persist_calls = []
+        def _capture_persist(results, status):
+            persist_calls.append((len(results), status))
+
+        runner._persist = _capture_persist
+
+        # Make _exec_node hang so we can cancel
+        async def _slow_exec(node_id, task, context_header=None):
+            await asyncio.sleep(100)
+            return NodeResult(node_id=node_id, task=task, output="", exit_code=0, duration=0)
+
+        with patch.object(runner, "_exec_node", side_effect=_slow_exec):
+            task = asyncio.create_task(runner.run())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert len(persist_calls) == 1
+        assert persist_calls[0][1] == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_runner_stores_partial_results_on_cancel(self):
+        """DAGRunner.partial_results is populated after cancellation."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="a", task="A"),
+                Node(id="b", task="B", depends=["a"]),
+            ],
+        )
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        call_count = {"a": 0}
+
+        async def _exec_with_hang(node_id, task, context_header=None):
+            if node_id == "a":
+                call_count["a"] += 1
+                return NodeResult(
+                    node_id="a", task="A", output="done",
+                    exit_code=0, duration=0.1,
+                )
+            # b hangs forever
+            await asyncio.sleep(100)
+            return NodeResult(node_id="b", task="B", output="", exit_code=0, duration=0)
+
+        runner._persist = lambda results, status: None  # no-op
+
+        with patch.object(runner, "_exec_node", side_effect=_exec_with_hang):
+            task = asyncio.create_task(runner.run())
+            await asyncio.sleep(0.1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert len(runner.partial_results) >= 1
+        assert runner.partial_results[0].node_id == "a"
+        assert runner.partial_results[0].output == "done"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_error_propagates_to_caller(self):
+        """CancelledError from DAGRunner.run() propagates correctly."""
+        wf = Workflow(name="t", nodes=[Node(id="a", task="A")])
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+        runner._persist = lambda results, status: None
+
+        async def _slow_exec(node_id, task, context_header=None):
+            await asyncio.sleep(100)
+            return NodeResult(node_id=node_id, task=task, output="", exit_code=0, duration=0)
+
+        with patch.object(runner, "_exec_node", side_effect=_slow_exec):
+            task = asyncio.create_task(runner.run())
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    @pytest.mark.asyncio
+    async def test_run_command_returns_continue_on_cancel(self):
+        """_run() command handler returns CONTINUE on CancelledError, not EXIT."""
+        from mocode.app.cli.commands import CommandResult
+        from mocode.app.cli.commands.workflow import _run
+
+        wf = Workflow(name="test-wf", nodes=[Node(id="a", task="A")])
+        ctx = _make_ctx(args="test-wf")
+
+        # Mock app.workflow_registry.get to return our workflow
+        ctx.app.workflow_registry.get.return_value = wf
+
+        # Mock renderer
+        ctx.app.wf_renderer = MagicMock()
+
+        # Mock display with spinner context manager
+        spinner_cm = AsyncMock()
+        spinner_cm.__aenter__ = AsyncMock(return_value=None)
+        spinner_cm.__aexit__ = AsyncMock(return_value=False)
+        ctx.display.spinner.return_value = spinner_cm
+        ctx.display.spinner_set = MagicMock()
+        ctx.display.print = MagicMock()
+        ctx.display.warn = MagicMock()
+        ctx.display.error = MagicMock()
+
+        # Patch DAGRunner.run to raise CancelledError
+        with patch("mocode.app.cli.commands.workflow.DAGRunner") as MockRunner, \
+             patch("mocode.app.cli.commands.workflow.WorkflowRunStore") as MockStore, \
+             patch("mocode.app.cli.commands.workflow.parse_args", return_value={}):
+
+            mock_runner_instance = MagicMock()
+            mock_runner_instance.partial_results = []
+            # Make run() return a coroutine that raises CancelledError
+            async def _cancelled_run(**kwargs):
+                raise asyncio.CancelledError()
+            mock_runner_instance.run = _cancelled_run
+            MockRunner.return_value = mock_runner_instance
+
+            mock_store = MagicMock()
+            MockStore.return_value = mock_store
+
+            result = await _run(ctx, "test-wf")
+
+        assert result == CommandResult.CONTINUE
+        # The renderer's cancelled() method should have been called
+        ctx.app.wf_renderer.cancelled.assert_called_once()
+        # The store should have been updated with "cancelled" status
+        mock_store.update.assert_called_once()

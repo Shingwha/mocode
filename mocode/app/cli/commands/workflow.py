@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import signal
+from datetime import datetime
+
 from ...workflow.models import parse_args
 from ...workflow.runner import DAGRunner
 from ...workflow.run_store import WorkflowRunStore
@@ -72,10 +76,27 @@ async def _run(ctx: CommandContext, args_str: str) -> CommandResult:
         timeout=wf.timeout,
     )
     try:
-        async with ctx.display.spinner():
-            ctx.display.spinner_set("wf_tag", wf.name,
-                                    priority=Priority.NORMAL, truncate=Truncate.TAIL)
-            results = await runner.run(args=user_args)
+        task = asyncio.ensure_future(runner.run(args=user_args))
+
+        def _on_sigint(signum, frame):
+            if not task.done():
+                task.cancel()
+
+        original_handler = signal.signal(signal.SIGINT, _on_sigint)
+        try:
+            async with ctx.display.spinner():
+                ctx.display.spinner_set("wf_tag", wf.name,
+                                        priority=Priority.NORMAL, truncate=Truncate.TAIL)
+                results = await task
+        finally:
+            signal.signal(signal.SIGINT, original_handler)
+
+    except asyncio.CancelledError:
+        ctx.display.print()  # newline after spinner
+        ctx.app.wf_renderer.cancelled(wf, runner.partial_results)
+        store.update(run_id, runner.partial_results, "cancelled",
+                     datetime.now().isoformat())
+        return CommandResult.CONTINUE
     except Exception as e:
         ctx.display.error(f"Workflow failed: {e}")
         return CommandResult.CONTINUE
