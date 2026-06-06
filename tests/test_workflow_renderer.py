@@ -364,36 +364,48 @@ class TestWorkflowList:
 
 
 class TestOnToolCall:
-    def test_success_prints_tool_name(self):
-        renderer, lines = _make_renderer()
+    def test_single_tool_updates_spinner(self):
+        renderer, _ = _make_renderer()
         event = NodeToolCallEvent(
             node_id="diff", tool_name="bash",
             tool_args={"command": "git log --oneline -20"},
             elapsed=0.8,
         )
         renderer.handle_event(event)
-        assert any("diff:bash" in l for l in lines)
-        assert any("git log" in l for l in lines)
-
-    def test_failure_prints_error(self):
-        renderer, lines = _make_renderer()
-        event = NodeToolCallEvent(
-            node_id="review", tool_name="bash",
-            tool_args={"command": "python setup.py install"},
-            error="subprocess error", elapsed=3.2,
+        # Should remove thinking and set tools spinner segments
+        renderer._d.spinner_remove.assert_any_call("wf_thinking")
+        renderer._d.spinner_set.assert_any_call(
+            "wf_tools_tag", "diff: running 1 tool",
+            priority=Priority.NORMAL, truncate=Truncate.TAIL,
         )
-        renderer.handle_event(event)
-        assert any("review:bash" in l for l in lines)
-        assert any("subprocess error" in l for l in lines)
-
-    def test_elapsed_shown_when_significant(self):
-        renderer, lines = _make_renderer()
-        event = NodeToolCallEvent(
-            node_id="a", tool_name="read",
-            tool_args={"path": "file.txt"}, elapsed=0.5,
+        renderer._d.spinner_set.assert_any_call(
+            "wf_tools_detail", "bash(git log --oneline -20)",
+            priority=Priority.LOW, truncate=Truncate.MIDDLE,
         )
-        renderer.handle_event(event)
-        assert any("elapsed=0.5" in l for l in lines)
+
+    def test_multiple_tools_accumulate(self):
+        renderer, _ = _make_renderer()
+        renderer.handle_event(NodeToolCallEvent(
+            node_id="build", tool_name="read",
+            tool_args={"path": "a.txt"}, elapsed=0.1,
+        ))
+        renderer.handle_event(NodeToolCallEvent(
+            node_id="build", tool_name="read",
+            tool_args={"path": "b.txt"}, elapsed=0.1,
+        ))
+        renderer.handle_event(NodeToolCallEvent(
+            node_id="build", tool_name="bash",
+            tool_args={"command": "make"}, elapsed=0.5,
+        ))
+        # Should show running 3 tools with deduplicated detail
+        renderer._d.spinner_set.assert_any_call(
+            "wf_tools_tag", "build: running 3 tools",
+            priority=Priority.NORMAL, truncate=Truncate.TAIL,
+        )
+        renderer._d.spinner_set.assert_any_call(
+            "wf_tools_detail", "read×2, bash",
+            priority=Priority.LOW, truncate=Truncate.MIDDLE,
+        )
 
 
 class TestOnToolBatchDone:
@@ -414,13 +426,17 @@ class TestOnToolBatchDone:
 
 class TestHandleEventDispatch:
     def test_dispatches_tool_call_event(self):
-        renderer, lines = _make_renderer()
+        renderer, _ = _make_renderer()
         event = NodeToolCallEvent(
             node_id="n1", tool_name="read",
             tool_args={"path": "test.py"}, elapsed=0.3,
         )
         renderer.handle_event(event)
-        assert any("n1:read" in l for l in lines)
+        # Tool calls update spinner, not print
+        renderer._d.spinner_set.assert_any_call(
+            "wf_tools_tag", "n1: running 1 tool",
+            priority=Priority.NORMAL, truncate=Truncate.TAIL,
+        )
 
     def test_dispatches_tool_batch_done_event(self):
         renderer, _ = _make_renderer()

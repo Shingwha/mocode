@@ -33,9 +33,6 @@ from .run_store import WorkflowRunStore
 # Re-export shared utilities from cli submodule for convenience
 from .cli import make_registry
 
-# Summary helpers live in the renderer (display layer)
-from ..cli.workflow_renderer import detailed_summarize, summarize
-
 __all__ = [
     "Node",
     "NodeResult",
@@ -63,4 +60,5 @@ __all__ = [
     "MapFanOutEvent",
     "MapItemDoneEvent",
     "ProgressEvent",
+    # summarize, detailed_summarize: import from mocode.app.cli.workflow_renderer
 ]

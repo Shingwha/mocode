@@ -82,7 +82,7 @@ async def _run(ctx: CommandContext, args_str: str) -> CommandResult:
     )
     try:
         async with ctx.display.spinner():
-            ctx.display.spinner_set("wf_tag", "running workflow",
+            ctx.display.spinner_set("wf_tag", wf.name,
                                     priority=Priority.NORMAL, truncate=Truncate.TAIL)
             results = await runner.run(args=user_args)
     except Exception as e:

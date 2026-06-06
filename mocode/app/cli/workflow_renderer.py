@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from .display import merge_summaries, tool_summary
 from .spinner import Priority, Truncate
 from .theme import (
     BOLD,
@@ -72,6 +73,7 @@ class WorkflowRenderer:
         self._d = display
         self._start_time: float = 0.0
         self._pending_tool_batch = False
+        self._batch_tool_groups: dict[str, list[str]] = {}  # name -> [summary]
 
     # ── Event dispatch ─────────────────────────────────────
 
@@ -146,16 +148,17 @@ class WorkflowRenderer:
                             priority=Priority.LOW, truncate=Truncate.TAIL)
 
     def _on_tool_call(self, event: NodeToolCallEvent) -> None:
-        # On first tool call of a batch, update spinner to show running status
+        # On first tool call of a batch, switch spinner from Thinking to tools
         if not self._pending_tool_batch:
             self._pending_tool_batch = True
             self._d.spinner_remove("wf_thinking")
-            self._d.spinner_set("wf_tools_tag", f"{event.node_id}:running tools",
-                                priority=Priority.NORMAL, truncate=Truncate.TAIL)
-        # Individual calls are displayed grouped in _on_tool_batch_done
+            self._batch_tool_groups = {}
+        # Accumulate tool call info and update spinner in real time
+        summary = tool_summary(event.tool_name, event.tool_args)
+        self._batch_tool_groups.setdefault(event.tool_name, []).append(summary)
+        self._update_spinner_for_tools(event.node_id, self._batch_tool_groups)
 
     def _on_tool_batch_done(self, event: NodeToolBatchDoneEvent) -> None:
-        from .display import merge_summaries
         # Clear tool spinner segments
         self._d.spinner_remove("wf_tools_tag")
         self._d.spinner_remove("wf_tools_detail")
@@ -163,6 +166,7 @@ class WorkflowRenderer:
         self._d.spinner_set("wf_thinking", "Thinking",
                             priority=Priority.LOW, truncate=Truncate.TAIL)
         self._pending_tool_batch = False
+        self._batch_tool_groups = {}
         # Render grouped tool calls (matches CLI batch display)
         for name, summaries in event.groups:
             merged = merge_summaries(summaries)
@@ -191,6 +195,27 @@ class WorkflowRenderer:
         self._d.spinner_remove("wf_thinking")
         self._d.spinner_remove("wf_tools_tag")
         self._d.spinner_remove("wf_tools_detail")
+        self._batch_tool_groups = {}
+
+    def _update_spinner_for_tools(self, node_id: str, groups: dict[str, list[str]]) -> None:
+        """Update spinner segments to show running tools — same format as CLI."""
+        total = sum(len(s) for s in groups.values())
+        label = "running 1 tool" if total == 1 else f"running {total} tools"
+
+        parts = []
+        for name, summaries in groups.items():
+            count = len(summaries)
+            if total == 1:
+                parts.append(f"{name}({merge_summaries(summaries)})")
+            elif count > 1:
+                parts.append(f"{name}×{count}")
+            else:
+                parts.append(name)
+
+        self._d.spinner_set("wf_tools_tag", f"{node_id}: {label}",
+                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
+        self._d.spinner_set("wf_tools_detail", ", ".join(parts),
+                            priority=Priority.LOW, truncate=Truncate.MIDDLE)
 
     def _on_loop_iter(self, event: LoopIterEvent) -> None:
         dur = f"{event.result.duration:.1f}s"

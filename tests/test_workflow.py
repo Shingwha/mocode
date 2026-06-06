@@ -25,9 +25,8 @@ from mocode.app.workflow import (
     fill_template,
     parse_args,
     parse_items,
-    summarize,
-    detailed_summarize,
 )
+from mocode.app.cli.workflow_renderer import summarize, detailed_summarize
 from mocode.app.workflow.events import (
     NodeStartEvent,
     NodeToolBatchDoneEvent,
