@@ -121,13 +121,19 @@ _PRESETS: dict[str, Spinner] = {
 class Truncate(Enum):
     """Segment truncation strategy."""
 
-    TAIL = "tail"      # 尾部截断，保护前缀: "analy..."
-    MIDDLE = "middle"  # 中间截断，保留首尾: "ana...ze"
-    NONE = "none"      # 不截断
+    TAIL = "tail"      # 尾部截断，保护前缀: "running 2 to..."
+    MIDDLE = "middle"  # 中间截断，保留首尾: "read(src/.../file.py)"
+    NONE = "none"      # 永不截断，永不移除（spinner 帧等固定内容）
 
 
 class Priority(IntEnum):
-    """Segment priority for truncation ordering (lower = truncate first)."""
+    """Segment priority for truncation ordering (lower = truncate first).
+
+    Usage:
+        HIGH (20)   — Critical info, never truncate first (node IDs, tool names)
+        NORMAL (10) — Important labels, truncate last (status text, phase names)
+        LOW (5)     — Supplementary info, truncate first (detail, file paths)
+    """
 
     LOW = 5       # 先被截（detail、补充信息）
     NORMAL = 10   # 中等保护（tag、标识）
@@ -163,32 +169,56 @@ def _format_elapsed(seconds: float) -> str:
 
 
 def _truncate_segs(segs: list[Segment], avail: int) -> list[Segment]:
-    """按优先级截断 segments 直到总宽度 <= avail。返回新列表。"""
-    # 排序：priority ASC, 插入序 DESC（靠后的先截）
-    order = sorted(range(len(segs)),
-                   key=lambda i: (segs[i].priority, -i))
+    """Unified truncation: truncate TAIL/MIDDLE, then remove if still over min width.
 
-    for idx in order:
-        total = sum(visible_width(s.text) for s in segs)
-        if total <= avail:
+    Phase 1: Truncate TAIL/MIDDLE segments (low priority first, high priority last)
+    Phase 2: Segments still exceeding min width after truncation → remove
+    Phase 3: NONE segments are never touched
+    """
+    result = [Segment(s.id, s.text, s.priority, s.truncate) for s in segs]
+
+    def _total_width() -> int:
+        return sum(visible_width(s.text) for s in result)
+
+    # Phase 1: truncate TAIL/MIDDLE segments, low priority first
+    truncatable = sorted(
+        [i for i, s in enumerate(result) if s.truncate in (Truncate.TAIL, Truncate.MIDDLE)],
+        key=lambda i: (result[i].priority, i),
+    )
+    for tidx in truncatable:
+        if _total_width() <= avail:
             break
-        seg = segs[idx]
-        if seg.truncate == Truncate.NONE:
-            continue
-        over = total - avail
+        seg = result[tidx]
+        over = _total_width() - avail
         cur = visible_width(seg.text)
-        min_w = 4 if seg.truncate == Truncate.TAIL else 7
+        min_w = 8 if seg.truncate == Truncate.TAIL else 12
         new_w = max(min_w, cur - over)
         if new_w >= cur:
             continue
         if seg.truncate == Truncate.TAIL:
-            segs[idx] = Segment(seg.id, ellipsize_tail(seg.text, new_w),
-                                seg.priority, seg.truncate)
+            result[tidx] = Segment(seg.id, ellipsize_tail(seg.text, new_w),
+                                   seg.priority, seg.truncate)
         else:
-            segs[idx] = Segment(seg.id, ellipsize_middle(seg.text, new_w),
-                                seg.priority, seg.truncate)
+            result[tidx] = Segment(seg.id, ellipsize_middle(seg.text, new_w),
+                                   seg.priority, seg.truncate)
 
-    return segs
+    # Phase 2: remove TAIL/MIDDLE segments still over their min width
+    removable = sorted(
+        [i for i, s in enumerate(result) if s.truncate in (Truncate.TAIL, Truncate.MIDDLE)],
+        key=lambda i: (result[i].priority, -i),
+    )
+    for idx in removable:
+        if _total_width() <= avail:
+            break
+        seg = result[idx]
+        min_w = 8 if seg.truncate == Truncate.TAIL else 12
+        if visible_width(seg.text) <= min_w:
+            result[idx] = Segment(seg.id, "", seg.priority, seg.truncate)
+
+    # filter empty
+    result = [s for s in result if s.text]
+
+    return result
 
 
 # ── SpinnerRunner ───────────────────────────────────────────────

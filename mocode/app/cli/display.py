@@ -6,6 +6,7 @@ import json
 from typing import TYPE_CHECKING
 
 from .spinner import Priority, SpinnerRunner, Truncate
+from .textutils import ellipsize_middle
 from .theme import DIM, Style, Theme, _s
 
 if TYPE_CHECKING:
@@ -31,6 +32,12 @@ _TOOL_KEY = {
 }
 
 
+# ── Tool call batching ──────────────────────────────────────
+
+_MERGE_TOOLS = frozenset({"read", "write", "append", "edit", "glob", "grep"})
+_CONTENT_LIMIT = 60  # unified width limit for tool content inside parentheses
+
+
 def tool_summary(name: str, args: dict) -> str:
     """Extract a short summary string from tool arguments."""
     key = _TOOL_KEY.get(name)
@@ -40,13 +47,7 @@ def tool_summary(name: str, args: dict) -> str:
             return ""
         key = next(iter(args))
     val = str(args.get(key, ""))
-    return val[:60] + ("..." if len(val) > 60 else "")
-
-
-# ── Tool call batching ──────────────────────────────────────
-
-_MERGE_TOOLS = frozenset({"read", "write", "append", "edit", "glob", "grep"})
-_MERGE_LIMIT = 100
+    return ellipsize_middle(val, _CONTENT_LIMIT)
 
 
 def group_items(
@@ -78,18 +79,18 @@ def group_tool_calls(tool_calls) -> list[tuple[str, list[str]]]:
 
 
 def merge_summaries(summaries: list[str]) -> str:
-    """Join summaries with ', ', truncate at _MERGE_LIMIT with '… +N' suffix."""
+    """Join summaries with ', ', truncate at _CONTENT_LIMIT with '… +N' suffix."""
     if not summaries:
         return ""
     joined = ", ".join(summaries)
-    if len(joined) <= _MERGE_LIMIT:
+    if len(joined) <= _CONTENT_LIMIT:
         return joined
     # Fit as many as possible, reserve space for suffix
     total = 0
     count = 0
     for s in summaries:
         add = len(s) + (2 if count > 0 else 0)
-        if total + add > _MERGE_LIMIT - 10:
+        if total + add > _CONTENT_LIMIT - 10:
             break
         total += add
         count += 1
