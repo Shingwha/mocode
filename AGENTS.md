@@ -4,7 +4,7 @@
 
 ```bash
 uv sync                    # Install all deps (including dev, via --dev)
-uv run pytest              # Run all tests (5700+ lines across 13 files, ~384 tests)
+uv run pytest              # Run all tests (~18 test files)
 uv run pytest -xvs         # Fast fail with verbose output
 uv run pytest tests/test_builder.py -xvs                               # Single file
 uv run pytest tests/test_builder.py::TestBuilder::test_minimal_build   # Single test
@@ -32,8 +32,7 @@ mocode/core/           ← zero deps on app/, providers/, tools/, hooks/
 
 mocode/providers/      OpenAI-compatible provider implementation
 mocode/tools/          Factory functions returning Tool instances with closures
-  ├── _helpers.py      Shared encoding fallback and path validation
-  └── utils.py         Shared grep output formatting (format_grep_content/files/count, expand_context_indices)
+  └── utils.py         Shared encoding fallback (decode_bytes), path validation (require_file/dir), grep output formatting
 mocode/hooks/          Built-in hooks: CompactHook (auto 80% threshold), GoalHook
 mocode/prompts/        System prompt definitions for main agent, subagent, compact
 mocode/skills/         Built-in skill factories (e.g. WorkflowSkill) — registered programmatically
@@ -72,9 +71,9 @@ Sections are ordered by priority (stable → dynamic) to maximize prefix cache h
 
 ### Session persistence
 
-- Sessions auto-save after each chat turn (dirty tracking via `mark_dirty()`)
-- Filename: `session_{uuid4().hex[:12]}.json` under `sessions/{workdir_sha256[:16]}/`
-- `save_if_dirty()` on SIGINT ensures no data loss on abrupt exit
+- Sessions save via `_save_current_session()` after each chat turn in the REPL
+- Session ID: `session_{uuid4().hex[:12]}` under `sessions/{workdir_sha256[:16]}/`
+- Saving on exit is handled by the `finally` block in `CLIApp._repl()`
 
 ### Workflow DAG execution
 
@@ -93,7 +92,7 @@ The workflow engine (`mocode/app/workflow/`) executes YAML-defined DAGs:
 - `from __future__ import annotations` at the top of every module
 - Public API surface: `mocode.core` re-exports all core types; `mocode.tools` re-exports all tool factories
 - Tests import from public API only (`mocode.core`, `mocode.tools`), never from internal submodules
-- `mocode.tools.utils` is internal — shared grep formatting used by `search.py`, not exported
+- `mocode.tools.utils` is internal — shared encoding fallback, path validation, and grep formatting used by tool modules
 
 ### Tool factories (the most important pattern)
 
@@ -173,20 +172,27 @@ class MyHook(AgentHook):
 
 ### Slash commands
 
-Commands implement the `Command` Protocol (`@runtime_checkable`):
+Commands are `@dataclass` instances with built-in subcommand routing:
 
 ```python
-class MyCommand:
-    name = "/mycommand"
-    description = "Does something"
-    aliases = ("mycommand",)  # bare-word aliases for non-interactive mode
+# Leaf command (no subcommands)
+Command("/quit", "Exit the application", aliases=("/exit", "quit", "exit"), handler=_quit)
 
-    async def run(self, ctx: CommandContext) -> CommandResult:
-        ...
-        return CommandResult.CONTINUE
+# Command with subcommands — auto-expands to /workflow:run, /workflow:show, etc.
+Command(
+    "/workflow", "Manage workflows",
+    subcommands=(
+        Subcommand(("list", "ls"), "List workflows", handler=_list),
+        Subcommand("run", "Run a workflow", handler=_run),
+    ),
+    default=_default,   # fallback when no subcommand matches
+)
 ```
 
-Return `CommandResult.text("...")` to send text to the agent as a silent prompt.
+`CommandResult.text("...")` sends text to the agent as a silent prompt.
+`CommandResult.CONTINUE` returns to the REPL. `CommandResult.EXIT` exits.
+
+**Prompt commands** (`mocode/app/cli/commands/prompts.py`) are data-driven: a dict of name→(template, description) pairs, auto-wrapped into `Command` handlers. Templates with `{args}` get user input substituted; without `{args}`, user input is appended as additional requirements.
 
 ### Config model
 
@@ -203,6 +209,15 @@ Return `CommandResult.text("...")` to send text to the agent as a silent prompt.
 - `@pytest.mark.asyncio` for all async tests
 - `tmp_path` for filesystem tests
 - `unittest.mock.patch` and `MagicMock` for complex mocking (CLIApp tests)
+- **只添加必要的核心测试** — 测试应覆盖关键路径和边界条件，不需要每个细节都写单元测试。优先测试：构建流程、核心循环、工具注册/执行、Hook 生命周期。避免过度测试实现细节。
+
+### Adding a built-in skill
+
+Recipe from `mocode/skills/__init__.py`:
+1. Create `mocode/skills/my_skill/` directory with `SKILL.md` + reference files
+2. Add a one-liner factory in `mocode/skills/my_skill/__init__.py` using `make_builtin_skill(Path(__file__).parent)`
+3. Import and export it from `mocode/skills/__init__.py`
+4. Register it in `mocode/app/cli/app.py` (`_build_agent`) via `self._skill_mgr.register(MySkill())`
 
 ### Config precedence
 
