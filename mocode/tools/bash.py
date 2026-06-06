@@ -92,19 +92,17 @@ class BashSession:
         if stripped.startswith("export "):
             return self._handle_export(stripped[7:])
 
-        full_cmd = command
+        env = None
         if self._env_vars:
-            exports = "; ".join(
-                [f'export {k}="{v}"' for k, v in self._env_vars.items()]
-            )
-            full_cmd = f"{exports}; {command}"
+            env = {**os.environ, **self._env_vars}
 
         try:
             result = subprocess.run(
-                [str(self.bash_path), "-c", full_cmd],
+                [str(self.bash_path), "-c", command],
                 capture_output=True,
                 timeout=timeout,
                 cwd=self._cwd,
+                env=env,
             )
             output = decode_bytes(result.stdout)
             if result.stderr:
