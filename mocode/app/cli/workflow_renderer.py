@@ -34,6 +34,7 @@ from ..workflow.events import (
 )
 
 from ..workflow.models import NodeResult
+from ..workflow.run_store import _pid_exists
 
 if TYPE_CHECKING:
     from ..workflow import Workflow
@@ -361,6 +362,54 @@ class WorkflowRenderer:
         for wf in workflows:
             desc = wf.description[:50] if wf.description else "(no description)"
             lines.append(f"  {_s(wf.name, BOLD):<20} {_s(desc, DIM)}")
+        return "\n".join(lines)
+
+    def list_runs(self, runs: list[dict], store: object) -> str:
+        """Render recent run list."""
+        lines = []
+        for r in runs:
+            rid = r.get("run_id", "?")
+            rname = r.get("workflow_name", "?")
+            status = r.get("status", "?")
+            started = r.get("started_at", "?")[:19]
+
+            alive_tag = ""
+            if status == "running" and r.get("pid"):
+                alive_tag = " (alive)" if store.is_alive(rid) else " (dead)"
+
+            lines.append(f"  {rid}  {rname:20s}  {status}{alive_tag}  {started}")
+        return "\n".join(lines)
+
+    def run_detail(self, record: dict, status: str) -> str:
+        """Render a single run's detailed status and results."""
+        run_id = record.get("run_id", "?")
+        name = record.get("workflow_name", "?")
+
+        lines = [
+            f"{_s('●', BOLD)} {_s(run_id, BOLD)}  {_s(name, DIM)}",
+            f"  Status:    {status}",
+            f"  Started:   {record.get('started_at', '?')}",
+        ]
+
+        if record.get("finished_at"):
+            lines.append(f"  Finished:  {record['finished_at']}")
+        if record.get("wall_duration") is not None:
+            lines.append(f"  Duration:  {record['wall_duration']:.1f}s")
+        if record.get("pid"):
+            alive = "alive" if _pid_exists(record["pid"]) else "dead"
+            lines.append(f"  PID:       {record['pid']} ({alive})")
+
+        results = [NodeResult(**r) for r in record.get("results", [])]
+        if results:
+            lines.append("")
+            lines.append(detailed_summarize(name, results, max_lines=9999))
+        else:
+            lines.append("  No node results yet.")
+
+        if status == "crashed":
+            lines.append("")
+            lines.append(_s("Process died unexpectedly. Check the log file.", RED))
+
         return "\n".join(lines)
 
 

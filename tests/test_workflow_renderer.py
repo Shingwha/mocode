@@ -360,6 +360,78 @@ class TestWorkflowList:
         assert "beta" in result
 
 
+class TestListRuns:
+    def test_lists_runs(self):
+        renderer, _ = _make_renderer()
+        store = MagicMock()
+        store.is_alive.return_value = False
+        runs = [
+            {"run_id": "wf_aaa", "workflow_name": "wf1",
+             "status": "completed", "started_at": "2025-01-01T00:00:00"},
+            {"run_id": "wf_bbb", "workflow_name": "wf2",
+             "status": "running", "started_at": "2025-01-02T00:00:00", "pid": 123},
+        ]
+        result = renderer.list_runs(runs, store)
+        assert "wf_aaa" in result
+        assert "wf_bbb" in result
+        assert "completed" in result
+        assert "running" in result
+        assert "(dead)" in result
+
+    def test_empty_runs(self):
+        renderer, _ = _make_renderer()
+        store = MagicMock()
+        result = renderer.list_runs([], store)
+        assert result == ""
+
+
+class TestRunDetail:
+    def test_completed_run(self):
+        renderer, _ = _make_renderer()
+        record = {
+            "run_id": "wf_abc", "workflow_name": "my-wf",
+            "status": "completed",
+            "started_at": "2025-01-01T00:00:00",
+            "finished_at": "2025-01-01T00:01:00",
+            "wall_duration": 60.0,
+            "results": [{
+                "node_id": "a", "task": "Do thing", "output": "ok",
+                "exit_code": 0, "duration": 60.0, "error": None,
+                "status": "done", "iteration": 1,
+            }],
+        }
+        result = renderer.run_detail(record, "completed")
+        assert "wf_abc" in result
+        assert "completed" in result
+        assert "60.0s" in result
+        assert "Do thing" in result
+
+    def test_crashed_run(self):
+        renderer, _ = _make_renderer()
+        record = {
+            "run_id": "wf_xyz", "workflow_name": "bad-wf",
+            "status": "crashed",
+            "started_at": "2025-01-01T00:00:00",
+            "results": [],
+        }
+        result = renderer.run_detail(record, "crashed")
+        assert "wf_xyz" in result
+        assert "crashed" in result
+        assert "died unexpectedly" in result
+
+    def test_no_results(self):
+        renderer, _ = _make_renderer()
+        record = {
+            "run_id": "wf_new", "workflow_name": "new-wf",
+            "status": "running",
+            "started_at": "2025-01-01T00:00:00",
+            "results": [],
+        }
+        result = renderer.run_detail(record, "running")
+        assert "wf_new" in result
+        assert "No node results yet" in result
+
+
 # ── New tool call event handlers ────────────────────────────
 
 
