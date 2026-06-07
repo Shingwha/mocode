@@ -4,6 +4,7 @@
 
 ```bash
 # Install dependencies (uses uv + hatchling)
+# Always use uv for python!!!
 uv sync
 
 # Run all tests

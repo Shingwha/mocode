@@ -6,6 +6,12 @@ import time
 from typing import TYPE_CHECKING
 
 from .display import merge_summaries, tool_summary
+from .formatter import (
+    _SKIP_STYLES,
+    _format_route,
+    detailed_summarize,
+    summarize,
+)
 from .spinner import Priority, Truncate
 from .theme import (
     BOLD,
@@ -39,29 +45,6 @@ from ..workflow.run_store import _pid_exists
 if TYPE_CHECKING:
     from ..workflow import Workflow
     from .display import Display
-
-
-# ── Skip reason styles ────────────────────────────────────
-
-_SKIP_STYLES: dict[str, tuple[str, str]] = {
-    "not activated by router": ("○", "routed elsewhere"),
-    "dependency skipped": ("◌", "upstream skipped"),
-    "not activated": ("∘", "not reached"),
-}
-
-
-# ── Helpers ────────────────────────────────────────────────
-
-
-def _format_route(route) -> str:
-    """Format a Route as a compact string for show view."""
-    parts = []
-    if route.match:
-        parts.append(f"/{route.match}/")
-    parts.append(", ".join(route.to))
-    if route.max:
-        parts.append(f"(max {route.max})")
-    return " ".join(parts)
 
 
 # ── Event dispatch table ─────────────────────────────────
@@ -418,40 +401,4 @@ class WorkflowRenderer:
         return "\n".join(lines)
 
 
-# ── Summary helpers (standalone, operate on results lists) ──
 
-
-def summarize(name: str, results: list[NodeResult]) -> str:
-    """Compact one-line-per-result summary."""
-    lines = [f"Workflow: {name}"]
-    for r in results:
-        status = "OK" if r.exit_code == 0 else "FAIL"
-        task_preview = r.task[:40] if r.task else "(empty)"
-        iter_suffix = f" (iter {r.iteration})" if r.iteration > 1 else ""
-        lines.append(
-            f"  [{status}] {r.node_id}{iter_suffix} · {task_preview}: {r.duration:.1f}s"
-        )
-    return "\n".join(lines)
-
-
-def detailed_summarize(
-    name: str, results: list[NodeResult], max_lines: int = 10
-) -> str:
-    """Multi-line summary with output and error excerpts."""
-    lines = [f"Workflow: {name}"]
-    for r in results:
-        status = "OK" if r.exit_code == 0 else "FAIL"
-        task_preview = r.task[:60] if r.task else "(empty)"
-        iter_suffix = f" (iter {r.iteration})" if r.iteration > 1 else ""
-        lines.append(
-            f"  [{status}] {r.node_id}{iter_suffix} · {task_preview} ({r.duration:.1f}s)"
-        )
-        if r.output:
-            output_lines = r.output.splitlines()
-            for ol in output_lines[:max_lines]:
-                lines.append(f"      {ol}")
-            if len(output_lines) > max_lines:
-                lines.append(f"      ... ({len(output_lines) - max_lines} more lines)")
-        if r.error:
-            lines.append(f"      Error: {r.error[:100]}")
-    return "\n".join(lines)
