@@ -64,6 +64,23 @@ def _format_route(route) -> str:
     return " ".join(parts)
 
 
+# ── Event dispatch table ─────────────────────────────────
+
+_EVENT_HANDLERS: dict[type, str] = {
+    WaveReadyEvent: "_on_wave_ready",
+    RouterConditionEvent: "_on_router_condition",
+    NodeSkippedEvent: "_on_node_skipped",
+    NodeStartEvent: "_on_node_start",
+    NodeToolCallEvent: "_on_tool_call",
+    NodeToolBatchDoneEvent: "_on_tool_batch_done",
+    NodeDoneEvent: "_on_node_done",
+    MapFanOutEvent: "_on_map_fan_out",
+    MapItemDoneEvent: "_on_map_item_done",
+    LoopIterEvent: "_on_loop_iter",
+    ProgressEvent: "_on_progress",
+}
+
+
 # ── WorkflowRenderer ───────────────────────────────────────
 
 
@@ -80,28 +97,9 @@ class WorkflowRenderer:
 
     def handle_event(self, event: WorkflowEvent) -> None:
         """Single entry point for all workflow events."""
-        if isinstance(event, WaveReadyEvent):
-            self._on_wave_ready(event)
-        elif isinstance(event, RouterConditionEvent):
-            self._on_router_condition(event)
-        elif isinstance(event, NodeSkippedEvent):
-            self._on_node_skipped(event)
-        elif isinstance(event, NodeStartEvent):
-            self._on_node_start(event)
-        elif isinstance(event, NodeToolCallEvent):
-            self._on_tool_call(event)
-        elif isinstance(event, NodeToolBatchDoneEvent):
-            self._on_tool_batch_done(event)
-        elif isinstance(event, NodeDoneEvent):
-            self._on_node_done(event)
-        elif isinstance(event, MapFanOutEvent):
-            self._on_map_fan_out(event)
-        elif isinstance(event, MapItemDoneEvent):
-            self._on_map_item_done(event)
-        elif isinstance(event, LoopIterEvent):
-            self._on_loop_iter(event)
-        elif isinstance(event, ProgressEvent):
-            self._on_progress(event)
+        handler_name = _EVENT_HANDLERS.get(type(event))
+        if handler_name:
+            getattr(self, handler_name)(event)
 
     # ── Event handlers ─────────────────────────────────────
 
@@ -136,12 +134,9 @@ class WorkflowRenderer:
         )
 
     def _on_node_start(self, event: NodeStartEvent) -> None:
-        desc = event.description or ""
         node_prefix = _s(event.node_id, BOLD)
-        if desc:
-            self._d.print(f"{_s('▸', BOLD)} {node_prefix}:start ({desc})")
-        else:
-            self._d.print(f"{_s('▸', BOLD)} {node_prefix}:start")
+        detail = f" ({event.description})" if event.description else ""
+        self._d.print(f"{_s('▸', BOLD)} {node_prefix}:start{detail}")
         # Spinner: node_id · Thinking
         self._d.spinner_set("wf_node", event.node_id,
                             priority=Priority.HIGH, truncate=Truncate.NONE)
@@ -243,14 +238,14 @@ class WorkflowRenderer:
         )
 
     def _on_progress(self, event: ProgressEvent) -> None:
-        if event.node_id:
-            self._d.spinner_set("wf_node", event.node_id,
-                                priority=Priority.HIGH, truncate=Truncate.NONE)
-            self._d.spinner_set("wf_thinking", event.detail or event.message,
-                                priority=Priority.NORMAL, truncate=Truncate.TAIL)
-        else:
+        if not event.node_id:
             self._d.spinner_set("wf_thinking", event.message,
                                 priority=Priority.NORMAL, truncate=Truncate.TAIL)
+            return
+        self._d.spinner_set("wf_node", event.node_id,
+                            priority=Priority.HIGH, truncate=Truncate.NONE)
+        self._d.spinner_set("wf_thinking", event.detail or event.message,
+                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
 
     # ── Lifecycle rendering ────────────────────────────────
 
@@ -286,11 +281,12 @@ class WorkflowRenderer:
                 self._d.print(ol)
         # Show errors from any failed result
         for r in results:
-            if r.error and r.exit_code != 0:
-                if not last_output_result:
-                    self._d.print(_s("─" * 48, YELLOW))
-                    last_output_result = r
-                self._d.print(_s(f"Error: {r.error}", RED))
+            if not r.error or r.exit_code == 0:
+                continue
+            if not last_output_result:
+                self._d.print(_s("─" * 48, YELLOW))
+                last_output_result = r
+            self._d.print(_s(f"Error: {r.error}", RED))
 
         # Summary
         self._d.print()
@@ -317,6 +313,21 @@ class WorkflowRenderer:
 
     # ── Static views ───────────────────────────────────────
 
+    def _render_node_content(self, node, connector: str, prefix: str) -> str:
+        """Render a single node's display line for the DAG tree."""
+        if node.type == "router":
+            route_strs = [_format_route(r) for r in node.routes]
+            return (
+                f"{prefix}{connector} {_s(node.id, SOFT_CYAN)} · router  "
+                f"{_s('→', YELLOW)} {' | '.join(route_strs)}"
+            )
+        preview = (
+            node.description
+            if node.description
+            else (node.task[:50] if node.task else "")
+        )
+        return f"{prefix}{connector} {_s(node.id, BOLD)} · {preview}"
+
     def show(self, wf: Workflow) -> str:
         """Generate a DAG tree-style structural view of the workflow."""
         lines = [
@@ -337,19 +348,7 @@ class WorkflowRenderer:
             rendered.add(node_id)
             node = node_map[node_id]
             connector = "└─" if is_last else "├─"
-            preview = (
-                node.description
-                if node.description
-                else (node.task[:50] if node.task else "")
-            )
-
-            if node.type == "router":
-                route_strs = [_format_route(r) for r in node.routes]
-                lines.append(
-                    f"{prefix}{connector} {_s(node_id, SOFT_CYAN)} · router  {_s('→', YELLOW)} {' | '.join(route_strs)}"
-                )
-            else:
-                lines.append(f"{prefix}{connector} {_s(node_id, BOLD)} · {preview}")
+            lines.append(self._render_node_content(node, connector, prefix))
 
             children = dependents.get(node_id, [])
             child_prefix = prefix + ("   " if is_last else "│  ")
