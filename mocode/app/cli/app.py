@@ -79,7 +79,8 @@ class CLIApp:
 
         self._workflow_registry = _make_workflow_registry()
 
-        self._agent = None  # lazy — built on first access
+        self.agent = self._build_agent()
+
         self._session_mgr: SessionManager | None = None
         if self.interactive:
             self._session_mgr = SessionManager(
@@ -89,12 +90,6 @@ class CLIApp:
             # Lazy create — session is only created on first actual save
 
     # ── Console setup ─────────────────────────────────────
-
-    @property
-    def agent(self):
-        if self._agent is None:
-            self._agent = self._build_agent()
-        return self._agent
 
     @property
     def session_mgr(self) -> SessionManager:
