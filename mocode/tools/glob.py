@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..core.tool import Tool
-from ..core.virtualfs import _strip_prefix
+from ..core.virtualfs import _VFS_PREFIX, _normalize, _strip_prefix
 from .utils import IGNORE_DIRS, _GLOB_MAX, _is_vfs_path, require_dir
 
 if TYPE_CHECKING:
@@ -23,11 +23,16 @@ def _glob(args: dict, vfs: VirtualFS | None = None) -> str:
     if _is_vfs_path(pattern) or _is_vfs_path(base_path):
         if not vfs:
             return "No virtual file system available"
-        vfs_path = base_path if _is_vfs_path(base_path) else None
         clean_pattern = _strip_prefix(pattern)
+        prefix = _normalize(base_path) if _is_vfs_path(base_path) else _VFS_PREFIX
+        if prefix != _VFS_PREFIX:
+            if not prefix.endswith("/"):
+                prefix += "/"
+            keys = [p for p in vfs if p.startswith(prefix)]
+        else:
+            keys = list(vfs)
         vfs_files = sorted(
-            p
-            for p in vfs.iter_files(vfs_path)
+            p for p in keys
             if fnmatch.fnmatch(_strip_prefix(p), clean_pattern)
         )
         if not vfs_files:

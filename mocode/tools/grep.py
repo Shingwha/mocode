@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ..core.tool import Tool
+from ..core.virtualfs import _VFS_PREFIX, _normalize
 from .utils import (
     _get_type_filter,
     _is_vfs_path,
@@ -154,9 +155,16 @@ def _grep_vfs(
     """Search VFS files using shared formatting utilities."""
 
     def _iter() -> Iterable[tuple[str, list[str]]]:
-        for p in vfs.iter_files(base_path):
+        prefix = _normalize(base_path)
+        if prefix != _VFS_PREFIX:
+            if not prefix.endswith("/"):
+                prefix += "/"
+            keys = [p for p in vfs if p.startswith(prefix)]
+        else:
+            keys = list(vfs)
+        for p in keys:
             if _match_vfs_type(p, type_filter):
-                yield p, vfs.get(p).splitlines()
+                yield p, vfs[p].splitlines()
 
     return _search_files(
         pattern, _iter(),

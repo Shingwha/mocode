@@ -71,7 +71,7 @@ def build_system_prompt(
         )
     )
 
-    if vfs is not None and vfs.list():
+    if vfs is not None and len(vfs):
         sections.append(Section("vfs", _render_vfs(vfs), priority=35))
 
     if tools is not None:
