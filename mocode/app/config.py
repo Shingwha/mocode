@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
+
+from .utils import read_json, write_json
 
 DEFAULT_CONFIG_PATH = Path.home() / ".mocode" / "config.json"
 
@@ -133,23 +134,17 @@ class Config:
     @classmethod
     def load(cls, path: Path | str = DEFAULT_CONFIG_PATH) -> Config | None:
         """Load config from JSON file. Returns None if file doesn't exist or is invalid."""
-        p = Path(path)
-        if not p.exists():
+        data = read_json(path, encoding="utf-8-sig")
+        if data is None:
             return None
         try:
-            data = json.loads(p.read_text(encoding="utf-8-sig"))
             return cls.from_dict(data)
-        except (json.JSONDecodeError, KeyError, TypeError):
+        except (KeyError, TypeError):
             return None
 
     def save(self, path: Path | str = DEFAULT_CONFIG_PATH) -> None:
         """Save config to JSON file."""
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(
-            json.dumps(self.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_json(path, self.to_dict())
 
     def copy(self) -> Config:
         return Config.from_dict(self.to_dict())

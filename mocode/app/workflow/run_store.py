@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from dataclasses import asdict
@@ -11,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ..utils import read_json, write_json
 from .models import NodeResult
 
 
@@ -91,13 +91,7 @@ class WorkflowRunStore:
 
     def load(self, run_id: str) -> dict[str, Any] | None:
         """Read and parse the run JSON. Returns None if not found."""
-        path = self._path(run_id)
-        if not path.exists():
-            return None
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
+        return read_json(self._path(run_id))
 
     def is_alive(self, run_id: str) -> bool:
         """Check if the recorded PID process still exists."""
@@ -114,11 +108,9 @@ class WorkflowRunStore:
         self._ensure_dir()
         records: list[dict[str, Any]] = []
         for f in self._base_dir.glob("wf_*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
+            data = read_json(f)
+            if data is not None:
                 records.append(data)
-            except (json.JSONDecodeError, OSError):
-                continue
         records.sort(key=lambda r: r.get("started_at", ""), reverse=True)
         return records[:limit]
 
@@ -140,10 +132,7 @@ class WorkflowRunStore:
 
     def _write(self, run_id: str, record: dict[str, Any]) -> None:
         self._ensure_dir()
-        self._path(run_id).write_text(
-            json.dumps(record, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        write_json(self._path(run_id), record)
 
 
 def _pid_exists(pid: int) -> bool:

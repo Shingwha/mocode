@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any, Protocol
 from uuid import uuid4
 
+from .utils import read_json, write_json
+
 
 @dataclass
 class Session:
@@ -83,30 +85,28 @@ class FileSessionStore:
             return []
         sessions = []
         for f in d.glob("session_*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                sessions.append(Session.from_dict(data))
-            except (json.JSONDecodeError, KeyError):
-                continue
+            data = read_json(f)
+            if data is not None:
+                try:
+                    sessions.append(Session.from_dict(data))
+                except KeyError:
+                    continue
         sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return sessions
 
     def save(self, workdir: str, session: Session) -> None:
         d = self._sessions_dir(_hash_workdir(workdir))
-        path = d / f"{session.id}.json"
-        path.write_text(
-            json.dumps(session.to_dict(), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        write_json(d / f"{session.id}.json", session.to_dict())
 
     def load(self, workdir: str, session_id: str) -> Session | None:
-        path = self._base_dir / _hash_workdir(workdir) / f"{session_id}.json"
-        if not path.exists():
+        data = read_json(
+            self._base_dir / _hash_workdir(workdir) / f"{session_id}.json"
+        )
+        if data is None:
             return None
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
             return Session.from_dict(data)
-        except (json.JSONDecodeError, KeyError):
+        except KeyError:
             return None
 
     def delete(self, workdir: str, session_id: str) -> bool:
@@ -412,10 +412,7 @@ class SessionManager:
     ) -> None:
         """Export session to a portable JSON file."""
         data = {"system_prompt": system_prompt, **session.to_dict()}
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        write_json(path, data)
 
     def export_to_md(
         self, session: Session, path: Path, system_prompt: str = ""
@@ -430,10 +427,7 @@ class SessionManager:
         """Import messages from a portable JSON file. Returns (messages, title) or None."""
         if not path.exists() or path.suffix != ".json":
             return None
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return None
+        data = read_json(path)
         if isinstance(data, dict) and "messages" in data:
             messages = data["messages"]
             title = _extract_title(messages) or path.stem
