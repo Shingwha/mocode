@@ -10,30 +10,38 @@ Usage:
         .build())
 """
 
-from .file import ReadTool, WriteTool, EditTool
-from .glob import GlobTool
-from .grep import GrepTool
-from .bash import BashTool
-from .fetch import FetchTool
-from .skill import SkillTool
-from .subagent import SubAgentTool
-from ..core import SubAgent, SubAgentConfig, SubAgentResult
-from .goal import GoalTool
-from .plan import PlanTool
+from __future__ import annotations
 
 __all__ = [
-    "ReadTool",
-    "WriteTool",
-    "EditTool",
-    "GlobTool",
-    "GrepTool",
-    "BashTool",
-    "FetchTool",
-    "SkillTool",
-    "SubAgent",
-    "SubAgentConfig",
-    "SubAgentResult",
-    "SubAgentTool",
-    "GoalTool",
-    "PlanTool",
+    "ReadTool", "WriteTool", "EditTool", "GlobTool", "GrepTool",
+    "BashTool", "FetchTool", "SkillTool", "SubAgent", "SubAgentConfig",
+    "SubAgentResult", "SubAgentTool", "GoalTool", "PlanTool",
 ]
+
+_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
+    "ReadTool": (".file", "ReadTool"),
+    "WriteTool": (".file", "WriteTool"),
+    "EditTool": (".file", "EditTool"),
+    "GlobTool": (".glob", "GlobTool"),
+    "GrepTool": (".grep", "GrepTool"),
+    "BashTool": (".bash", "BashTool"),
+    "FetchTool": (".fetch", "FetchTool"),
+    "SkillTool": (".skill", "SkillTool"),
+    "SubAgent": ("..core", "SubAgent"),
+    "SubAgentConfig": ("..core", "SubAgentConfig"),
+    "SubAgentResult": ("..core", "SubAgentResult"),
+    "SubAgentTool": (".subagent", "SubAgentTool"),
+    "GoalTool": (".goal", "GoalTool"),
+    "PlanTool": (".plan", "PlanTool"),
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+        import importlib
+        module_path, attr = _LAZY_IMPORTS[name]
+        module = importlib.import_module(module_path, __name__)
+        value = getattr(module, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

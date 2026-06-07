@@ -49,11 +49,16 @@ def find_bash() -> Optional[Path]:
 class BashSession:
     """Persistent bash session — maintains cwd and env vars across commands."""
     def __init__(self):
-        self.bash_path = find_bash()
-        if not self.bash_path:
-            raise RuntimeError("Bash not found. Please install bash (Git for Windows, MSYS2, or a Unix shell).")
+        self.bash_path: Path | None = None  # lazy — resolved on first use
         self._cwd = Path(os.getcwd()).resolve()
         self._env_vars: dict[str, str] = {}
+
+    def _ensure_bash(self) -> Path:
+        if self.bash_path is None:
+            self.bash_path = find_bash()
+            if not self.bash_path:
+                raise RuntimeError("Bash not found. Please install bash (Git for Windows, MSYS2, or a Unix shell).")
+        return self.bash_path
 
     @property
     def cwd(self) -> str:
@@ -65,11 +70,12 @@ class BashSession:
             return self._handle_cd(stripped[3:].strip())
         if stripped.startswith("export "):
             return self._handle_export(stripped[7:])
+        bash = str(self._ensure_bash())
         env = None
         if self._env_vars:
             env = {**os.environ, **self._env_vars}
         try:
-            result = subprocess.run([str(self.bash_path), "-c", command], capture_output=True,
+            result = subprocess.run([bash, "-c", command], capture_output=True,
                                     timeout=timeout, cwd=self._cwd, env=env)
             output = decode_bytes(result.stdout)
             if result.stderr:

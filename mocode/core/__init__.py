@@ -2,16 +2,6 @@
 
 from __future__ import annotations
 
-from .builder import Agent
-from .agent import AgentLoop, AgentConfig, LoopResult
-from .subagent import SubAgent, SubAgentConfig, SubAgentResult
-from .provider import Provider, Response, ToolCall, Usage
-from .tool import Tool, ToolRegistry, ToolError
-from .hook import AgentHook, AgentHookContext, HookRunner, ToolTimingTracker
-from .prompt import Prompt, Section
-from .skill import Skill, SkillMetadata, SkillManager, make_builtin_skill
-from .virtualfs import VirtualFS
-
 __all__ = [
     "Agent",
     "AgentLoop",
@@ -39,3 +29,42 @@ __all__ = [
     "make_builtin_skill",
     "VirtualFS",
 ]
+
+_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
+    "Agent": (".builder", "Agent"),
+    "AgentLoop": (".agent", "AgentLoop"),
+    "AgentConfig": (".agent", "AgentConfig"),
+    "LoopResult": (".agent", "LoopResult"),
+    "SubAgent": (".subagent", "SubAgent"),
+    "SubAgentConfig": (".subagent", "SubAgentConfig"),
+    "SubAgentResult": (".subagent", "SubAgentResult"),
+    "Provider": (".provider", "Provider"),
+    "Response": (".provider", "Response"),
+    "ToolCall": (".provider", "ToolCall"),
+    "Usage": (".provider", "Usage"),
+    "Tool": (".tool", "Tool"),
+    "ToolRegistry": (".tool", "ToolRegistry"),
+    "ToolError": (".tool", "ToolError"),
+    "AgentHook": (".hook", "AgentHook"),
+    "AgentHookContext": (".hook", "AgentHookContext"),
+    "HookRunner": (".hook", "HookRunner"),
+    "ToolTimingTracker": (".hook", "ToolTimingTracker"),
+    "Prompt": (".prompt", "Prompt"),
+    "Section": (".prompt", "Section"),
+    "Skill": (".skill", "Skill"),
+    "SkillMetadata": (".skill", "SkillMetadata"),
+    "SkillManager": (".skill", "SkillManager"),
+    "make_builtin_skill": (".skill", "make_builtin_skill"),
+    "VirtualFS": (".virtualfs", "VirtualFS"),
+}
+
+
+def __getattr__(name: str):
+    if name in _LAZY_IMPORTS:
+        import importlib
+        module_path, attr = _LAZY_IMPORTS[name]
+        module = importlib.import_module(module_path, __name__)
+        value = getattr(module, attr)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
