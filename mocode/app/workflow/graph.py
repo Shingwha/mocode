@@ -11,6 +11,34 @@ if TYPE_CHECKING:
 # ── Graph validation ─────────────────────────────────────────
 
 
+def _validate_task_node(node: Node, errors: list[str]) -> None:
+    """Validate a task node."""
+    if not node.task:
+        errors.append(f"Task node '{node.id}' must have 'task'")
+
+
+def _validate_router_node(node: Node, node_map: dict[str, Node], errors: list[str]) -> None:
+    """Validate a router node."""
+    if not node.routes:
+        errors.append(f"Router node '{node.id}' must have 'routes'")
+    if node.task:
+        errors.append(f"Router node '{node.id}' must not have 'task'")
+    for route in node.routes:
+        for target in route.to:
+            if target not in node_map:
+                errors.append(f"Router '{node.id}' route targets unknown node '{target}'")
+
+
+def _validate_map_node(node: Node, errors: list[str]) -> None:
+    """Validate a map node."""
+    if not node.items:
+        errors.append(f"Map node '{node.id}' must have 'items'")
+    if not node.task:
+        errors.append(f"Map node '{node.id}' must have 'task'")
+    if node.routes:
+        errors.append(f"Map node '{node.id}' must not have 'routes'")
+
+
 def validate_workflow(nodes: list[Node], node_map: dict[str, Node]) -> None:
     """Raise ValueError on invalid graph structure."""
 
@@ -29,29 +57,17 @@ def validate_workflow(nodes: list[Node], node_map: dict[str, Node]) -> None:
             if dep not in node_map:
                 raise ValueError(f"Node '{n.id}' depends on unknown node '{dep}'")
 
-    # All route.to IDs must exist + node-type-specific validation
+    # Node-type-specific validation
+    type_errors: list[str] = []
     for n in nodes:
         if n.type == "router":
-            if not n.routes:
-                raise ValueError(f"Router node '{n.id}' must have 'routes'")
-            if n.task:
-                raise ValueError(f"Router node '{n.id}' must not have 'task'")
-            for route in n.routes:
-                for target in route.to:
-                    if target not in node_map:
-                        raise ValueError(
-                            f"Router '{n.id}' route targets unknown node '{target}'"
-                        )
+            _validate_router_node(n, node_map, type_errors)
         elif n.type == "map":
-            if not n.items:
-                raise ValueError(f"Map node '{n.id}' must have 'items'")
-            if not n.task:
-                raise ValueError(f"Map node '{n.id}' must have 'task'")
-            if n.routes:
-                raise ValueError(f"Map node '{n.id}' must not have 'routes'")
+            _validate_map_node(n, type_errors)
         else:
-            if not n.task:
-                raise ValueError(f"Task node '{n.id}' must have 'task'")
+            _validate_task_node(n, type_errors)
+    if type_errors:
+        raise ValueError("\n".join(type_errors))
 
     # No self-dependency
     for n in nodes:
