@@ -64,7 +64,7 @@ class TestConnectAdd:
         app = _make_app()
         with (
             patch(
-                "mocode.app.cli.commands.builtin.text_input",
+                "mocode.app.cli.commands.connect.text_input",
                 new_callable=AsyncMock,
                 side_effect=[
                     "openai",  # key
@@ -92,12 +92,12 @@ class TestConnectEdit:
         app = _make_app()
         with (
             patch(
-                "mocode.app.cli.commands.builtin.select",
+                "mocode.app.cli.commands.connect.select",
                 new_callable=AsyncMock,
                 side_effect=["name", "back"],
             ),
             patch(
-                "mocode.app.cli.commands.builtin.text_input",
+                "mocode.app.cli.commands.connect.text_input",
                 new_callable=AsyncMock,
                 return_value="DeepSeek Renamed",
             ),
@@ -112,12 +112,12 @@ class TestConnectEdit:
         app = _make_app()
         with (
             patch(
-                "mocode.app.cli.commands.builtin.select",
+                "mocode.app.cli.commands.connect.select",
                 new_callable=AsyncMock,
                 side_effect=["delete"],
             ),
             patch(
-                "mocode.app.cli.commands.builtin.confirm",
+                "mocode.app.cli.commands.connect.confirm",
                 new_callable=AsyncMock,
                 return_value=True,
             ),
