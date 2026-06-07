@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .builder import Agent
 from .agent import AgentLoop, AgentConfig, LoopResult
+from .subagent import SubAgent, SubAgentConfig, SubAgentResult
 from .provider import Provider, Response, ToolCall, Usage
 from .tool import Tool, ToolRegistry, ToolError
 from .hook import AgentHook, AgentHookContext, HookRunner, ToolTimingTracker
@@ -16,6 +17,9 @@ __all__ = [
     "AgentLoop",
     "AgentConfig",
     "LoopResult",
+    "SubAgent",
+    "SubAgentConfig",
+    "SubAgentResult",
     "Provider",
     "Response",
     "ToolCall",

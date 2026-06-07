@@ -7,12 +7,10 @@ from mocode.core import (
     ToolCall,
     Tool,
     ToolRegistry,
-)
-from mocode.tools.subagent import (
     SubAgent,
     SubAgentConfig,
-    SubAgentTool,
 )
+from mocode.tools.subagent import SubAgentTool
 from mocode.core.tool import ToolError
 
 

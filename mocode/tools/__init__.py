@@ -17,7 +17,8 @@ from .bash import BashTool
 from .fetch import FetchTool
 from .skill import SkillTool
 from .compact import CompactTool
-from .subagent import SubAgent, SubAgentConfig, SubAgentResult, SubAgentTool
+from .subagent import SubAgentTool
+from ..core import SubAgent, SubAgentConfig, SubAgentResult
 from .goal import GoalTool
 from .plan import PlanTool
 
