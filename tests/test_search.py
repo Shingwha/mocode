@@ -207,6 +207,12 @@ class TestGrepToolSchema:
         required = schema["function"]["parameters"]["required"]
         assert "ignore_case" not in required
 
+    def test_schema_has_ignore_case_default(self):
+        tool = GrepTool()
+        schema = tool.to_schema()
+        props = schema["function"]["parameters"]["properties"]
+        assert props["ignore_case"]["default"] is False
+
 
 # ── VFS subdirectory filtering ─────────────────────────────
 

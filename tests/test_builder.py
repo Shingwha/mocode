@@ -341,6 +341,20 @@ class TestTool:
         assert "name" in schema["function"]["parameters"]["required"]
         assert "count" not in schema["function"]["parameters"]["required"]
 
+    def test_to_schema_includes_default(self):
+        schema = Tool(
+            "x",
+            "desc",
+            {
+                "p": {"type": "string", "description": "p", "default": "hello"},
+                "q": {"type": "integer", "description": "q"},
+            },
+            lambda a: "ok",
+        ).to_schema()
+        props = schema["function"]["parameters"]["properties"]
+        assert props["p"]["default"] == "hello"
+        assert "default" not in props["q"]
+
 
 # ---- AgentHook / HookRunner ----
 

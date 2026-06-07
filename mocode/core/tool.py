@@ -78,6 +78,8 @@ class Tool:
                 prop["description"] = param_spec["description"]
             if "enum" in param_spec:
                 prop["enum"] = param_spec["enum"]
+            if "default" in param_spec:
+                prop["default"] = param_spec["default"]
             properties[param_name] = prop
 
         return {
