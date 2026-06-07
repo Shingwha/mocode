@@ -11,7 +11,8 @@ Usage:
 """
 
 from .file import ReadTool, WriteTool, AppendTool, EditTool
-from .search import GlobTool, GrepTool
+from .glob import GlobTool
+from .grep import GrepTool
 from .bash import BashTool
 from .fetch import FetchTool
 from .skill import SkillTool

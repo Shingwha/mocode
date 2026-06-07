@@ -1,10 +1,15 @@
-"""Shared tool utilities — encoding, path validation, grep output formatting."""
+"""Shared tool utilities — encoding, path validation, grep output formatting, and search constants."""
 
 from __future__ import annotations
 
+import fnmatch
+import os
+import re
+from collections.abc import Iterable
 from pathlib import Path
 
 from ..core.tool import ToolError
+from ..core.virtualfs import _VFS_PREFIX
 
 
 def decode_bytes(data: bytes) -> str:
@@ -93,3 +98,96 @@ def format_grep_count(entries: list[str], pattern_str: str) -> str:
     if not entries:
         return f"No matches for '{pattern_str}'"
     return "\n".join(entries)
+
+
+# ── search constants ────────────────────────────────────────
+
+IGNORE_DIRS = frozenset(
+    {
+        # VCS
+        ".git", ".svn", ".hg",
+        # Python
+        "__pycache__", ".venv", "venv", "env", ".tox",
+        ".pytest_cache", ".mypy_cache", ".ruff_cache",
+        # JS/TS
+        "node_modules", ".next", ".nuxt",
+        # JVM
+        ".gradle",
+        # Rust
+        "target",
+        # Build output
+        "dist", "build",
+        # IDE
+        ".idea", ".vscode",
+        # Other
+        ".cache", "coverage", ".terraform",
+    }
+)
+
+TYPE_MAP = {
+    "py": ".py", "js": ".js", "ts": ".ts", "tsx": ".tsx", "jsx": ".jsx",
+    "go": ".go", "rs": ".rs", "java": ".java", "c": ".c", "cpp": ".cpp",
+    "h": ".h", "rb": ".rb", "php": ".php", "cs": ".cs", "swift": ".swift",
+    "kt": ".kt", "scala": ".scala", "lua": ".lua", "r": ".r",
+    "html": ".html", "css": ".css", "vue": ".vue", "svelte": ".svelte",
+    "json": ".json", "yaml": ".yaml", "yml": ".yml", "toml": ".toml",
+    "md": ".md", "txt": ".txt", "sql": ".sql", "xml": ".xml", "sh": ".sh",
+}
+
+TEXT_EXTENSIONS = frozenset(
+    set(TYPE_MAP.values())
+    | {
+        ".hpp", ".m", ".mm", ".bash", ".zsh", ".ps1", ".bat", ".cmd", ".fish",
+        ".ini", ".cfg", ".conf", ".env", ".rst", ".adoc", ".tex", ".org",
+        ".scss", ".less", ".sass", ".svg", ".csv", ".tsv",
+        ".dockerfile", ".makefile", ".cmake",
+        ".gitignore", ".gitattributes", ".editorconfig",
+    }
+)
+
+_GLOB_MAX = 200
+
+
+# ── shared search helpers ───────────────────────────────────
+
+
+def _is_text_file(path: str) -> bool:
+    suffix = Path(path).suffix.lower()
+    return suffix in TEXT_EXTENSIONS or not suffix
+
+
+def _get_type_filter(type_str: str) -> set[str] | None:
+    if not type_str:
+        return None
+    extensions = set()
+    for t in type_str.split(","):
+        t = t.strip().lower()
+        if t in TYPE_MAP:
+            extensions.add(TYPE_MAP[t])
+        else:
+            ext = t if t.startswith(".") else f".{t}"
+            extensions.add(ext)
+    return extensions
+
+
+def _walk_text_files(base_path: Path, type_filter: set[str] | None):
+    """Yield text file paths under base_path, respecting IGNORE_DIRS and type filter."""
+    for root, dirs, _files in os.walk(base_path):
+        dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+        for filename in _files:
+            if not _is_text_file(filename):
+                continue
+            if type_filter and Path(filename).suffix.lower() not in type_filter:
+                continue
+            yield os.path.join(root, filename)
+
+
+def _is_vfs_path(path: str) -> bool:
+    return path.startswith(_VFS_PREFIX)
+
+
+def _match_vfs_type(path: str, type_filter: set[str] | None) -> bool:
+    if not type_filter:
+        return True
+    suffix = ("." + path.rsplit(".", 1)[-1]) if "." in path else ""
+    return suffix in type_filter
