@@ -389,36 +389,13 @@ class DAGRunner:
             nr = await self._exec_node(node.id, task_text, context_header)
         state.total_executions += 1
 
-        state.results.append(nr)
-        state.context["nodes"][node.id] = {
-            "output": nr.output,
-            "exit_code": nr.exit_code,
-            "duration": nr.duration,
-            "error": nr.error or "",
-        }
-        state.context["previous"] = nr.output
-        state.completed.add(node.id)
-        self._persist(state.results, "running")
-
-        wave_idx = state.node_wave.get(node.id, 0)
-        self._emit(
-            NodeDoneEvent(
-                node_id=node.id,
-                description=node.description,
-                result=nr,
-                wave_idx=wave_idx,
-            )
+        self._record_node_done(
+            node,
+            nr,
+            state,
+            wf,
+            progress_message=f"Node '{node.id}' done ({nr.duration:.1f}s)",
         )
-        self._emit(
-            ProgressEvent(
-                message=f"Node '{node.id}' done ({nr.duration:.1f}s)",
-                node_id=node.id,
-                detail=f"done ({nr.duration:.1f}s)",
-            )
-        )
-
-        # Activate downstream dependents
-        self._activate_downstream(node.id, wf, state)
 
     # ── Map node execution ────────────────────────────────────
 
@@ -447,25 +424,8 @@ class DAGRunner:
             exit_code=0,
             duration=0,
         )
-        state.results.append(empty_result)
         state.total_executions += 1
-        state.context["nodes"][node.id] = {
-            "output": "",
-            "exit_code": 0,
-            "duration": 0,
-            "error": "",
-        }
-        state.context["previous"] = ""
-        state.completed.add(node.id)
-        self._emit(
-            NodeDoneEvent(
-                node_id=node.id,
-                description=node.description,
-                result=empty_result,
-                wave_idx=state.node_wave.get(node.id, 0),
-            )
-        )
-        self._activate_downstream(node.id, wf, state)
+        self._record_node_done(node, empty_result, state, wf)
 
     async def _fan_out_children(
         self, node: Node, items: list[str], state: RunState
@@ -539,16 +499,46 @@ class DAGRunner:
             exit_code=0,
             duration=total_duration,
         )
-        state.results.append(map_result)
         state.total_executions += 1
+        self._record_node_done(
+            node,
+            map_result,
+            state,
+            wf,
+            progress_message=f"Map '{node.id}' done — {len(items)} items ({total_duration:.1f}s)",
+        )
 
+    async def _run_map_child(
+        self, child_id: str, task: str, context_header: str | None
+    ) -> NodeResult:
+        """Run a single map child task under the semaphore."""
+        async with self._semaphore:
+            return await self._exec_node(child_id, task, context_header)
+
+    # ── Node completion helper ────────────────────────────────
+
+    def _record_node_done(
+        self,
+        node: Node,
+        nr: NodeResult,
+        state: RunState,
+        wf: Workflow,
+        *,
+        progress_message: str | None = None,
+    ) -> None:
+        """Record node completion: update state, persist, emit events, activate downstream.
+
+        Centralises the ~15-line sequence duplicated in _run_task_node,
+        _finalize_empty_map, and _finalize_map.
+        """
+        state.results.append(nr)
         state.context["nodes"][node.id] = {
-            "output": merged_output,
-            "exit_code": 0,
-            "duration": total_duration,
-            "error": "",
+            "output": nr.output,
+            "exit_code": nr.exit_code,
+            "duration": nr.duration,
+            "error": nr.error or "",
         }
-        state.context["previous"] = merged_output
+        state.context["previous"] = nr.output
         state.completed.add(node.id)
         self._persist(state.results, "running")
 
@@ -557,25 +547,19 @@ class DAGRunner:
             NodeDoneEvent(
                 node_id=node.id,
                 description=node.description,
-                result=map_result,
+                result=nr,
                 wave_idx=wave_idx,
             )
         )
-        self._emit(
-            ProgressEvent(
-                message=f"Map '{node.id}' done — {len(items)} items ({total_duration:.1f}s)",
-                node_id=node.id,
-                detail=f"done · {len(items)} items ({total_duration:.1f}s)",
+        if progress_message is not None:
+            self._emit(
+                ProgressEvent(
+                    message=progress_message,
+                    node_id=node.id,
+                    detail=f"done ({nr.duration:.1f}s)",
+                )
             )
-        )
         self._activate_downstream(node.id, wf, state)
-
-    async def _run_map_child(
-        self, child_id: str, task: str, context_header: str | None
-    ) -> NodeResult:
-        """Run a single map child task under the semaphore."""
-        async with self._semaphore:
-            return await self._exec_node(child_id, task, context_header)
 
     # ── Downstream activation helper ──────────────────────────
 
