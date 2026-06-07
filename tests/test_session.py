@@ -1,11 +1,11 @@
-"""Tests for mocode.app.session — Session, FileSessionStore, SessionManager."""
+"""Tests for mocode.app.session — Session, SessionStore, SessionManager."""
 
 import pytest
 
 from mocode.app.session import (
-    FileSessionStore,
     Session,
     SessionManager,
+    SessionStore,
 )
 
 
@@ -43,10 +43,10 @@ class TestSession:
         assert s2.metadata == {"key": "value"}
 
 
-class TestFileSessionStore:
+class TestSessionStore:
     @pytest.fixture
     def store(self, tmp_path):
-        return FileSessionStore(base_dir=tmp_path / "sessions")
+        return SessionStore(base_dir=tmp_path / "sessions")
 
     def test_save_and_load(self, store):
         s = Session(
@@ -98,7 +98,7 @@ class TestFileSessionStore:
 class TestSessionManager:
     @pytest.fixture
     def manager(self, tmp_path):
-        store = FileSessionStore(base_dir=tmp_path / "sessions")
+        store = SessionStore(base_dir=tmp_path / "sessions")
         return SessionManager(workdir="/project", store=store)
 
     def test_create(self, manager):

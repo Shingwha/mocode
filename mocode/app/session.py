@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 from uuid import uuid4
 
 from .utils import read_json, write_json
@@ -55,20 +55,11 @@ class Session:
         }
 
 
-class SessionStore(Protocol):
-    """Session persistence protocol."""
-
-    def list(self, workdir: str) -> list[Session]: ...
-    def save(self, workdir: str, session: Session) -> None: ...
-    def load(self, workdir: str, session_id: str) -> Session | None: ...
-    def delete(self, workdir: str, session_id: str) -> bool: ...
-
-
 def _hash_workdir(workdir: str) -> str:
     return hashlib.sha256(workdir.encode()).hexdigest()[:16]
 
 
-class FileSessionStore:
+class SessionStore:
     """File-based session storage. base_dir is parameterized, no paths.py dependency."""
 
     def __init__(self, base_dir: Path | None = None):

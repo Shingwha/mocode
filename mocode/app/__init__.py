@@ -1,7 +1,7 @@
 """mocode.app — shared application layer: Config, Session."""
 
 from .config import Config, ProviderEntry
-from .session import FileSessionStore, Session, SessionManager, SessionStore
+from .session import Session, SessionManager, SessionStore
 
 __all__ = [
     "Config",
@@ -9,5 +9,4 @@ __all__ = [
     "Session",
     "SessionManager",
     "SessionStore",
-    "FileSessionStore",
 ]

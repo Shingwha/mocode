@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from ..config import Config
-from ..session import FileSessionStore, Session, SessionManager
+from ..session import Session, SessionManager, SessionStore
 from ...core import Agent
 from ...core.agent import AgentConfig
 from ...core.skill import SkillManager
@@ -86,7 +86,7 @@ class CLIApp:
         if self.interactive:
             self._session_mgr = SessionManager(
                 workdir=str(Path.cwd()),
-                store=FileSessionStore(),
+                store=SessionStore(),
             )
             # Lazy create — session is only created on first actual save
 
