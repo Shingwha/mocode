@@ -1,12 +1,14 @@
-"""Fetch tool — FetchTool for HTTP fetch with markdown conversion."""
+"""Fetch tool — FetchTool for HTTP fetch via Jina Reader API with markdown conversion."""
 
 from __future__ import annotations
+
+import os
 
 from ..core.tool import Tool, ToolError
 
 
 def FetchTool(result_limit: int = 50000) -> Tool:
-    """Create a fetch tool.
+    """Create a fetch tool using Jina Reader API.
 
     Args:
         result_limit: Max characters for fetched content.
@@ -21,17 +23,21 @@ def FetchTool(result_limit: int = 50000) -> Tool:
             )
 
         timeout = args.get("timeout", 30)
-        base = "https://markdown.new/"
-        fetch_url = base + url.lstrip("/")
+        fetch_url = "https://r.jina.ai/" + url.lstrip("/")
+
         import httpx
 
+        headers = {"Accept": "text/plain"}
+        api_key = os.environ.get("JINA_API_KEY")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(timeout=timeout) as client:
                 response = await client.get(
                     fetch_url,
-                    timeout=timeout,
+                    headers=headers,
                     follow_redirects=True,
-                    headers={"User-Agent": "Mozilla/5.0 (compatible; mocode/1.0)"},
                 )
             response.raise_for_status()
             text = response.text
