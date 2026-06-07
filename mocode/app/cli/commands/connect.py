@@ -72,6 +72,105 @@ async def _connect_extra_body(ctx: CommandContext, entry: ProviderEntry):
 # ── /connect:edit ─────────────────────────────────────────
 
 
+async def _handle_edit_name(
+    ctx: CommandContext, entry: ProviderEntry
+) -> bool | None:
+    result = await text_input("Display name:", default=entry.name)
+    if result is not None:
+        entry.name = result
+        return True
+    return False
+
+
+async def _handle_edit_apikey(
+    ctx: CommandContext, entry: ProviderEntry
+) -> bool | None:
+    result = await text_input("API key:", default=entry.api_key)
+    if result is not None:
+        entry.api_key = result
+        return True
+    return False
+
+
+async def _handle_edit_baseurl(
+    ctx: CommandContext, entry: ProviderEntry
+) -> bool | None:
+    result = await text_input("Base URL:", default=entry.base_url or "")
+    if result is not None:
+        entry.base_url = result or None
+        return True
+    return False
+
+
+async def _handle_edit_models(
+    ctx: CommandContext, key: str, entry: ProviderEntry
+) -> bool | None:
+    default_str = ", ".join(entry.model_names())
+    result = await text_input("Models (comma-separated):", default=default_str)
+    if result is None:
+        return False
+
+    new_names = [m.strip() for m in result.split(",") if m.strip()]
+    if not new_names:
+        ctx.display.warn("Models list cannot be empty.")
+        return False
+
+    old_extra = {m.name: m.extra_body for m in entry.models}
+    entry.models = [
+        ModelEntry(name=n, extra_body=old_extra.get(n)) for n in new_names
+    ]
+    if (
+        ctx.app.config.active_model not in new_names
+        and key == ctx.app.config.active_provider
+    ):
+        ctx.app.config.active_model = new_names[0]
+        ctx.display.warn(f"Active model removed, reset to '{new_names[0]}'")
+    return True
+
+
+async def _handle_edit_extra_body(
+    ctx: CommandContext, entry: ProviderEntry
+) -> bool | None:
+    await _connect_extra_body(ctx, entry)
+    return True
+
+
+async def _handle_delete_provider(
+    ctx: CommandContext, key: str
+) -> bool | None:
+    if key == ctx.app.config.active_provider:
+        ctx.display.warn(
+            f"Cannot delete active provider '{key}'. "
+            "Use /model to switch first."
+        )
+        return False
+    if await confirm(f"Delete provider '{key}'?"):
+        del ctx.app.config.providers[key]
+        ctx.app.config.save()
+        ctx.display.info(f"Provider '{key}' deleted.")
+        return None  # signal: exit the edit loop
+    return False
+
+
+async def _dispatch_edit(
+    choice: str, ctx: CommandContext, key: str, entry: ProviderEntry
+) -> bool | None:
+    """Dispatch a single edit action. Returns dirty flag or None to exit."""
+    if choice == "name":
+        return await _handle_edit_name(ctx, entry)
+    if choice == "apikey":
+        return await _handle_edit_apikey(ctx, entry)
+    if choice == "baseurl":
+        return await _handle_edit_baseurl(ctx, entry)
+    if choice == "models":
+        return await _handle_edit_models(ctx, key, entry)
+    if choice == "extra_body":
+        return await _handle_edit_extra_body(ctx, entry)
+    if choice == "delete":
+        return await _handle_delete_provider(ctx, key)
+    return False
+
+
 async def _connect_edit(ctx: CommandContext, key: str):
     """Edit submenu for one provider — loop until Back."""
     entry = ctx.app.config.providers.get(key)
@@ -106,65 +205,11 @@ async def _connect_edit(ctx: CommandContext, key: str):
                 ctx.display.info("Config saved.")
             return
 
-        if chosen == "name":
-            result = await text_input("Display name:", default=entry.name)
-            if result is not None:
-                entry.name = result
-                dirty = True
-
-        elif chosen == "apikey":
-            result = await text_input("API key:", default=entry.api_key)
-            if result is not None:
-                entry.api_key = result
-                dirty = True
-
-        elif chosen == "baseurl":
-            result = await text_input("Base URL:", default=entry.base_url or "")
-            if result is not None:
-                entry.base_url = result or None
-                dirty = True
-
-        elif chosen == "models":
-            default_str = ", ".join(entry.model_names())
-            result = await text_input(
-                "Models (comma-separated):", default=default_str
-            )
-            if result is not None:
-                new_names = [m.strip() for m in result.split(",") if m.strip()]
-                if new_names:
-                    old_extra = {m.name: m.extra_body for m in entry.models}
-                    entry.models = [
-                        ModelEntry(name=n, extra_body=old_extra.get(n))
-                        for n in new_names
-                    ]
-                    if (
-                        ctx.app.config.active_model not in new_names
-                        and key == ctx.app.config.active_provider
-                    ):
-                        ctx.app.config.active_model = new_names[0]
-                        ctx.display.warn(
-                            f"Active model removed, reset to '{new_names[0]}'"
-                        )
-                    dirty = True
-                else:
-                    ctx.display.warn("Models list cannot be empty.")
-
-        elif chosen == "extra_body":
-            await _connect_extra_body(ctx, entry)
+        result = await _dispatch_edit(chosen, ctx, key, entry)
+        if result is None:  # delete signaled exit
+            return
+        if result:  # dirty
             dirty = True
-
-        elif chosen == "delete":
-            if key == ctx.app.config.active_provider:
-                ctx.display.warn(
-                    f"Cannot delete active provider '{key}'. "
-                    "Use /model to switch first."
-                )
-                continue
-            if await confirm(f"Delete provider '{key}'?"):
-                del ctx.app.config.providers[key]
-                ctx.app.config.save()
-                ctx.display.info(f"Provider '{key}' deleted.")
-                return
 
 
 # ── /connect:add ──────────────────────────────────────────
