@@ -1,4 +1,4 @@
-"""File operation tools — ReadTool, WriteTool, AppendTool, EditTool."""
+"""File operation tools — ReadTool, WriteTool, EditTool."""
 
 from __future__ import annotations
 
@@ -99,31 +99,27 @@ def _write(args: dict) -> str:
     if p.is_dir():
         raise ToolError(f"Path is a directory: {p}", "invalid_path")
     content = args["content"]
+    append = args.get("append", False)
+
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content, encoding="utf-8")
-    line_count = content.count("\n") + (
-        1 if content and not content.endswith("\n") else 0
-    )
-    return f"Wrote {line_count} lines to {p.name}"
 
-
-def _append(args: dict) -> str:
-    p = Path(args["path"])
-    if p.is_dir():
-        raise ToolError(f"Path is a directory: {p}", "invalid_path")
-
-    content = args["content"]
-    if p.exists():
+    if append and p.exists():
+        # Append mode: auto-prepend newline if needed
         existing = p.read_text(encoding="utf-8")
         if existing and not existing.endswith("\n"):
             content = "\n" + content
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(content)
+        action = "Appended"
+    else:
+        # Overwrite mode (default)
+        p.write_text(content, encoding="utf-8")
+        action = "Wrote"
 
-    with open(p, "a", encoding="utf-8") as f:
-        f.write(content)
     line_count = content.count("\n") + (
         1 if content and not content.endswith("\n") else 0
     )
-    return f"Appended {line_count} lines to {p.name}"
+    return f"{action} {line_count} lines to {p.name}"
 
 
 def _edit(args: dict) -> str:
@@ -153,25 +149,17 @@ def WriteTool() -> Tool:
     return Tool(
         "write",
         "Write content to a file. Creates the file and any parent directories if they don't exist. "
-        "Overwrites existing content entirely. For appending, use the append tool instead.",
+        "By default, overwrites existing content entirely. Set append=true to append to the end of the file instead.",
         {
             "path": {"type": "string", "description": "File path to write"},
             "content": {"type": "string", "description": "Content to write (UTF-8)"},
+            "append": {
+                "type": "boolean",
+                "description": "Append to end of file instead of overwriting (default: false)",
+                "default": False,
+            },
         },
         _write,
-    )
-
-
-def AppendTool() -> Tool:
-    return Tool(
-        "append",
-        "Append content to the end of a file. Creates the file if it doesn't exist. "
-        "Automatically adds a newline before the content if the existing file doesn't end with one.",
-        {
-            "path": {"type": "string", "description": "File path to append to"},
-            "content": {"type": "string", "description": "Content to append (UTF-8)"},
-        },
-        _append,
     )
 
 

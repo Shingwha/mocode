@@ -21,7 +21,6 @@ from ...hooks import CompactHook, GoalHook
 from ...prompts.app import build_system_prompt
 from ...providers.openai import OpenAIProvider
 from ...tools import (
-    AppendTool,
     BashTool,
     CompactTool,
     EditTool,
@@ -131,7 +130,6 @@ class CLIApp:
         for t in [
             ReadTool(vfs=self._vfs),
             WriteTool(),
-            AppendTool(),
             EditTool(),
             GlobTool(vfs=self._vfs),
             GrepTool(vfs=self._vfs),

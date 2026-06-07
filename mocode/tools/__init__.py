@@ -10,7 +10,7 @@ Usage:
         .build())
 """
 
-from .file import ReadTool, WriteTool, AppendTool, EditTool
+from .file import ReadTool, WriteTool, EditTool
 from .glob import GlobTool
 from .grep import GrepTool
 from .bash import BashTool
@@ -25,7 +25,6 @@ from .plan import PlanTool
 __all__ = [
     "ReadTool",
     "WriteTool",
-    "AppendTool",
     "EditTool",
     "GlobTool",
     "GrepTool",
