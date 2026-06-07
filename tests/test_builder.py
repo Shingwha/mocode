@@ -426,6 +426,23 @@ class TestAgentHook:
         await runner.on_tool_complete(ctx)
         assert events == [("start", "bash"), ("complete", "bash", "file1\nfile2")]
 
+    @pytest.mark.asyncio
+    async def test_add_hook_dynamically(self):
+        """Hooks added after first call are invoked on subsequent calls."""
+        calls = []
+        runner = HookRunner()
+
+        class LateHook(AgentHook):
+            async def after_iteration(self, ctx):
+                calls.append("late")
+
+        await runner.after_iteration(AgentHookContext())
+        assert calls == []
+
+        runner.add(LateHook())
+        await runner.after_iteration(AgentHookContext())
+        assert calls == ["late"]
+
 
 # ---------------------------------------------------------------------------
 # AgentLoop properties

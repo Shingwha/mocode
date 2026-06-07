@@ -6,12 +6,12 @@ within a node agent and emits NodeToolCallEvent / NodeToolBatchDoneEvent.
 
 from __future__ import annotations
 
-from ...core.hook import ToolTimingTracker
+from ...core.hook import AgentHook, ToolTimingTracker
 from ..utils import group_tool_calls
 from .events import NodeToolBatchDoneEvent, NodeToolCallEvent
 
 
-class _WorkflowNodeHook:
+class _WorkflowNodeHook(AgentHook):
     """Lightweight hook that captures tool calls within a node agent
     and emits NodeToolCallEvent / NodeToolBatchDoneEvent via on_event."""
 
