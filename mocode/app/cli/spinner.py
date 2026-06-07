@@ -96,22 +96,6 @@ _PRESETS: dict[str, Spinner] = {
         frames=("🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"),
         speed=0.15,
     ),
-    # --- Variable-width spinners ---
-    "grow": Spinner.from_list(
-        _ping_pong(["·", "··", "···", "····", "·····", "······", "·······"]), 0.18
-    ),
-    "typewriter": Spinner.from_list(
-        _ping_pong(["▌", "思▌", "思考▌", "思考中▌", "思考中…▌", "思考中… ▌"]), 0.20
-    ),
-    "train": Spinner.from_list(
-        _ping_pong(["🚂", "🚂🚃", "🚂🚃🚃", "🚂🚃🚃🚃"]), 0.25
-    ),
-    "snake": Spinner.from_list(
-        _ping_pong(["●", "○●", "○○●", "○○○●", "○○○○●", "○○○○○●"]), 0.18
-    ),
-    "progress": Spinner.from_list(
-        _ping_pong(["[    ]", "[-   ]", "[--  ]", "[--- ]", "[----]"]), 0.20
-    ),
 }
 
 
