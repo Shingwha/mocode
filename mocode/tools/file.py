@@ -77,6 +77,45 @@ def _read_text(p: Path, offset: int, limit: int) -> str:
     return _format_lines(content, str(p), offset, limit)
 
 
+def _list_directory(p: Path) -> str:
+    """List directory contents when read() is called on a directory.
+
+    Graceful degradation pattern (inspired by DesktopCommanderMCP):
+    detect directory via is_dir(), return listing + hint instead of error.
+
+    Output format: flat list, dirs first with '/' suffix, files with size.
+    Matches MoCode's [header] + one-item-per-line style (same as glob/grep).
+    """
+    from .utils import IGNORE_DIRS
+
+    entries = sorted(p.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+
+    dirs, files = [], []
+    for entry in entries:
+        if entry.name in IGNORE_DIRS:
+            continue
+        if entry.is_dir():
+            dirs.append(f"{entry.name}/")
+        else:
+            size = entry.stat().st_size
+            if size < 1024:
+                size_str = f"{size} B"
+            elif size < 1024 * 1024:
+                size_str = f"{size / 1024:.1f} KB"
+            else:
+                size_str = f"{size / (1024 * 1024):.1f} MB"
+            files.append(f"{entry.name}  ({size_str})")
+
+    lines = dirs + files
+    header = f"[{p}/ — {len(dirs)} directories, {len(files)} files]"
+    hint = (
+        "\nThis is a directory, not a file. "
+        "Use glob(pattern='**/*', path='<directory>') to explore its contents, "
+        "or specify a file path."
+    )
+    return header + "\n" + "\n".join(lines) + hint
+
+
 def ReadTool(vfs: VirtualFS | None = None) -> Tool:
     """Create a read tool."""
 
@@ -88,7 +127,13 @@ def ReadTool(vfs: VirtualFS | None = None) -> Tool:
         if vfs and vfs.exists(path):
             return _format_lines(vfs.get(path), path, offset, limit)
 
-        p = require_file(Path(path))
+        p = Path(path)
+
+        # ── directory graceful degradation ──
+        if p.is_dir():
+            return _list_directory(p)
+
+        p = require_file(p)  # require_file won't see directories anymore
         return _read_text(p, offset, limit)
 
     return Tool("read", _READ_DESC, _READ_PARAMS, _read)
