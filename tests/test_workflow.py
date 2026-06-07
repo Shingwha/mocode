@@ -20,7 +20,6 @@ from mocode.app.workflow import (
     Route,
     WaveReadyEvent,
     Workflow,
-    WorkflowRegistry,
     compute_waves,
     fill_template,
     parse_args,

@@ -13,33 +13,36 @@ logger = logging.getLogger(__name__)
 class WorkflowRegistry:
     """Discovers YAML workflow files from configured directories.
 
-    YAML parsing is deferred until the first ``list()`` / ``get()`` / ``names()``
-    call so that construction is cheap.
+    Each call to ``list()``, ``get()`` or ``names()`` re-scans the directories
+    so newly added YAML files are picked up immediately without restarting.
     """
 
     def __init__(self, dirs: list[Path] | None = None):
         self._dirs: list[Path] = list(dirs) if dirs else []
-        self._workflows: dict[str, Workflow] = {}
-        self._loaded: bool = False
 
-    def _ensure_loaded(self) -> None:
-        """Parse all YAML files on first access."""
-        if not self._loaded:
-            self._loaded = True
-            self._workflows.clear()
-            for d in self._dirs:
-                if not d.is_dir():
-                    continue
-                for f in sorted(d.iterdir()):
-                    if f.is_file() and f.suffix in (".yaml", ".yml"):
-                        wf = self._load(f)
-                        if wf:
-                            self._workflows[wf.name] = wf
+    @classmethod
+    def from_default_dirs(cls) -> WorkflowRegistry:
+        """Create registry with default global + project-local dirs."""
+        dirs: list[Path] = []
+        global_dir = Path.home() / ".mocode" / "workflows"
+        dirs.append(global_dir)
+        local_dir = Path.cwd() / ".mocode" / "workflows"
+        if local_dir != global_dir:
+            dirs.append(local_dir)
+        return cls(dirs=dirs)
 
-    def discover(self) -> None:
-        """Invalidate the cache so the next access re-scans."""
-        self._loaded = False
-        self._workflows.clear()
+    def _scan(self) -> dict[str, Workflow]:
+        """Scan all directories and return workflows."""
+        workflows: dict[str, Workflow] = {}
+        for d in self._dirs:
+            if not d.is_dir():
+                continue
+            for f in sorted(d.iterdir()):
+                if f.is_file() and f.suffix in (".yaml", ".yml"):
+                    wf = self._load(f)
+                    if wf:
+                        workflows[wf.name] = wf
+        return workflows
 
     def _load(self, path: Path) -> Workflow | None:
         try:
@@ -49,13 +52,10 @@ class WorkflowRegistry:
             return None
 
     def list(self) -> list[Workflow]:
-        self._ensure_loaded()
-        return list(self._workflows.values())
+        return list(self._scan().values())
 
     def get(self, name: str) -> Workflow | None:
-        self._ensure_loaded()
-        return self._workflows.get(name)
+        return self._scan().get(name)
 
     def names(self) -> list[str]:
-        self._ensure_loaded()
-        return list(self._workflows.keys())
+        return list(self._scan().keys())
