@@ -5,7 +5,8 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from mocode.tools.search import _grep, GrepTool, GlobTool
+from mocode.tools.grep import _grep, GrepTool
+from mocode.tools.glob import GlobTool
 from mocode.tools.utils import (
     expand_context_indices,
     format_grep_content,
