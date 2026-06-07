@@ -1,12 +1,9 @@
-"""Tests for compact — compact_messages, CompactHook, CompactTool."""
+"""Tests for compact — compact_messages, CompactHook."""
 
 import pytest
 
 from mocode.core import AgentHookContext, Response, Usage
-from mocode.tools.compact import (
-    compact_messages,
-    CompactTool,
-)
+from mocode.core.compact import compact_messages
 from mocode.hooks.compact import CompactHook
 
 
@@ -95,23 +92,3 @@ class TestCompactHook:
         await hook.before_iteration(ctx)
         assert ctx.messages is messages
 
-
-# ---- CompactTool ----
-
-
-class TestCompactTool:
-    @pytest.mark.asyncio
-    async def test_compacts_and_mutates_in_place(self):
-        provider = MockProvider(responses=[Response(content="compressed summary")])
-        messages = [
-            {"role": "user", "content": "fix bug"},
-            {"role": "assistant", "content": "fixed"},
-            {"role": "user", "content": "add tests"},
-            {"role": "assistant", "content": "added"},
-        ]
-        tool = CompactTool(MockAgent(provider), lambda: messages)
-        result = await tool.run_async({})
-
-        assert "compacted" in result.lower()
-        assert len(messages) == 1
-        assert "[Context Summary]" in messages[0]["content"]

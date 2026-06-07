@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ....tools.compact import compact_messages
+from ....core.compact import compact_messages
 from . import Command, CommandContext, CommandResult
 
 

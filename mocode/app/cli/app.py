@@ -22,7 +22,6 @@ from ...prompts.app import build_system_prompt
 from ...providers.openai import OpenAIProvider
 from ...tools import (
     BashTool,
-    CompactTool,
     EditTool,
     FetchTool,
     GlobTool,
@@ -170,7 +169,6 @@ class CLIApp:
 
         # agent exists now — attach hooks/tools that need agent reference
         agent.hooks.add(CompactHook(agent))
-        self._tools.register(CompactTool(agent, lambda: agent.messages))
         self._tools.register(
             SubAgentTool(agent, self._tools, tool_timeout=agent.config.tool_timeout)
         )

@@ -16,7 +16,6 @@ from .grep import GrepTool
 from .bash import BashTool
 from .fetch import FetchTool
 from .skill import SkillTool
-from .compact import CompactTool
 from .subagent import SubAgentTool
 from ..core import SubAgent, SubAgentConfig, SubAgentResult
 from .goal import GoalTool
@@ -31,7 +30,6 @@ __all__ = [
     "BashTool",
     "FetchTool",
     "SkillTool",
-    "CompactTool",
     "SubAgent",
     "SubAgentConfig",
     "SubAgentResult",

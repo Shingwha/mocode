@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..core.hook import AgentHook, AgentHookContext
-from ..tools.compact import compact_messages
+from ..core.compact import compact_messages
 
 
 class CompactHook(AgentHook):

@@ -1,22 +1,12 @@
 """Compact — context compression for long conversations.
 
-Provides:
-- Pure functions for message formatting and compression
-- compact_messages() — core compression logic
-- CompactTool — LLM-callable tool for manual trigger
-
-CompactHook lives in mocode/hooks/compact.py.
+Core compression logic, extracted from tools/compact.py to break
+hooks → tools → prompts dependency chain.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
-
-from ..core.tool import Tool
 from ..prompts.compact import summary_system_prompt, COMPACT_USER_TEMPLATE
-
-
-# ---- Message formatting helpers (pure functions) ----
 
 
 def format_messages_for_summary(messages: list[dict]) -> str:
@@ -80,9 +70,6 @@ def build_fallback_summary(messages: list[dict]) -> str:
     )
 
 
-# ---- Core compression (pure async function) ----
-
-
 async def _generate_summary(provider, messages_text: str) -> str:
     try:
         resp = await provider.call(
@@ -124,29 +111,3 @@ async def compact_messages(
     ]
 
     return new_messages
-
-
-# ---- CompactTool (Tool factory) ----
-
-
-def CompactTool(
-    agent,
-    get_messages: Callable[[], list[dict]],
-) -> Tool:
-    """Create a tool that lets the LLM trigger context compression."""
-
-    async def _compact(args: dict) -> str:
-        messages = get_messages()
-        if not messages:
-            return "No messages to compact"
-        new_messages = await compact_messages(agent.provider, messages)
-        messages.clear()
-        messages.extend(new_messages)
-        return f"Context compacted: {len(new_messages)} messages remaining"
-
-    return Tool(
-        "compact",
-        "Compress conversation history to free up context window. Returns a summary of older messages.",
-        {},
-        _compact,
-    )
