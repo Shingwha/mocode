@@ -183,7 +183,6 @@ name = "mocode"
 version = "0.3.0"
 source = { editable = "." }
 dependencies = [
-    { name = "httpx" },
     { name = "openai" },
     { name = "prompt-toolkit" },
     { name = "pyperclip" },
@@ -205,7 +204,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "httpx", specifier = ">=0.27" },
     { name = "openai", specifier = ">=1.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "pyperclip", specifier = ">=1.8" },
