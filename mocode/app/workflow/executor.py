@@ -3,7 +3,6 @@
 Contains:
 - _exec_node: AgentLoop instantiation and execution
 - _build_node_context_header: context string builder
-- _WorkflowNodeHook: per-node tool-call event hook
 - _finalize_map / _finalize_empty_map: map result helpers
 
 Higher-level orchestration (_run_task_node, _run_map_node, _run_map_child)
@@ -26,50 +25,8 @@ if TYPE_CHECKING:
 
     from ..core.agent import AgentLoop
 
-from ...core.hook import ToolTimingTracker
-from .events import NodeToolBatchDoneEvent, NodeToolCallEvent
+from .hooks import _WorkflowNodeHook  # noqa: F401 — re-export for backward compat
 from .models import NodeResult
-
-
-class _WorkflowNodeHook:
-    """Lightweight hook that captures tool calls within a node agent
-    and emits NodeToolCallEvent / NodeToolBatchDoneEvent via on_event."""
-
-    def __init__(self, node_id: str, on_event):
-        self._node_id = node_id
-        self._on_event = on_event
-        # Per-batch tracking (reset on each on_response)
-        self._groups: list[tuple[str, list[str]]] = []
-        self._tracker = ToolTimingTracker()
-
-    async def on_response(self, ctx) -> None:
-        if ctx.response and ctx.response.tool_calls:
-            from ..cli.display import group_tool_calls
-            self._groups = group_tool_calls(ctx.response.tool_calls)
-            self._tracker.reset()
-
-    async def on_tool_start(self, ctx) -> None:
-        self._tracker.start(ctx.tool_call_id)
-
-    async def on_tool_complete(self, ctx) -> None:
-        elapsed = self._tracker.complete(
-            ctx.tool_call_id, ctx.tool_name, ctx.tool_error, ctx.tool_timeout
-        )
-        self._on_event(NodeToolCallEvent(
-            node_id=self._node_id,
-            tool_name=ctx.tool_name,
-            tool_args=ctx.tool_args,
-            error=self._tracker.errors.get(ctx.tool_name),
-            elapsed=elapsed,
-        ))
-
-    async def after_tools(self, ctx) -> None:
-        self._on_event(NodeToolBatchDoneEvent(
-            node_id=self._node_id,
-            groups=list(self._groups),
-            errors=dict(self._tracker.errors),
-            elapsed=dict(self._tracker.elapsed),
-        ))
 
 
 class Executor:

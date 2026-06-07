@@ -26,7 +26,8 @@ from .events import (
     ProgressEvent,
     WorkflowEvent,
 )
-from .executor import Executor, _WorkflowNodeHook  # noqa: F401 — re-export for backward compat
+from .executor import Executor
+from .hooks import _WorkflowNodeHook  # noqa: F401 — re-export for backward compat
 from .models import fill_template, parse_items
 from .scheduler import Scheduler  # noqa: F401 — re-export for backward compat
 from .state import RunState
