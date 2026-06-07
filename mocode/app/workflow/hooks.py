@@ -7,6 +7,7 @@ within a node agent and emits NodeToolCallEvent / NodeToolBatchDoneEvent.
 from __future__ import annotations
 
 from ...core.hook import ToolTimingTracker
+from ..utils import group_tool_calls
 from .events import NodeToolBatchDoneEvent, NodeToolCallEvent
 
 
@@ -23,7 +24,6 @@ class _WorkflowNodeHook:
 
     async def on_response(self, ctx) -> None:
         if ctx.response and ctx.response.tool_calls:
-            from ..cli.display import group_tool_calls
             self._groups = group_tool_calls(ctx.response.tool_calls)
             self._tracker.reset()
 

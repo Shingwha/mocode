@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from math import ceil
 from shutil import get_terminal_size
 
 from wcwidth import wcswidth
 
-_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
-
-
-def visible_width(text: str) -> int:
-    """Return display width of *text*, ignoring ANSI escape sequences."""
-    return wcswidth(_ANSI_RE.sub("", text))
+# Re-export shared text utilities from app layer (canonical location)
+from ..utils import _ANSI_RE, ellipsize_middle, visible_width  # noqa: F401
 
 
 def ellipsize_tail(text: str, max_width: int) -> str:
@@ -23,17 +18,6 @@ def ellipsize_tail(text: str, max_width: int) -> str:
     if max_width < 4:
         return text[:max_width]
     return text[: max_width - 3] + "..."
-
-
-def ellipsize_middle(text: str, max_width: int) -> str:
-    """Truncate *text* in the middle: ``'abcdefghij'`` → ``'abcde...hij'``."""
-    if visible_width(text) <= max_width:
-        return text
-    if max_width < 7:  # too narrow for "a...b" — hard truncate
-        return text[:max_width]
-    head = max_width // 2 - 1
-    tail = max_width - head - 3
-    return text[:head] + "..." + text[-tail:]
 
 
 def count_visual_lines(text: str, prompt_width: int) -> int:

@@ -5,77 +5,15 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from ..utils import _CONTENT_LIMIT, group_items
 from .spinner import Priority, SpinnerRunner, Truncate
-from .textutils import ellipsize_middle
 from .theme import DIM, Style, Theme, _s
 
 if TYPE_CHECKING:
     from .input import Input
 
 
-# ── Tool display helpers ────────────────────────────────────
-
-_TOOL_KEY = {
-    "read": "path",
-    "write": "path",
-    "append": "path",
-    "edit": "path",
-    "bash": "command",
-    "glob": "pattern",
-    "grep": "pattern",
-    "fetch": "url",
-    "sub_agent": "task",
-    "skill": "name",
-    "goal": "action",
-    "image": "prompt",
-    "plan": "action",
-}
-
-
 # ── Tool call batching ──────────────────────────────────────
-
-_MERGE_TOOLS = frozenset({"read", "write", "append", "edit", "glob", "grep"})
-_CONTENT_LIMIT = 60  # unified width limit for tool content inside parentheses
-
-
-def tool_summary(name: str, args: dict) -> str:
-    """Extract a short summary string from tool arguments."""
-    key = _TOOL_KEY.get(name)
-    if not key:
-        # Fallback: show the first available argument
-        if not args:
-            return ""
-        key = next(iter(args))
-    val = str(args.get(key, ""))
-    return ellipsize_middle(val, _CONTENT_LIMIT)
-
-
-def group_items(
-    items: list,
-    get_name,
-    get_args,
-) -> list[tuple[str, list[str]]]:
-    """Group items by tool name. Mergeable tools are grouped; others stay individual."""
-    merged: dict[str, list[str]] = {}
-    singles: list[tuple[str, list[str]]] = []
-    for item in items:
-        name = get_name(item)
-        args = get_args(item)
-        summary = tool_summary(name, args)
-        if name in _MERGE_TOOLS:
-            merged.setdefault(name, []).append(summary)
-        else:
-            singles.append((name, [summary]))
-    return list(merged.items()) + singles
-
-
-def group_tool_calls(tool_calls) -> list[tuple[str, list[str]]]:
-    """Group OpenAI-style tool_calls by name."""
-    return group_items(
-        tool_calls,
-        get_name=lambda tc: tc.name,
-        get_args=lambda tc: json.loads(tc.arguments) if isinstance(tc.arguments, str) else (tc.arguments or {}),
-    )
 
 
 def merge_summaries(summaries: list[str]) -> str:

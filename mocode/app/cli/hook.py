@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from ...core.hook import AgentHook, ToolTimingTracker
-from .display import group_tool_calls, merge_summaries
+from ..utils import group_tool_calls
+from .display import merge_summaries
 from .spinner import Priority, Truncate
 
 
