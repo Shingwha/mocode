@@ -9,6 +9,36 @@ from __future__ import annotations
 from ..prompts.compact import summary_system_prompt, COMPACT_USER_TEMPLATE
 
 
+def _format_content_parts(content: list) -> str:
+    """Flatten a list of content parts into a single string."""
+    text_parts = []
+    for part in content:
+        if not isinstance(part, dict):
+            text_parts.append(str(part))
+            continue
+        part_type = part.get("type", "")
+        if part_type == "text":
+            text_parts.append(part.get("text", ""))
+        elif part_type == "image_url":
+            text_parts.append("[image attached]")
+        else:
+            text_parts.append("[attachment]")
+    return " ".join(text_parts)
+
+
+def _format_tool_calls(tool_calls: list) -> str:
+    """Format tool calls into a readable string."""
+    parts = []
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function", {})
+        name = fn.get("name", "unknown")
+        args = fn.get("arguments", "")
+        parts.append(f"[Tool Call: {name}({args})]")
+    return "\n".join(parts)
+
+
 def format_messages_for_summary(messages: list[dict]) -> str:
     parts = []
     for msg in messages:
@@ -17,30 +47,14 @@ def format_messages_for_summary(messages: list[dict]) -> str:
 
         if role == "user":
             if isinstance(content, list):
-                text_parts = []
-                for part in content:
-                    if isinstance(part, dict):
-                        if part.get("type") == "text":
-                            text_parts.append(part.get("text", ""))
-                        elif part.get("type") == "image_url":
-                            text_parts.append("[image attached]")
-                        else:
-                            text_parts.append("[attachment]")
-                    else:
-                        text_parts.append(str(part))
-                content = " ".join(text_parts)
+                content = _format_content_parts(content)
             parts.append(f"[User] {content}")
 
         elif role == "assistant":
             text = content or ""
             tool_calls = msg.get("tool_calls", [])
             if tool_calls:
-                for tc in tool_calls:
-                    if isinstance(tc, dict):
-                        fn = tc.get("function", {})
-                        name = fn.get("name", "unknown")
-                        args = fn.get("arguments", "")
-                        text += f"\n[Tool Call: {name}({args})]"
+                text += "\n" + _format_tool_calls(tool_calls)
             parts.append(f"[Assistant] {text}")
 
         elif role == "tool":
