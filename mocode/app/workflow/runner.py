@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
@@ -19,7 +18,6 @@ if TYPE_CHECKING:
 
     from ..core.agent import AgentLoop
 
-from ...core.hook import ToolTimingTracker
 from .events import (
     LoopIterEvent,
     MapFanOutEvent,
@@ -27,56 +25,14 @@ from .events import (
     NodeDoneEvent,
     NodeSkippedEvent,
     NodeStartEvent,
-    NodeToolBatchDoneEvent,
-    NodeToolCallEvent,
     ProgressEvent,
     RouterConditionEvent,
     WaveReadyEvent,
     WorkflowEvent,
 )
+from .executor import Executor, _WorkflowNodeHook  # noqa: F401 — re-export for backward compat
 from .models import NodeResult, fill_template, parse_items
 from .state import RunState
-
-
-class _WorkflowNodeHook:
-    """Lightweight hook that captures tool calls within a node agent
-    and emits NodeToolCallEvent / NodeToolBatchDoneEvent via on_event."""
-
-    def __init__(self, node_id: str, on_event):
-        self._node_id = node_id
-        self._on_event = on_event
-        # Per-batch tracking (reset on each on_response)
-        self._groups: list[tuple[str, list[str]]] = []
-        self._tracker = ToolTimingTracker()
-
-    async def on_response(self, ctx) -> None:
-        if ctx.response and ctx.response.tool_calls:
-            from ..cli.display import group_tool_calls
-            self._groups = group_tool_calls(ctx.response.tool_calls)
-            self._tracker.reset()
-
-    async def on_tool_start(self, ctx) -> None:
-        self._tracker.start(ctx.tool_call_id)
-
-    async def on_tool_complete(self, ctx) -> None:
-        elapsed = self._tracker.complete(
-            ctx.tool_call_id, ctx.tool_name, ctx.tool_error, ctx.tool_timeout
-        )
-        self._on_event(NodeToolCallEvent(
-            node_id=self._node_id,
-            tool_name=ctx.tool_name,
-            tool_args=ctx.tool_args,
-            error=self._tracker.errors.get(ctx.tool_name),
-            elapsed=elapsed,
-        ))
-
-    async def after_tools(self, ctx) -> None:
-        self._on_event(NodeToolBatchDoneEvent(
-            node_id=self._node_id,
-            groups=list(self._groups),
-            errors=dict(self._tracker.errors),
-            elapsed=dict(self._tracker.elapsed),
-        ))
 
 
 class DAGRunner:
@@ -106,6 +62,11 @@ class DAGRunner:
         self.run_store = run_store
         self._semaphore = asyncio.Semaphore(workflow.concurrency)
         self.partial_results: list[NodeResult] = []  # populated on cancellation
+        self._executor = Executor(
+            parent_agent,
+            timeout=timeout,
+            on_event=on_event,
+        )
 
     # ── Event dispatch ────────────────────────────────────────
 
@@ -374,15 +335,16 @@ class DAGRunner:
             stack.extend(wf.dependents.get(nid, []))
         return visited
 
-    # ── Task node execution ───────────────────────────────────
+    # ── Delegated node execution (to Executor) ───────────────
 
     async def _run_task_node(self, node: Node, state: RunState) -> None:
-        """Fill template, execute via subprocess, record result."""
+        """Fill template, execute via AgentLoop, record result."""
         wf = self.workflow
         task_text = fill_template(node.task, state.context)
 
         context_header = (
-            self._build_node_context_header(node, wf) if self.node_context else None
+            self._executor._build_node_context_header(node, wf)
+            if self.node_context else None
         )
         async with self._semaphore:
             self._emit(NodeStartEvent(node_id=node.id, description=node.description))
@@ -393,11 +355,8 @@ class DAGRunner:
             node,
             nr,
             state,
-            wf,
             progress_message=f"Node '{node.id}' done ({nr.duration:.1f}s)",
         )
-
-    # ── Map node execution ────────────────────────────────────
 
     async def _run_map_node(self, node: Node, state: RunState) -> None:
         """Fan-out: parse items, run a child task for each, concatenate results."""
@@ -405,27 +364,16 @@ class DAGRunner:
         items = parse_items(items_raw)
 
         if not items:
-            self._finalize_empty_map(node, state)
+            self._executor._finalize_empty_map(node, state, self._record_node_done)
             return
 
         async with self._semaphore:
             self._emit(NodeStartEvent(node_id=node.id, description=node.description))
 
         child_results = await self._fan_out_children(node, items, state)
-        self._finalize_map(node, items, child_results, state)
-
-    def _finalize_empty_map(self, node: Node, state: RunState) -> None:
-        """Handle a map node with no items — produce empty output."""
-        wf = self.workflow
-        empty_result = NodeResult(
-            node_id=node.id,
-            task=node.task,
-            output="",
-            exit_code=0,
-            duration=0,
+        self._executor._finalize_map(
+            node, items, child_results, state, self._record_node_done
         )
-        state.total_executions += 1
-        self._record_node_done(node, empty_result, state, wf)
 
     async def _fan_out_children(
         self, node: Node, items: list[str], state: RunState
@@ -439,7 +387,8 @@ class DAGRunner:
 
         # Build context header once (same for all children)
         context_header = (
-            self._build_node_context_header(node, wf) if self.node_context else None
+            self._executor._build_node_context_header(node, wf)
+            if self.node_context else None
         )
 
         child_ids: list[str] = []
@@ -476,44 +425,25 @@ class DAGRunner:
 
         return child_results
 
-    def _finalize_map(
-        self,
-        node: Node,
-        items: list[str],
-        child_results: list[NodeResult],
-        state: RunState,
-    ) -> None:
-        """Merge child outputs, record result, activate downstream."""
-        wf = self.workflow
-        total_duration = sum(nr.duration for nr in child_results)
-        merged_output = "\n---\n".join(nr.output for nr in child_results)
-
-        for nr in child_results:
-            state.total_executions += 1
-            state.results.append(nr)
-
-        map_result = NodeResult(
-            node_id=node.id,
-            task=node.task,
-            output=merged_output,
-            exit_code=0,
-            duration=total_duration,
-        )
-        state.total_executions += 1
-        self._record_node_done(
-            node,
-            map_result,
-            state,
-            wf,
-            progress_message=f"Map '{node.id}' done — {len(items)} items ({total_duration:.1f}s)",
-        )
-
     async def _run_map_child(
         self, child_id: str, task: str, context_header: str | None
     ) -> NodeResult:
         """Run a single map child task under the semaphore."""
         async with self._semaphore:
             return await self._exec_node(child_id, task, context_header)
+
+    async def _exec_node(
+        self,
+        node_id: str,
+        task: str,
+        context_header: str | None = None,
+    ) -> NodeResult:
+        """Delegate node execution to the Executor.
+
+        Kept as a thin wrapper so that ``patch.object(runner, "_exec_node")``
+        in tests continues to work without modification.
+        """
+        return await self._executor._exec_node(node_id, task, context_header)
 
     # ── Node completion helper ────────────────────────────────
 
@@ -522,7 +452,6 @@ class DAGRunner:
         node: Node,
         nr: NodeResult,
         state: RunState,
-        wf: Workflow,
         *,
         progress_message: str | None = None,
     ) -> None:
@@ -531,6 +460,7 @@ class DAGRunner:
         Centralises the ~15-line sequence duplicated in _run_task_node,
         _finalize_empty_map, and _finalize_map.
         """
+        wf = self.workflow
         state.results.append(nr)
         state.context["nodes"][node.id] = {
             "output": nr.output,
@@ -572,92 +502,3 @@ class DAGRunner:
             state.pending_deps[dep_id] = state.pending_deps.get(dep_id, 0) - 1
             if state.is_ready(dep_id) and dep_id not in state.ready_queue:
                 state.ready_queue.append(dep_id)
-
-    # ── Node context header ───────────────────────────────────
-
-    @staticmethod
-    def _build_node_context_header(node: Node, workflow: Workflow) -> str:
-        """Build context header with graph structure info for a node."""
-        lines = [f'You are node "{node.id}" in workflow "{workflow.name}".']
-        if node.description:
-            lines.append(f"Description: {node.description}")
-
-        if node.depends:
-            lines.append("Input from:")
-            for dep_id in node.depends:
-                dep_node = workflow.node_map.get(dep_id)
-                desc = dep_node.description if dep_node else ""
-                lines.append(f"  - {dep_id}: {desc}" if desc else f"  - {dep_id}")
-
-        dep_ids = workflow.dependents.get(node.id, [])
-        if dep_ids:
-            lines.append("Output to:")
-            for dep_id in dep_ids:
-                dep_node = workflow.node_map.get(dep_id)
-                desc = dep_node.description if dep_node else ""
-                lines.append(f"  - {dep_id}: {desc}" if desc else f"  - {dep_id}")
-
-        return "\n".join(lines)
-
-    # ── AgentLoop execution ──────────────────────────────────
-
-    async def _exec_node(
-        self,
-        node_id: str,
-        task: str,
-        context_header: str | None = None,
-    ) -> NodeResult:
-        """Execute a task node using an in-process AgentLoop."""
-        from ...core.builder import Agent
-
-        full_prompt = f"{context_header}\n\n---\nTask: {task}" if context_header else task
-
-        tools = self._parent_agent.tool_registry.derived(
-            exclude={"sub_agent", "compact"}
-        )
-        hook = _WorkflowNodeHook(node_id, self._emit)
-
-        temp_agent = (
-            Agent()
-            .provider(self._parent_agent.provider)
-            .prompt(self._parent_agent.system_prompt)
-            .tools(tools)
-            .hooks([hook])
-            .config(self._parent_agent.config)
-            .build()
-        )
-
-        t0 = time.monotonic()
-        try:
-            result = await asyncio.wait_for(
-                temp_agent.chat(full_prompt),
-                timeout=self.timeout,
-            )
-            return NodeResult(
-                node_id=node_id,
-                task=task,
-                output=result or "",
-                exit_code=0,
-                duration=time.monotonic() - t0,
-                iteration=temp_agent.iteration,
-            )
-        except asyncio.TimeoutError:
-            return NodeResult(
-                node_id=node_id,
-                task=task,
-                output="",
-                exit_code=1,
-                duration=time.monotonic() - t0,
-                error=f"timed out after {self.timeout}s",
-                iteration=getattr(temp_agent, 'iteration', 1),
-            )
-        except Exception as e:
-            return NodeResult(
-                node_id=node_id,
-                task=task,
-                output="",
-                exit_code=1,
-                duration=time.monotonic() - t0,
-                error=str(e),
-                iteration=getattr(temp_agent, 'iteration', 1),
-            )
