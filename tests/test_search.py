@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from mocode.tools.grep import GrepTool
+from mocode.tools.grep import _grep, GrepTool
 from mocode.tools.glob import GlobTool
 from mocode.tools.utils import (
     expand_context_indices,
@@ -35,7 +35,7 @@ class TestGrepIgnoreCase:
             "context": 0,
             "ignore_case": ignore_case,
         }
-        result = GrepTool().run(args)
+        result = _grep(args)
         if should_match:
             assert "AgentLoop" in result
         else:
@@ -111,7 +111,7 @@ class TestGrepSingleFile:
             "context": 0,
             "type": "",
         }
-        result = GrepTool().run(args)
+        result = _grep(args)
         assert "import os" in result
         assert "import sys" in result
 
@@ -126,7 +126,7 @@ class TestGrepSingleFile:
             "context": 0,
             "type": "",
         }
-        result = GrepTool().run(args)
+        result = _grep(args)
         assert ":2" in result
 
     def test_single_file_files_mode(self, tmp_path: Path):
@@ -140,7 +140,7 @@ class TestGrepSingleFile:
             "context": 0,
             "type": "",
         }
-        result = GrepTool().run(args)
+        result = _grep(args)
         assert "Found 1 file" in result
         assert "main.py" in result
 
@@ -155,7 +155,7 @@ class TestGrepSingleFile:
             "context": 0,
             "type": "",
         }
-        result = GrepTool().run(args)
+        result = _grep(args)
         assert "No matches" in result
 
     def test_single_file_with_context(self, tmp_path: Path):
@@ -169,7 +169,7 @@ class TestGrepSingleFile:
             "context": 1,
             "type": "",
         }
-        result = GrepTool().run(args)
+        result = _grep(args)
         assert "match_here" in result
         assert "line2" in result
         assert "line4" in result
@@ -186,7 +186,7 @@ class TestGrepSingleFile:
             "type": "",
             "ignore_case": True,
         }
-        result = GrepTool().run(args)
+        result = _grep(args)
         assert "Error" in result
 
 
