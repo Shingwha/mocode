@@ -8,6 +8,7 @@ after_tools) can mutate ctx.messages in place.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -60,6 +61,61 @@ class AgentHookContext:
         self.tool_result = None
         self.tool_error = None
         self.tool_timeout = None
+
+
+@dataclass
+class ToolTimingTracker:
+    """Reusable tracker for per-call timing and per-tool-name error/elapsed tracking.
+
+    Provides start(call_id) / complete(call_id, name, error, timeout) / reset()
+    so that multiple Hook classes can share the same timing logic via composition.
+    """
+
+    _call_start: dict[str, float] = field(default_factory=dict)
+    _elapsed: dict[str, float] = field(default_factory=dict)
+    _errors: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def elapsed(self) -> dict[str, float]:
+        """Max elapsed seconds keyed by tool name."""
+        return self._elapsed
+
+    @property
+    def errors(self) -> dict[str, str]:
+        """First error message keyed by tool name."""
+        return self._errors
+
+    def start(self, call_id: str) -> None:
+        """Record monotonic start time for *call_id*."""
+        self._call_start[call_id] = time.monotonic()
+
+    def complete(
+        self,
+        call_id: str,
+        name: str,
+        error: str | None = None,
+        timeout: int | None = None,
+    ) -> float:
+        """Finalise *call_id*, return elapsed seconds.
+
+        Tracks max elapsed per *name* and first error/timeout per *name*.
+        """
+        elapsed = 0.0
+        if call_id in self._call_start:
+            elapsed = time.monotonic() - self._call_start[call_id]
+            prev = self._elapsed.get(name, 0.0)
+            self._elapsed[name] = max(prev, elapsed)
+        if timeout is not None:
+            self._errors.setdefault(name, f"timeout {timeout}s")
+        elif error:
+            self._errors.setdefault(name, error[:80])
+        return elapsed
+
+    def reset(self) -> None:
+        """Clear all tracking state."""
+        self._call_start.clear()
+        self._elapsed.clear()
+        self._errors.clear()
 
 
 class AgentHook:

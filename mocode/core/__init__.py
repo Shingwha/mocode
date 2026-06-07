@@ -6,7 +6,7 @@ from .builder import Agent
 from .agent import AgentLoop, AgentConfig, LoopResult
 from .provider import Provider, Response, ToolCall, Usage
 from .tool import Tool, ToolRegistry, ToolError
-from .hook import AgentHook, AgentHookContext, HookRunner
+from .hook import AgentHook, AgentHookContext, HookRunner, ToolTimingTracker
 from .prompt import Prompt, Section
 from .skill import Skill, SkillMetadata, SkillManager, make_builtin_skill
 from .virtualfs import VirtualFS
@@ -26,6 +26,7 @@ __all__ = [
     "AgentHook",
     "AgentHookContext",
     "HookRunner",
+    "ToolTimingTracker",
     "Prompt",
     "Section",
     "Skill",

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import time
-
-from ...core.hook import AgentHook
+from ...core.hook import AgentHook, ToolTimingTracker
 from .display import group_tool_calls, merge_summaries
 from .spinner import Priority, Truncate
 
@@ -21,9 +19,7 @@ class CLIDisplayHook(AgentHook):
         self._prompt = self._completion = 0
         # Tool execution tracking (reset per batch)
         self._tool_groups: list[tuple[str, list[str]]] = []
-        self._tool_errors: dict[str, str] = {}  # name -> first error msg
-        self._tool_call_start: dict[str, float] = {}  # call_id -> monotonic
-        self._tool_elapsed: dict[str, float] = {}  # name -> max elapsed
+        self._tracker = ToolTimingTracker()
 
     async def on_response(self, ctx):
         if ctx.reasoning_content and not (ctx.response and ctx.response.tool_calls):
@@ -37,9 +33,7 @@ class CLIDisplayHook(AgentHook):
         if ctx.response and ctx.response.tool_calls:
             groups = group_tool_calls(ctx.response.tool_calls)
             self._tool_groups = groups
-            self._tool_errors = {}
-            self._tool_call_start = {}
-            self._tool_elapsed = {}
+            self._tracker.reset()
             self._update_spinner_for_tools(groups)
 
     async def after_iteration(self, ctx):
@@ -48,28 +42,19 @@ class CLIDisplayHook(AgentHook):
             self._prompt = self._completion = 0
 
     async def on_tool_start(self, ctx):
-        self._tool_call_start[ctx.tool_call_id] = time.monotonic()
+        self._tracker.start(ctx.tool_call_id)
 
     async def on_tool_complete(self, ctx):
-        # Track per-tool elapsed (max across parallel calls of same name)
-        if ctx.tool_call_id in self._tool_call_start:
-            elapsed = time.monotonic() - self._tool_call_start[ctx.tool_call_id]
-            prev = self._tool_elapsed.get(ctx.tool_name, 0)
-            self._tool_elapsed[ctx.tool_name] = max(prev, elapsed)
-        # Track first error per tool name
-        if ctx.tool_timeout is not None:
-            self._tool_errors.setdefault(
-                ctx.tool_name, f"timeout {ctx.tool_timeout}s"
-            )
-        elif ctx.tool_error:
-            self._tool_errors.setdefault(ctx.tool_name, ctx.tool_error[:80])
+        self._tracker.complete(
+            ctx.tool_call_id, ctx.tool_name, ctx.tool_error, ctx.tool_timeout
+        )
 
     async def after_tools(self, ctx):
         for name, summaries in self._tool_groups:
             merged = merge_summaries(summaries)
-            elapsed = self._tool_elapsed.get(name, 0)
-            if name in self._tool_errors:
-                self._d.tool_fail(name, merged, self._tool_errors[name], elapsed)
+            elapsed = self._tracker.elapsed.get(name, 0)
+            if name in self._tracker.errors:
+                self._d.tool_fail(name, merged, self._tracker.errors[name], elapsed)
             else:
                 self._d.tool_done(name, merged, elapsed)
 
@@ -79,9 +64,7 @@ class CLIDisplayHook(AgentHook):
         self._d.spinner_set("thinking", "Thinking",
                             priority=Priority.NORMAL, truncate=Truncate.TAIL)
         self._tool_groups = []
-        self._tool_errors = {}
-        self._tool_call_start = {}
-        self._tool_elapsed = {}
+        self._tracker.reset()
 
     async def on_compact(self, ctx):
         self._d.spinner_remove("thinking")
