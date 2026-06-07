@@ -1,34 +1,24 @@
-"""Skill tool — loads skill content on demand.
-
-Usage:
-    from mocode.core.skill import SkillManager
-    from mocode.tools import SkillTool
-
-    mgr = SkillManager([Path.home() / ".mocode" / "skills"])
-    agent = Agent().tools([SkillTool(mgr)]).build()
-"""
-
+"""Skill tool — loads skill content on demand."""
 from __future__ import annotations
 
-from mocode.core import Tool, ToolError, SkillManager
+from ..core.tool import Tool, ToolError
+from ..core.skill import SkillManager
+
+_SKILL_PARAMS = {"name": {"type": "string", "description": "The skill name to load"}}
+_SKILL_DESC = "Load a skill by name. Use when the user's request matches a skill's description. Returns the skill's instructions for you to follow."
 
 
-def SkillTool(manager: SkillManager, *, name: str = "skill") -> Tool:
-    def _use_skill(args: dict) -> str:
+class SkillTool(Tool):
+    """Load a skill by name."""
+    def __init__(self, manager: SkillManager, *, name: str = "skill") -> None:
+        self._manager = manager
+        super().__init__(name=name, description=_SKILL_DESC, params=_SKILL_PARAMS, func=self._execute)
+
+    def _execute(self, args: dict) -> str:
         skill_name = args["name"]
-
-        skill = manager.get(skill_name)
+        skill = self._manager.get(skill_name)
         if not skill:
-            available = manager.names()
+            available = self._manager.names()
             hint = f" Available: {available}" if available else " No skills available."
             raise ToolError(f"Skill '{skill_name}' not found.{hint}", "not_found")
-
         return f"Base directory: {skill.base_dir}\n\n{skill.load_content()}"
-
-    return Tool(
-        name,
-        "Load a skill by name. Use when the user's request matches a skill's description. "
-        "Returns the skill's instructions for you to follow.",
-        {"name": {"type": "string", "description": "The skill name to load"}},
-        _use_skill,
-    )
