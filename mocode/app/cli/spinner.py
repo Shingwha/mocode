@@ -96,6 +96,10 @@ _PRESETS: dict[str, Spinner] = {
         frames=("🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"),
         speed=0.15,
     ),
+    # --- Track animation (fixed-width) ---
+    "runner": Spinner.from_list(
+        _ping_pong([f"{'─' * i}🏃{'─' * (14 - i)}" for i in range(15)]), 0.10
+    ),
 }
 
 
