@@ -17,7 +17,7 @@ from ...core.virtualfs import VirtualFS
 from ...skills import AmesimTunerSkill, SimulinkTunerSkill, WorkflowSkill
 from ..workflow import WorkflowRegistry
 from ..workflow.cli import make_registry as _make_workflow_registry
-from ...hooks import CompactHook, GoalHook
+from ...hooks import CompactHook
 from ...prompts.app import build_system_prompt
 from ...providers.openai import OpenAIProvider
 from ...tools import (
@@ -25,7 +25,6 @@ from ...tools import (
     EditTool,
     FetchTool,
     GlobTool,
-    GoalTool,
     GrepTool,
     ReadTool,
     SkillTool,
@@ -148,14 +147,11 @@ class CLIApp:
 
         prompt = self._build_prompt()
 
-        goal_hook = GoalHook()
-
         hooks = []
         if self.interactive:
             from .hook import CLIDisplayHook
 
             hooks.append(CLIDisplayHook(self.display))
-        hooks.append(goal_hook)
 
         agent = (
             Agent()
@@ -172,7 +168,6 @@ class CLIApp:
         self._tools.register(
             SubAgentTool(agent, self._tools, tool_timeout=agent.config.tool_timeout)
         )
-        self._tools.register(GoalTool(goal_hook))
 
         from ...tools.plan import PlanTool
         self._tools.register(PlanTool(self))

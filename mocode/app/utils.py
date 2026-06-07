@@ -44,7 +44,6 @@ _TOOL_KEY = {
     "fetch": "url",
     "sub_agent": "task",
     "skill": "name",
-    "goal": "action",
     "image": "prompt",
     "plan": "action",
 }
