@@ -149,17 +149,6 @@ class HookRunner:
     """Fan-out dispatcher for a list of AgentHooks with error isolation."""
 
     _log = logging.getLogger(__name__)
-    _METHODS = frozenset(
-        {
-            "before_iteration",
-            "on_response",
-            "after_tools",
-            "after_iteration",
-            "on_tool_start",
-            "on_tool_complete",
-            "on_compact",
-        }
-    )
 
     def __init__(self, hooks: list[AgentHook] | None = None):
         self._hooks: list[AgentHook] = list(hooks or [])
@@ -176,9 +165,23 @@ class HookRunner:
                     "Hook %s.%s failed", type(h).__name__, method, exc_info=True
                 )
 
-    def __getattr__(self, name: str):
-        if name in self._METHODS:
-            async def dispatch(ctx: AgentHookContext) -> None:
-                await self._dispatch(name, ctx)
-            return dispatch
-        raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+    async def before_iteration(self, ctx: AgentHookContext) -> None:
+        await self._dispatch("before_iteration", ctx)
+
+    async def on_response(self, ctx: AgentHookContext) -> None:
+        await self._dispatch("on_response", ctx)
+
+    async def after_tools(self, ctx: AgentHookContext) -> None:
+        await self._dispatch("after_tools", ctx)
+
+    async def after_iteration(self, ctx: AgentHookContext) -> None:
+        await self._dispatch("after_iteration", ctx)
+
+    async def on_tool_start(self, ctx: AgentHookContext) -> None:
+        await self._dispatch("on_tool_start", ctx)
+
+    async def on_tool_complete(self, ctx: AgentHookContext) -> None:
+        await self._dispatch("on_tool_complete", ctx)
+
+    async def on_compact(self, ctx: AgentHookContext) -> None:
+        await self._dispatch("on_compact", ctx)
