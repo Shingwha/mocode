@@ -38,8 +38,6 @@ class AgentHookContext:
     tool_result: str | None = None
     tool_error: str | None = None
     tool_timeout: int | None = None
-    # Loop control
-    continue_loop: bool | None = None
     # Compact state
     compact_old: int = 0
     compact_new: int = 0

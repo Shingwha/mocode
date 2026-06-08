@@ -173,15 +173,10 @@ class AgentLoop:
                     and self._iteration_count >= self.config.max_iterations
                 ):
                     break
-                if ctx.continue_loop is False:
-                    break
             else:
                 self.messages.append(self._assistant_msg(response))
                 await self.hooks.after_iteration(ctx)
                 self.messages = ctx.messages
-                if ctx.continue_loop is True:
-                    ctx.continue_loop = None
-                    continue
                 break
 
         return final_response
