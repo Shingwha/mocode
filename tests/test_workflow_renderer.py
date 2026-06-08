@@ -303,7 +303,8 @@ class TestWorkflowSummary:
         renderer, lines = _make_renderer()
         wf = MagicMock()
         wf.name = "test-wf"
-        r1 = MagicMock(exit_code=0, status="done", output="ok", error=None)
+        r1 = MagicMock(exit_code=0, status="done", output="ok", error=None,
+                       tool_calls=0, prompt_tokens=0, completion_tokens=0)
         renderer.start(wf)
         renderer.summary(wf, [r1])
         assert any("1 passed" in l for l in lines)
@@ -312,14 +313,43 @@ class TestWorkflowSummary:
         renderer, lines = _make_renderer()
         wf = MagicMock()
         wf.name = "test-wf"
-        r_ok = MagicMock(exit_code=0, status="done", output="ok", error=None)
-        r_fail = MagicMock(exit_code=1, status="done", output="", error="boom")
-        r_skip = MagicMock(exit_code=0, status="skipped", output="", error=None)
+        r_ok = MagicMock(exit_code=0, status="done", output="ok", error=None,
+                         tool_calls=0, prompt_tokens=0, completion_tokens=0)
+        r_fail = MagicMock(exit_code=1, status="done", output="", error="boom",
+                           tool_calls=0, prompt_tokens=0, completion_tokens=0)
+        r_skip = MagicMock(exit_code=0, status="skipped", output="", error=None,
+                           tool_calls=0, prompt_tokens=0, completion_tokens=0)
         renderer.start(wf)
         renderer.summary(wf, [r_ok, r_fail, r_skip])
         summary_lines = [l for l in lines if "passed" in l and "failed" in l]
         assert len(summary_lines) >= 1
         assert any("skipped" in l for l in summary_lines)
+
+    def test_usage_totals_displayed(self):
+        renderer, lines = _make_renderer()
+        wf = MagicMock()
+        wf.name = "test-wf"
+        r1 = MagicMock(exit_code=0, status="done", output="ok", error=None,
+                       tool_calls=3, prompt_tokens=1500, completion_tokens=400)
+        r2 = MagicMock(exit_code=0, status="done", output="ok2", error=None,
+                       tool_calls=2, prompt_tokens=800, completion_tokens=200)
+        renderer.start(wf)
+        renderer.summary(wf, [r1, r2])
+        summary_line = [l for l in lines if "passed" in l][0]
+        assert "5 tools" in summary_line
+        assert "↑2,300 ↓600 tokens" in summary_line
+
+    def test_no_usage_when_zero(self):
+        renderer, lines = _make_renderer()
+        wf = MagicMock()
+        wf.name = "test-wf"
+        r = MagicMock(exit_code=0, status="done", output="ok", error=None,
+                      tool_calls=0, prompt_tokens=0, completion_tokens=0)
+        renderer.start(wf)
+        renderer.summary(wf, [r])
+        summary_line = [l for l in lines if "passed" in l][0]
+        assert "tools" not in summary_line
+        assert "tokens" not in summary_line
 
 
 # ── Static views ───────────────────────────────────────────

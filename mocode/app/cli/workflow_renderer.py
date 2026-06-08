@@ -256,13 +256,32 @@ class WorkflowRenderer:
         )
         self._d.print()
 
+    @staticmethod
+    def _collect_stats(results: list) -> tuple[int, int, int]:
+        """Return (passed, failed, skipped) counts."""
+        passed = sum(1 for r in results if r.exit_code == 0 and r.status == "done")
+        failed = sum(1 for r in results if r.exit_code != 0)
+        skipped = sum(1 for r in results if r.status == "skipped")
+        return passed, failed, skipped
+
+    @staticmethod
+    def _build_usage_line(results: list) -> str:
+        """Build dim usage totals line from done results."""
+        done = [r for r in results if r.status == "done"]
+        total_tools = sum(r.tool_calls for r in done)
+        total_prompt = sum(r.prompt_tokens for r in done)
+        total_completion = sum(r.completion_tokens for r in done)
+        parts = []
+        if total_tools > 0:
+            parts.append(f"{total_tools} tools")
+        if total_prompt > 0:
+            parts.append(f"↑{total_prompt:,} ↓{total_completion:,} tokens")
+        return _s(f"  {' · '.join(parts)}", DIM) if parts else ""
+
     def summary(self, wf: Workflow, results: list | None = None) -> None:
         """Print final output and summary."""
         results = results or []
-
-        passed = sum(1 for r in results if r.exit_code == 0 and r.status == "done")
-        failed = sum(1 for r in results if r.exit_code != 0)
-        skipped_count = sum(1 for r in results if r.status == "skipped")
+        passed, failed, skipped_count = self._collect_stats(results)
         wall_time = (
             time.monotonic() - self._start_time if self._start_time else 0.0
         )
@@ -286,33 +305,18 @@ class WorkflowRenderer:
                 last_output_result = r
             self._d.print(_s(f"Error: {r.error}", RED))
 
-        # Summary
+        # Summary line
         self._d.print()
-        time_str = _s(f"{wall_time:.1f}s", DIM)
-        summary_icon_color = GREEN if failed == 0 else RED
-        parts = []
-        if passed:
-            parts.append(_s(f"{passed} passed", GREEN + BOLD))
-        if failed:
-            parts.append(_s(f"{failed} failed", RED))
-        if skipped_count:
-            parts.append(_s(f"{skipped_count} skipped", DIM))
-        stat_str = " · ".join(parts)
+        stat_str = " · ".join(s for s in (
+            _s(f"{passed} passed", GREEN + BOLD) if passed else None,
+            _s(f"{failed} failed", RED) if failed else None,
+            _s(f"{skipped_count} skipped", DIM) if skipped_count else None,
+        ) if s)
 
-        # Totals: tools + tokens
-        done_results = [r for r in results if r.status == "done"]
-        total_tools = sum(int(getattr(r, 'tool_calls', 0) or 0) for r in done_results)
-        total_prompt = sum(int(getattr(r, 'prompt_tokens', 0) or 0) for r in done_results)
-        total_completion = sum(int(getattr(r, 'completion_tokens', 0) or 0) for r in done_results)
-        usage_parts = []
-        if total_tools > 0:
-            usage_parts.append(f"{total_tools} tools")
-        if total_prompt > 0:
-            usage_parts.append(f"↑{total_prompt:,} ↓{total_completion:,} tokens")
-        usage_str = _s(f"  {' · '.join(usage_parts)}", DIM) if usage_parts else ""
-
+        usage_str = self._build_usage_line(results)
+        icon = GREEN if failed == 0 else RED
         self._d.print(
-            f"{_s('■', summary_icon_color)} {_s(wf.name, BOLD)}  {stat_str}  {time_str}{usage_str}"
+            f"{_s('■', icon)} {_s(wf.name, BOLD)}  {stat_str}  {_s(f'{wall_time:.1f}s', DIM)}{usage_str}"
         )
 
     def cancelled(self, wf: Workflow, results: list | None = None) -> None:
