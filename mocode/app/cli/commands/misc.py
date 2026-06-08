@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ....core.compact import compact_messages
+from ....prompts.compact import summary_system_prompt, COMPACT_USER_TEMPLATE
 from . import Command, CommandContext, CommandResult
 
 
@@ -83,7 +84,12 @@ async def _compact(ctx: CommandContext) -> CommandResult:
     old_count = len(agent.messages)
     ctx.display.info("Compacting conversation...")
 
-    new_messages = await compact_messages(agent.provider, agent.messages)
+    new_messages = await compact_messages(
+        agent.provider,
+        agent.messages,
+        summary_system_prompt.build(fmt="xml"),
+        COMPACT_USER_TEMPLATE,
+    )
     agent.messages.clear()
     agent.messages.extend(new_messages)
 

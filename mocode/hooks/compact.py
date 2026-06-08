@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..core.hook import AgentHook, AgentHookContext
 from ..core.compact import compact_messages
+from ..prompts.compact import summary_system_prompt, COMPACT_USER_TEMPLATE
 
 
 class CompactHook(AgentHook):
@@ -32,6 +33,8 @@ class CompactHook(AgentHook):
             ctx.messages[:] = await compact_messages(
                 self._agent.provider,
                 ctx.messages,
+                summary_system_prompt.build(fmt="xml"),
+                COMPACT_USER_TEMPLATE,
             )
             ctx.compact_old = old_count
             ctx.compact_new = len(ctx.messages)

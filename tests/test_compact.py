@@ -10,6 +10,7 @@ from mocode.core.compact import (
     _format_tool_calls,
 )
 from mocode.hooks.compact import CompactHook
+from mocode.prompts.compact import summary_system_prompt, COMPACT_USER_TEMPLATE
 
 
 class MockProvider:
@@ -167,7 +168,11 @@ class TestCompactMessages:
             {"role": "user", "content": "Now add tests"},
             {"role": "assistant", "content": "Added test_auth.py"},
         ]
-        result = await compact_messages(provider, messages)
+        result = await compact_messages(
+            provider, messages,
+            summary_system_prompt.build(fmt="xml"),
+            COMPACT_USER_TEMPLATE,
+        )
 
         assert len(result) == 1
         assert result[0]["role"] == "user"

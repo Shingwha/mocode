@@ -6,8 +6,6 @@ hooks → tools → prompts dependency chain.
 
 from __future__ import annotations
 
-from ..prompts.compact import summary_system_prompt, COMPACT_USER_TEMPLATE
-
 
 def _format_content_parts(content: list) -> str:
     """Flatten a list of content parts into a single string."""
@@ -84,18 +82,21 @@ def build_fallback_summary(messages: list[dict]) -> str:
     )
 
 
-async def _generate_summary(provider, messages_text: str) -> str:
+async def _generate_summary(
+    provider,
+    messages_text: str,
+    system_prompt: str,
+    user_template: str,
+) -> str:
     try:
         resp = await provider.call(
             messages=[
                 {
                     "role": "user",
-                    "content": COMPACT_USER_TEMPLATE.format(
-                        messages_text=messages_text
-                    ),
+                    "content": user_template.format(messages_text=messages_text),
                 }
             ],
-            system=summary_system_prompt.build(fmt="xml"),
+            system=system_prompt,
             tools=[],
             max_tokens=8000,
         )
@@ -107,13 +108,15 @@ async def _generate_summary(provider, messages_text: str) -> str:
 async def compact_messages(
     provider,
     messages: list[dict],
+    system_prompt: str,
+    user_template: str,
 ) -> list[dict]:
     """Compress messages by generating an LLM summary."""
     if len(messages) <= 2:
         return messages
 
     formatted = format_messages_for_summary(messages)
-    summary = await _generate_summary(provider, formatted)
+    summary = await _generate_summary(provider, formatted, system_prompt, user_template)
     if not summary:
         summary = build_fallback_summary(messages)
 
