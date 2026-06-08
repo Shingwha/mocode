@@ -24,6 +24,7 @@ from mocode.app.workflow import (
     fill_template,
     parse_args,
     parse_items,
+    parse_sections,
 )
 from mocode.app.cli.workflow_renderer import summarize, detailed_summarize
 from mocode.app.workflow.events import (
@@ -155,6 +156,16 @@ class TestModels:
         assert n.routes[0].match == "critical"
         assert n.routes[1].match is None
 
+    def test_node_from_dict_each(self):
+        n = Node.from_dict({
+            "id": "audit", "each": "{nodes.scan.ISSUE}", "as": "finding",
+            "task": "Analyze {finding}", "depends": ["scan"],
+        })
+        assert n.each == "{nodes.scan.ISSUE}"
+        assert n.as_ == "finding"
+        assert n.task == "Analyze {finding}"
+        assert "scan" in n.depends
+
     def test_node_result_defaults(self):
         nr = NodeResult(
             node_id="scan", task="Scan", output="found 3 issues",
@@ -166,11 +177,15 @@ class TestModels:
         assert nr.error is None
         assert nr.status == "done"
         assert nr.iteration == 1
+        assert nr.sections == {}
 
     def test_depends_inference(self):
         assert infer_depends_from_task("Check {nodes.scan.output}") == ["scan"]
         n = Node.from_dict({"id": "t", "task": "Process {nodes.src.output}"})
         assert "src" in n.depends
+
+    def test_depends_inference_with_index(self):
+        assert infer_depends_from_task("Check {nodes.scan.ISSUE[0]}") == ["scan"]
 
 
 # ===========================================================================
@@ -283,63 +298,67 @@ class TestFillTemplate:
     def test_unknown_placeholder_kept(self):
         assert fill_template("{unknown.thing}", {}) == "{unknown.thing}"
 
+    def test_index_access(self):
+        ctx = {"nodes": {"scan": {"ISSUE": ["issue1", "issue2"]}}}
+        assert fill_template("{nodes.scan.ISSUE[0]}", ctx) == "issue1"
+        assert fill_template("{nodes.scan.ISSUE[1]}", ctx) == "issue2"
+
+    def test_index_out_of_range_kept(self):
+        ctx = {"nodes": {"scan": {"ISSUE": ["issue1"]}}}
+        assert fill_template("{nodes.scan.ISSUE[5]}", ctx) == "{nodes.scan.ISSUE[5]}"
+
+    def test_list_join(self):
+        ctx = {"nodes": {"scan": {"ISSUE": ["a", "b", "c"]}}}
+        result = fill_template("Issues: {nodes.scan.ISSUE}", ctx)
+        assert result == "Issues: a\n---\nb\n---\nc"
+
 
 # ===========================================================================
 # 5. Map node — model + validation
 # ===========================================================================
 
 
-class TestMapNode:
-    def test_from_dict_map(self):
+class TestTaskEachNode:
+    def test_from_dict_each(self):
         n = Node.from_dict({
-            "id": "search", "type": "map",
-            "items": "{nodes.gen.output}", "parse": "lines",
-            "item_key": "keyword", "task": "Search {keyword}",
+            "id": "audit", "each": "{nodes.scan.ISSUE}", "as": "finding",
+            "task": "Analyze {finding}", "depends": ["scan"],
         })
-        assert n.type == "map"
-        assert n.items == "{nodes.gen.output}"
-        assert n.item_key == "keyword"
-        assert n.task == "Search {keyword}"
+        assert n.type == "task"
+        assert n.each == "{nodes.scan.ISSUE}"
+        assert n.as_ == "finding"
+        assert n.task == "Analyze {finding}"
 
     def test_auto_infers_depends(self):
         n = Node.from_dict({
-            "id": "m", "type": "map",
-            "items": "{nodes.a.output}",
+            "id": "m", "each": "{nodes.a.output}", "as": "item",
             "task": "Use {nodes.b.output} and {item}",
         })
         assert "a" in n.depends
         assert "b" in n.depends
 
-    def test_default_item_key(self):
-        n = Node(id="m", type="map", items="{args.x}", task="Do {item}")
-        assert n.item_key == "item"
-
-    def test_missing_items_rejected(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "no_items.yaml", {
-            "name": "t",
-            "nodes": [{"id": "m", "type": "map", "task": "Do {item}"}],
+    def test_auto_infers_depends_from_each(self):
+        """each expression also contributes to depends inference."""
+        n = Node.from_dict({
+            "id": "m", "each": "{nodes.scan.ISSUE}", "as": "finding",
+            "task": "Process {finding}",
         })
-        with pytest.raises(ValueError, match="must have 'items'"):
+        assert "scan" in n.depends
+
+    def test_missing_as_rejected(self, tmp_path: Path):
+        path = _write_yaml(tmp_path / "no_as.yaml", {
+            "name": "t",
+            "nodes": [{"id": "m", "each": "{args.x}", "task": "Do {item}"}],
+        })
+        with pytest.raises(ValueError, match="must have 'as'"):
             Workflow.from_yaml(path)
 
     def test_missing_task_rejected(self, tmp_path: Path):
         path = _write_yaml(tmp_path / "no_task.yaml", {
             "name": "t",
-            "nodes": [{"id": "m", "type": "map", "items": "{args.x}"}],
+            "nodes": [{"id": "m", "each": "{args.x}", "as": "item"}],
         })
         with pytest.raises(ValueError, match="must have 'task'"):
-            Workflow.from_yaml(path)
-
-    def test_with_routes_rejected(self, tmp_path: Path):
-        path = _write_yaml(tmp_path / "routes.yaml", {
-            "name": "t",
-            "nodes": [{
-                "id": "m", "type": "map", "items": "{args.x}",
-                "task": "Do {item}",
-                "routes": [{"match": "x", "to": ["y"]}],
-            }],
-        })
-        with pytest.raises(ValueError, match="must not have 'routes'"):
             Workflow.from_yaml(path)
 
 
@@ -541,35 +560,32 @@ class TestRunnerErrorHandling:
 # ===========================================================================
 
 
-class TestRunnerMapNode:
+class TestRunnerEachNode:
     @pytest.mark.asyncio
-    async def test_map_fan_out_three_items(self):
-        """Map node expands 3 items, runs each as a subprocess, concatenates output."""
+    async def test_each_fan_out_three_items(self):
+        """task+each node expands 3 items, runs each as a child, concatenates output."""
         wf = Workflow(
             name="t",
             nodes=[
                 Node(id="gen", task="Generate keywords"),
                 Node(
-                    id="search", type="map",
-                    items="{nodes.gen.output}", item_key="kw",
+                    id="search",
+                    each="{nodes.gen.output}", as_="kw",
                     task="Search for {kw}", depends=["gen"],
                 ),
                 Node(id="report", task="Report: {nodes.search.output}", depends=["search"]),
             ],
         )
         runner = DAGRunner(wf, parent_agent=_make_mock_agent())
-        call_idx = {"i": 0}
-        outputs = [
-            NodeResult(node_id="gen", task="Generate keywords", output="alpha\nbeta\ngamma", exit_code=0, duration=0.1),
-            NodeResult(node_id="search::0", task="Search for alpha", output="result-alpha", exit_code=0, duration=0.1),
-            NodeResult(node_id="search::1", task="Search for beta", output="result-beta", exit_code=0, duration=0.1),
-            NodeResult(node_id="search::2", task="Search for gamma", output="result-gamma", exit_code=0, duration=0.1),
-            NodeResult(node_id="report", task="Report: ...", output="final report", exit_code=0, duration=0.1),
-        ]
+
         async def _mock_exec(node_id, task, context_header=None):
-            i = call_idx["i"]
-            call_idx["i"] += 1
-            return outputs[i]
+            if node_id == "gen":
+                return NodeResult(node_id="gen", task=task, output="alpha\nbeta\ngamma", exit_code=0, duration=0.1)
+            if node_id.startswith("search::"):
+                idx = int(node_id.split("::")[1])
+                items = ["alpha", "beta", "gamma"]
+                return NodeResult(node_id=node_id, task=task, output=f"result-{items[idx]}", exit_code=0, duration=0.1)
+            return NodeResult(node_id=node_id, task=task, output="final report", exit_code=0, duration=0.1)
 
         with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             results = await runner.run()
@@ -581,21 +597,21 @@ class TestRunnerMapNode:
         assert "search" in node_ids
         assert "report" in node_ids
 
-        # map node output = concatenation of children
-        map_result = next(r for r in results if r.node_id == "search")
-        assert "result-alpha" in map_result.output
-        assert "---" in map_result.output
+        # each node output = concatenation of children
+        each_result = next(r for r in results if r.node_id == "search")
+        assert "result-alpha" in each_result.output
+        assert "---" in each_result.output
 
     @pytest.mark.asyncio
-    async def test_map_empty_items(self):
-        """Map node with empty items produces empty output without spawning."""
+    async def test_each_empty_items(self):
+        """task+each node with empty items produces empty output without spawning."""
         wf = Workflow(
             name="t",
             nodes=[
                 Node(id="gen", task="Generate"),
                 Node(
-                    id="m", type="map",
-                    items="{nodes.gen.output}", task="Process {item}",
+                    id="m",
+                    each="{nodes.gen.output}", as_="item", task="Process {item}",
                     depends=["gen"],
                 ),
             ],
@@ -609,19 +625,19 @@ class TestRunnerMapNode:
             results = await runner.run()
 
         assert len(results) == 2
-        map_result = next(r for r in results if r.node_id == "m")
-        assert map_result.output == ""
+        each_result = next(r for r in results if r.node_id == "m")
+        assert each_result.output == ""
 
     @pytest.mark.asyncio
-    async def test_map_events_emitted(self):
-        """Map node emits MapFanOutEvent and MapItemDoneEvent."""
+    async def test_each_events_emitted(self):
+        """task+each node emits MapFanOutEvent and MapItemDoneEvent."""
         wf = Workflow(
             name="t",
             nodes=[
                 Node(id="gen", task="Generate"),
                 Node(
-                    id="m", type="map",
-                    items="{nodes.gen.output}", task="Process {item}",
+                    id="m",
+                    each="{nodes.gen.output}", as_="item", task="Process {item}",
                     depends=["gen"],
                 ),
             ],
@@ -643,15 +659,15 @@ class TestRunnerMapNode:
         assert len(item_done) == 2
 
     @pytest.mark.asyncio
-    async def test_map_with_concurrency(self):
-        """Map node respects workflow concurrency via semaphore."""
+    async def test_each_with_concurrency(self):
+        """task+each node respects workflow concurrency via semaphore."""
         wf = Workflow(
             name="t", concurrency=2,
             nodes=[
                 Node(id="gen", task="Generate"),
                 Node(
-                    id="m", type="map",
-                    items="{nodes.gen.output}", task="Process {item}",
+                    id="m",
+                    each="{nodes.gen.output}", as_="item", task="Process {item}",
                     depends=["gen"],
                 ),
             ],
@@ -1142,17 +1158,17 @@ class TestWorkflowParams:
 # ===========================================================================
 
 
-class TestMapTemplateUnified:
+class TestEachTemplateUnified:
     @pytest.mark.asyncio
-    async def test_single_brace_item_in_map(self):
-        """Map node uses {item} (single brace) and it works via fill_template."""
+    async def test_single_brace_as_in_each(self):
+        """task+each uses {as_var} (single brace) and it works via fill_template."""
         wf = Workflow(
             name="t",
             nodes=[
                 Node(id="gen", task="Generate"),
                 Node(
-                    id="search", type="map",
-                    items="{nodes.gen.output}", item_key="kw",
+                    id="search",
+                    each="{nodes.gen.output}", as_="kw",
                     task="Search for {kw}", depends=["gen"],
                 ),
             ],
@@ -1174,16 +1190,16 @@ class TestMapTemplateUnified:
         assert child_results[1].task == "Search for beta"
 
     @pytest.mark.asyncio
-    async def test_mixed_item_and_node_ref_in_map(self):
-        """Map task can mix {item} and {nodes.X.output} in the same template."""
+    async def test_mixed_as_and_node_ref_in_each(self):
+        """task+each can mix {as_var} and {nodes.X.output} in the same template."""
         wf = Workflow(
             name="t",
             nodes=[
                 Node(id="ctx", task="context data"),
                 Node(id="gen", task="items source"),
                 Node(
-                    id="m", type="map",
-                    items="{nodes.gen.output}", item_key="item",
+                    id="m",
+                    each="{nodes.gen.output}", as_="item",
                     task="Use {nodes.ctx.output} with {item}", depends=["ctx", "gen"],
                 ),
             ],
@@ -1332,6 +1348,122 @@ class TestWorkflowNodeHook:
         await hook.on_tool_complete(ctx_tool)
 
         assert events[0].error == "command not found: bad"
+
+
+# ===========================================================================
+# 19. parse_sections — [TAG] output protocol
+# ===========================================================================
+
+
+class TestParseSections:
+    def test_single_tag(self):
+        output = "[VERDICT]\n整体风险等级：🔴 高危"
+        sections = parse_sections(output)
+        assert sections == {"VERDICT": ["整体风险等级：🔴 高危"]}
+
+    def test_multiple_same_tag(self):
+        output = (
+            "[ISSUE]\nsrc/auth.py:42 — SQL 注入风险\n\n"
+            "[ISSUE]\nsrc/config.py:15 — 硬编码密钥"
+        )
+        sections = parse_sections(output)
+        assert "ISSUE" in sections
+        assert len(sections["ISSUE"]) == 2
+        assert "SQL 注入风险" in sections["ISSUE"][0]
+        assert "硬编码密钥" in sections["ISSUE"][1]
+
+    def test_mixed_tags(self):
+        output = (
+            "[ISSUE]\nsrc/auth.py:42 — SQL 注入\n\n"
+            "[FILE]\nsrc/auth.py\nsrc/config.py\n\n"
+            "[VERDICT]\n整体风险等级：高危"
+        )
+        sections = parse_sections(output)
+        assert set(sections.keys()) == {"ISSUE", "FILE", "VERDICT"}
+        assert len(sections["ISSUE"]) == 1
+        assert len(sections["FILE"]) == 1
+        assert len(sections["VERDICT"]) == 1
+
+    def test_no_tags(self):
+        assert parse_sections("just plain text") == {}
+        assert parse_sections("") == {}
+
+    def test_content_before_first_tag_ignored(self):
+        output = "preamble text\n[ISSUE]\nreal content"
+        sections = parse_sections(output)
+        assert sections == {"ISSUE": ["real content"]}
+
+    def test_content_stripped(self):
+        output = "[TAG]\n   padded content   \n"
+        sections = parse_sections(output)
+        assert sections == {"TAG": ["padded content"]}
+
+    def test_empty_content_skipped(self):
+        output = "[TAG]\n\n[OTHER]\ndata"
+        sections = parse_sections(output)
+        assert "TAG" not in sections  # empty content is skipped
+        assert sections == {"OTHER": ["data"]}
+
+
+# ===========================================================================
+# 20. Sections in context registration
+# ===========================================================================
+
+
+class TestSectionsInContext:
+    @pytest.mark.asyncio
+    async def test_sections_registered_in_context(self):
+        """After a node completes, its [TAG] sections are available as context keys."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="scan", task="Scan"),
+                Node(id="use", task="Use {nodes.scan.ISSUE}", depends=["scan"]),
+            ],
+        )
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        async def _mock_exec(node_id, task, context_header=None):
+            if node_id == "scan":
+                return NodeResult(
+                    node_id="scan", task="Scan",
+                    output="[ISSUE]\nbug1\n\n[ISSUE]\nbug2\n\n[VERDICT]\nbad",
+                    exit_code=0, duration=0.1,
+                    sections={"ISSUE": ["bug1", "bug2"], "VERDICT": ["bad"]},
+                )
+            return NodeResult(node_id=node_id, task=task, output="ok", exit_code=0, duration=0.1)
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
+            results = await runner.run()
+
+        # The second node's task should have {nodes.scan.ISSUE} resolved
+        assert results[1].task == "Use bug1\n---\nbug2"
+
+    @pytest.mark.asyncio
+    async def test_section_index_access(self):
+        """{nodes.scan.ISSUE[0]} resolves to the first item."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="scan", task="Scan"),
+                Node(id="use", task="First: {nodes.scan.ISSUE[0]}", depends=["scan"]),
+            ],
+        )
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        async def _mock_exec(node_id, task, context_header=None):
+            if node_id == "scan":
+                return NodeResult(
+                    node_id="scan", task="Scan", output="[ISSUE]\nbug1\n\n[ISSUE]\nbug2",
+                    exit_code=0, duration=0.1,
+                    sections={"ISSUE": ["bug1", "bug2"]},
+                )
+            return NodeResult(node_id=node_id, task=task, output="ok", exit_code=0, duration=0.1)
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
+            results = await runner.run()
+
+        assert results[1].task == "First: bug1"
 
 
 # ===========================================================================

@@ -50,7 +50,7 @@ mocode/
 │       ├── state.py       # RunState — mutable state for one workflow execution
 │       ├── events.py      # WorkflowEvent types (NodeStart, NodeDone, Router, Loop, Map, etc.)
 │       ├── runner.py      # DAGRunner — main coordinator (delegates to executor/scheduler)
-│       ├── executor.py    # Executor — AgentLoop instantiation + map result helpers
+│       ├── executor.py    # Executor — AgentLoop instantiation + each result helpers
 │       ├── scheduler.py   # Scheduler — wave announcement, router eval, back-edges, downstream activation
 │       ├── hooks.py       # _WorkflowNodeHook
 │       ├── registry.py    # WorkflowRegistry — YAML discovery
@@ -87,9 +87,9 @@ mocode/
 
 4. **Prompt uses Sections with priority** — `Prompt` builds XML or text from `Section` objects sorted by `(priority, name)`. Sections can hold strings, nested `Section` lists, or callables that receive context dicts. The system prompt (`prompts/app.py`) orders sections by priority: guidelines(10) → agents(20) → environment(30) → vfs(35) → tools(40) → skills(50) → workflows(60) to maximize LLM prefix cache hit rate.
 
-5. **Workflow is a DAG engine with three node types** — `task` (runs via in-process AgentLoop), `router` (evaluates regex conditions against dependency outputs; supports loops via back-edges with `max` iteration limits), `map` (fans out to N child tasks using `items` template). Dependencies are auto-inferred from `{nodes.id.*}` template references.
+5. **Workflow is a DAG engine with two node types** — `task` (runs via in-process AgentLoop; with `each` + `as` fields for fan-out over lists) and `router` (evaluates regex conditions against dependency outputs; supports loops via back-edges with `max` iteration limits). Nodes can output `[TAG]` sections for structured downstream references (`{nodes.id.TAG}`, `{nodes.id.TAG[0]}`). Dependencies are auto-inferred from `{nodes.id.*}` template references.
 
-6. **Workflow runner is split into three concerns** — `DAGRunner` (coordinator: main loop, map fan-out, node completion), `Executor` (AgentLoop creation, node context header, map finalization), `Scheduler` (wave announcement, router evaluation, back-edge handling, downstream activation). This split happened because runner.py grew to 600+ lines.
+6. **Workflow runner is split into three concerns** — `DAGRunner` (coordinator: main loop, each fan-out, node completion), `Executor` (AgentLoop creation, node context header, each finalization), `Scheduler` (wave announcement, router evaluation, back-edge handling, downstream activation). This split happened because runner.py grew to 600+ lines.
 
 7. **Skills are directory-based** — Each skill has a `SKILL.md` with YAML frontmatter (name, description) and body content. Reference files are mounted into VirtualFS at `vfs://skill-name/path`.
 
@@ -129,9 +129,9 @@ CLIApp → DAGRunner.run()
          Scheduler.announce_waves() → emit WaveReadyEvent
               ↓
          For each ready node:
-           router → Scheduler.evaluate_router() → regex match routes → activate targets / back-edge
-           map    → parse items → fan_out_children() → concurrent AgentLoop per item
-           task   → Executor._exec_node() → AgentLoop.chat(full_prompt) → NodeResult
+           router     → Scheduler.evaluate_router() → regex match routes → activate targets / back-edge
+           task+each  → resolve items → fan_out_children() → concurrent AgentLoop per item
+           task       → Executor._exec_node() → AgentLoop.chat(full_prompt) → parse_sections() → NodeResult
               ↓
          _record_node_done() → update state.context, persist, emit events, activate_downstream
               ↓

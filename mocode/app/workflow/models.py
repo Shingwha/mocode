@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 # ── Data models ──────────────────────────────────────────────
@@ -40,32 +41,31 @@ class Route:
 class Node:
     """A node in the workflow graph.
 
-    type "task"   — has a ``task`` template, runs via mocode -p.
+    type "task"   — has a ``task`` template, runs via AgentLoop.
+                  With ``each`` + ``as_``: fans out to N child tasks.
     type "router" — has ``routes``, no ``task``; evaluates conditions.
-    type "map"    — has ``items`` + ``task``; fans out to N child tasks.
 
     ``depends`` is auto-inferred from ``{nodes.<id>.*}`` references in the
-    ``task`` template (and ``items`` template for map nodes) and merged with
-    any explicit ``depends``.
+    ``task`` and ``each`` templates, merged with any explicit ``depends``.
     """
 
     id: str = ""
-    type: str = "task"  # "task" | "router" | "map"
+    type: str = "task"  # "task" | "router"
     description: str = ""  # brief human-readable label
     task: str = ""  # template string (empty for router)
     depends: list[str] = field(default_factory=list)
     routes: list[Route] = field(default_factory=list)
-    # map node fields
-    items: str = ""  # template resolving to a list source
-    item_key: str = "item"  # variable name in task template
+    # task+each fields (fan-out mode)
+    each: str = ""  # list source expression (empty = no fan-out)
+    as_: str = ""  # iteration variable name (required when each is set)
 
     def __post_init__(self) -> None:
         """Auto-infer depends from {nodes.X.*} refs, merged with explicit depends."""
         templates = []
-        if self.task and self.type in ("task", "map"):
+        if self.task and self.type in ("task", "router"):
             templates.append(self.task)
-        if self.items and self.type == "map":
-            templates.append(self.items)
+        if self.each:
+            templates.append(self.each)
         if templates:
             combined = "\n".join(templates)
             inferred = infer_depends_from_task(combined)
@@ -83,8 +83,8 @@ class Node:
             task=data.get("task", ""),
             depends=list(data.get("depends", [])),
             routes=[Route.from_dict(r) for r in routes_raw],
-            items=data.get("items", ""),
-            item_key=data.get("item_key", "item"),
+            each=data.get("each", ""),
+            as_=data.get("as", ""),
         )
 
 
@@ -100,11 +100,35 @@ class NodeResult:
     error: str | None = None
     status: str = "done"  # "done" | "skipped"
     iteration: int = 1  # which execution (increments on loop)
+    sections: dict[str, list[str]] = field(default_factory=dict)  # [TAG] parsed sections
+
+
+# ── [TAG] section parsing ───────────────────────────────────
+
+_RE_TAG = re.compile(r'^\[([a-zA-Z_]\w*)\]\s*$', re.MULTILINE)
+
+
+def parse_sections(output: str) -> dict[str, list[str]]:
+    """Parse ``[TAG]`` section markers from node output.
+
+    Tags must appear at the start of a line. Content between tags (or EOF)
+    is stripped and grouped by tag name. Same-name tags are merged into a list.
+    """
+    sections: dict[str, list[str]] = {}
+    for m in _RE_TAG.finditer(output):
+        tag = m.group(1)
+        start = m.end()
+        next_m = _RE_TAG.search(output, start)
+        end = next_m.start() if next_m else len(output)
+        content = output[start:end].strip()
+        if content:
+            sections.setdefault(tag, []).append(content)
+    return sections
 
 
 # ── Depends inference ────────────────────────────────────────
 
-_RE_NODE_REF = re.compile(r"\{node(?:s?)\.(\w+)\.\w+\}")
+_RE_NODE_REF = re.compile(r"\{node(?:s?)\.(\w+)\.\w+(?:\[\d+\])?\}")
 
 
 def infer_depends_from_task(task: str) -> list[str]:
@@ -118,7 +142,7 @@ def infer_depends_from_task(task: str) -> list[str]:
 
 # ── Template filling ─────────────────────────────────────────
 
-_RE_PLACEHOLDER = re.compile(r"\{(\w+(?:\.\w+)*)\}")
+_RE_PLACEHOLDER = re.compile(r"\{([^{}[\]]+(?:\[\d+\])?)\}")
 
 _BUCKET_ALIASES = {
     "node": "nodes",
@@ -126,13 +150,14 @@ _BUCKET_ALIASES = {
 
 
 def fill_template(template: str, context: dict) -> str:
-    """Replace {a.b.c} placeholders by dot-path lookup in context dict.
+    """Replace {a.b.c} / {a.b.c[0]} placeholders by dot-path lookup in context dict.
 
     Single-segment paths (``{direction}``, ``{previous}``, ``{item}``) look up
     directly in the context top level.
 
-    Multi-segment paths (``{env.VAR}``, ``{nodes.id.output}``) walk into nested
-    dicts. ``{node.id.*}`` is accepted as alias for ``{nodes.id.*}``.
+    Multi-segment paths (``{env.VAR}``, ``{nodes.id.output}``, ``{nodes.id.TAG[0]}``)
+    walk into nested dicts. ``{node.id.*}`` is accepted as alias for ``{nodes.id.*}``.
+    List values are joined with ``\\n---\\n``.
     """
 
     def _replace(m: re.Match) -> str:
@@ -142,24 +167,37 @@ def fill_template(template: str, context: dict) -> str:
             # Single segment: {direction}, {previous}, {item}
             val = context.get(path)
             return str(val) if val is not None else m.group(0)
-        # Multi-segment: {env.HOME}, {nodes.scan.output}, {node.scan.output}
+        # Multi-segment: {env.HOME}, {nodes.scan.output}, {nodes.scan.ISSUE[0]}
         bucket, rest = parts
         obj = context.get(bucket) or context.get(_BUCKET_ALIASES.get(bucket, ""))
         if isinstance(obj, dict):
-            return _dot_lookup(obj, rest, m.group(0))
+            val = _resolve_path(rest, obj)
+            if val is None:
+                return m.group(0)
+            if isinstance(val, list):
+                return "\n---\n".join(str(v) for v in val)
+            return str(val)
         return m.group(0)
 
     return _RE_PLACEHOLDER.sub(_replace, template)
 
 
-def _dot_lookup(obj: dict, path: str, default: str) -> str:
-    """Walk 'a.b.c' path into nested dicts. Return default on failure."""
-    for key in path.split("."):
-        if isinstance(obj, dict):
-            obj = obj.get(key)
+def _resolve_path(path: str, obj: dict) -> Any:
+    """Walk 'a.b.c' / 'a.b.c[0]' path into nested dicts. Return None on failure."""
+    for part in path.split("."):
+        if obj is None:
+            return None
+        idx_match = re.match(r'^(\w+)\[(\d+)\]$', part)
+        if idx_match:
+            key, idx = idx_match.group(1), int(idx_match.group(2))
+            obj = obj.get(key) if isinstance(obj, dict) else None
+            if isinstance(obj, list) and idx < len(obj):
+                obj = obj[idx]
+            else:
+                return None
         else:
-            return default
-    return str(obj) if obj is not None else default
+            obj = obj.get(part) if isinstance(obj, dict) else None
+    return obj
 
 
 # ── Params parsing ────────────────────────────────────────────

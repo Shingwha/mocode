@@ -28,7 +28,7 @@ from .events import (
 )
 from .executor import Executor
 from .hooks import _WorkflowNodeHook  # noqa: F401 — re-export for backward compat
-from .models import fill_template, parse_items
+from .models import fill_template, parse_items, parse_sections
 from .scheduler import Scheduler  # noqa: F401 — re-export for backward compat
 from .state import RunState
 
@@ -108,8 +108,6 @@ class DAGRunner:
                     if node.type == "router":
                         # Routers are sync — run inline, add to batch of 1
                         self._scheduler.evaluate_router(node, state)
-                    elif node.type == "map":
-                        tasks.append(self._run_map_node(node, state))
                     else:
                         tasks.append(self._run_task_node(node, state))
 
@@ -146,7 +144,23 @@ class DAGRunner:
     # ── Delegated node execution (to Executor) ───────────────
 
     async def _run_task_node(self, node: Node, state: RunState) -> None:
-        """Fill template, execute via AgentLoop, record result."""
+        """Fill template, execute via AgentLoop, record result.
+
+        If ``node.each`` is set, fan-out to N child tasks instead of single execution.
+        """
+        if node.each:
+            items = _resolve_items(node.each, state.context)
+            if not items:
+                self._executor._finalize_empty_map(node, state, self._record_node_done)
+                return
+            async with self._semaphore:
+                self._emit(NodeStartEvent(node_id=node.id, description=node.description))
+            child_results = await self._fan_out_children(node, items, state)
+            self._executor._finalize_map(
+                node, items, child_results, state, self._record_node_done
+            )
+            return
+
         wf = self.workflow
         task_text = fill_template(node.task, state.context)
 
@@ -164,23 +178,6 @@ class DAGRunner:
             nr,
             state,
             progress_message=f"Node '{node.id}' done ({nr.duration:.1f}s)",
-        )
-
-    async def _run_map_node(self, node: Node, state: RunState) -> None:
-        """Fan-out: parse items, run a child task for each, concatenate results."""
-        items_raw = fill_template(node.items, state.context)
-        items = parse_items(items_raw)
-
-        if not items:
-            self._executor._finalize_empty_map(node, state, self._record_node_done)
-            return
-
-        async with self._semaphore:
-            self._emit(NodeStartEvent(node_id=node.id, description=node.description))
-
-        child_results = await self._fan_out_children(node, items, state)
-        self._executor._finalize_map(
-            node, items, child_results, state, self._record_node_done
         )
 
     async def _fan_out_children(
@@ -204,8 +201,8 @@ class DAGRunner:
         for idx, item_val in enumerate(items):
             child_id = f"{node.id}::{idx}"
             child_ids.append(child_id)
-            # Inject item into context top level, fill_template handles {item_key}
-            state.context[node.item_key] = item_val
+            # Inject item into context top level, fill_template handles {as_}
+            state.context[node.as_] = item_val
             child_task_text = fill_template(node.task, state.context)
             child_tasks.append(
                 asyncio.create_task(
@@ -214,7 +211,7 @@ class DAGRunner:
             )
 
         # Clean up injected item
-        state.context.pop(node.item_key, None)
+        state.context.pop(node.as_, None)
 
         state.map_children[node.id] = child_ids
         child_results: list[NodeResult] = list(await asyncio.gather(*child_tasks))
@@ -270,12 +267,16 @@ class DAGRunner:
         """
         wf = self.workflow
         state.results.append(nr)
-        state.context["nodes"][node.id] = {
+        node_ctx: dict = {
             "output": nr.output,
             "exit_code": nr.exit_code,
             "duration": nr.duration,
             "error": nr.error or "",
         }
+        # Register [TAG] sections as top-level keys in node context
+        for tag, values in nr.sections.items():
+            node_ctx[tag] = values
+        state.context["nodes"][node.id] = node_ctx
         state.context["previous"] = nr.output
         state.completed.add(node.id)
         self._persist(state.results, "running")
@@ -299,4 +300,32 @@ class DAGRunner:
             )
         Scheduler.activate_downstream(node.id, wf, state)
 
+
+def _resolve_items(each_expr: str, context: dict) -> list[str]:
+    """Resolve ``each`` expression to a list of strings.
+
+    Priority:
+    1. Direct list resolution (e.g. ``{nodes.scan.ISSUE}`` → already a list)
+    2. ``fill_template`` + line splitting (covers string outputs and mixed templates)
+    """
+    expr = each_expr.strip()
+    if expr.startswith("{") and expr.endswith("}"):
+        inner = expr[1:-1]
+        parts = inner.split(".", 1)
+        if len(parts) > 1:
+            bucket, rest = parts
+            from .models import _BUCKET_ALIASES, _resolve_path
+            obj = context.get(bucket) or context.get(_BUCKET_ALIASES.get(bucket, ""))
+            if isinstance(obj, dict):
+                val = _resolve_path(rest, obj)
+                if isinstance(val, list):
+                    return [str(v) for v in val]
+        else:
+            # Single-segment placeholder
+            val = context.get(inner)
+            if isinstance(val, list):
+                return [str(v) for v in val]
+    # Fallback: fill template + split by lines
+    filled = fill_template(each_expr, context)
+    return [line.strip() for line in filled.splitlines() if line.strip()]
 

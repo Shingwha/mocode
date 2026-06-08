@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from ..core.agent import AgentLoop
 
 from .hooks import _WorkflowNodeHook  # noqa: F401 — re-export for backward compat
-from .models import NodeResult
+from .models import NodeResult, parse_sections
 
 
 class Executor:
@@ -159,13 +159,15 @@ class Executor:
                 temp_agent.chat(full_prompt),
                 timeout=self.timeout,
             )
+            output = result or ""
             return NodeResult(
                 node_id=node_id,
                 task=task,
-                output=result or "",
+                output=output,
                 exit_code=0,
                 duration=time.monotonic() - t0,
                 iteration=temp_agent.iteration,
+                sections=parse_sections(output),
             )
         except asyncio.TimeoutError:
             return NodeResult(

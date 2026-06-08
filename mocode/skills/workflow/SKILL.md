@@ -1,6 +1,6 @@
 ---
 name: workflow
-description: Design, create, and run MoCode Workflows — DAG-based multi-step task orchestration with parallel nodes, conditional routing, map fan-out, and loops. Use when the user describes a multi-step process, pipeline, or needs to orchestrate sequential/parallel tasks.
+description: Design, create, and run MoCode Workflows — DAG-based multi-step task orchestration with parallel nodes, conditional routing, fan-out via each, and loops. Use when the user describes a multi-step process, pipeline, or needs to orchestrate sequential/parallel tasks.
 ---
 
 # MoCode Workflows
@@ -44,14 +44,15 @@ nodes:
 | Type     | Purpose | Key Fields |
 |----------|---------|------------|
 | `task`   | Prompt → LLM | `task`, `depends` |
+| `task` + `each` | Fan-out over list, concatenate results | `each`, `as`, `task` |
 | `router` | Regex on upstream output → activate targets | `routes`, `depends` (required) |
-| `map`    | Fan-out over list, concatenate results | `items`, `item_key`, `task` |
 
 ### Template Variables
 
-`{param}` — workflow param | `{nodes.X.output}` — node output | `{nodes.X.exit_code}` / `.error` / `.duration` | `{previous}` — last output | `{env.VAR}` | `{item}` — map item
+`{param}` — workflow param | `{nodes.X.output}` — node output | `{nodes.X.TAG}` — `[TAG]` section | `{nodes.X.TAG[0]}` — indexed section | `{nodes.X.exit_code}` / `.error` / `.duration` | `{previous}` — last output | `{env.VAR}` | `{as_var}` — each iteration variable
 
 > `{node.X.output}` works as alias for `{nodes.X.output}`.
+> List values in templates are joined with `\n---\n`.
 
 ### Dependencies
 
@@ -77,18 +78,38 @@ First matching route wins. `match: null` = unconditional fallback (put last). Ba
       to: [done]
 ```
 
-### Map Nodes
+### Fan-out with `each`
 
 ```yaml
 - id: explore
-  type: map
-  items: "{nodes.topics.output}"   # template → newline-separated list
-  item_key: topic                  # default: "item"
+  each: "{nodes.topics.ISSUE}"    # list source (resolves to list or splits by newlines)
+  as: topic                        # iteration variable (required)
   task: Write about {topic}.       # single braces
   depends: [topics]
 ```
 
-Items split by newlines → each line is one child task → outputs joined with `\n---\n`.
+- `each` — resolves to a list (direct list from `[TAG]` sections) or splits by newlines
+- `as` — variable name used in task template (required, no default)
+- Child outputs are joined with `\n---\n`
+
+### `[TAG]` Output Protocol
+
+Nodes can output structured sections using `[TAG]` markers:
+
+```
+[ISSUE]
+src/auth.py:42 — SQL injection risk
+
+[ISSUE]
+src/config.py:15 — hardcoded secret
+
+[VERDICT]
+Overall risk: HIGH
+```
+
+- Tags at line start: `[TAG]` where TAG matches `[a-zA-Z_]\w*`
+- Same-name tags merge into a list
+- Downstream references: `{nodes.scan.ISSUE}` (list), `{nodes.scan.ISSUE[0]}` (first), `{nodes.scan.VERDICT[0]}`
 
 ---
 
