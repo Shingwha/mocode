@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 
-from .textutils import ellipsize_middle, ellipsize_tail, terminal_width, visible_width
+from ..utils import ellipsize_middle, ellipsize_tail, terminal_width, visible_width
 from .theme import DIM, RST, SOFT_CYAN
 
 
