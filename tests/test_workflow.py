@@ -40,6 +40,7 @@ from mocode.app.workflow.models import infer_depends_from_task
 from mocode.app.workflow.runner import DAGRunner
 from mocode.app.workflow.state import RunState
 from mocode.core.agent import AgentConfig, AgentLoop
+from mocode.core.provider import Usage
 from mocode.core.hook import HookRunner
 from mocode.core.tool import ToolRegistry
 
@@ -600,6 +601,79 @@ class TestRunnerErrorHandling:
 
         assert results[0].exit_code == 1
         assert "spawn failed" in results[0].error
+
+    @pytest.mark.asyncio
+    async def test_exec_node_success_populates_usage(self):
+        """_exec_node returns tool_calls and token counts on success."""
+        wf = Workflow(name="t", nodes=[Node(id="a", task="Do it")])
+        parent = _make_mock_agent()
+        runner = DAGRunner(wf, parent_agent=parent)
+
+        mock_agent = _make_mock_agent()
+        mock_agent._tool_call_count = 5
+        mock_agent._total_usage = Usage(1200, 300)
+        mock_agent.chat = AsyncMock(return_value="done")
+
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = mock_agent
+        for method in ("provider", "prompt", "tools", "hooks", "config"):
+            getattr(mock_builder, method).return_value = mock_builder
+
+        with patch("mocode.core.builder.Agent", return_value=mock_builder):
+            result = await runner._exec_node("a", "Do it")
+
+        assert result.exit_code == 0
+        assert result.tool_calls == 5
+        assert result.prompt_tokens == 1200
+        assert result.completion_tokens == 300
+
+    @pytest.mark.asyncio
+    async def test_exec_node_timeout_returns_usage(self):
+        """_exec_node returns partial usage on timeout."""
+        wf = Workflow(name="t", nodes=[Node(id="a", task="Slow")])
+        parent = _make_mock_agent()
+        runner = DAGRunner(wf, parent_agent=parent, timeout=0.01)
+
+        mock_agent = _make_mock_agent()
+        mock_agent._tool_call_count = 3
+        mock_agent._total_usage = Usage(500, 100)
+        mock_agent.chat = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = mock_agent
+        for method in ("provider", "prompt", "tools", "hooks", "config"):
+            getattr(mock_builder, method).return_value = mock_builder
+
+        with patch("mocode.core.builder.Agent", return_value=mock_builder):
+            result = await runner._exec_node("a", "Slow")
+
+        assert result.exit_code == 1
+        assert "timed out" in result.error
+        assert result.tool_calls == 3
+        assert result.prompt_tokens == 500
+
+    @pytest.mark.asyncio
+    async def test_exec_node_exception_returns_error(self):
+        """_exec_node catches generic exceptions and returns error NodeResult."""
+        wf = Workflow(name="t", nodes=[Node(id="a", task="Boom")])
+        parent = _make_mock_agent()
+        runner = DAGRunner(wf, parent_agent=parent)
+
+        mock_agent = _make_mock_agent()
+        mock_agent._tool_call_count = 0
+        mock_agent._total_usage = Usage(0, 0)
+        mock_agent.chat = AsyncMock(side_effect=RuntimeError("kaboom"))
+
+        mock_builder = MagicMock()
+        mock_builder.build.return_value = mock_agent
+        for method in ("provider", "prompt", "tools", "hooks", "config"):
+            getattr(mock_builder, method).return_value = mock_builder
+
+        with patch("mocode.core.builder.Agent", return_value=mock_builder):
+            result = await runner._exec_node("a", "Boom")
+
+        assert result.exit_code == 1
+        assert "kaboom" in result.error
 
 
 # ===========================================================================

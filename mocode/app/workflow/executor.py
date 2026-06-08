@@ -130,6 +130,33 @@ class Executor:
 
     # ── AgentLoop execution ──────────────────────────────────
 
+    def _build_result(
+        self,
+        node_id: str,
+        task: str,
+        output: str,
+        exit_code: int,
+        t0: float,
+        temp_agent: AgentLoop,
+        *,
+        sections: dict | None = None,
+        error: str | None = None,
+    ) -> NodeResult:
+        """Build a NodeResult from agent state after execution."""
+        usage = temp_agent.total_usage
+        return NodeResult(
+            node_id=node_id,
+            task=task,
+            output=output,
+            exit_code=exit_code,
+            duration=time.monotonic() - t0,
+            error=error,
+            sections=sections or {},
+            tool_calls=temp_agent._tool_call_count,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+        )
+
     async def _exec_node(
         self,
         node_id: str,
@@ -163,41 +190,17 @@ class Executor:
                 timeout=self.timeout,
             )
             output = result or ""
-            usage = temp_agent.total_usage
-            return NodeResult(
-                node_id=node_id,
-                task=task,
-                output=output,
-                exit_code=0,
-                duration=time.monotonic() - t0,
+            return self._build_result(
+                node_id, task, output, 0, t0, temp_agent,
                 sections=parse_sections(output),
-                tool_calls=temp_agent._tool_call_count,
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
             )
         except asyncio.TimeoutError:
-            usage = temp_agent.total_usage
-            return NodeResult(
-                node_id=node_id,
-                task=task,
-                output="",
-                exit_code=1,
-                duration=time.monotonic() - t0,
+            return self._build_result(
+                node_id, task, "", 1, t0, temp_agent,
                 error=f"timed out after {self.timeout}s",
-                tool_calls=getattr(temp_agent, '_tool_call_count', 0),
-                prompt_tokens=usage.prompt_tokens,
-                completion_tokens=usage.completion_tokens,
             )
         except Exception as e:
-            usage = getattr(temp_agent, 'total_usage', None)
-            return NodeResult(
-                node_id=node_id,
-                task=task,
-                output="",
-                exit_code=1,
-                duration=time.monotonic() - t0,
+            return self._build_result(
+                node_id, task, "", 1, t0, temp_agent,
                 error=str(e),
-                tool_calls=getattr(temp_agent, '_tool_call_count', 0),
-                prompt_tokens=usage.prompt_tokens if usage else 0,
-                completion_tokens=usage.completion_tokens if usage else 0,
             )
