@@ -345,3 +345,16 @@ class TestPasteStore:
         content = "line1\nline2\nline3"
         marker = ps.put(content)
         assert ps.resolve(marker) == content
+
+    def test_markers_persist_without_clear(self):
+        """PasteStore markers should remain valid across multiple resolve calls."""
+        ps = PasteStore()
+        marker = ps.put("pasted content")
+        
+        # First resolve
+        result1 = ps.resolve(f"before {marker} after")
+        assert result1 == "before pasted content after"
+        
+        # Second resolve (simulating history recall)
+        result2 = ps.resolve(f"reuse {marker}")
+        assert result2 == "reuse pasted content"

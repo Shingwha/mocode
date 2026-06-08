@@ -216,6 +216,7 @@ class CLIApp:
         self.agent.messages.clear()
         self.agent.messages.extend(session.messages)
         self.agent.system_prompt = self._build_prompt()
+        self.display.clear_session()
         self.display.clear_screen()
         if session.messages:
             self.display.render_messages(session.messages)
@@ -229,6 +230,7 @@ class CLIApp:
             self._session_mgr.clear()
             self._session_mgr.create()
         self.agent.system_prompt = self._build_prompt()
+        self.display.clear_session()
         self.display.clear_screen()
         if messages:
             self.display.render_messages(messages)
@@ -241,6 +243,7 @@ class CLIApp:
             self._session_mgr.clear()
             self._session_mgr.create()
         self.agent.system_prompt = self._build_prompt()
+        self.display.clear_session()
         self.display.clear_screen()
 
     def switch_provider(self, key: str, model: str):

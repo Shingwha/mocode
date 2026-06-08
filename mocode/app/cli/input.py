@@ -153,9 +153,12 @@ class Input:
     def _resolve_paste_markers(self, text: str) -> str:
         return self._pastes.resolve(text)
 
+    def clear_session(self) -> None:
+        """Clear paste store when starting a new conversation."""
+        self._pastes.clear()
+
     async def prompt(self, default: str = "") -> str:
         self._ensure_session()
-        self._pastes.clear()
         raw = await self._session.prompt_async(f"{self._ps1} ", default=default)
         # Clear the prompt_toolkit input lines from the terminal
         lines = count_visual_lines(raw, len(self._ps1) + 1)  # +1 for trailing space

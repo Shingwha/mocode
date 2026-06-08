@@ -63,6 +63,10 @@ class Display:
         """Queue text to pre-fill the next prompt."""
         self._pending_input = text
 
+    def clear_session(self) -> None:
+        """Clear paste store when starting a new conversation."""
+        self._input.clear_session()
+
     async def prompt(self) -> str:
         default = self._pending_input or ""
         self._pending_input = None
