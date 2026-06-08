@@ -47,6 +47,12 @@ def _patch_openai_errors(monkeypatch):
     monkeypatch.setattr(prov, "_is_retriable", original_is_retriable)
 
 
+@pytest.fixture(autouse=True)
+def _patch_sleep(monkeypatch):
+    """Mock asyncio.sleep so retry tests run instantly."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+
+
 def _get_error_classes():
     """Retrieve the fake error classes stored on the module."""
     import mocode.core.provider as prov
@@ -99,9 +105,9 @@ class TestWithRetry:
         rate, _ = _get_error_classes()
         fn = AsyncMock(side_effect=rate("429"))
         with pytest.raises(rate):
-            await with_retry(fn, max_retries=4)
-        # 1 initial + 4 retries = 5 total attempts
-        assert fn.call_count == 5
+            await with_retry(fn, max_retries=6)
+        # 1 initial + 6 retries = 7 total attempts
+        assert fn.call_count == 7
 
     @pytest.mark.asyncio
     async def test_with_retry_passes_args(self):
@@ -128,6 +134,6 @@ class TestComputeDelay:
         assert 1.0 <= d <= 1.5  # base + max jitter
 
     def test_delay_capped(self):
-        """High attempt numbers should not exceed MAX_DELAY (30s)."""
+        """High attempt numbers should not exceed MAX_DELAY (60s)."""
         d = _compute_delay(20)
-        assert d <= 30.0
+        assert d <= 60.0

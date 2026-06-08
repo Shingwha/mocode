@@ -64,9 +64,9 @@ from typing import Awaitable as _Awaitable, Callable as _Callable, TypeVar as _T
 _T = _TypeVar("_T")
 _retry_log = _logging.getLogger(__name__)
 
-_MAX_RETRIES = 4        # 5 total attempts
+_MAX_RETRIES = 6        # 7 total attempts
 _BASE_DELAY = 1.0       # seconds
-_MAX_DELAY = 30.0       # cap
+_MAX_DELAY = 60.0       # cap
 _JITTER_MAX = 0.5       # random jitter range
 
 
