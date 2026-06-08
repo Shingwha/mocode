@@ -120,9 +120,24 @@ class RunState:
         self.skipped[nid] = reason
 
     def propagate_skip(self, nid: str, wf: Workflow) -> None:
-        """Skip node and all downstream nodes not yet activated."""
+        """Skip node and propagate to downstream nodes not yet activated.
+
+        Unlike the old version, this decrements ``pending_deps`` for each
+        downstream node (mirroring ``activate_downstream``) so that nodes
+        with other valid dependency paths can still become ready.
+        """
         for child_id in wf.dependents.get(nid, []):
-            if child_id not in self.activated and child_id not in self.skipped:
+            if child_id in self.activated:
+                continue
+            # Decrement pending_deps — a skipped dep counts as "resolved"
+            self.pending_deps[child_id] = self.pending_deps.get(child_id, 0) - 1
+            if child_id in self.skipped:
+                continue
+            if self.is_ready(child_id):
+                # All deps resolved — don't skip, let it execute
+                if child_id not in self.ready_queue:
+                    self.ready_queue.append(child_id)
+            else:
                 self.skip(child_id, "dependency skipped")
                 self.propagate_skip(child_id, wf)
 

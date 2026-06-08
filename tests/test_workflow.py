@@ -510,6 +510,53 @@ class TestRunnerRouter:
         assert node_ids.count("do") == 2
         assert "done" in node_ids
 
+    @pytest.mark.asyncio
+    async def test_router_skip_does_not_block_downstream_convergence(self):
+        """Downstream node depending on both activated and skipped router
+        targets must still execute via its other valid dependency paths.
+
+        Regression test: propagate_skip used to unconditionally mark
+        downstream nodes as skipped without decrementing pending_deps,
+        causing permanent deadlock on convergence nodes.
+
+        DAG:
+            src → router → b (activated)  ──┐
+                  router → c (skipped)  ────┤
+            src ──────────────────────────── → converge (terminal)
+        """
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="src", task="Source"),
+                Node(id="router", type="router", depends=["src"], routes=[
+                    Route(match="go", to=["b"]),
+                    Route(match=None, to=["c"]),
+                ]),
+                Node(id="b", task="Branch B", depends=["router"]),
+                Node(id="c", task="Branch C", depends=["router"]),
+                Node(id="converge", task="Converge", depends=["b", "c", "src"]),
+            ],
+        )
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+        outputs = {
+            "src": NodeResult(node_id="src", task="Source", output="go ahead", exit_code=0, duration=0.1),
+            "b": NodeResult(node_id="b", task="Branch B", output="b done", exit_code=0, duration=0.1),
+            "converge": NodeResult(node_id="converge", task="Converge", output="converged", exit_code=0, duration=0.1),
+        }
+
+        async def _mock_exec(node_id, task, context_header=None):
+            return outputs[node_id]
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
+            results = await runner.run()
+
+        completed_ids = [r.node_id for r in results]
+        assert "b" in completed_ids, "activated branch should run"
+        assert "c" not in completed_ids, "skipped branch should not run"
+        assert "converge" in completed_ids, (
+            "convergence node must execute even when one dep was skipped"
+        )
+
 
 # ===========================================================================
 # 10. Runner — Error handling

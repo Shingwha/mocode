@@ -239,10 +239,20 @@ class Scheduler:
 
     @staticmethod
     def activate_downstream(node_id: str, wf: Workflow, state: RunState) -> None:
-        """Decrement pending_deps for dependents and enqueue ready ones."""
+        """Decrement pending_deps for dependents and enqueue ready ones.
+
+        If a dependent was previously skipped (e.g. by a router) but all its
+        remaining dependencies have now resolved, un-skip it so it can execute.
+        """
         for dep_id in wf.dependents.get(node_id, []):
-            if dep_id in state.skipped:
-                continue
             state.pending_deps[dep_id] = state.pending_deps.get(dep_id, 0) - 1
+            if dep_id in state.skipped:
+                # Re-evaluate: maybe all other deps are now satisfied
+                if state.is_ready(dep_id):
+                    state.skipped.pop(dep_id)
+                    state.activated.add(dep_id)
+                    if dep_id not in state.ready_queue:
+                        state.ready_queue.append(dep_id)
+                continue
             if state.is_ready(dep_id) and dep_id not in state.ready_queue:
                 state.ready_queue.append(dep_id)

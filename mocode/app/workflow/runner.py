@@ -95,8 +95,10 @@ class DAGRunner:
             while state.ready_queue and not state.should_stop():
                 self._scheduler.announce_waves(state)
 
-                # Collect all ready nodes at once for potential parallelism
-                batch = list(state.ready_queue)
+                # Collect all ready nodes at once for potential parallelism.
+                # Filter out any nodes that were queued then skipped by
+                # propagate_skip before we got to process them.
+                batch = [nid for nid in state.ready_queue if nid not in state.skipped]
                 state.ready_queue.clear()
 
                 # Run the batch concurrently
