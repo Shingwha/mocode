@@ -64,7 +64,7 @@ class BashSession:
     def cwd(self) -> str:
         return str(self._cwd)
 
-    def execute(self, command: str, timeout: int = 30) -> str:
+    def execute(self, command: str, timeout: int = 240) -> str:
         stripped = command.strip()
         if stripped.startswith("cd ") and "&&" not in stripped and ";" not in stripped:
             return self._handle_cd(stripped[3:].strip())
