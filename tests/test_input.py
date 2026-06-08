@@ -12,7 +12,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.keys import Keys
 
 from mocode.app.cli.commands import CommandRegistry
-from mocode.app.cli.input import SlashCompleter, build_keybindings
+from mocode.app.cli.input import PasteStore, SlashCompleter, build_keybindings
 
 
 async def _collect(completer, doc, event):
@@ -282,3 +282,66 @@ class TestNewlineKeybinding:
         event = _make_event(buf)
         handler(event)
         buf.insert_text.assert_called_once_with("\n")
+
+
+# ---------------------------------------------------------------------------
+# PasteStore tests
+# ---------------------------------------------------------------------------
+
+
+class TestPasteStore:
+    """PasteStore manages indexed paste content with marker resolution."""
+
+    def test_put_returns_marker(self):
+        ps = PasteStore()
+        marker = ps.put("hello world")
+        assert marker == "[paste:1]"
+
+    def test_put_increments_counter(self):
+        ps = PasteStore()
+        m1 = ps.put("first")
+        m2 = ps.put("second")
+        assert m1 == "[paste:1]"
+        assert m2 == "[paste:2]"
+
+    def test_resolve_single_marker(self):
+        ps = PasteStore()
+        marker = ps.put("replaced")
+        result = ps.resolve(f"before {marker} after")
+        assert result == "before replaced after"
+
+    def test_resolve_multiple_markers(self):
+        ps = PasteStore()
+        m1 = ps.put("AAA")
+        m2 = ps.put("BBB")
+        result = ps.resolve(f"{m1} and {m2}")
+        assert result == "AAA and BBB"
+
+    def test_resolve_unknown_marker_keeps_original(self):
+        ps = PasteStore()
+        result = ps.resolve("text [paste:99] end")
+        assert result == "text [paste:99] end"
+
+    def test_resolve_no_markers(self):
+        ps = PasteStore()
+        assert ps.resolve("plain text") == "plain text"
+
+    def test_clear_resets_store(self):
+        ps = PasteStore()
+        ps.put("data")
+        ps.clear()
+        result = ps.resolve("[paste:1]")
+        assert result == "[paste:1]"  # marker stays — store is empty
+
+    def test_clear_resets_counter(self):
+        ps = PasteStore()
+        ps.put("data")
+        ps.clear()
+        marker = ps.put("new")
+        assert marker == "[paste:1]"  # counter restarted
+
+    def test_resolve_multiline_content(self):
+        ps = PasteStore()
+        content = "line1\nline2\nline3"
+        marker = ps.put(content)
+        assert ps.resolve(marker) == content

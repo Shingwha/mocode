@@ -10,10 +10,34 @@ from ..utils import count_visual_lines
 if TYPE_CHECKING:
     from .commands import CommandRegistry
 
-# Paste marker thresholds
-_PASTE_LINE_THRESHOLD = 3
-_PASTE_CHAR_THRESHOLD = 100
-_PASTE_MARKER_RE = re.compile(r"\[Pasted text #(\d+) \+\d+ (?:lines|chars)\]")
+# Paste marker thresholds (OR: below either → insert directly)
+_PASTE_LINE_THRESHOLD = 5
+_PASTE_CHAR_THRESHOLD = 200
+_PASTE_RE = re.compile(r"\[paste:(\d+)]")
+
+
+class PasteStore:
+    """Indexed store for pasted content with marker resolution."""
+
+    def __init__(self):
+        self._store: dict[int, str] = {}
+        self._counter: int = 0
+
+    def clear(self) -> None:
+        self._store.clear()
+        self._counter = 0
+
+    def put(self, data: str) -> str:
+        """Store content, return its marker string."""
+        self._counter += 1
+        self._store[self._counter] = data
+        return f"[paste:{self._counter}]"
+
+    def resolve(self, text: str) -> str:
+        """Replace all markers with stored content."""
+        def _repl(m: re.Match) -> str:
+            return self._store.get(int(m.group(1)), m.group(0))
+        return _PASTE_RE.sub(_repl, text)
 
 
 # ── Completion helpers ──────────────────────────────────
@@ -103,8 +127,7 @@ class Input:
 
     def __init__(self, registry: CommandRegistry, ps1: str = "❯"):
         self._ps1 = ps1
-        self._paste_store: dict[int, str] = {}
-        self._paste_counter: int = 0
+        self._pastes = PasteStore()
         self._registry = registry
         self._session = None
 
@@ -120,32 +143,19 @@ class Input:
 
     def _handle_paste(self, event):
         data = event.data.replace("\r\n", "\n").replace("\r", "\n")
-        n_lines = data.count("\n") + 1
-        n_chars = len(data)
-
-        if n_lines < _PASTE_LINE_THRESHOLD and n_chars < _PASTE_CHAR_THRESHOLD:
+        lines, chars = data.count("\n") + 1, len(data)
+        if lines < _PASTE_LINE_THRESHOLD or chars < _PASTE_CHAR_THRESHOLD:
             event.current_buffer.insert_text(data)
             return
-
-        self._paste_counter += 1
-        pid = self._paste_counter
-        self._paste_store[pid] = data
-        unit = "lines" if n_lines > 1 else "chars"
-        count = n_lines if n_lines > 1 else n_chars
-        marker = f"[Pasted text #{pid} +{count} {unit}]"
+        marker = self._pastes.put(data)
         event.current_buffer.insert_text(marker)
 
     def _resolve_paste_markers(self, text: str) -> str:
-        def _replace(m):
-            pid = int(m.group(1))
-            return self._paste_store.get(pid, m.group(0))
-
-        return _PASTE_MARKER_RE.sub(_replace, text)
+        return self._pastes.resolve(text)
 
     async def prompt(self, default: str = "") -> str:
         self._ensure_session()
-        self._paste_store.clear()
-        self._paste_counter = 0
+        self._pastes.clear()
         raw = await self._session.prompt_async(f"{self._ps1} ", default=default)
         # Clear the prompt_toolkit input lines from the terminal
         lines = count_visual_lines(raw, len(self._ps1) + 1)  # +1 for trailing space
