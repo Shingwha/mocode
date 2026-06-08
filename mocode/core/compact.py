@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from collections import Counter
 
+from .provider import with_retry
+
 # ---- Constants for preprocessing ----
 
 TOOL_RESULT_MAX_LEN = 800
@@ -199,7 +201,8 @@ async def _generate_summary(
     user_template: str,
 ) -> str:
     try:
-        resp = await provider.call(
+        resp = await with_retry(
+            provider.call,
             messages=[
                 {
                     "role": "user",

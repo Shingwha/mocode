@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .hook import HookRunner, AgentHookContext
-from .provider import Provider, Response, Usage
+from .provider import Provider, Response, Usage, with_retry
 from .tool import ToolError, ToolRegistry
 
 
@@ -106,7 +106,8 @@ class AgentLoop:
                 ctx.compact_new = 0
 
             try:
-                response: Response = await self.provider.call(
+                response: Response = await with_retry(
+                    self.provider.call,
                     self.messages,
                     self.system_prompt,
                     self._tools.all_schemas(),
