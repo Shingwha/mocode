@@ -322,6 +322,7 @@ class TestBuildFallbackSummary:
         ]
         result = build_fallback_summary(messages)
         assert "look at this" in result
+        assert "[image attached]" in result
 
     def test_multiple_user_messages(self):
         messages = [
@@ -338,6 +339,25 @@ class TestBuildFallbackSummary:
     def test_empty_messages(self):
         result = build_fallback_summary([])
         assert "[Conversation summary (0 messages compressed)]" in result
+
+    def test_tool_call_counting(self):
+        messages = [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"function": {"name": "read", "arguments": "{}"}},
+                {"function": {"name": "read", "arguments": "{}"}},
+                {"function": {"name": "edit", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "content": "ok"},
+            {"role": "assistant", "content": "done", "tool_calls": [
+                {"function": {"name": "bash", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "content": "ok"},
+        ]
+        result = build_fallback_summary(messages)
+        assert "read: 2" in result
+        assert "edit: 1" in result
+        assert "bash: 1" in result
 
 
 # ---- compact_messages (pure function) ----

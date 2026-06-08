@@ -37,6 +37,11 @@ def _format_content_parts(content: list) -> str:
     return " ".join(text_parts)
 
 
+def _extract_tool_name(tc: dict) -> str:
+    """Extract tool name from a tool_calls entry."""
+    return tc.get("function", {}).get("name", "unknown")
+
+
 def _truncate_tool_calls(tool_calls: list) -> list:
     """Return a shallow copy with long arguments truncated."""
     out = []
@@ -98,7 +103,7 @@ def _format_tool_calls(tool_calls: list) -> str:
         if not isinstance(tc, dict):
             continue
         fn = tc.get("function", {})
-        name = fn.get("name", "unknown")
+        name = _extract_tool_name(tc)
         args = fn.get("arguments", "")
         parts.append(f"[Tool Call: {name}({args})]")
     return "\n".join(parts)
@@ -145,10 +150,7 @@ def build_fallback_summary(messages: list[dict]) -> str:
         if role == "user":
             text = content
             if isinstance(text, list):
-                text = " ".join(
-                    p.get("text", "") if isinstance(p, dict) else str(p)
-                    for p in text
-                )
+                text = _format_content_parts(text)
             # Take first sentence or first 200 chars
             first_line = text.split("\n", 1)[0][:200]
             if first_line:
@@ -157,15 +159,10 @@ def build_fallback_summary(messages: list[dict]) -> str:
         elif role == "assistant":
             if content:
                 last_assistant = content[:300]
-
-    # Count tool calls from assistant messages
-    for msg in messages:
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            for tc in msg["tool_calls"]:
-                if isinstance(tc, dict):
-                    fn = tc.get("function", {})
-                    name = fn.get("name", "unknown")
-                    tool_counter[name] += 1
+            if msg.get("tool_calls"):
+                for tc in msg["tool_calls"]:
+                    if isinstance(tc, dict):
+                        tool_counter[_extract_tool_name(tc)] += 1
 
     parts = [f"[Conversation summary ({len(messages)} messages compressed)]"]
 
