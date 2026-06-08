@@ -90,6 +90,9 @@ class Executor:
             output=merged_output,
             exit_code=0,
             duration=total_duration,
+            tool_calls=sum(nr.tool_calls for nr in child_results),
+            prompt_tokens=sum(nr.prompt_tokens for nr in child_results),
+            completion_tokens=sum(nr.completion_tokens for nr in child_results),
         )
         state.total_executions += 1
         record_done(

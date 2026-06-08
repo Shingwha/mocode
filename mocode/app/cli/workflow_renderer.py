@@ -220,9 +220,19 @@ class WorkflowRenderer:
     def _on_map_item_done(self, event: MapItemDoneEvent) -> None:
         dur = f"{event.duration:.1f}s"
         val = event.item_value[:30] + ("…" if len(event.item_value) > 30 else "")
+        # Build usage detail (same logic as _on_node_done)
+        parts = []
+        tc = getattr(event, 'tool_calls', 0) or 0
+        if tc > 0:
+            parts.append(f"{tc} tools")
+        pt = getattr(event, 'prompt_tokens', 0) or 0
+        ct = getattr(event, 'completion_tokens', 0) or 0
+        if pt > 0:
+            parts.append(f"↑{pt:,} ↓{ct:,} tokens")
+        usage = f"  {' · '.join(parts)}" if parts else ""
         self._d.print(
             f"     {_s('▪', GRAY)} [{event.item_index + 1}/{event.total_count}] "
-            f"{_s(val, DIM)}  {_s(dur, DIM)}"
+            f"{_s(val, DIM)}  {_s(dur, DIM)}{usage}"
         )
 
     def _on_progress(self, event: ProgressEvent) -> None:
@@ -320,6 +330,18 @@ class WorkflowRenderer:
             return (
                 f"{prefix}{connector} {_s(node.id, SOFT_CYAN)} · router  "
                 f"{_s('→', YELLOW)} {' | '.join(route_strs)}"
+            )
+        # Map node (each + as) — show fan-out mode
+        if getattr(node, 'each', ''):
+            as_var = getattr(node, 'as_', '') or '?'
+            preview = (
+                node.description
+                if node.description
+                else (node.task[:50] if node.task else "")
+            )
+            return (
+                f"{prefix}{connector} {_s(node.id, BOLD)} · "
+                f"each {node.each} as {as_var} → {preview}"
             )
         preview = (
             node.description

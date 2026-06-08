@@ -94,6 +94,9 @@ class MapItemDoneEvent(WorkflowEvent):
     total_count: int
     item_value: str
     duration: float
+    tool_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 @dataclass

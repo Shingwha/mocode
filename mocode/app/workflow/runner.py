@@ -227,6 +227,9 @@ class DAGRunner:
                     total_count=len(items),
                     item_value=items[idx][:80],
                     duration=nr.duration,
+                    tool_calls=nr.tool_calls,
+                    prompt_tokens=nr.prompt_tokens,
+                    completion_tokens=nr.completion_tokens,
                 )
             )
 

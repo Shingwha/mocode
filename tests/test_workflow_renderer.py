@@ -240,6 +240,31 @@ class TestOnMapItemDone:
         renderer.handle_event(event)
         assert any("3/5" in l for l in lines)
 
+    def test_prints_usage_when_present(self):
+        renderer, lines = _make_renderer()
+        event = MapItemDoneEvent(
+            map_id="m1", item_index=0, total_count=3,
+            item_value="item_a", duration=1.2,
+            tool_calls=3, prompt_tokens=5000, completion_tokens=1200,
+        )
+        renderer.handle_event(event)
+        output = "\n".join(lines)
+        assert "1/3" in output
+        assert "3 tools" in output
+        assert "↑5,000 ↓1,200 tokens" in output
+
+    def test_no_usage_when_zero(self):
+        renderer, lines = _make_renderer()
+        event = MapItemDoneEvent(
+            map_id="m1", item_index=0, total_count=1,
+            item_value="only", duration=0.5,
+            tool_calls=0, prompt_tokens=0, completion_tokens=0,
+        )
+        renderer.handle_event(event)
+        output = "\n".join(lines)
+        assert "tools" not in output
+        assert "tokens" not in output
+
 
 class TestOnProgress:
     def test_with_node_id_sets_spinner(self):
@@ -343,6 +368,29 @@ class TestWorkflowShow:
         result = renderer.show(wf)
         assert "router" in result
         assert "next" in result
+
+    def test_map_node_shows_each_mode(self):
+        renderer, _ = _make_renderer()
+        node = MagicMock()
+        node.id = "process"
+        node.type = "task"
+        node.description = "Process item"
+        node.task = "Do something with {item}"
+        node.routes = []
+        node.each = "{nodes.source.items}"
+        node.as_ = "item"
+        wf = MagicMock()
+        wf.name = "mapped"
+        wf.description = ""
+        wf.total_nodes.return_value = 1
+        wf.node_map = {"process": node}
+        wf.dependents = {}
+        wf.root_nodes = [node]
+        result = renderer.show(wf)
+        assert "each" in result
+        assert "{nodes.source.items}" in result
+        assert "as item" in result
+        assert "Process item" in result
 
 
 class TestWorkflowList:

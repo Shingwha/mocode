@@ -677,7 +677,7 @@ class TestRunnerEachNode:
 
     @pytest.mark.asyncio
     async def test_each_events_emitted(self):
-        """task+each node emits MapFanOutEvent and MapItemDoneEvent."""
+        """task+each node emits MapFanOutEvent and MapItemDoneEvent with usage."""
         wf = Workflow(
             name="t",
             nodes=[
@@ -694,7 +694,8 @@ class TestRunnerEachNode:
 
         async def _mock_exec(node_id, task, context_header=None):
             return NodeResult(node_id=node_id, task=task, output="r" if "::" in node_id else "x\ny",
-                              exit_code=0, duration=0.1)
+                              exit_code=0, duration=0.1,
+                              tool_calls=3, prompt_tokens=1000, completion_tokens=200)
 
         with patch.object(runner, "_exec_node", side_effect=_mock_exec):
             await runner.run()
@@ -704,6 +705,45 @@ class TestRunnerEachNode:
         assert len(fan_out) == 1
         assert fan_out[0].item_count == 2
         assert len(item_done) == 2
+        # Verify usage fields are propagated to MapItemDoneEvent
+        assert item_done[0].tool_calls == 3
+        assert item_done[0].prompt_tokens == 1000
+        assert item_done[0].completion_tokens == 200
+
+    @pytest.mark.asyncio
+    async def test_each_map_result_aggregates_usage(self):
+        """Map node's final NodeResult aggregates usage from all children."""
+        wf = Workflow(
+            name="t",
+            nodes=[
+                Node(id="gen", task="Generate"),
+                Node(
+                    id="m",
+                    each="{nodes.gen.output}", as_="item", task="Process {item}",
+                    depends=["gen"],
+                ),
+            ],
+        )
+        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
+
+        async def _mock_exec(node_id, task, context_header=None):
+            if "::" in node_id:
+                return NodeResult(node_id=node_id, task=task, output="ok",
+                                  exit_code=0, duration=0.5,
+                                  tool_calls=2, prompt_tokens=500, completion_tokens=100)
+            return NodeResult(node_id=node_id, task=task, output="a\nb",
+                              exit_code=0, duration=0.1)
+
+        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
+            results = await runner.run()
+
+        # Find the aggregated map result (node "m", not children "m::0", "m::1")
+        map_results = [r for r in results if r.node_id == "m"]
+        assert len(map_results) == 1
+        mr = map_results[0]
+        assert mr.tool_calls == 4  # 2 children × 2
+        assert mr.prompt_tokens == 1000  # 2 children × 500
+        assert mr.completion_tokens == 200  # 2 children × 100
 
     @pytest.mark.asyncio
     async def test_each_with_concurrency(self):
