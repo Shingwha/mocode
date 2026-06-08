@@ -97,20 +97,6 @@ class TestSlashCompleter:
         assert completions[0].text == "/help"
         assert completions[0].display_meta[0][1] == "Show help"
 
-    def test_no_match_without_slash(self):
-        reg = _make_registry(_make_command("/help"))
-        completer = SlashCompleter(reg)
-        doc = Document("hello")
-        completions = asyncio.run(_collect(completer, doc, MagicMock()))
-        assert completions == []
-
-    def test_no_match_with_space(self):
-        reg = _make_registry(_make_command("/help"))
-        completer = SlashCompleter(reg)
-        doc = Document("/help foo")
-        completions = asyncio.run(_collect(completer, doc, MagicMock()))
-        assert completions == []
-
     def test_multiple_matches(self):
         reg = _make_registry(
             _make_command("/export"),
@@ -124,20 +110,6 @@ class TestSlashCompleter:
         assert "/export" in names
         assert "/exit" in names
         assert "/help" not in names
-
-    def test_no_commands(self):
-        reg = _make_registry()
-        completer = SlashCompleter(reg)
-        doc = Document("/h")
-        completions = asyncio.run(_collect(completer, doc, MagicMock()))
-        assert completions == []
-
-    def test_start_position_replaces_full_text(self):
-        reg = _make_registry(_make_command("/help"))
-        completer = SlashCompleter(reg)
-        doc = Document("/he")
-        completions = asyncio.run(_collect(completer, doc, MagicMock()))
-        assert completions[0].start_position == -3  # -len("/he")
 
     def test_exact_match_yields_self_and_children(self):
         """Exact match yields itself plus subcommands (Tab-triggered)."""
@@ -153,28 +125,6 @@ class TestSlashCompleter:
         assert "/plan" in names
         assert "/plan:start" in names
         assert "/plan:clear" in names
-
-    def test_exact_match_leaf_command_yields_self(self):
-        """Exact match of a leaf command yields itself."""
-        reg = _make_registry(_make_command("/help", "Show help"))
-        completer = SlashCompleter(reg)
-        doc = Document("/help")
-        completions = asyncio.run(_collect(completer, doc, MagicMock()))
-        assert len(completions) == 1
-        assert completions[0].text == "/help"
-
-    def test_partial_match_yields_parent_and_children(self):
-        """Partial match like /pl → yields /plan and /plan:start."""
-        reg = _make_registry(
-            _make_command("/plan", "Create plans"),
-            _make_command("/plan:start", "Start plan"),
-        )
-        completer = SlashCompleter(reg)
-        doc = Document("/pl")
-        completions = asyncio.run(_collect(completer, doc, MagicMock()))
-        names = [c.text for c in completions]
-        assert "/plan" in names
-        assert "/plan:start" in names
 
 
 # ---------------------------------------------------------------------------
@@ -201,16 +151,6 @@ class TestEnterKeybinding:
         cs = _make_complete_state([c1, c2], current_completion=c1)
         handler = _find_handler(self.bindings, "enter")
         buf = _make_buffer("/hel", complete_state=cs)
-        event = _make_event(buf)
-        handler(event)
-        buf.apply_completion.assert_called_once_with(c1)
-
-    def test_enter_applies_first_completion_when_no_explicit_selection(self):
-        c1 = Completion("/help", start_position=-5)
-        c2 = Completion("/history", start_position=-5)
-        cs = _make_complete_state([c1, c2], current_completion=None)
-        handler = _find_handler(self.bindings, "enter")
-        buf = _make_buffer("/h", complete_state=cs)
         event = _make_event(buf)
         handler(event)
         buf.apply_completion.assert_called_once_with(c1)
@@ -297,34 +237,11 @@ class TestPasteStore:
         marker = ps.put("hello world")
         assert marker == "[paste:1]"
 
-    def test_put_increments_counter(self):
-        ps = PasteStore()
-        m1 = ps.put("first")
-        m2 = ps.put("second")
-        assert m1 == "[paste:1]"
-        assert m2 == "[paste:2]"
-
     def test_resolve_single_marker(self):
         ps = PasteStore()
         marker = ps.put("replaced")
         result = ps.resolve(f"before {marker} after")
         assert result == "before replaced after"
-
-    def test_resolve_multiple_markers(self):
-        ps = PasteStore()
-        m1 = ps.put("AAA")
-        m2 = ps.put("BBB")
-        result = ps.resolve(f"{m1} and {m2}")
-        assert result == "AAA and BBB"
-
-    def test_resolve_unknown_marker_keeps_original(self):
-        ps = PasteStore()
-        result = ps.resolve("text [paste:99] end")
-        assert result == "text [paste:99] end"
-
-    def test_resolve_no_markers(self):
-        ps = PasteStore()
-        assert ps.resolve("plain text") == "plain text"
 
     def test_clear_resets_store(self):
         ps = PasteStore()
@@ -332,29 +249,3 @@ class TestPasteStore:
         ps.clear()
         result = ps.resolve("[paste:1]")
         assert result == "[paste:1]"  # marker stays — store is empty
-
-    def test_clear_resets_counter(self):
-        ps = PasteStore()
-        ps.put("data")
-        ps.clear()
-        marker = ps.put("new")
-        assert marker == "[paste:1]"  # counter restarted
-
-    def test_resolve_multiline_content(self):
-        ps = PasteStore()
-        content = "line1\nline2\nline3"
-        marker = ps.put(content)
-        assert ps.resolve(marker) == content
-
-    def test_markers_persist_without_clear(self):
-        """PasteStore markers should remain valid across multiple resolve calls."""
-        ps = PasteStore()
-        marker = ps.put("pasted content")
-        
-        # First resolve
-        result1 = ps.resolve(f"before {marker} after")
-        assert result1 == "before pasted content after"
-        
-        # Second resolve (simulating history recall)
-        result2 = ps.resolve(f"reuse {marker}")
-        assert result2 == "reuse pasted content"

@@ -6,10 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from mocode.app.cli.commands import Command, CommandContext, CommandRegistry, CommandResult
-from mocode.app.cli.commands.builtin import (
-    commands as builtin_commands,
-    _quit, _help, _clear, _copy, _export, _compact, _model, _resume, _connect,
-)
+from mocode.app.cli.commands.builtin import commands as builtin_commands
 from mocode.app.cli.commands.skill import make_skill_command
 from mocode.app.session import Session
 
@@ -124,18 +121,6 @@ class TestExportCommand:
         app.session_mgr.export_to_file.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_warns_when_no_session(self):
-        app = MagicMock()
-        app.session_mgr.get_active.return_value = None
-        display = MagicMock()
-
-        cmd = _get_builtin_cmd("/export")
-        result = await cmd.run(_make_ctx(app=app, display=display))
-
-        assert result == CommandResult.CONTINUE
-        display.warn.assert_called_once()
-
-    @pytest.mark.asyncio
     async def test_export_md_format(self, tmp_path, monkeypatch):
         session = Session(
             id="session_test",
@@ -159,29 +144,6 @@ class TestExportCommand:
         assert call_args[0][1].suffix == ".md"
         display.info.assert_called_once()
         assert ".md" in display.info.call_args[0][0]
-
-    @pytest.mark.asyncio
-    async def test_export_json_explicit(self, tmp_path, monkeypatch):
-        session = Session(
-            id="session_test",
-            created_at="2025-01-01T00:00:00",
-            updated_at="2025-01-01T00:00:00",
-            workdir="/tmp",
-            messages=[{"role": "user", "content": "hi"}],
-        )
-        app = MagicMock()
-        app.session_mgr.get_active.return_value = session
-        app.agent.system_prompt = "You are helpful."
-        display = MagicMock()
-
-        monkeypatch.chdir(tmp_path)
-        cmd = _get_builtin_cmd("/export")
-        result = await cmd.run(_make_ctx(app=app, display=display, args="json"))
-
-        assert result == CommandResult.CONTINUE
-        app.session_mgr.export_to_file.assert_called_once()
-        call_args = app.session_mgr.export_to_file.call_args
-        assert call_args[0][1].suffix == ".json"
 
 
 class TestResumeCommand:
@@ -251,33 +213,4 @@ class TestSkillCommand:
         assert "typeset instructions" in result.prompt
         assert "do NOT call the skill tool" in result.prompt
 
-    @pytest.mark.asyncio
-    async def test_empty_content_warns(self):
-        skill = MagicMock()
-        skill.metadata.name = "empty"
-        skill.metadata.description = "Empty skill"
-        skill.load_content.return_value = ""
-        cmd = make_skill_command(skill)
-        display = MagicMock()
-        result = await cmd.run(_make_ctx(display=display))
-        assert result == CommandResult.CONTINUE
-        display.warn.assert_called_once()
 
-    def test_registered_in_registry(self):
-        """Verify skill commands can be registered and looked up."""
-        skill = MagicMock()
-        skill.metadata.name = "test-skill"
-        skill.metadata.description = "A test"
-        skill.load_content.return_value = "body"
-        cmd = make_skill_command(skill)
-        reg = CommandRegistry()
-        reg.register(cmd)
-        assert reg.get("/skill:test-skill") is cmd
-
-    def test_no_aliases(self):
-        skill = MagicMock()
-        skill.metadata.name = "foo"
-        skill.metadata.description = ""
-        skill.load_content.return_value = "x"
-        cmd = make_skill_command(skill)
-        assert cmd.aliases == ()

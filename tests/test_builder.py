@@ -196,7 +196,7 @@ class TestChat:
         """Cancel via asyncio.Task.cancel() raises CancelledError."""
 
         async def delayed_call(messages, system, tools, max_tokens):
-            await asyncio.sleep(10)
+            await asyncio.Event().wait()
             return Response(content="never")
 
         agent = AgentLoop(

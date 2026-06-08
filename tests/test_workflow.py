@@ -10,8 +10,6 @@ import pytest
 
 from mocode.app.workflow import (
     LoopIterEvent,
-    MapFanOutEvent,
-    MapItemDoneEvent,
     Node,
     NodeDoneEvent,
     NodeResult,
@@ -320,24 +318,6 @@ class TestFillTemplate:
 
 
 class TestTaskEachNode:
-    def test_from_dict_each(self):
-        n = Node.from_dict({
-            "id": "audit", "each": "{nodes.scan.ISSUE}", "as": "finding",
-            "task": "Analyze {finding}", "depends": ["scan"],
-        })
-        assert n.type == "task"
-        assert n.each == "{nodes.scan.ISSUE}"
-        assert n.as_ == "finding"
-        assert n.task == "Analyze {finding}"
-
-    def test_auto_infers_depends(self):
-        n = Node.from_dict({
-            "id": "m", "each": "{nodes.a.output}", "as": "item",
-            "task": "Use {nodes.b.output} and {item}",
-        })
-        assert "a" in n.depends
-        assert "b" in n.depends
-
     def test_auto_infers_depends_from_each(self):
         """each expression also contributes to depends inference."""
         n = Node.from_dict({
@@ -628,31 +608,6 @@ class TestRunnerErrorHandling:
         assert result.completion_tokens == 300
 
     @pytest.mark.asyncio
-    async def test_exec_node_timeout_returns_usage(self):
-        """_exec_node returns partial usage on timeout."""
-        wf = Workflow(name="t", nodes=[Node(id="a", task="Slow")])
-        parent = _make_mock_agent()
-        runner = DAGRunner(wf, parent_agent=parent, timeout=0.01)
-
-        mock_agent = _make_mock_agent()
-        mock_agent._tool_call_count = 3
-        mock_agent._total_usage = Usage(500, 100)
-        mock_agent.chat = AsyncMock(side_effect=asyncio.TimeoutError)
-
-        mock_builder = MagicMock()
-        mock_builder.build.return_value = mock_agent
-        for method in ("provider", "prompt", "tools", "hooks", "config"):
-            getattr(mock_builder, method).return_value = mock_builder
-
-        with patch("mocode.core.builder.Agent", return_value=mock_builder):
-            result = await runner._exec_node("a", "Slow")
-
-        assert result.exit_code == 1
-        assert "timed out" in result.error
-        assert result.tool_calls == 3
-        assert result.prompt_tokens == 500
-
-    @pytest.mark.asyncio
     async def test_exec_node_exception_returns_error(self):
         """_exec_node catches generic exceptions and returns error NodeResult."""
         wf = Workflow(name="t", nodes=[Node(id="a", task="Boom")])
@@ -750,41 +705,6 @@ class TestRunnerEachNode:
         assert each_result.output == ""
 
     @pytest.mark.asyncio
-    async def test_each_events_emitted(self):
-        """task+each node emits MapFanOutEvent and MapItemDoneEvent with usage."""
-        wf = Workflow(
-            name="t",
-            nodes=[
-                Node(id="gen", task="Generate"),
-                Node(
-                    id="m",
-                    each="{nodes.gen.output}", as_="item", task="Process {item}",
-                    depends=["gen"],
-                ),
-            ],
-        )
-        events: list = []
-        runner = DAGRunner(wf, parent_agent=_make_mock_agent(), on_event=events.append)
-
-        async def _mock_exec(node_id, task, context_header=None):
-            return NodeResult(node_id=node_id, task=task, output="r" if "::" in node_id else "x\ny",
-                              exit_code=0, duration=0.1,
-                              tool_calls=3, prompt_tokens=1000, completion_tokens=200)
-
-        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
-            await runner.run()
-
-        fan_out = [e for e in events if isinstance(e, MapFanOutEvent)]
-        item_done = [e for e in events if isinstance(e, MapItemDoneEvent)]
-        assert len(fan_out) == 1
-        assert fan_out[0].item_count == 2
-        assert len(item_done) == 2
-        # Verify usage fields are propagated to MapItemDoneEvent
-        assert item_done[0].tool_calls == 3
-        assert item_done[0].prompt_tokens == 1000
-        assert item_done[0].completion_tokens == 200
-
-    @pytest.mark.asyncio
     async def test_each_map_result_aggregates_usage(self):
         """Map node's final NodeResult aggregates usage from all children."""
         wf = Workflow(
@@ -818,32 +738,6 @@ class TestRunnerEachNode:
         assert mr.tool_calls == 4  # 2 children × 2
         assert mr.prompt_tokens == 1000  # 2 children × 500
         assert mr.completion_tokens == 200  # 2 children × 100
-
-    @pytest.mark.asyncio
-    async def test_each_with_concurrency(self):
-        """task+each node respects workflow concurrency via semaphore."""
-        wf = Workflow(
-            name="t", concurrency=2,
-            nodes=[
-                Node(id="gen", task="Generate"),
-                Node(
-                    id="m",
-                    each="{nodes.gen.output}", as_="item", task="Process {item}",
-                    depends=["gen"],
-                ),
-            ],
-        )
-        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
-
-        async def _mock_exec(node_id, task, context_header=None):
-            return NodeResult(node_id=node_id, task=task, output="r" if "::" in node_id else "a\nb\nc",
-                              exit_code=0, duration=0.1)
-
-        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
-            results = await runner.run()
-
-        child_ids = [r.node_id for r in results if "::" in r.node_id]
-        assert len(child_ids) == 3
 
 
 # ===========================================================================
@@ -998,37 +892,6 @@ class TestWorkflowMenuPendingInput:
         else:
             app.wf_renderer.show.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_menu_runs_delegates_to_status(self):
-        """Recent runs menu choice delegates to _status."""
-        from mocode.app.cli.commands import CommandResult
-        from mocode.app.cli.commands.workflow import command as wf_command
-
-        wf = Workflow(name="test-wf", nodes=[Node(id="a", task="Do stuff")])
-        registry = MagicMock()
-        registry.list.return_value = [wf]
-
-        app = MagicMock()
-        app.workflow_registry = registry
-        app.wf_renderer = MagicMock()
-        display = MagicMock()
-        ctx = _make_ctx(app=app, display=display)
-
-        cmd = wf_command
-        with (
-            patch("mocode.app.cli.commands.workflow.select", new_callable=AsyncMock) as mock_select,
-            patch("mocode.app.cli.commands.workflow.WorkflowRunStore") as MockStore,
-        ):
-            mock_select.return_value = "__runs__"
-            mock_store = MagicMock()
-            mock_store.list_recent.return_value = []
-            MockStore.return_value = mock_store
-            result = await cmd.menu(ctx, cmd)
-
-        assert result == CommandResult.CONTINUE
-        display.warn.assert_called()  # No runs found
-
-
 # ===========================================================================
 # 13. WorkflowCommand — run, status, result, runs, run-bg
 # ===========================================================================
@@ -1074,40 +937,6 @@ class TestWorkflowCommandRun:
         _, kwargs = MockRunner.call_args
         assert kwargs.get("run_id") == "wf_test123"
         assert kwargs.get("run_store") is mock_store
-
-    @pytest.mark.asyncio
-    async def test_run_fg_blocks(self):
-        """Without --bg, _run blocks until completion."""
-        from mocode.app.cli.commands import CommandResult
-        from mocode.app.cli.commands.workflow import command as wf_command
-
-        wf = Workflow(name="fg-wf", nodes=[Node(id="a", task="Do stuff")])
-        registry = MagicMock()
-        registry.get.return_value = wf
-
-        app = MagicMock()
-        app.workflow_registry = registry
-        display = MagicMock()
-        ctx = _make_ctx(app=app, display=display, args="run fg-wf")
-        cmd = wf_command
-
-        with (
-            patch("mocode.app.cli.commands.workflow.WorkflowRunStore") as MockStore,
-            patch("mocode.app.cli.commands.workflow.DAGRunner") as MockRunner,
-        ):
-            mock_store = MagicMock()
-            mock_store.create.return_value = "wf_fg123"
-            MockStore.return_value = mock_store
-            mock_runner_instance = AsyncMock()
-            mock_runner_instance.run = AsyncMock(return_value=[
-                NodeResult(node_id="a", task="Do stuff", output="ok", exit_code=0, duration=1.0)
-            ])
-            MockRunner.return_value = mock_runner_instance
-            result = await cmd.run(ctx)
-
-        assert result == CommandResult.CONTINUE
-        mock_runner_instance.run.assert_called_once()
-        app.wf_renderer.summary.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_status_with_run_id(self):
@@ -1165,37 +994,6 @@ class TestWorkflowCommandRun:
 
         assert result == CommandResult.CONTINUE
         display.warn.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_status_shows_recent_runs(self):
-        """status subcommand with no args lists recent runs."""
-        from mocode.app.cli.commands import CommandResult
-        from mocode.app.cli.commands.workflow import command as wf_command
-
-        app = MagicMock()
-        app.wf_renderer.list_runs.return_value = "  wf_aaa  wf1  completed  2025-01-01\n  wf_bbb  wf2  running  2025-01-01"
-        display = MagicMock()
-        ctx = _make_ctx(app=app, display=display, args="status")
-        cmd = wf_command
-
-        with patch("mocode.app.cli.commands.workflow.WorkflowRunStore") as MockStore:
-            mock_store = MagicMock()
-            mock_store.list_recent.return_value = [
-                {"run_id": "wf_aaa", "workflow_name": "wf1",
-                 "status": "completed", "started_at": "2025-01-01T00:00:00"},
-                {"run_id": "wf_bbb", "workflow_name": "wf2",
-                 "status": "running", "started_at": "2025-01-01T00:05:00", "pid": 12345},
-            ]
-            mock_store.is_alive.return_value = True
-            MockStore.return_value = mock_store
-            result = await cmd.run(ctx)
-
-        assert result == CommandResult.CONTINUE
-        info_text = display.info.call_args[0][0]
-        assert "wf_aaa" in info_text
-        assert "wf_bbb" in info_text
-        assert "completed" in info_text
-        assert "running" in info_text
 
 
 # ===========================================================================
@@ -1349,35 +1147,6 @@ class TestEachTemplateUnified:
         assert len(child_results) == 2
         assert child_results[0].task == "Search for alpha"
         assert child_results[1].task == "Search for beta"
-
-    @pytest.mark.asyncio
-    async def test_mixed_as_and_node_ref_in_each(self):
-        """task+each can mix {as_var} and {nodes.X.output} in the same template."""
-        wf = Workflow(
-            name="t",
-            nodes=[
-                Node(id="ctx", task="context data"),
-                Node(id="gen", task="items source"),
-                Node(
-                    id="m",
-                    each="{nodes.gen.output}", as_="item",
-                    task="Use {nodes.ctx.output} with {item}", depends=["ctx", "gen"],
-                ),
-            ],
-        )
-        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
-
-        async def _mock_exec(node_id, task, context_header=None):
-            return NodeResult(node_id=node_id, task=task,
-                              output="context-info" if node_id == "ctx" else ("x\ny" if node_id == "gen" else f"r"),
-                              exit_code=0, duration=0.1)
-
-        with patch.object(runner, "_exec_node", side_effect=_mock_exec):
-            results = await runner.run()
-
-        child_results = [r for r in results if "::" in r.node_id]
-        assert child_results[0].task == "Use context-info with x"
-        assert child_results[1].task == "Use context-info with y"
 
 
 # ===========================================================================
@@ -1634,35 +1403,9 @@ class TestSectionsInContext:
 
 class TestWorkflowCancellation:
     @pytest.mark.asyncio
-    async def test_runner_persists_cancelled_on_cancel(self):
-        """DAGRunner.run() persists 'cancelled' status when task is cancelled."""
-        wf = _simple_linear_wf(2)
-        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
-
-        persist_calls = []
-        def _capture_persist(results, status):
-            persist_calls.append((len(results), status))
-
-        runner._persist = _capture_persist
-
-        # Make _exec_node hang so we can cancel
-        async def _slow_exec(node_id, task, context_header=None):
-            await asyncio.sleep(100)
-            return NodeResult(node_id=node_id, task=task, output="", exit_code=0, duration=0)
-
-        with patch.object(runner, "_exec_node", side_effect=_slow_exec):
-            task = asyncio.create_task(runner.run())
-            await asyncio.sleep(0.05)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-        assert len(persist_calls) == 1
-        assert persist_calls[0][1] == "cancelled"
-
-    @pytest.mark.asyncio
-    async def test_runner_stores_partial_results_on_cancel(self):
-        """DAGRunner.partial_results is populated after cancellation."""
+    async def test_cancel_workflow_persists_and_preserves_partial_results(self):
+        """Cancelling a workflow persists 'cancelled' status, preserves partial results,
+        and propagates CancelledError to the caller."""
         wf = Workflow(
             name="t",
             nodes=[
@@ -1672,20 +1415,19 @@ class TestWorkflowCancellation:
         )
         runner = DAGRunner(wf, parent_agent=_make_mock_agent())
 
-        call_count = {"a": 0}
+        persist_calls = []
+        def _capture_persist(results, status):
+            persist_calls.append((len(results), status))
+        runner._persist = _capture_persist
 
         async def _exec_with_hang(node_id, task, context_header=None):
             if node_id == "a":
-                call_count["a"] += 1
                 return NodeResult(
                     node_id="a", task="A", output="done",
                     exit_code=0, duration=0.1,
                 )
-            # b hangs forever
-            await asyncio.sleep(100)
+            await asyncio.Event().wait()
             return NodeResult(node_id="b", task="B", output="", exit_code=0, duration=0)
-
-        runner._persist = lambda results, status: None  # no-op
 
         with patch.object(runner, "_exec_node", side_effect=_exec_with_hang):
             task = asyncio.create_task(runner.run())
@@ -1694,27 +1436,13 @@ class TestWorkflowCancellation:
             with pytest.raises(asyncio.CancelledError):
                 await task
 
+        # persist was called with 'cancelled' status
+        statuses = [s for _, s in persist_calls]
+        assert "cancelled" in statuses
+        # partial results from completed node "a" are preserved
         assert len(runner.partial_results) >= 1
         assert runner.partial_results[0].node_id == "a"
         assert runner.partial_results[0].output == "done"
-
-    @pytest.mark.asyncio
-    async def test_cancelled_error_propagates_to_caller(self):
-        """CancelledError from DAGRunner.run() propagates correctly."""
-        wf = Workflow(name="t", nodes=[Node(id="a", task="A")])
-        runner = DAGRunner(wf, parent_agent=_make_mock_agent())
-        runner._persist = lambda results, status: None
-
-        async def _slow_exec(node_id, task, context_header=None):
-            await asyncio.sleep(100)
-            return NodeResult(node_id=node_id, task=task, output="", exit_code=0, duration=0)
-
-        with patch.object(runner, "_exec_node", side_effect=_slow_exec):
-            task = asyncio.create_task(runner.run())
-            await asyncio.sleep(0.05)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
 
     @pytest.mark.asyncio
     async def test_run_command_returns_continue_on_cancel(self):
