@@ -160,16 +160,20 @@ class Executor:
                 timeout=self.timeout,
             )
             output = result or ""
+            usage = temp_agent.total_usage
             return NodeResult(
                 node_id=node_id,
                 task=task,
                 output=output,
                 exit_code=0,
                 duration=time.monotonic() - t0,
-                iteration=temp_agent.iteration,
                 sections=parse_sections(output),
+                tool_calls=temp_agent._tool_call_count,
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
             )
         except asyncio.TimeoutError:
+            usage = temp_agent.total_usage
             return NodeResult(
                 node_id=node_id,
                 task=task,
@@ -177,9 +181,12 @@ class Executor:
                 exit_code=1,
                 duration=time.monotonic() - t0,
                 error=f"timed out after {self.timeout}s",
-                iteration=getattr(temp_agent, 'iteration', 1),
+                tool_calls=getattr(temp_agent, '_tool_call_count', 0),
+                prompt_tokens=usage.prompt_tokens,
+                completion_tokens=usage.completion_tokens,
             )
         except Exception as e:
+            usage = getattr(temp_agent, 'total_usage', None)
             return NodeResult(
                 node_id=node_id,
                 task=task,
@@ -187,5 +194,7 @@ class Executor:
                 exit_code=1,
                 duration=time.monotonic() - t0,
                 error=str(e),
-                iteration=getattr(temp_agent, 'iteration', 1),
+                tool_calls=getattr(temp_agent, '_tool_call_count', 0),
+                prompt_tokens=usage.prompt_tokens if usage else 0,
+                completion_tokens=usage.completion_tokens if usage else 0,
             )

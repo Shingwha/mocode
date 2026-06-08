@@ -397,7 +397,7 @@ class TestRunDetail:
             "results": [{
                 "node_id": "a", "task": "Do thing", "output": "ok",
                 "exit_code": 0, "duration": 60.0, "error": None,
-                "status": "done", "iteration": 1,
+                "status": "done",
             }],
         }
         result = renderer.run_detail(record, "completed")

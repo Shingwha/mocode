@@ -191,7 +191,6 @@ class Scheduler:
             output="",
             exit_code=0,
             duration=0,
-            iteration=retry_count,
         )
         self._emit(
             LoopIterEvent(

@@ -31,15 +31,24 @@ def _format_route(route) -> str:
 # ── Summary helpers ────────────────────────────────────────
 
 
+def _usage_suffix(r: NodeResult) -> str:
+    """Build compact usage suffix: '(5 tools, ↑12,000 ↓3,500)'."""
+    parts = []
+    if r.tool_calls > 0:
+        parts.append(f"{r.tool_calls} tools")
+    if r.prompt_tokens > 0:
+        parts.append(f"↑{r.prompt_tokens:,} ↓{r.completion_tokens:,}")
+    return f" ({', '.join(parts)})" if parts else ""
+
+
 def summarize(name: str, results: list[NodeResult]) -> str:
     """Compact one-line-per-result summary."""
     lines = [f"Workflow: {name}"]
     for r in results:
         status = "OK" if r.exit_code == 0 else "FAIL"
         task_preview = r.task[:40] if r.task else "(empty)"
-        iter_suffix = f" (iter {r.iteration})" if r.iteration > 1 else ""
         lines.append(
-            f"  [{status}] {r.node_id}{iter_suffix} · {task_preview}: {r.duration:.1f}s"
+            f"  [{status}] {r.node_id}{_usage_suffix(r)} · {task_preview}: {r.duration:.1f}s"
         )
     return "\n".join(lines)
 
@@ -52,9 +61,8 @@ def detailed_summarize(
     for r in results:
         status = "OK" if r.exit_code == 0 else "FAIL"
         task_preview = r.task[:60] if r.task else "(empty)"
-        iter_suffix = f" (iter {r.iteration})" if r.iteration > 1 else ""
         lines.append(
-            f"  [{status}] {r.node_id}{iter_suffix} · {task_preview} ({r.duration:.1f}s)"
+            f"  [{status}] {r.node_id}{_usage_suffix(r)} · {task_preview} ({r.duration:.1f}s)"
         )
         if r.output:
             output_lines = r.output.splitlines()

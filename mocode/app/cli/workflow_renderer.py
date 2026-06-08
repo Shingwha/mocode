@@ -161,15 +161,19 @@ class WorkflowRenderer:
         dur = f"{event.result.duration:.1f}s"
         icon = _s("■", GREEN) if event.result.exit_code == 0 else _s("■", RED)
         node_prefix = _s(event.node_id, BOLD)
-        desc = event.description or (event.result.task[:40] if event.result.task else "")
-        # Build detail inside parentheses
-        parts = [desc]
-        if event.result.iteration > 1:
-            parts.append(f"iter {event.result.iteration}")
+        # Build usage detail
+        parts = []
+        tc = getattr(event.result, 'tool_calls', 0) or 0
+        if tc > 0:
+            parts.append(f"{tc} tools")
+        pt = getattr(event.result, 'prompt_tokens', 0) or 0
+        ct = getattr(event.result, 'completion_tokens', 0) or 0
+        if pt > 0:
+            parts.append(f"↑{pt:,} ↓{ct:,} tokens")
         if event.result.error and event.result.exit_code != 0:
             parts.append(f"{_s('ERROR', RED)} {event.result.error[:30]}")
-        detail = ", ".join(parts)
-        self._d.print(f"{icon} {node_prefix}:done ({detail})  {_s(dur, DIM)}")
+        detail = f"  {' · '.join(parts)}" if parts else ""
+        self._d.print(f"{icon} {node_prefix}:done  {_s(dur, DIM)}{detail}")
         # Clear all spinner segments
         self._d.spinner_remove("wf_node")
         self._d.spinner_remove("wf_thinking")
@@ -285,8 +289,20 @@ class WorkflowRenderer:
             parts.append(_s(f"{skipped_count} skipped", DIM))
         stat_str = " · ".join(parts)
 
+        # Totals: tools + tokens
+        done_results = [r for r in results if r.status == "done"]
+        total_tools = sum(int(getattr(r, 'tool_calls', 0) or 0) for r in done_results)
+        total_prompt = sum(int(getattr(r, 'prompt_tokens', 0) or 0) for r in done_results)
+        total_completion = sum(int(getattr(r, 'completion_tokens', 0) or 0) for r in done_results)
+        usage_parts = []
+        if total_tools > 0:
+            usage_parts.append(f"{total_tools} tools")
+        if total_prompt > 0:
+            usage_parts.append(f"↑{total_prompt:,} ↓{total_completion:,} tokens")
+        usage_str = _s(f"  {' · '.join(usage_parts)}", DIM) if usage_parts else ""
+
         self._d.print(
-            f"{_s('■', summary_icon_color)} {_s(wf.name, BOLD)}  {stat_str}  {time_str}"
+            f"{_s('■', summary_icon_color)} {_s(wf.name, BOLD)}  {stat_str}  {time_str}{usage_str}"
         )
 
     def cancelled(self, wf: Workflow, results: list | None = None) -> None:

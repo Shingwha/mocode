@@ -99,8 +99,10 @@ class NodeResult:
     duration: float
     error: str | None = None
     status: str = "done"  # "done" | "skipped"
-    iteration: int = 1  # which execution (increments on loop)
     sections: dict[str, list[str]] = field(default_factory=dict)  # [TAG] parsed sections
+    tool_calls: int = 0  # total tool invocations within this node
+    prompt_tokens: int = 0  # cumulative prompt tokens
+    completion_tokens: int = 0  # cumulative completion tokens
 
 
 # ── [TAG] section parsing ───────────────────────────────────

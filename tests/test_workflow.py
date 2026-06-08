@@ -176,7 +176,7 @@ class TestModels:
         assert nr.exit_code == 0
         assert nr.error is None
         assert nr.status == "done"
-        assert nr.iteration == 1
+        assert nr.tool_calls == 0
         assert nr.sections == {}
 
     def test_depends_inference(self):
@@ -1018,7 +1018,7 @@ class TestWorkflowCommandRun:
                 "results": [{
                     "node_id": "a", "task": "Do thing", "output": "ok",
                     "exit_code": 0, "duration": 30.5, "error": None,
-                    "status": "done", "iteration": 1,
+                    "status": "done",
                 }],
             }
             MockStore.return_value = mock_store

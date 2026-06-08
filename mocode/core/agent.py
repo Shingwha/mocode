@@ -56,6 +56,7 @@ class AgentLoop:
         self.config = config or AgentConfig()
         self.messages: list[dict] = []
         self._last_usage: Usage | None = None
+        self._total_usage = Usage(0, 0)
         self._call_seq = 0
         self._iteration_count = 0
         self._tool_call_count = 0
@@ -96,6 +97,7 @@ class AgentLoop:
         final_response = ""
         self._iteration_count = 0
         self._tool_call_count = 0
+        self._total_usage = Usage(0, 0)
 
         while True:
             await self.hooks.before_iteration(ctx)
@@ -123,6 +125,10 @@ class AgentLoop:
             if response.usage:
                 self._last_usage = response.usage
                 ctx.usage = response.usage
+                self._total_usage = Usage(
+                    self._total_usage.prompt_tokens + response.usage.prompt_tokens,
+                    self._total_usage.completion_tokens + response.usage.completion_tokens,
+                )
             if response.content is not None:
                 final_response = response.content
                 ctx.final_content = response.content
@@ -328,3 +334,7 @@ class AgentLoop:
     @property
     def last_usage(self) -> Usage | None:
         return self._last_usage
+
+    @property
+    def total_usage(self) -> Usage:
+        return self._total_usage
