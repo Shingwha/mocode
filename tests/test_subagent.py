@@ -143,13 +143,43 @@ class TestSubAgentTool:
             ]
         )
 
-        sub_tool = SubAgentTool(MockAgent(provider), registry)
+        sub_tool = SubAgentTool(MockAgent(provider), registry, system_prompt="parent prompt")
         result = await sub_tool.run_async({"task": "say hi"})
         assert result == "result from sub"
 
     @pytest.mark.asyncio
     async def test_missing_task(self):
         registry = ToolRegistry()
-        sub_tool = SubAgentTool(MockAgent(MockProvider()), registry)
+        sub_tool = SubAgentTool(MockAgent(MockProvider()), registry, system_prompt="parent prompt")
         with pytest.raises(ToolError, match="task"):
             await sub_tool.run_async({})
+
+    @pytest.mark.asyncio
+    async def test_subagent_inherits_parent_prompt(self):
+        """Verify that SubAgent's system prompt includes the parent prompt content."""
+        captured_system = {}
+
+        class SpyProvider:
+            def __init__(self):
+                self._model = "test"
+
+            @property
+            def model(self):
+                return self._model
+
+            async def call(self, messages, system, tools, max_tokens):
+                captured_system["value"] = system
+                return Response(content="done")
+
+        provider = SpyProvider()
+        parent_prompt = "PARENT_AGENT_INSTRUCTIONS"
+        sub_tool = SubAgentTool(MockAgent(provider), ToolRegistry(), system_prompt=parent_prompt)
+        await sub_tool.run_async({"task": "test"})
+
+        sys = captured_system["value"]
+        # Parent prompt content is preserved
+        assert parent_prompt in sys
+        # Sub-agent identity is prepended
+        assert "sub-agent" in sys
+        # Sub-agent guidelines are appended
+        assert "Work autonomously" in sys

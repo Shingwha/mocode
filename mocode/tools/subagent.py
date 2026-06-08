@@ -21,14 +21,21 @@ _SUB_AGENT_DESC = (
 
 class SubAgentTool(Tool):
     """Let the LLM delegate tasks to a sub-agent."""
-    def __init__(self, agent, parent_tools: ToolRegistry, tool_timeout: int = 240) -> None:
+    def __init__(
+        self,
+        agent,
+        parent_tools: ToolRegistry,
+        system_prompt: str,
+        tool_timeout: int = 240,
+    ) -> None:
         self._agent = agent
         self._parent_tools = parent_tools
+        self._system_prompt = system_prompt
         self._tool_timeout = tool_timeout
         super().__init__(name="sub_agent", description=_SUB_AGENT_DESC, params=_SUB_AGENT_PARAMS, func=self._execute)
 
     async def _execute(self, args: dict) -> str:
-        from ..prompts.subagent import subagent_system_prompt
+        from ..prompts.subagent import build_subagent_prompt
         task = args["task"]
         derived_tools = self._parent_tools.derived(exclude=_BLOCKED_TOOLS)
         if args.get("tools"):
@@ -40,7 +47,7 @@ class SubAgentTool(Tool):
                     filtered.register(tool)
             derived_tools = filtered
         sub_config = SubAgentConfig(
-            system_prompt=subagent_system_prompt.build(fmt="xml"),
+            system_prompt=build_subagent_prompt(self._system_prompt),
             max_tool_calls=args.get("max_tool_calls", 50),
             max_tokens=args.get("max_tokens", 8192),
             tool_timeout=self._tool_timeout,

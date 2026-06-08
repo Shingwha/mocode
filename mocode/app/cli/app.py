@@ -164,7 +164,12 @@ class CLIApp:
         # agent exists now — attach hooks/tools that need agent reference
         agent.hooks.add(CompactHook(agent))
         self._tools.register(
-            SubAgentTool(agent, self._tools, tool_timeout=agent.config.tool_timeout)
+            SubAgentTool(
+                agent,
+                self._tools,
+                system_prompt=prompt,
+                tool_timeout=agent.config.tool_timeout,
+            )
         )
 
         from ...tools.plan import PlanTool

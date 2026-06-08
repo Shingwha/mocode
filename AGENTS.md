@@ -71,7 +71,7 @@ mocode/
 ├── prompts/       # System prompts
 │   ├── app.py         # Main system prompt builder (reads AGENTS.md, tools, skills)
 │   ├── compact.py     # Compression prompt templates
-│   └── subagent.py    # Sub-agent system prompt
+│   └── subagent.py    # Sub-agent prompt builder (layers onto parent prompt)
 ├── providers/     # LLM providers (OpenAI-compatible)
 │   └── openai.py      # OpenAIProvider
 └── skills/        # Built-in skills with SKILL.md + references/
@@ -95,7 +95,7 @@ mocode/
 
 8. **AGENTS.md is read at prompt build time** — Two locations: `~/.mocode/AGENTS.md` (global) and `./AGENTS.md` (project). Both are optional and merged into the `<agents>` section of the system prompt.
 
-9. **SubAgent and Compact live in core/** — `SubAgent` (`core/subagent.py`) creates an isolated `AgentLoop` with its own message history, sharing the parent's provider but with a filtered tool set (`sub_agent` and `compact` are blocked by default). `compact_messages` (`core/compact.py`) generates LLM summaries; extracted from `tools/` to break the `hooks → tools → prompts` dependency chain.
+9. **SubAgent and Compact live in core/** — `SubAgent` (`core/subagent.py`) creates an isolated `AgentLoop` with its own message history, sharing the parent's provider but with a filtered tool set (`sub_agent` and `compact` are blocked by default). The sub-agent inherits the parent's full system prompt (AGENTS.md, environment, tools, skills) via `build_subagent_prompt()` which layers sub-agent identity and guidelines on top of the parent prompt — injected through `SubAgentTool(system_prompt=...)`. `compact_messages` (`core/compact.py`) generates LLM summaries; extracted from `tools/` to break the `hooks → tools → prompts` dependency chain.
 
 10. **Lazy imports everywhere** — Both `mocode/core/__init__.py` and `mocode/tools/__init__.py` use `__getattr__` + `_LAZY_IMPORTS` dicts to defer module loading. This reduced startup from ~1900ms to ~180ms.
 
