@@ -31,13 +31,25 @@ def _format_route(route) -> str:
 # ── Summary helpers ────────────────────────────────────────
 
 
+def build_usage_parts(
+    tool_calls: int, prompt_tokens: int, completion_tokens: int
+) -> list[str]:
+    """Build usage detail parts from token/call counts.
+
+    Returns e.g. ``["3 tools", "↑12,000 ↓3,500 tokens"]``.
+    Zero-valued metrics are omitted.
+    """
+    parts: list[str] = []
+    if tool_calls > 0:
+        parts.append(f"{tool_calls} tools")
+    if prompt_tokens > 0:
+        parts.append(f"↑{prompt_tokens:,} ↓{completion_tokens:,} tokens")
+    return parts
+
+
 def _usage_suffix(r: NodeResult) -> str:
-    """Build compact usage suffix: '(5 tools, ↑12,000 ↓3,500)'."""
-    parts = []
-    if r.tool_calls > 0:
-        parts.append(f"{r.tool_calls} tools")
-    if r.prompt_tokens > 0:
-        parts.append(f"↑{r.prompt_tokens:,} ↓{r.completion_tokens:,}")
+    """Build compact usage suffix: '(5 tools, ↑12,000 ↓3,500 tokens)'."""
+    parts = build_usage_parts(r.tool_calls, r.prompt_tokens, r.completion_tokens)
     return f" ({', '.join(parts)})" if parts else ""
 
 

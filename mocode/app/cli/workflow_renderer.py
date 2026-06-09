@@ -10,6 +10,7 @@ from .display import merge_summaries
 from .formatter import (
     _SKIP_STYLES,
     _format_route,
+    build_usage_parts,
     detailed_summarize,
     summarize,
 )
@@ -170,14 +171,11 @@ class WorkflowRenderer:
         fail_style = self._s.node_done_fail
         style = ok_style if event.result.exit_code == 0 else fail_style
         # Build usage detail
-        parts = []
-        tc = getattr(event.result, 'tool_calls', 0) or 0
-        if tc > 0:
-            parts.append(f"{tc} tools")
-        pt = getattr(event.result, 'prompt_tokens', 0) or 0
-        ct = getattr(event.result, 'completion_tokens', 0) or 0
-        if pt > 0:
-            parts.append(f"↑{pt:,} ↓{ct:,} tokens")
+        parts = build_usage_parts(
+            getattr(event.result, 'tool_calls', 0) or 0,
+            getattr(event.result, 'prompt_tokens', 0) or 0,
+            getattr(event.result, 'completion_tokens', 0) or 0,
+        )
         if event.result.error and event.result.exit_code != 0:
             parts.append(f"{self._p.s('ERROR', 'error')} {event.result.error[:30]}")
         detail = f"  {' · '.join(parts)}" if parts else ""
@@ -236,15 +234,12 @@ class WorkflowRenderer:
     def _on_map_item_done(self, event: MapItemDoneEvent) -> None:
         dur = f"{event.duration:.1f}s"
         val = event.item_value[:30] + ("…" if len(event.item_value) > 30 else "")
-        # Build usage detail (same logic as _on_node_done)
-        parts = []
-        tc = getattr(event, 'tool_calls', 0) or 0
-        if tc > 0:
-            parts.append(f"{tc} tools")
-        pt = getattr(event, 'prompt_tokens', 0) or 0
-        ct = getattr(event, 'completion_tokens', 0) or 0
-        if pt > 0:
-            parts.append(f"↑{pt:,} ↓{ct:,} tokens")
+        # Build usage detail
+        parts = build_usage_parts(
+            getattr(event, 'tool_calls', 0) or 0,
+            getattr(event, 'prompt_tokens', 0) or 0,
+            getattr(event, 'completion_tokens', 0) or 0,
+        )
         usage = f"  {' · '.join(parts)}" if parts else ""
         self._d.print(
             f"     {self._s.map_item.render(f'[{event.item_index + 1}/{event.total_count}]', self._p)} "
@@ -286,14 +281,11 @@ class WorkflowRenderer:
     def _build_usage_line(results: list) -> str:
         """Build dim usage totals line from done results."""
         done = [r for r in results if r.status == "done"]
-        total_tools = sum(r.tool_calls for r in done)
-        total_prompt = sum(r.prompt_tokens for r in done)
-        total_completion = sum(r.completion_tokens for r in done)
-        parts = []
-        if total_tools > 0:
-            parts.append(f"{total_tools} tools")
-        if total_prompt > 0:
-            parts.append(f"↑{total_prompt:,} ↓{total_completion:,} tokens")
+        parts = build_usage_parts(
+            sum(r.tool_calls for r in done),
+            sum(r.prompt_tokens for r in done),
+            sum(r.completion_tokens for r in done),
+        )
         return f"  {' · '.join(parts)}" if parts else ""
 
     def summary(self, wf: Workflow, results: list | None = None) -> None:
