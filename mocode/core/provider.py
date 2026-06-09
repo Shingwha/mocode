@@ -45,6 +45,8 @@ class Provider(Protocol):
     @property
     def model(self) -> str: ...
 
+    def is_retriable(self, exc: Exception) -> bool: ...
+
     async def call(
         self,
         messages: list[dict[str, Any]],
@@ -70,23 +72,6 @@ _MAX_DELAY = 60.0       # cap
 _JITTER_MAX = 0.5       # random jitter range
 
 
-def _is_retriable(exc: Exception) -> bool:
-    """Check if an exception is a transient/retriable error."""
-    try:
-        from openai import (
-            RateLimitError,
-            InternalServerError,
-            APIConnectionError,
-            APITimeoutError,
-        )
-        return isinstance(
-            exc,
-            (RateLimitError, InternalServerError, APIConnectionError, APITimeoutError),
-        )
-    except ImportError:
-        return False
-
-
 def _compute_delay(attempt: int) -> float:
     """Exponential backoff with jitter: base * 2^attempt + jitter, capped."""
     delay = _BASE_DELAY * (2 ** attempt) + _random.uniform(0, _JITTER_MAX)
@@ -94,6 +79,7 @@ def _compute_delay(attempt: int) -> float:
 
 
 async def with_retry(
+    provider: Provider,
     fn: _Callable[..., _Awaitable[_T]],
     *args: Any,
     max_retries: int = _MAX_RETRIES,
@@ -101,8 +87,7 @@ async def with_retry(
 ) -> _T:
     """Call an async function with retry on transient errors.
 
-    Retries RateLimitError, InternalServerError, APIConnectionError,
-    APITimeoutError with exponential backoff + jitter.
+    Uses provider.is_retriable() to determine if an exception should be retried.
     All other exceptions propagate immediately.
     """
     last_exc: Exception | None = None
@@ -113,7 +98,7 @@ async def with_retry(
         except _asyncio.CancelledError:
             raise  # Never retry user cancellation
         except Exception as exc:
-            if not _is_retriable(exc) or attempt >= max_retries:
+            if not provider.is_retriable(exc) or attempt >= max_retries:
                 raise
             last_exc = exc
             delay = _compute_delay(attempt)

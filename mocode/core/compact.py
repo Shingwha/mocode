@@ -199,6 +199,7 @@ async def _generate_summary(
 ) -> str:
     try:
         resp = await with_retry(
+            provider,
             provider.call,
             messages=[
                 {

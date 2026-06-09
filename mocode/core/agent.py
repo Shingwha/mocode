@@ -109,6 +109,7 @@ class AgentLoop:
 
             try:
                 response: Response = await with_retry(
+                    self.provider,
                     self.provider.call,
                     self.messages,
                     self.system_prompt,

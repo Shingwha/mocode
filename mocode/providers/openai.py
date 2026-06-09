@@ -37,6 +37,18 @@ class OpenAIProvider:
     def model(self) -> str:
         return self._model
 
+    def is_retriable(self, exc: Exception) -> bool:
+        from openai import (
+            RateLimitError,
+            InternalServerError,
+            APIConnectionError,
+            APITimeoutError,
+        )
+        return isinstance(
+            exc,
+            (RateLimitError, InternalServerError, APIConnectionError, APITimeoutError),
+        )
+
     async def call(
         self,
         messages: list[dict[str, Any]],

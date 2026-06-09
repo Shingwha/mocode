@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mocode.core.provider import _compute_delay, _is_retriable, with_retry
+from mocode.core.provider import _compute_delay, with_retry
 
 
-# ---- Helpers: fake openai error types ----
+# ---- Helpers: fake openai error types + mock provider ----
 
 def _make_openai_errors():
     """Create minimal stand-ins for openai SDK error classes."""
@@ -23,40 +23,30 @@ def _make_openai_errors():
     return rate, internal, conn, timeout, auth
 
 
-@pytest.fixture(autouse=True)
-def _patch_openai_errors(monkeypatch):
-    """Patch openai error types into _is_retriable so tests are deterministic."""
-    rate, internal, conn, timeout, auth = _make_openai_errors()
+_rate, _internal, _conn, _timeout, _auth = _make_openai_errors()
 
-    original_is_retriable = _is_retriable
 
-    def _patched_is_retriable(exc: Exception) -> bool:
-        return isinstance(exc, (rate, internal, conn, timeout))
+class _MockProvider:
+    """Mock provider with is_retriable that mimics OpenAI error classification."""
 
-    # Patch at module level
-    import mocode.core.provider as prov
-    monkeypatch.setattr(prov, "_is_retriable", _patched_is_retriable)
+    @property
+    def model(self) -> str:
+        return "mock"
 
-    # Store for test use
-    prov._test_rate = rate
-    prov._test_auth = auth
+    def is_retriable(self, exc: Exception) -> bool:
+        return isinstance(exc, (_rate, _internal, _conn, _timeout))
 
-    yield
+    async def call(self, **kwargs):
+        raise NotImplementedError
 
-    # Cleanup not strictly needed with monkeypatch, but explicit is good
-    monkeypatch.setattr(prov, "_is_retriable", original_is_retriable)
+
+_provider = _MockProvider()
 
 
 @pytest.fixture(autouse=True)
 def _patch_sleep(monkeypatch):
     """Mock asyncio.sleep so retry tests run instantly."""
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
-
-
-def _get_error_classes():
-    """Retrieve the fake error classes stored on the module."""
-    import mocode.core.provider as prov
-    return prov._test_rate, prov._test_auth
 
 
 # ---- Tests ----
@@ -69,26 +59,24 @@ class TestWithRetry:
     async def test_success_first_try(self):
         """Function succeeds immediately — no retry."""
         fn = AsyncMock(return_value="ok")
-        result = await with_retry(fn, max_retries=3)
+        result = await with_retry(_provider, fn, max_retries=3)
         assert result == "ok"
         assert fn.call_count == 1
 
     @pytest.mark.asyncio
     async def test_success_after_retries(self):
         """Function fails with retriable error, then succeeds."""
-        rate, _ = _get_error_classes()
-        fn = AsyncMock(side_effect=[rate("429"), rate("429"), "ok"])
-        result = await with_retry(fn, max_retries=3)
+        fn = AsyncMock(side_effect=[_rate("429"), _rate("429"), "ok"])
+        result = await with_retry(_provider, fn, max_retries=3)
         assert result == "ok"
         assert fn.call_count == 3
 
     @pytest.mark.asyncio
     async def test_non_retriable_error_propagates(self):
         """Non-retriable error raises immediately, no retry."""
-        _, auth = _get_error_classes()
-        fn = AsyncMock(side_effect=auth("bad key"))
-        with pytest.raises(auth, match="bad key"):
-            await with_retry(fn, max_retries=3)
+        fn = AsyncMock(side_effect=_auth("bad key"))
+        with pytest.raises(_auth, match="bad key"):
+            await with_retry(_provider, fn, max_retries=3)
         assert fn.call_count == 1
 
     @pytest.mark.asyncio
@@ -96,16 +84,15 @@ class TestWithRetry:
         """CancelledError propagates immediately, no retry."""
         fn = AsyncMock(side_effect=asyncio.CancelledError())
         with pytest.raises(asyncio.CancelledError):
-            await with_retry(fn, max_retries=3)
+            await with_retry(_provider, fn, max_retries=3)
         assert fn.call_count == 1
 
     @pytest.mark.asyncio
     async def test_all_retries_exhausted(self):
         """All retries used up — raises the last retriable error."""
-        rate, _ = _get_error_classes()
-        fn = AsyncMock(side_effect=rate("429"))
-        with pytest.raises(rate):
-            await with_retry(fn, max_retries=6)
+        fn = AsyncMock(side_effect=_rate("429"))
+        with pytest.raises(_rate):
+            await with_retry(_provider, fn, max_retries=6)
         # 1 initial + 6 retries = 7 total attempts
         assert fn.call_count == 7
 
@@ -113,7 +100,7 @@ class TestWithRetry:
     async def test_with_retry_passes_args(self):
         """Arguments and keyword arguments are forwarded correctly."""
         fn = AsyncMock(return_value="result")
-        result = await with_retry(fn, "a", "b", max_retries=2, key="val")
+        result = await with_retry(_provider, fn, "a", "b", max_retries=2, key="val")
         assert result == "result"
         fn.assert_called_once_with("a", "b", key="val")
 
