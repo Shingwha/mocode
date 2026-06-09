@@ -8,6 +8,12 @@ from __future__ import annotations
 from typing import Any
 
 from ..core.provider import Response, ToolCall, Usage
+from openai import (
+    RateLimitError,
+    InternalServerError,
+    APIConnectionError,
+    APITimeoutError,
+)
 
 
 class OpenAIProvider:
@@ -38,12 +44,6 @@ class OpenAIProvider:
         return self._model
 
     def is_retriable(self, exc: Exception) -> bool:
-        from openai import (
-            RateLimitError,
-            InternalServerError,
-            APIConnectionError,
-            APITimeoutError,
-        )
         return isinstance(
             exc,
             (RateLimitError, InternalServerError, APIConnectionError, APITimeoutError),
@@ -103,17 +103,41 @@ class OpenAIProvider:
     @staticmethod
     def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Strip empty/orphaned tool_calls from assistant messages."""
+        # Quick check: if no assistant messages have tool_calls, nothing to do
+        has_assistant_tool_calls = any(
+            m.get("role") == "assistant" and "tool_calls" in m
+            for m in messages
+        )
+        if not has_assistant_tool_calls:
+            return messages
+
+        # Build set of valid tool_call_ids from tool messages
         result_ids = {
             m["tool_call_id"]
             for m in messages
             if m.get("role") == "tool" and m.get("tool_call_id")
         }
+
+        # If no valid tool_call_ids, strip all tool_calls from assistant messages
+        if not result_ids:
+            result = []
+            for msg in messages:
+                if msg.get("role") == "assistant" and "tool_calls" in msg:
+                    result.append({k: v for k, v in msg.items() if k != "tool_calls"})
+                else:
+                    result.append(msg)
+            return result
+
+        # Normal case: filter tool_calls
         result = []
         for msg in messages:
             if msg.get("role") == "assistant" and "tool_calls" in msg:
                 valid = [tc for tc in msg["tool_calls"] if tc.get("id") in result_ids]
                 if not valid:
                     result.append({k: v for k, v in msg.items() if k != "tool_calls"})
+                elif len(valid) == len(msg["tool_calls"]):
+                    # All tool_calls are valid, no copy needed
+                    result.append(msg)
                 else:
                     cleaned = dict(msg)
                     cleaned["tool_calls"] = valid
