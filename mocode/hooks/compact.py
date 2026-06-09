@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..core.hook import AgentHook, AgentHookContext
+from ..core.hook import AgentHook, IterationContext, CompactContext
 from ..core.compact import compact_messages
 from ..prompts.compact import summary_system_prompt, COMPACT_USER_TEMPLATE
 
@@ -25,18 +25,17 @@ class CompactHook(AgentHook):
     def last_prompt_tokens(self) -> int:
         return self._last_prompt_tokens
 
-    async def before_iteration(self, ctx: AgentHookContext) -> None:
+    async def before_iteration(self, ctx: IterationContext) -> None:
         if ctx.usage:
             self._last_prompt_tokens = ctx.usage.prompt_tokens
         if self._last_prompt_tokens > self._context_window * self._threshold:
-            old_count = len(ctx.messages)
-            ctx.messages[:] = await compact_messages(
-                self._agent.provider,
-                ctx.messages,
-                summary_system_prompt.build(fmt="xml"),
-                COMPACT_USER_TEMPLATE,
-            )
-            ctx.compact_old = old_count
-            ctx.compact_new = len(ctx.messages)
-            self._last_prompt_tokens = 0
+            ctx._needs_compact = True
 
+    async def on_compact(self, ctx: CompactContext) -> None:
+        ctx.messages[:] = await compact_messages(
+            self._agent.provider,
+            ctx.messages,
+            summary_system_prompt.build(fmt="xml"),
+            COMPACT_USER_TEMPLATE,
+        )
+        self._last_prompt_tokens = 0

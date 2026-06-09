@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .hook import HookRunner, AgentHookContext
+from .hook import HookRunner, IterationContext, ToolCallContext
 from .provider import Provider, Response, Usage, with_retry
 from .tool import ToolError, ToolRegistry
 
@@ -93,7 +93,7 @@ class AgentLoop:
             )
 
     async def _loop(self) -> str:
-        ctx = AgentHookContext(messages=self.messages)
+        ctx = IterationContext(messages=self.messages)
         final_response = ""
         self._iteration_count = 0
         self._tool_call_count = 0
@@ -102,10 +102,13 @@ class AgentLoop:
         while True:
             await self.hooks.before_iteration(ctx)
             self.messages = ctx.messages
-            if ctx.compact_old:
-                await self.hooks.on_compact(ctx)
-                ctx.compact_old = 0
-                ctx.compact_new = 0
+            if ctx._needs_compact:
+                old_count = len(ctx.messages)
+                from .hook import CompactContext
+                compact_ctx = CompactContext(messages=ctx.messages, old_count=old_count)
+                await self.hooks.on_compact(compact_ctx)
+                compact_ctx.new_count = len(ctx.messages)
+                ctx._needs_compact = False
 
             try:
                 response: Response = await with_retry(
@@ -122,7 +125,14 @@ class AgentLoop:
                 )
                 raise
 
-            ctx.reset_response()
+            # Reset iteration-level fields
+            ctx.final_content = ""
+            ctx.reasoning_content = None
+            ctx.usage = None
+            ctx.stop_reason = None
+            ctx.tool_calls = []
+            ctx.tool_results = []
+
             if response.usage:
                 self._last_usage = response.usage
                 ctx.usage = response.usage
@@ -242,21 +252,18 @@ class AgentLoop:
         return result
 
     async def _run_tool_async(
-        self, tool_name: str, tool_args: dict, ctx: AgentHookContext
+        self, tool_name: str, tool_args: dict, messages: list[dict]
     ) -> str:
         """Returns tool result string."""
         call_id = self._next_call_id()
 
-        ctx.reset_tool()
-        ctx.tool_name = tool_name
-        ctx.tool_args = tool_args
-        ctx.tool_call_id = call_id
-        await self.hooks.on_tool_start(ctx)
+        tc = ToolCallContext(tool_name=tool_name, tool_args=tool_args, tool_call_id=call_id)
+        await self.hooks.on_tool_start(tc)
 
         tool = self._tools.get(tool_name)
         if tool is None:
-            ctx.tool_error = f"unknown tool '{tool_name}'"
-            await self.hooks.on_tool_complete(ctx)
+            tc.tool_error = f"unknown tool '{tool_name}'"
+            await self.hooks.on_tool_complete(tc)
             return f"unknown tool '{tool_name}'"
 
         try:
@@ -271,28 +278,26 @@ class AgentLoop:
                     timeout=self.config.tool_timeout,
                 )
         except asyncio.TimeoutError:
-            ctx.tool_timeout = self.config.tool_timeout
-            await self.hooks.on_tool_complete(ctx)
+            tc.tool_timeout = self.config.tool_timeout
+            await self.hooks.on_tool_complete(tc)
             return self._truncate(f"timeout: {self.config.tool_timeout}s")
         except ToolError as e:
             result = f"{e.code}: {e.message}"
-            ctx.tool_error = result
+            tc.tool_error = result
         except Exception as e:
             result = f"error: {e}"
-            ctx.tool_error = result
+            tc.tool_error = result
 
-        ctx.tool_result = self._truncate(result)
-        await self.hooks.on_tool_complete(ctx)
-        return ctx.tool_result
+        tc.tool_result = self._truncate(result)
+        await self.hooks.on_tool_complete(tc)
+        return tc.tool_result
 
     async def _run_tool_calls_parallel(
-        self, tool_calls: list, ctx: AgentHookContext
+        self, tool_calls: list, ctx: IterationContext
     ) -> list[dict]:
         async def _run_one(tc):
             tool_args = json.loads(tc.arguments)
-            # Per-call ctx so concurrent tools don't clobber each other's tool_name/tool_args/tool_error
-            tool_ctx = AgentHookContext(messages=ctx.messages)
-            result = await self._run_tool_async(tc.name, tool_args, tool_ctx)
+            result = await self._run_tool_async(tc.name, tool_args, ctx.messages)
             return {"role": "tool", "tool_call_id": tc.id, "content": result}
 
         raw_results = await asyncio.gather(

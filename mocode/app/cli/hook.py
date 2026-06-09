@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ...core.hook import AgentHook, ToolTimingTracker
+from ...core.hook import AgentHook, CompactContext, IterationContext, ToolCallContext, ToolTimingTracker
 from ..utils import group_tool_calls
 from .display import merge_summaries
 from .spinner import Priority, Truncate
@@ -22,7 +22,7 @@ class CLIDisplayHook(AgentHook):
         self._tool_groups: list[tuple[str, list[str]]] = []
         self._tracker = ToolTimingTracker()
 
-    async def on_response(self, ctx):
+    async def on_response(self, ctx: IterationContext) -> None:
         if ctx.reasoning_content and not (ctx.response and ctx.response.tool_calls):
             self._d.reasoning(ctx.reasoning_content)
         if ctx.final_content and ctx.response and ctx.response.tool_calls:
@@ -42,10 +42,10 @@ class CLIDisplayHook(AgentHook):
             self._d.usage(self._prompt, self._completion)
             self._prompt = self._completion = 0
 
-    async def on_tool_start(self, ctx):
+    async def on_tool_start(self, ctx: ToolCallContext) -> None:
         self._tracker.start(ctx.tool_call_id)
 
-    async def on_tool_complete(self, ctx):
+    async def on_tool_complete(self, ctx: ToolCallContext) -> None:
         self._tracker.complete(
             ctx.tool_call_id, ctx.tool_name, ctx.tool_error, ctx.tool_timeout
         )
@@ -67,11 +67,11 @@ class CLIDisplayHook(AgentHook):
         self._tool_groups = []
         self._tracker.reset()
 
-    async def on_compact(self, ctx):
+    async def on_compact(self, ctx: CompactContext) -> None:
         self._d.spinner_remove("thinking")
         self._d.spinner_set("compact", "Compacting",
                             priority=Priority.NORMAL, truncate=Truncate.TAIL)
-        self._d.compact(ctx.compact_old, ctx.compact_new)
+        self._d.compact(ctx.old_count, ctx.new_count)
 
     # ── Internal ───────────────────────────────────────────
 
@@ -101,3 +101,5 @@ class CLIDisplayHook(AgentHook):
                             priority=Priority.HIGH, truncate=Truncate.TAIL)
         self._d.spinner_set("tools_detail", ", ".join(parts),
                             priority=Priority.LOW, truncate=Truncate.MIDDLE)
+
+

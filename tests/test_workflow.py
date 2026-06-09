@@ -23,6 +23,7 @@ from mocode.app.workflow import (
     parse_args,
     parse_items,
     parse_sections,
+    resolve_list_expr,
 )
 from mocode.app.cli.workflow_renderer import summarize, detailed_summarize
 from mocode.app.workflow.events import (
@@ -310,6 +311,51 @@ class TestFillTemplate:
         ctx = {"nodes": {"scan": {"ISSUE": ["a", "b", "c"]}}}
         result = fill_template("Issues: {nodes.scan.ISSUE}", ctx)
         assert result == "Issues: a\n---\nb\n---\nc"
+
+
+class TestResolveListExpr:
+    """Tests for resolve_list_expr — centralised each-expression resolution."""
+
+    def test_direct_list_ref(self):
+        ctx = {"nodes": {"scan": {"ISSUE": ["issue1", "issue2"]}}}
+        assert resolve_list_expr("{nodes.scan.ISSUE}", ctx) == ["issue1", "issue2"]
+
+    def test_single_segment_list(self):
+        ctx = {"items": ["a", "b", "c"]}
+        assert resolve_list_expr("{items}", ctx) == ["a", "b", "c"]
+
+    def test_bucket_alias(self):
+        ctx = {"node": {"scan": {"ISSUE": ["x", "y"]}}}
+        assert resolve_list_expr("{node.scan.ISSUE}", ctx) == ["x", "y"]
+
+    def test_nested_path_list(self):
+        ctx = {"env": {"TOOLS": ["git", "python"]}}
+        assert resolve_list_expr("{env.TOOLS}", ctx) == ["git", "python"]
+
+    def test_string_fallback_splits_lines(self):
+        ctx = {"nodes": {"scan": {"output": "line1\nline2\nline3"}}}
+        assert resolve_list_expr("{nodes.scan.output}", ctx) == ["line1", "line2", "line3"]
+
+    def test_empty_list(self):
+        ctx = {"nodes": {"scan": {"ISSUE": []}}}
+        assert resolve_list_expr("{nodes.scan.ISSUE}", ctx) == []
+
+    def test_missing_path_returns_empty_lines(self):
+        ctx = {"nodes": {}}
+        # fill_template returns "{nodes.missing}" as-is → single line
+        assert resolve_list_expr("{nodes.missing}", ctx) == ["{nodes.missing}"]
+
+    def test_string_with_blank_lines_filtered(self):
+        ctx = {"nodes": {"scan": {"output": "a\n\nb\n\nc"}}}
+        assert resolve_list_expr("{nodes.scan.output}", ctx) == ["a", "b", "c"]
+
+    def test_numeric_list_stringified(self):
+        ctx = {"nodes": {"count": {"vals": [1, 2, 3]}}}
+        assert resolve_list_expr("{nodes.count.vals}", ctx) == ["1", "2", "3"]
+
+    def test_whitespace_trimmed(self):
+        ctx = {"nodes": {"scan": {"output": "  a  \n  b  "}}}
+        assert resolve_list_expr("{nodes.scan.output}", ctx) == ["a", "b"]
 
 
 # ===========================================================================
@@ -1191,7 +1237,7 @@ class TestWorkflowNodeHook:
     async def test_on_tool_complete_emits_event(self):
         """Hook emits NodeToolCallEvent on tool_complete."""
         from mocode.app.workflow.runner import _WorkflowNodeHook
-        from mocode.core.hook import AgentHookContext
+        from mocode.core.hook import IterationContext, ToolCallContext
         from mocode.core.provider import Response
 
         events = []
@@ -1201,12 +1247,12 @@ class TestWorkflowNodeHook:
         tc = MagicMock()
         tc.name = "bash"
         tc.arguments = '{"command": "ls"}'
-        ctx = AgentHookContext()
+        ctx = IterationContext()
         ctx.response = Response(content=None, tool_calls=[tc])
         await hook.on_response(ctx)
 
         # Simulate on_tool_start
-        ctx_tool = AgentHookContext()
+        ctx_tool = ToolCallContext()
         ctx_tool.tool_name = "bash"
         ctx_tool.tool_args = {"command": "ls"}
         ctx_tool.tool_call_id = "call_1"
@@ -1228,7 +1274,7 @@ class TestWorkflowNodeHook:
     async def test_after_tools_emits_batch_done(self):
         """Hook emits NodeToolBatchDoneEvent after_tools."""
         from mocode.app.workflow.runner import _WorkflowNodeHook
-        from mocode.core.hook import AgentHookContext
+        from mocode.core.hook import IterationContext, ToolCallContext
         from mocode.core.provider import Response
 
         events = []
@@ -1238,12 +1284,12 @@ class TestWorkflowNodeHook:
         tc = MagicMock()
         tc.name = "read"
         tc.arguments = '{"path": "test.py"}'
-        ctx = AgentHookContext()
+        ctx = IterationContext()
         ctx.response = Response(content=None, tool_calls=[tc])
         await hook.on_response(ctx)
 
         # Simulate on_tool_start + on_tool_complete
-        ctx_tool = AgentHookContext()
+        ctx_tool = ToolCallContext()
         ctx_tool.tool_name = "read"
         ctx_tool.tool_args = {"path": "test.py"}
         ctx_tool.tool_call_id = "call_1"
@@ -1263,12 +1309,12 @@ class TestWorkflowNodeHook:
     async def test_error_captured_in_event(self):
         """Hook captures tool error in NodeToolCallEvent."""
         from mocode.app.workflow.runner import _WorkflowNodeHook
-        from mocode.core.hook import AgentHookContext
+        from mocode.core.hook import ToolCallContext
 
         events = []
         hook = _WorkflowNodeHook("n1", events.append)
 
-        ctx_tool = AgentHookContext()
+        ctx_tool = ToolCallContext()
         ctx_tool.tool_name = "bash"
         ctx_tool.tool_args = {"command": "bad"}
         ctx_tool.tool_call_id = "call_1"

@@ -2,7 +2,7 @@
 
 import pytest
 
-from mocode.core import AgentHookContext, Response, Usage
+from mocode.core import IterationContext, CompactContext, Response, Usage
 from mocode.core.compact import (
     TOOL_RESULT_MAX_LEN,
     TOOL_ARGS_MAX_LEN,
@@ -446,7 +446,7 @@ class TestCompactMessages:
 
 class TestCompactHook:
     @pytest.mark.asyncio
-    async def test_before_iteration_compacts_when_over_threshold(self):
+    async def test_before_iteration_sets_flag_when_over_threshold(self):
         provider = MockProvider(responses=[Response(content="summary")])
         hook = CompactHook(MockAgent(provider), threshold=0.80, context_window=128_000)
         hook._last_prompt_tokens = 110_000
@@ -454,15 +454,12 @@ class TestCompactHook:
         messages = [
             {"role": "user", "content": "old 1"},
             {"role": "assistant", "content": "resp 1"},
-            {"role": "user", "content": "old 2"},
-            {"role": "assistant", "content": "resp 2"},
-            {"role": "user", "content": "old 3"},
-            {"role": "assistant", "content": "resp 3"},
         ]
-        original_len = len(messages)
-        ctx = AgentHookContext(messages=messages)
+        ctx = IterationContext(messages=messages)
         await hook.before_iteration(ctx)
-        assert len(ctx.messages) < original_len
+        assert ctx._needs_compact is True
+        # Messages unchanged — compaction happens in on_compact
+        assert len(ctx.messages) == 2
 
     @pytest.mark.asyncio
     async def test_before_iteration_skips_when_under_threshold(self):
@@ -475,6 +472,25 @@ class TestCompactHook:
             {"role": "user", "content": "old"},
             {"role": "assistant", "content": "resp"},
         ]
-        ctx = AgentHookContext(messages=messages)
+        ctx = IterationContext(messages=messages)
         await hook.before_iteration(ctx)
+        assert ctx._needs_compact is False
         assert ctx.messages is messages
+
+    @pytest.mark.asyncio
+    async def test_on_compact_replaces_messages(self):
+        provider = MockProvider(responses=[Response(content="summary")])
+        hook = CompactHook(MockAgent(provider), threshold=0.80, context_window=128_000)
+
+        messages = [
+            {"role": "user", "content": "old 1"},
+            {"role": "assistant", "content": "resp 1"},
+            {"role": "user", "content": "old 2"},
+            {"role": "assistant", "content": "resp 2"},
+        ]
+        original_len = len(messages)
+        ctx = CompactContext(messages=messages, old_count=original_len)
+        await hook.on_compact(ctx)
+        assert len(messages) < original_len
+        # new_count is set by the caller (agent loop), not the hook
+        assert hook._last_prompt_tokens == 0

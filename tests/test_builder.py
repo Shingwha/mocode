@@ -11,7 +11,8 @@ from mocode.core import (
     ToolRegistry,
     ToolError,
     AgentHook,
-    AgentHookContext,
+    IterationContext,
+    ToolCallContext,
     HookRunner,
     Prompt,
     Section,
@@ -368,7 +369,7 @@ class TestAgentHook:
             async def after_iteration(self, ctx):
                 received.append(ctx)
 
-        ctx = AgentHookContext(final_content="test")
+        ctx = IterationContext(final_content="test")
         runner = HookRunner([TestHook()])
         await runner.after_iteration(ctx)
         assert len(received) == 1
@@ -387,7 +388,7 @@ class TestAgentHook:
                 calls.append("h2")
 
         runner = HookRunner([H1(), H2()])
-        await runner.before_iteration(AgentHookContext())
+        await runner.before_iteration(IterationContext())
         assert calls == ["h1", "h2"]
 
     @pytest.mark.asyncio
@@ -403,7 +404,7 @@ class TestAgentHook:
                 calls.append("good")
 
         runner = HookRunner([BadHook(), GoodHook()])
-        await runner.before_iteration(AgentHookContext())
+        await runner.before_iteration(IterationContext())
         assert calls == ["good"]
 
     @pytest.mark.asyncio
@@ -418,7 +419,7 @@ class TestAgentHook:
                 events.append(("complete", ctx.tool_name, ctx.tool_result))
 
         runner = HookRunner([ToolHook()])
-        ctx = AgentHookContext(
+        ctx = ToolCallContext(
             tool_name="bash", tool_args={"cmd": "ls"}, tool_call_id="c1"
         )
         await runner.on_tool_start(ctx)
@@ -436,11 +437,11 @@ class TestAgentHook:
             async def after_iteration(self, ctx):
                 calls.append("late")
 
-        await runner.after_iteration(AgentHookContext())
+        await runner.after_iteration(IterationContext())
         assert calls == []
 
         runner.add(LateHook())
-        await runner.after_iteration(AgentHookContext())
+        await runner.after_iteration(IterationContext())
         assert calls == ["late"]
 
 

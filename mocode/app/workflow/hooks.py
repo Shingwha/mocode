@@ -6,7 +6,7 @@ within a node agent and emits NodeToolCallEvent / NodeToolBatchDoneEvent.
 
 from __future__ import annotations
 
-from ...core.hook import AgentHook, ToolTimingTracker
+from ...core.hook import AgentHook, IterationContext, ToolCallContext, ToolTimingTracker
 from ..utils import group_tool_calls
 from .events import NodeToolBatchDoneEvent, NodeToolCallEvent
 
@@ -22,15 +22,15 @@ class _WorkflowNodeHook(AgentHook):
         self._groups: list[tuple[str, list[str]]] = []
         self._tracker = ToolTimingTracker()
 
-    async def on_response(self, ctx) -> None:
+    async def on_response(self, ctx: IterationContext) -> None:
         if ctx.response and ctx.response.tool_calls:
             self._groups = group_tool_calls(ctx.response.tool_calls)
             self._tracker.reset()
 
-    async def on_tool_start(self, ctx) -> None:
+    async def on_tool_start(self, ctx: ToolCallContext) -> None:
         self._tracker.start(ctx.tool_call_id)
 
-    async def on_tool_complete(self, ctx) -> None:
+    async def on_tool_complete(self, ctx: ToolCallContext) -> None:
         elapsed = self._tracker.complete(
             ctx.tool_call_id, ctx.tool_name, ctx.tool_error, ctx.tool_timeout
         )
@@ -42,7 +42,7 @@ class _WorkflowNodeHook(AgentHook):
             elapsed=elapsed,
         ))
 
-    async def after_tools(self, ctx) -> None:
+    async def after_tools(self, ctx: IterationContext) -> None:
         self._on_event(NodeToolBatchDoneEvent(
             node_id=self._node_id,
             groups=list(self._groups),
