@@ -10,7 +10,6 @@ from mocode.app.cli.commands.plan import (
     command as plan_command,
     _start,
     _start_clean,
-    _clear,
 )
 
 
@@ -81,13 +80,6 @@ class TestPlanCommand:
         result = await _start_clean(_make_ctx(app=app), "")
         app.clear_conversation.assert_called_once()
         assert result.kind == "prompt"
-
-    @pytest.mark.asyncio
-    async def test_clear_resets_path(self):
-        app = _app_with_plan("test.md")
-        result = await _clear(_make_ctx(app=app), "")
-        assert app.plan_state.active_plan_path is None
-        assert result == CommandResult.CONTINUE
 
 
 # ---- /plan command routing via Command.run() ----

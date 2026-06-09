@@ -37,15 +37,6 @@ async def _start_clean(ctx: CommandContext, args: str) -> CommandResult:
     return await _start(ctx, args)
 
 
-async def _status(ctx: CommandContext, args: str) -> CommandResult:
-    path = ctx.app.plan_state.active_plan_path
-    if path:
-        ctx.display.info(f"Active plan: {path}")
-    else:
-        ctx.display.info("No active plan.")
-    return CommandResult.CONTINUE
-
-
 async def _view(ctx: CommandContext, args: str) -> CommandResult:
     path = ctx.app.plan_state.active_plan_path
     if not path:
@@ -68,72 +59,6 @@ async def _view(ctx: CommandContext, args: str) -> CommandResult:
 
     ctx.display.divider()
     ctx.display.print(content.strip())
-    ctx.display.divider()
-    return CommandResult.CONTINUE
-
-
-async def _clear(ctx: CommandContext, args: str) -> CommandResult:
-    ctx.app.plan_state.active_plan_path = None
-    ctx.display.info("Active plan cleared.")
-    return CommandResult.CONTINUE
-
-
-async def _list(ctx: CommandContext, args: str) -> CommandResult:
-    """List all discovered plans from project-local + global dirs."""
-    registry = ctx.app.plan_registry
-    plans = registry.list()
-    if not plans:
-        ctx.display.info("No plans found (project-local or global).")
-        return CommandResult.CONTINUE
-
-    local_dir = Path.cwd() / ".mocode" / "plans"
-    global_dir = ctx.app.home / "plans"
-
-    ctx.display.divider()
-    for name, path in plans.items():
-        try:
-            path.relative_to(local_dir)
-            loc = "local"
-        except ValueError:
-            loc = "global"
-
-        active = ""
-        if ctx.app.plan_state.active_plan_path == str(path):
-            active = "  ★ active"
-
-        ctx.display.print(f"  {name}  [{loc}]{active}")
-    ctx.display.print()
-    ctx.display.divider()
-    return CommandResult.CONTINUE
-
-
-async def _show(ctx: CommandContext, args: str) -> CommandResult:
-    """Show plan content by name (auto-find from dual locations)."""
-    name = args.strip()
-    if not name:
-        ctx.display.warn("Usage: /plan show <name>")
-        return CommandResult.CONTINUE
-
-    registry = ctx.app.plan_registry
-    path = registry.get(name)
-    if path is None:
-        ctx.display.error(f"Plan not found: {name}")
-        return CommandResult.CONTINUE
-
-    try:
-        content = path.read_text(encoding="utf-8")
-    except Exception as e:
-        ctx.display.error(f"Failed to read plan: {e}")
-        return CommandResult.CONTINUE
-
-    if not content.strip():
-        ctx.display.warn(f"Plan file is empty: {path}")
-        return CommandResult.CONTINUE
-
-    ctx.display.divider()
-    ctx.display.print(f"  {path}")
-    ctx.display.divider()
-    ctx.display.text_response(content)
     ctx.display.divider()
     return CommandResult.CONTINUE
 
@@ -189,11 +114,7 @@ command = Command(
     subcommands=(
         Subcommand("start", "Execute plan (keep context)", _start),
         Subcommand("start-clean", "Execute plan (clear context)", _start_clean),
-        Subcommand("status", "Show active plan path", _status),
         Subcommand("view", "Show plan content (real-time read)", _view),
-        Subcommand("list", "List all plans (local + global)", _list),
-        Subcommand("show", "Show plan content by name", _show),
-        Subcommand("clear", "Clear the active plan", _clear),
         Subcommand("copy", "Copy plan to clipboard", _copy),
     ),
     default=_default_plan,
