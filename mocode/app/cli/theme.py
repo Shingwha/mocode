@@ -1,83 +1,49 @@
-"""CLI visual configuration — ANSI styles, Style, Theme."""
+"""CLI visual configuration — Theme as composition wrapper."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-# ── ANSI constants ───────────────────────────────────────
-
-RST = "\033[0m"
-BOLD = "\033[1m"
-DIM = "\033[2m"
-GRAY = "\033[90m"
-RED = "\033[91m"
-GREEN = "\033[92m"
-YELLOW = "\033[93m"
-CYAN = "\033[96m"
-MAGENTA = "\033[95m"
-SOFT_CYAN = "\033[36m"
-BG_USER = "\033[100m"
-
-
-# ── Style ────────────────────────────────────────────────
-
-
-@dataclass(frozen=True, slots=True)
-class Style:
-    """Visual style for a single display line.
-
-    Composable and declarative — define once in Theme, use everywhere.
-
-    Example::
-
-        tool_done = Style(icon="✓", icon_color=GREEN, text_color=CYAN)
-        info      = Style(text_color=SOFT_CYAN)
-    """
-
-    icon: str = ""
-    icon_color: str = ""        # defaults to text_color when empty
-    text_color: str = ""
-    bg: str = ""                # optional background (e.g. BG_USER)
-
-
-# ── Theme ───────────────────────────────────────────────
+from .palette import ColorPalette, DEFAULT_PALETTE
+from .styles import DisplayStyles, WorkflowStyles, SpinnerStyles
 
 
 @dataclass
 class Theme:
-    """Visual style — swap to change the CLI look.
+    """样式配置包 — 组合 palette + 所有组件样式组。
 
-    Each field is a ``Style`` instance. Override to reskin the entire CLI::
+    Theme 不是"样式注册表"，而是"打包方便传递"的组合对象。
+    组件不应直接读取 Theme，而应接收自己需要的 *Styles 子集。
 
-        Theme(style_tool_done=Style(icon="✔", icon_color=GREEN, text_color=CYAN))
+    换肤方式::
+
+        # 方式 1：换 palette（所有颜色跟着变）
+        Theme(palette=ColorPalette(success="\\033[92m", ...))
+
+        # 方式 2：换个别样式（只改一个组件的一个样式）
+        from .style import Style
+        Theme(display=DisplayStyles(tool_done=Style(icon="✔", fg="success")))
+
+        # 方式 3：换整个组件样式组
+        Theme(workflow=WorkflowStyles(separator=Style(fg="accent")))
     """
 
-    # Tool lifecycle
-    style_tool_done: Style = Style(icon="✓", icon_color=GREEN, text_color=CYAN)
-    style_tool_fail: Style = Style(icon="✗", icon_color=RED, text_color=CYAN)
+    palette: ColorPalette = field(default_factory=lambda: DEFAULT_PALETTE)
 
-    # User input
-    style_user: Style = Style(icon="❯", icon_color=BOLD, text_color=BOLD, bg=BG_USER)
+    display: DisplayStyles = field(default_factory=DisplayStyles)
+    workflow: WorkflowStyles = field(default_factory=WorkflowStyles)
+    spinner: SpinnerStyles = field(default_factory=SpinnerStyles)
 
-    # Model response
-    style_reasoning: Style = Style(icon="┊", text_color=DIM)
-    style_text: Style = Style(icon="│", text_color=DIM + MAGENTA)
-    style_response: Style = Style()  # raw text, no styling
+    # ── 便捷方法：组件用来提取自己需要的部分 ──
 
-    # Status
-    style_usage: Style = Style(icon="✦", text_color=DIM)
-    style_compact: Style = Style(icon="─", text_color=YELLOW)
-    style_info: Style = Style(text_color=SOFT_CYAN)
-    style_warn: Style = Style(text_color=YELLOW)
-    style_error: Style = Style(text_color=RED)
+    def for_display(self) -> tuple[DisplayStyles, ColorPalette]:
+        return self.display, self.palette
 
+    def for_workflow(self) -> tuple[WorkflowStyles, ColorPalette]:
+        return self.workflow, self.palette
 
-# ── Helpers ─────────────────────────────────────────────
-
-
-def _s(text: str, *codes: str) -> str:
-    """Apply ANSI codes to text with reset."""
-    return f"{''.join(codes)}{text}{RST}"
+    def for_spinner(self) -> tuple[SpinnerStyles, ColorPalette]:
+        return self.spinner, self.palette
 
 
 def questionary_style(theme: Theme | None = None):

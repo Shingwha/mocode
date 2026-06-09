@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from enum import Enum, IntEnum
 
 from ..utils import ellipsize_middle, ellipsize_tail, terminal_width, visible_width
-from .theme import DIM, RST, SOFT_CYAN
+from .palette import DEFAULT_PALETTE, ColorPalette
+from .styles import SpinnerStyles
 
 
 # ── Spinner style ────────────────────────────────────────────
@@ -215,11 +216,15 @@ def _truncate_segs(segs: list[Segment], avail: int) -> list[Segment]:
 class SpinnerRunner:
     """Owns the spinner animation lifecycle with composable segments."""
 
-    def __init__(self, separator: str = " · ") -> None:
+    def __init__(self, separator: str = " · ",
+                 styles: SpinnerStyles | None = None,
+                 palette: ColorPalette | None = None) -> None:
         self._active = False
         self._start: float = 0.0
         self._segments: dict[str, Segment] = {}  # 保持插入顺序
         self._separator = separator
+        self._styles = styles or SpinnerStyles()
+        self._palette = palette or DEFAULT_PALETTE
 
     @property
     def active(self) -> bool:
@@ -257,7 +262,7 @@ class SpinnerRunner:
             return ""
 
         elapsed = _format_elapsed(time.monotonic() - self._start)
-        elapsed_str = f"{SOFT_CYAN}{elapsed}{RST}"
+        elapsed_str = self._palette.s(elapsed, self._styles.elapsed)
         elapsed_vis = len(elapsed)
 
         segs = list(self._segments.values())
@@ -320,7 +325,9 @@ class SpinnerRunner:
                 term_w = terminal_width()
                 max_suffix = max(10, int(term_w * 0.9) - 15)
                 suffix = self._render_suffix(max_suffix, spinner.show_text)
-                print(f"\r{DIM}{frame}{suffix}{RST}\033[K", end="", flush=True)
+                dim = self._palette.resolve(self._styles.frame)
+                rst = self._palette.reset
+                print(f"\r{dim}{frame}{suffix}{rst}\033[K", end="", flush=True)
                 await asyncio.sleep(text_interval)
 
         task = asyncio.ensure_future(_spin())

@@ -13,17 +13,10 @@ from .formatter import (
     detailed_summarize,
     summarize,
 )
+from .palette import DEFAULT_PALETTE, ColorPalette
 from .spinner import Priority, Truncate
-from .theme import (
-    BOLD,
-    DIM,
-    GRAY,
-    GREEN,
-    RED,
-    SOFT_CYAN,
-    YELLOW,
-    _s,
-)
+from .styles import WorkflowStyles
+from .style import Style
 
 from ..workflow.events import (
     LoopIterEvent,
@@ -71,8 +64,12 @@ _EVENT_HANDLERS: dict[type, str] = {
 class WorkflowRenderer:
     """Renders workflow events, DAG trees, and execution summaries."""
 
-    def __init__(self, display: Display) -> None:
+    def __init__(self, display: Display,
+                 styles: WorkflowStyles | None = None,
+                 palette: ColorPalette | None = None) -> None:
         self._d = display
+        self._s = styles or WorkflowStyles()
+        self._p = palette or DEFAULT_PALETTE
         self._start_time: float = 0.0
         self._pending_tool_batch = False
         self._batch_tool_groups: dict[str, list[str]] = {}  # name -> [summary]
@@ -92,35 +89,47 @@ class WorkflowRenderer:
             self._d.print()
         node_ids = event.node_ids
         if len(node_ids) <= 4:
-            node_str = _s(", ".join(node_ids), DIM)
+            node_str = self._p.s(", ".join(node_ids), "dim")
         else:
             shown = ", ".join(node_ids[:3])
-            node_str = _s(f"{shown} +{len(node_ids) - 3} more", DIM)
-        self._d.print(
-            f"{_s('◇', YELLOW)} Wave {event.wave_idx + 1}/{event.total_waves}  {node_str}"
+            node_str = self._p.s(f"{shown} +{len(node_ids) - 3} more", "dim")
+        line = self._s.wave.render(
+            f"Wave {event.wave_idx + 1}/{event.total_waves}",
+            self._p,
+            suffix=node_str,
         )
+        self._d.print(line)
 
     def _on_router_condition(self, event: RouterConditionEvent) -> None:
         if event.matched and event.targets:
             target_str = ", ".join(event.targets)
-            self._d.print(
-                f"  └─ {_s('▸', SOFT_CYAN)} {_s(event.router_id, SOFT_CYAN)} → {_s(target_str, DIM)}"
+            line = (
+                f"  └─ {self._s.router_match.render(event.router_id, self._p)}"
+                f" → {self._p.s(target_str, 'dim')}"
             )
+            self._d.print(line)
         else:
-            self._d.print(
-                f"  └─ {_s('▹', GRAY)} {_s(event.router_id, GRAY)} · {_s('no match', DIM)}"
+            line = (
+                f"  └─ {self._s.router_miss.render(event.router_id, self._p)}"
+                f" · {self._p.s('no match', 'dim')}"
             )
+            self._d.print(line)
 
     def _on_node_skipped(self, event: NodeSkippedEvent) -> None:
         icon, label = _SKIP_STYLES.get(event.reason, ("∘", event.reason))
-        self._d.print(
-            f"  │  {_s(icon, GRAY)} {_s(event.node_id, GRAY)}  {_s(label, DIM)}"
+        line = (
+            f"  │  {self._s.skip.render(event.node_id, self._p)}"
+            f"  {self._p.s(label, 'dim')}"
         )
+        self._d.print(line)
 
     def _on_node_start(self, event: NodeStartEvent) -> None:
-        node_prefix = _s(event.node_id, BOLD)
-        detail = f" ({event.description})" if event.description else ""
-        self._d.print(f"{_s('▸', BOLD)} {node_prefix}:start{detail}")
+        desc = f" ({event.description})" if event.description else ""
+        line = self._s.node_start.render(
+            f"{event.node_id}:start", self._p,
+            suffix=desc,
+        )
+        self._d.print(line)
         # Spinner: node_id · Thinking
         self._d.spinner_set("wf_node", event.node_id,
                             priority=Priority.HIGH, truncate=Truncate.NONE)
@@ -159,8 +168,9 @@ class WorkflowRenderer:
 
     def _on_node_done(self, event: NodeDoneEvent) -> None:
         dur = f"{event.result.duration:.1f}s"
-        icon = _s("■", GREEN) if event.result.exit_code == 0 else _s("■", RED)
-        node_prefix = _s(event.node_id, BOLD)
+        ok_style = self._s.node_done_ok
+        fail_style = self._s.node_done_fail
+        style = ok_style if event.result.exit_code == 0 else fail_style
         # Build usage detail
         parts = []
         tc = getattr(event.result, 'tool_calls', 0) or 0
@@ -171,9 +181,16 @@ class WorkflowRenderer:
         if pt > 0:
             parts.append(f"↑{pt:,} ↓{ct:,} tokens")
         if event.result.error and event.result.exit_code != 0:
-            parts.append(f"{_s('ERROR', RED)} {event.result.error[:30]}")
+            parts.append(f"{self._p.s('ERROR', 'error')} {event.result.error[:30]}")
         detail = f"  {' · '.join(parts)}" if parts else ""
-        self._d.print(f"{icon} {node_prefix}:done  {_s(dur, DIM)}{detail}")
+        line = style.render(
+            f"{event.node_id}:done", self._p,
+            suffix=dur, error="" if event.result.exit_code == 0 else detail.lstrip(),
+        )
+        # Append non-error details as plain dim text
+        if event.result.exit_code == 0 and detail:
+            line += f" {self._p.s(detail.strip(), 'dim')}"
+        self._d.print(line)
         # Clear all spinner segments
         self._d.spinner_remove("wf_node")
         self._d.spinner_remove("wf_thinking")
@@ -208,13 +225,14 @@ class WorkflowRenderer:
         )
         max_str = str(event.max_iter) if event.max_iter > 0 else "∞"
         self._d.print(
-            f"  └─ {_s('↻', YELLOW)} {_s(event.node_id, BOLD)} [{event.iteration}/{max_str}] · {desc}  {_s(dur, DIM)}"
+            f"  └─ {self._s.loop.render(f'{event.node_id}', self._p)} "
+            f"[{event.iteration}/{max_str}] · {desc}  {self._p.s(dur, 'dim')}"
         )
 
     def _on_map_fan_out(self, event: MapFanOutEvent) -> None:
         self._d.print(
-            f"  └─ {_s('⊞', SOFT_CYAN)} {_s(event.map_id, BOLD)} · "
-            f"{_s(f'{event.item_count} items', DIM)}"
+            f"  └─ {self._s.fanout.render(event.map_id, self._p)} · "
+            f"{self._p.s(f'{event.item_count} items', 'dim')}"
         )
 
     def _on_map_item_done(self, event: MapItemDoneEvent) -> None:
@@ -231,8 +249,8 @@ class WorkflowRenderer:
             parts.append(f"↑{pt:,} ↓{ct:,} tokens")
         usage = f"  {' · '.join(parts)}" if parts else ""
         self._d.print(
-            f"     {_s('▪', GRAY)} [{event.item_index + 1}/{event.total_count}] "
-            f"{_s(val, DIM)}  {_s(dur, DIM)}{usage}"
+            f"     {self._s.map_item.render(f'[{event.item_index + 1}/{event.total_count}]', self._p)} "
+            f"{self._p.s(val, 'dim')}  {self._p.s(dur, 'dim')}{usage}"
         )
 
     def _on_progress(self, event: ProgressEvent) -> None:
@@ -252,7 +270,10 @@ class WorkflowRenderer:
         node_count = wf.total_nodes()
         self._start_time = time.monotonic()
         self._d.print(
-            f"{_s('●', YELLOW)} {_s(wf.name, BOLD)}  {_s(f'{node_count} nodes', DIM)}"
+            self._s.header.render(
+                wf.name, self._p,
+                suffix=f"{node_count} nodes",
+            )
         )
         self._d.print()
 
@@ -276,7 +297,7 @@ class WorkflowRenderer:
             parts.append(f"{total_tools} tools")
         if total_prompt > 0:
             parts.append(f"↑{total_prompt:,} ↓{total_completion:,} tokens")
-        return _s(f"  {' · '.join(parts)}", DIM) if parts else ""
+        return f"  {' · '.join(parts)}" if parts else ""
 
     def summary(self, wf: Workflow, results: list | None = None) -> None:
         """Print final output and summary."""
@@ -293,7 +314,7 @@ class WorkflowRenderer:
                 last_output_result = r
                 break
         if last_output_result:
-            self._d.print(_s("─" * 48, YELLOW))
+            self._d.print(self._p.s("─" * 48, "warning"))
             for ol in last_output_result.output.splitlines():
                 self._d.print(ol)
         # Show errors from any failed result
@@ -301,22 +322,24 @@ class WorkflowRenderer:
             if not r.error or r.exit_code == 0:
                 continue
             if not last_output_result:
-                self._d.print(_s("─" * 48, YELLOW))
+                self._d.print(self._p.s("─" * 48, "warning"))
                 last_output_result = r
-            self._d.print(_s(f"Error: {r.error}", RED))
+            self._d.print(self._p.s(f"Error: {r.error}", "error"))
 
         # Summary line
         self._d.print()
         stat_str = " · ".join(s for s in (
-            _s(f"{passed} passed", GREEN + BOLD) if passed else None,
-            _s(f"{failed} failed", RED) if failed else None,
-            _s(f"{skipped_count} skipped", DIM) if skipped_count else None,
+            self._p.s(f"{passed} passed", "success", "bold") if passed else None,
+            self._p.s(f"{failed} failed", "error") if failed else None,
+            self._p.s(f"{skipped_count} skipped", "dim") if skipped_count else None,
         ) if s)
 
         usage_str = self._build_usage_line(results)
-        icon = GREEN if failed == 0 else RED
+        icon_style = self._s.node_done_ok if failed == 0 else self._s.node_done_fail
         self._d.print(
-            f"{_s('■', icon)} {_s(wf.name, BOLD)}  {stat_str}  {_s(f'{wall_time:.1f}s', DIM)}{usage_str}"
+            f"{icon_style.render(wf.name, self._p)}  {stat_str}  "
+            f"{self._p.s(f'{wall_time:.1f}s', 'dim')}"
+            f"{self._p.s(usage_str, 'dim') if usage_str else ''}"
         )
 
     def cancelled(self, wf: Workflow, results: list | None = None) -> None:
@@ -332,8 +355,8 @@ class WorkflowRenderer:
         if node.type == "router":
             route_strs = [_format_route(r) for r in node.routes]
             return (
-                f"{prefix}{connector} {_s(node.id, SOFT_CYAN)} · router  "
-                f"{_s('→', YELLOW)} {' | '.join(route_strs)}"
+                f"{prefix}{connector} {self._p.s(node.id, 'info')} · router  "
+                f"{self._p.s('→', 'warning')} {' | '.join(route_strs)}"
             )
         # Map node (each + as) — show fan-out mode
         if getattr(node, 'each', ''):
@@ -344,7 +367,7 @@ class WorkflowRenderer:
                 else (node.task[:50] if node.task else "")
             )
             return (
-                f"{prefix}{connector} {_s(node.id, BOLD)} · "
+                f"{prefix}{connector} {self._p.s(node.id, 'bold')} · "
                 f"each {node.each} as {as_var} → {preview}"
             )
         preview = (
@@ -352,14 +375,14 @@ class WorkflowRenderer:
             if node.description
             else (node.task[:50] if node.task else "")
         )
-        return f"{prefix}{connector} {_s(node.id, BOLD)} · {preview}"
+        return f"{prefix}{connector} {self._p.s(node.id, 'bold')} · {preview}"
 
     def show(self, wf: Workflow) -> str:
         """Generate a DAG tree-style structural view of the workflow."""
         lines = [
-            f"{_s(wf.name, BOLD)}",
+            f"{self._p.s(wf.name, 'bold')}",
             f"  {wf.description}" if wf.description else "",
-            f"  {_s(f'{wf.total_nodes()} nodes', DIM)}",
+            f"  {self._p.s(f'{wf.total_nodes()} nodes', 'dim')}",
             "",
         ]
         node_map = wf.node_map
@@ -392,7 +415,7 @@ class WorkflowRenderer:
         lines = []
         for wf in workflows:
             desc = wf.description[:50] if wf.description else "(no description)"
-            lines.append(f"  {_s(wf.name, BOLD):<20} {_s(desc, DIM)}")
+            lines.append(f"  {self._p.s(wf.name, 'bold'):<20} {self._p.s(desc, 'dim')}")
         return "\n".join(lines)
 
     def list_runs(self, runs: list[dict], store: object) -> str:
@@ -417,7 +440,7 @@ class WorkflowRenderer:
         name = record.get("workflow_name", "?")
 
         lines = [
-            f"{_s('●', BOLD)} {_s(run_id, BOLD)}  {_s(name, DIM)}",
+            f"{self._p.s('●', 'bold')} {self._p.s(run_id, 'bold')}  {self._p.s(name, 'dim')}",
             f"  Status:    {status}",
             f"  Started:   {record.get('started_at', '?')}",
         ]
@@ -439,9 +462,6 @@ class WorkflowRenderer:
 
         if status == "crashed":
             lines.append("")
-            lines.append(_s("Process died unexpectedly. Check the log file.", RED))
+            lines.append(self._p.s("Process died unexpectedly. Check the log file.", "error"))
 
         return "\n".join(lines)
-
-
-

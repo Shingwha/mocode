@@ -33,6 +33,7 @@ from ...tools import (
 )
 from .commands import CommandContext, CommandRegistry, CommandResult
 from .spinner import Priority, Truncate
+from .theme import Theme
 
 
 class CLIApp:
@@ -69,9 +70,22 @@ class CLIApp:
             from .display import Display
             from .workflow_renderer import WorkflowRenderer
 
+            self.theme = Theme()
+            palette = self.theme.palette
+
             _input = Input(self.commands, ps1="❯")
-            self.display = display or Display(input_=_input)
-            self.wf_renderer = WorkflowRenderer(self.display)
+            self.display = display or Display(
+                input_=_input,
+                styles=self.theme.display,
+                palette=palette,
+                spinner_styles=self.theme.spinner,
+                spinner_palette=palette,
+            )
+            self.wf_renderer = WorkflowRenderer(
+                display=self.display,
+                styles=self.theme.workflow,
+                palette=palette,
+            )
         else:
             self.display = display  # may be None in non-interactive
             self.wf_renderer = None  # type: ignore[assignment]

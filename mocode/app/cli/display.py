@@ -6,8 +6,10 @@ import json
 from typing import TYPE_CHECKING
 
 from ..utils import _CONTENT_LIMIT, group_items
+from .palette import DEFAULT_PALETTE, ColorPalette
 from .spinner import Priority, SpinnerRunner, Truncate
-from .theme import DIM, Style, Theme, _s
+from .styles import DisplayStyles, SpinnerStyles
+from .style import Style
 
 if TYPE_CHECKING:
     from .input import Input
@@ -51,10 +53,18 @@ class Display:
         Display.render_line()  — styled output using Style instances
     """
 
-    def __init__(self, input_: Input, theme: Theme | None = None):
-        self.theme = theme or Theme()
+    def __init__(self, input_: Input,
+                 styles: DisplayStyles | None = None,
+                 palette: ColorPalette | None = None,
+                 spinner_styles: SpinnerStyles | None = None,
+                 spinner_palette: ColorPalette | None = None):
+        self._s = styles or DisplayStyles()
+        self._p = palette or DEFAULT_PALETTE
         self._input = input_
-        self._spinner = SpinnerRunner()
+        self._spinner = SpinnerRunner(
+            styles=spinner_styles,
+            palette=spinner_palette,
+        )
         self._pending_input: str | None = None
 
     # ── Input delegation ──────────────────────────────────
@@ -107,32 +117,9 @@ class Display:
             elapsed: Optional elapsed seconds (shown if >= 0.1)
             error: Optional error text (rendered in icon color)
         """
-        parts = []
-
-        # Icon
-        if style.icon:
-            ic = style.icon_color or style.text_color
-            parts.append(_s(style.icon, ic))
-
-        # Text (with optional background)
-        if style.bg:
-            parts.append(_s(text, style.bg, style.text_color))
-        else:
-            parts.append(_s(text, style.text_color))
-
-        # Suffix (dimmed)
-        if suffix:
-            parts.append(_s(suffix, DIM))
-
-        # Error (icon color, typically red)
-        if error:
-            parts.append(_s(error, style.icon_color or style.text_color))
-
-        # Elapsed time (dimmed)
-        if elapsed >= 0.1:
-            parts.append(_s(f"{elapsed:.1f}s", DIM))
-
-        self.print(" ".join(parts))
+        self.print(style.render(text, self._p,
+                                suffix=suffix, elapsed=elapsed,
+                                error=error))
 
     def _render_multiline(self, style: Style, content: str) -> None:
         """Render multi-line content with a style, one styled line per line."""
@@ -143,22 +130,21 @@ class Display:
 
     def user_message(self, content: str) -> None:
         """Render a user message with dark background."""
-        t = self.theme
-        # Icon and text share the same background — combine them
-        self.print(_s(f"{t.style_user.icon} {content.strip()}", t.style_user.bg, t.style_user.text_color))
+        s = self._s.user_input
+        self.print(self._p.s(f"{s.icon} {content.strip()}", s.bg, s.fg))
         self.print()
 
     # ── Output: tool lifecycle ────────────────────────────
 
     def tool_done(self, name: str, merged: str, elapsed: float) -> None:
         """Print a successful tool line — ✓ with name, args, and optional elapsed."""
-        self.render_line(self.theme.style_tool_done, name,
+        self.render_line(self._s.tool_done, name,
                          suffix=f"({merged})", elapsed=elapsed)
 
     def tool_fail(self, name: str, merged: str, error: str,
                   elapsed: float = -1) -> None:
         """Print a failed tool line — ✗ with name, args, error, and optional elapsed."""
-        self.render_line(self.theme.style_tool_fail, name,
+        self.render_line(self._s.tool_fail, name,
                          suffix=f"({merged})" if merged else "",
                          error=error, elapsed=elapsed)
 
@@ -166,11 +152,11 @@ class Display:
 
     def reasoning(self, content: str) -> None:
         """Render reasoning content (thinking)."""
-        self._render_multiline(self.theme.style_reasoning, content)
+        self._render_multiline(self._s.reasoning, content)
 
     def text_response(self, content: str) -> None:
         """Render text response with line-by-line styling."""
-        self._render_multiline(self.theme.style_text, content.strip())
+        self._render_multiline(self._s.text, content.strip())
 
     def response(self, text: str) -> None:
         """Render final response (raw text)."""
@@ -179,19 +165,19 @@ class Display:
     # ── Output: status ────────────────────────────────────
 
     def usage(self, prompt_tokens: int, completion_tokens: int) -> None:
-        self.render_line(self.theme.style_usage, f"↑{prompt_tokens:,} ↓{completion_tokens:,}")
+        self.render_line(self._s.usage, f"↑{prompt_tokens:,} ↓{completion_tokens:,}")
 
     def compact(self, old: int, new: int) -> None:
-        self.render_line(self.theme.style_compact, f"Compacted: {old} → {new} msgs")
+        self.render_line(self._s.compact, f"Compacted: {old} → {new} msgs")
 
     def info(self, text: str) -> None:
-        self.render_line(self.theme.style_info, text)
+        self.render_line(self._s.info, text)
 
     def warn(self, text: str) -> None:
-        self.render_line(self.theme.style_warn, text)
+        self.render_line(self._s.warn, text)
 
     def error(self, text: str) -> None:
-        self.render_line(self.theme.style_error, text)
+        self.render_line(self._s.error, text)
 
     # ── Screen ────────────────────────────────────────────
 
