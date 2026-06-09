@@ -48,7 +48,8 @@ class CLIApp:
     ):
         self.home = home or Path.home() / ".mocode"
         self.interactive = interactive
-        self.active_plan_path: str | None = None
+        from ...tools.plan import PlanState
+        self.plan_state = PlanState()
         _fix_console()
 
         self.config = config or Config.load()
@@ -187,7 +188,7 @@ class CLIApp:
         )
 
         from ...tools.plan import PlanTool
-        self._tools.register(PlanTool(self))
+        self._tools.register(PlanTool(self.plan_state))
 
         # Register /skill:<name> commands for each discovered skill
         if self.interactive:
@@ -291,7 +292,15 @@ class CLIApp:
             return await cmd.run(ctx)
 
         if text.startswith("/"):
-            self.display.warn(f"Unknown command: {cmd_text}")
+            # Fuzzy matching for unknown commands
+            import difflib
+            all_commands = [c.name for c in self.commands.all()]
+            matches = difflib.get_close_matches(cmd_text, all_commands, n=1, cutoff=0.6)
+            if matches:
+                suggestion = matches[0]
+                self.display.warn(f"Unknown command: {cmd_text} — did you mean {suggestion}?")
+            else:
+                self.display.warn(f"Unknown command: {cmd_text}")
             return CommandResult.CONTINUE
 
         return CommandResult(kind="chat", prompt=text)

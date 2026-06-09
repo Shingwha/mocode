@@ -11,7 +11,7 @@ from . import Command, CommandContext, CommandResult, Subcommand
 
 
 async def _start(ctx: CommandContext, args: str) -> CommandResult:
-    path = ctx.app.active_plan_path
+    path = ctx.app.plan_state.active_plan_path
     if not path:
         ctx.display.warn("No active plan. Use /plan <description> to create one.")
         return CommandResult.CONTINUE
@@ -28,7 +28,7 @@ async def _start(ctx: CommandContext, args: str) -> CommandResult:
 
 
 async def _start_clean(ctx: CommandContext, args: str) -> CommandResult:
-    path = ctx.app.active_plan_path
+    path = ctx.app.plan_state.active_plan_path
     if not path:
         ctx.display.warn("No active plan. Use /plan <description> to create one.")
         return CommandResult.CONTINUE
@@ -38,7 +38,7 @@ async def _start_clean(ctx: CommandContext, args: str) -> CommandResult:
 
 
 async def _status(ctx: CommandContext, args: str) -> CommandResult:
-    path = ctx.app.active_plan_path
+    path = ctx.app.plan_state.active_plan_path
     if path:
         ctx.display.info(f"Active plan: {path}")
     else:
@@ -47,7 +47,7 @@ async def _status(ctx: CommandContext, args: str) -> CommandResult:
 
 
 async def _view(ctx: CommandContext, args: str) -> CommandResult:
-    path = ctx.app.active_plan_path
+    path = ctx.app.plan_state.active_plan_path
     if not path:
         ctx.display.warn("No active plan. Use /plan <description> to create one.")
         return CommandResult.CONTINUE
@@ -73,13 +73,13 @@ async def _view(ctx: CommandContext, args: str) -> CommandResult:
 
 
 async def _clear(ctx: CommandContext, args: str) -> CommandResult:
-    ctx.app.active_plan_path = None
+    ctx.app.plan_state.active_plan_path = None
     ctx.display.info("Active plan cleared.")
     return CommandResult.CONTINUE
 
 
 async def _copy(ctx: CommandContext, args: str) -> CommandResult:
-    path = ctx.app.active_plan_path
+    path = ctx.app.plan_state.active_plan_path
     if not path:
         ctx.display.warn("No active plan. Use /plan <description> to create one.")
         return CommandResult.CONTINUE
