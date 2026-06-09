@@ -14,6 +14,20 @@ from ..utils import read_json, write_json
 from .models import NodeResult
 
 
+def derive_runs_dir(workflow_path: Path) -> Path:
+    """Derive the runs directory from a workflow YAML path.
+
+    Example::
+
+        .mocode/workflows/xxx.yaml → .mocode/runs/
+        ~/.mocode/workflows/xxx.yaml → ~/.mocode/runs/
+    """
+    # workflow in xxx/workflows/ → run in xxx/runs/
+    parent = workflow_path.parent      # workflows/
+    grandparent = parent.parent        # .mocode/
+    return grandparent / "runs"
+
+
 class WorkflowRunStore:
     """File-based store for workflow run records.
 
@@ -23,6 +37,12 @@ class WorkflowRunStore:
 
     def __init__(self, base_dir: Path | None = None):
         self._base_dir = base_dir or Path.home() / ".mocode" / "runs"
+
+    @classmethod
+    def from_workflow_path(cls, workflow_path: Path) -> WorkflowRunStore:
+        """Create a store whose base directory is derived from a workflow file path."""
+        runs_dir = derive_runs_dir(workflow_path)
+        return cls(base_dir=runs_dir)
 
     def _path(self, run_id: str) -> Path:
         return self._base_dir / run_id / "run.json"

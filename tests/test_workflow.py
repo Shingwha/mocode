@@ -961,7 +961,7 @@ class TestWorkflowCommandRun:
         ):
             mock_store = MagicMock()
             mock_store.create.return_value = "wf_test123"
-            MockStore.return_value = mock_store
+            MockStore.from_workflow_path.return_value = mock_store
             mock_runner = AsyncMock()
             mock_runner.run = AsyncMock(return_value=[
                 NodeResult(node_id="a", task="Do stuff", output="ok", exit_code=0, duration=1.0)
@@ -1522,7 +1522,7 @@ class TestWorkflowCancellation:
             MockRunner.return_value = mock_runner_instance
 
             mock_store = MagicMock()
-            MockStore.return_value = mock_store
+            MockStore.from_workflow_path.return_value = mock_store
 
             result = await _run(ctx, "test-wf")
 

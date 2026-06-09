@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import signal
 from datetime import datetime
+from pathlib import Path
 
 from ...workflow.models import parse_args
 from ...workflow.runner import DAGRunner
@@ -57,8 +58,8 @@ async def _run(ctx: CommandContext, args_str: str) -> CommandResult:
         ctx.display.warn(str(e))
         return CommandResult.CONTINUE
 
-    # Persist run
-    store = WorkflowRunStore()
+    # Persist run — store location derived from workflow YAML path
+    store = WorkflowRunStore.from_workflow_path(wf.path)
     run_id = store.create(
         workflow_name=name,
         workflow_path=str(wf.path),
@@ -108,24 +109,29 @@ async def _run(ctx: CommandContext, args_str: str) -> CommandResult:
 
 
 async def _status(ctx: CommandContext, args_str: str) -> CommandResult:
-    store = WorkflowRunStore()
     raw = args_str.strip()
 
-    # No arguments: show recent run list
+    # No arguments: show recent run list from all stores
     if not raw:
-        runs = store.list_recent()
-        if not runs:
+        all_runs: list[dict] = []
+        for store in _list_all_stores():
+            all_runs.extend(store.list_recent(limit=20))
+        all_runs.sort(key=lambda r: r.get("started_at", ""), reverse=True)
+        all_runs = all_runs[:20]
+        if not all_runs:
             ctx.display.warn("No workflow runs found.")
             return CommandResult.CONTINUE
-        text = ctx.app.wf_renderer.list_runs(runs, store)
+        # Use default store for rendering (renderer only needs run_dir path)
+        text = ctx.app.wf_renderer.list_runs(all_runs, WorkflowRunStore())
         ctx.display.info(text)
         return CommandResult.CONTINUE
 
-    # With arguments: show specific run detail
-    record = _resolve_run(store, raw)
-    if record is None:
+    # With arguments: show specific run detail (search all stores)
+    result = _find_store_for_run(raw)
+    if result is None:
         ctx.display.warn(f"Run '{raw}' not found.")
         return CommandResult.CONTINUE
+    store, record = result
 
     run_id = record["run_id"]
     status = record.get("status", "unknown")
@@ -141,12 +147,12 @@ async def _status(ctx: CommandContext, args_str: str) -> CommandResult:
 
 async def _result(ctx: CommandContext, args_str: str) -> CommandResult:
     """Show output files for a run."""
-    store = WorkflowRunStore()
     raw = args_str.strip()
-    record = _resolve_run(store, raw)
-    if record is None:
+    result = _find_store_for_run(raw)
+    if result is None:
         ctx.display.warn(f"Run '{raw}' not found.")
         return CommandResult.CONTINUE
+    store, record = result
 
     run_id = record["run_id"]
     rd = store.run_dir(run_id)
@@ -224,6 +230,53 @@ def _find_workflow(ctx: CommandContext, name: str) -> object | None:
     if wf is None:
         ctx.display.warn(f"Workflow '{name}' not found.")
     return wf
+
+
+def _find_store_for_run(raw: str) -> tuple[WorkflowRunStore, dict | None] | None:
+    """Find the store and record for a run identifier.
+
+    Searches global store first, then local stores if not found.
+    Returns (store, record) or None.
+    """
+    global_store = WorkflowRunStore()
+    record = _resolve_run(global_store, raw)
+    if record is not None:
+        return (global_store, record)
+
+    # Derive local store from the workflow_path in recent global runs.
+    # Check recent global runs' workflow paths for local runs.
+    for g_rec in global_store.list_recent(limit=20):
+        wf_path = g_rec.get("workflow_path")
+        if wf_path:
+            local_store = WorkflowRunStore.from_workflow_path(Path(wf_path))
+            if local_store._base_dir != global_store._base_dir and local_store._base_dir.exists():
+                record = _resolve_run(local_store, raw)
+                if record is not None:
+                    return (local_store, record)
+
+    return None
+
+
+def _list_all_stores() -> list[WorkflowRunStore]:
+    """Return all known stores: global + any local runs/ directories."""
+    global_store = WorkflowRunStore()
+    stores = [global_store]
+    # Discover local stores by scanning for .mocode directories with workflows/
+    for md_dir in Path.cwd().parents:
+        local_wfs = md_dir / ".mocode" / "workflows"
+        local_runs = md_dir / ".mocode" / "runs"
+        if local_wfs.is_dir() and local_runs.is_dir():
+            store = WorkflowRunStore(base_dir=local_runs)
+            if store._base_dir != global_store._base_dir:
+                stores.append(store)
+            break  # nearest .mocode wins
+    # Also check home dir local stores
+    home_runs = Path.home() / ".mocode" / "runs"
+    if home_runs.is_dir():
+        home_store = WorkflowRunStore(base_dir=home_runs)
+        if home_store._base_dir != global_store._base_dir:
+            stores.append(home_store)
+    return stores
 
 
 def _resolve_run(store: WorkflowRunStore, raw: str) -> dict | None:

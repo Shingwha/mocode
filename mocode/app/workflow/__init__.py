@@ -30,7 +30,7 @@ from .models import (
     resolve_list_expr,
 )
 from .registry import WorkflowRegistry
-from .run_store import WorkflowRunStore
+from .run_store import WorkflowRunStore, derive_runs_dir
 
 # Re-export shared utilities from cli submodule for convenience
 from .cli import make_registry
@@ -43,6 +43,7 @@ __all__ = [
     "Workflow",
     "WorkflowRegistry",
     "WorkflowRunStore",
+    "derive_runs_dir",
     "compute_waves",
     "fill_template",
     "parse_args",
