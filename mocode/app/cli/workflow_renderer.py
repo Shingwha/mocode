@@ -85,8 +85,6 @@ class WorkflowRenderer:
     # ── Event handlers ─────────────────────────────────────
 
     def _on_wave_ready(self, event: WaveReadyEvent) -> None:
-        if event.wave_idx > 0:
-            self._d.print()
         node_ids = event.node_ids
         if len(node_ids) <= 4:
             node_str = self._p.s(", ".join(node_ids), "dim")
@@ -275,7 +273,6 @@ class WorkflowRenderer:
                 suffix=f"{node_count} nodes",
             )
         )
-        self._d.print()
 
     @staticmethod
     def _collect_stats(results: list) -> tuple[int, int, int]:
@@ -327,7 +324,6 @@ class WorkflowRenderer:
             self._d.print(self._p.s(f"Error: {r.error}", "error"))
 
         # Summary line
-        self._d.print()
         stat_str = " · ".join(s for s in (
             self._p.s(f"{passed} passed", "success", "bold") if passed else None,
             self._p.s(f"{failed} failed", "error") if failed else None,
@@ -380,11 +376,10 @@ class WorkflowRenderer:
     def show(self, wf: Workflow) -> str:
         """Generate a DAG tree-style structural view of the workflow."""
         lines = [
-            f"{self._p.s(wf.name, 'bold')}",
-            f"  {wf.description}" if wf.description else "",
-            f"  {self._p.s(f'{wf.total_nodes()} nodes', 'dim')}",
-            "",
+            f"{self._p.s(wf.name, 'bold')}  {self._p.s(f'{wf.total_nodes()} nodes', 'dim')}",
         ]
+        if wf.description:
+            lines.append(f"  {wf.description}")
         node_map = wf.node_map
         dependents = wf.dependents
 
@@ -455,13 +450,11 @@ class WorkflowRenderer:
 
         results = [NodeResult(**r) for r in record.get("results", [])]
         if results:
-            lines.append("")
             lines.append(detailed_summarize(name, results, max_lines=9999))
         else:
             lines.append("  No node results yet.")
 
         if status == "crashed":
-            lines.append("")
             lines.append(self._p.s("Process died unexpectedly. Check the log file.", "error"))
 
         return "\n".join(lines)
