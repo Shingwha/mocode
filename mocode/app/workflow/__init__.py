@@ -27,6 +27,7 @@ from .models import (
     parse_args,
     parse_items,
     parse_sections,
+    resolve_list_expr,
 )
 from .registry import WorkflowRegistry
 from .run_store import WorkflowRunStore
@@ -47,6 +48,7 @@ __all__ = [
     "parse_args",
     "parse_items",
     "parse_sections",
+    "resolve_list_expr",
     "summarize",
     "detailed_summarize",
     "make_registry",

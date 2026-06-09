@@ -279,6 +279,34 @@ def parse_items(raw: str) -> list[str]:
     return [line.strip() for line in raw.splitlines() if line.strip()]
 
 
+def resolve_list_expr(each_expr: str, context: dict) -> list[str]:
+    """Resolve an ``each`` expression to a list of strings.
+
+    Priority:
+    1. Direct list resolution (e.g. ``{nodes.scan.ISSUE}`` → already a list)
+    2. ``fill_template`` + line splitting (covers string outputs and mixed templates)
+    """
+    expr = each_expr.strip()
+    if expr.startswith("{") and expr.endswith("}"):
+        inner = expr[1:-1]
+        parts = inner.split(".", 1)
+        if len(parts) > 1:
+            bucket, rest = parts
+            obj = context.get(bucket) or context.get(_BUCKET_ALIASES.get(bucket, ""))
+            if isinstance(obj, dict):
+                val = _resolve_path(rest, obj)
+                if isinstance(val, list):
+                    return [str(v) for v in val]
+        else:
+            # Single-segment placeholder
+            val = context.get(inner)
+            if isinstance(val, list):
+                return [str(v) for v in val]
+    # Fallback: fill template + split by lines
+    filled = fill_template(each_expr, context)
+    return [line.strip() for line in filled.splitlines() if line.strip()]
+
+
 # ── Workflow ─────────────────────────────────────────────────
 
 
