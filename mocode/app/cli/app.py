@@ -51,8 +51,9 @@ class CLIApp:
     ):
         self.home = home or Path.home() / ".mocode"
         self.interactive = interactive
-        from ...tools.plan import PlanState
+        from ...tools.plan import PlanRegistry, PlanState
         self.plan_state = PlanState()
+        self.plan_registry = PlanRegistry.from_default_dirs()
         _fix_console()
 
         self.config = config or Config.load()
@@ -156,7 +157,10 @@ class CLIApp:
         ]:
             self._tools.register(t)
 
-        self._skill_mgr = SkillManager([self.home / "skills"], vfs=self._vfs)
+        self._skill_mgr = SkillManager(
+            [self.home / "skills", Path.cwd() / ".mocode" / "skills"],
+            vfs=self._vfs,
+        )
 
         # Register built-in skills
         self._skill_mgr.register(WorkflowSkill())

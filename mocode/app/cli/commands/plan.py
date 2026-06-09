@@ -78,6 +78,113 @@ async def _clear(ctx: CommandContext, args: str) -> CommandResult:
     return CommandResult.CONTINUE
 
 
+async def _list(ctx: CommandContext, args: str) -> CommandResult:
+    """List all discovered plans from project-local + global dirs."""
+    registry = ctx.app.plan_registry
+    plans = registry.list()
+    if not plans:
+        ctx.display.info("No plans found (project-local or global).")
+        return CommandResult.CONTINUE
+
+    local_dir = Path.cwd() / ".mocode" / "plans"
+    global_dir = ctx.app.home / "plans"
+
+    ctx.display.divider()
+    for name, path in plans.items():
+        try:
+            path.relative_to(local_dir)
+            loc = "local"
+        except ValueError:
+            loc = "global"
+
+        active = ""
+        if ctx.app.plan_state.active_plan_path == str(path):
+            active = "  ★ active"
+
+        ctx.display.print(f"  {name}  [{loc}]{active}")
+    ctx.display.print()
+    ctx.display.divider()
+    return CommandResult.CONTINUE
+
+
+async def _show(ctx: CommandContext, args: str) -> CommandResult:
+    """Show plan content by name (auto-find from dual locations)."""
+    name = args.strip()
+    if not name:
+        ctx.display.warn("Usage: /plan show <name>")
+        return CommandResult.CONTINUE
+
+    registry = ctx.app.plan_registry
+    path = registry.get(name)
+    if path is None:
+        ctx.display.error(f"Plan not found: {name}")
+        return CommandResult.CONTINUE
+
+    try:
+        content = path.read_text(encoding="utf-8")
+    except Exception as e:
+        ctx.display.error(f"Failed to read plan: {e}")
+        return CommandResult.CONTINUE
+
+    if not content.strip():
+        ctx.display.warn(f"Plan file is empty: {path}")
+        return CommandResult.CONTINUE
+
+    ctx.display.divider()
+    ctx.display.print(f"  {path}")
+    ctx.display.divider()
+    ctx.display.text_response(content)
+    ctx.display.divider()
+    return CommandResult.CONTINUE
+
+
+async def _move(ctx: CommandContext, args: str) -> CommandResult:
+    """Move a plan between project-local and global locations.
+
+    Usage:
+        /plan move <name>          → toggle between local/global
+        /plan move <name> --global → move to global
+        /plan move <name> --local  → move to project-local
+    """
+    parts = args.strip().split()
+    if not parts:
+        ctx.display.warn("Usage: /plan move <name> [--global|--local]")
+        return CommandResult.CONTINUE
+
+    name = parts[0]
+    registry = ctx.app.plan_registry
+    current_loc = registry.location(name)
+    if current_loc is None:
+        ctx.display.error(f"Plan not found: {name}")
+        return CommandResult.CONTINUE
+
+    # Determine target
+    flag = parts[1] if len(parts) > 1 else ""
+    if flag == "--global":
+        target = "global"
+    elif flag == "--local":
+        target = "local"
+    else:
+        # toggle
+        target = "local" if current_loc == "global" else "global"
+
+    new_path = registry.move(name, target)
+    if new_path is None:
+        ctx.display.error(f"Failed to move plan: {name}")
+        return CommandResult.CONTINUE
+
+    # Update active plan path if it was the one being moved
+    if ctx.app.plan_state.active_plan_path:
+        old_path = ctx.app.plan_state.active_plan_path
+        # Check if old_path no longer exists (was moved)
+        from pathlib import Path as _P
+        if not _P(old_path).exists():
+            ctx.app.plan_state.active_plan_path = str(new_path)
+
+    ctx.display.info(f"Moved {name}: {current_loc} → {target} ({new_path})")
+    return CommandResult.CONTINUE
+
+
 async def _copy(ctx: CommandContext, args: str) -> CommandResult:
     path = ctx.app.plan_state.active_plan_path
     if not path:
@@ -111,8 +218,8 @@ async def _default_plan(ctx: CommandContext, args: str) -> CommandResult:
     prompt = (
         f"The user wants to create an implementation plan for:\n\n"
         f"{args}\n\n"
-        f"Save the plan as a Markdown file under .mocode/plans/ (project-local) or\n"
-        f"~/.mocode/plans/ (global). Create the directory if needed.\n"
+        f"Save the plan as a Markdown file under .mocode/plans/ (project-local).\n"
+        f"Create the directory if needed.\n"
         f"Then call the plan tool with action='done' and the file path.\n"
         f"After that, tell the user to run /plan:start or /plan:start-clean to execute. "
         f"If the user has feedback, revise the plan accordingly."
@@ -131,6 +238,9 @@ command = Command(
         Subcommand("start-clean", "Execute plan (clear context)", _start_clean),
         Subcommand("status", "Show active plan path", _status),
         Subcommand("view", "Show plan content (real-time read)", _view),
+        Subcommand("list", "List all plans (local + global)", _list),
+        Subcommand("show", "Show plan content by name", _show),
+        Subcommand("move", "Move plan between local/global", _move),
         Subcommand("clear", "Clear the active plan", _clear),
         Subcommand("copy", "Copy plan to clipboard", _copy),
     ),
