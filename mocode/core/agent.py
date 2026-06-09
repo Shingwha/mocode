@@ -61,6 +61,17 @@ class AgentLoop:
         self._iteration_count = 0
         self._tool_call_count = 0
 
+    def reset(self, *, hooks: HookRunner | None = None) -> None:
+        """Reset mutable state for reuse. Shared deps (provider, prompt, tools) stay."""
+        self.messages = []
+        self._last_usage = None
+        self._total_usage = Usage(0, 0)
+        self._call_seq = 0
+        self._iteration_count = 0
+        self._tool_call_count = 0
+        if hooks is not None:
+            self.hooks = hooks
+
     # ---- Chat ----
 
     async def chat(self, user_input: str, images: list[str] | None = None) -> str:

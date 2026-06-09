@@ -23,8 +23,8 @@ if TYPE_CHECKING:
     from .models import Node, NodeResult, Workflow
     from .state import RunState
 
-    from ..core.agent import AgentLoop
-
+from ...core.agent import AgentLoop
+from ...core.hook import HookRunner
 from .hooks import _WorkflowNodeHook  # noqa: F401 — re-export for backward compat
 from .models import NodeResult, parse_sections
 
@@ -47,6 +47,21 @@ class Executor:
         self._parent_agent = parent_agent
         self.timeout = timeout
         self._on_event = on_event
+        # Cache node-independent state (derived once, reused for all nodes)
+        self._node_tools = parent_agent.tool_registry.derived(
+            exclude={"sub_agent", "compact"}
+        )
+        self._provider = parent_agent.provider
+        self._system_prompt = parent_agent.system_prompt
+        self._config = parent_agent.config
+        # Reusable AgentLoop — reset between sequential nodes
+        self._template_agent = AgentLoop(
+            provider=self._provider,
+            system_prompt=self._system_prompt,
+            tools=self._node_tools,
+            hooks=HookRunner(),
+            config=self._config,
+        )
 
     # ── Event dispatch (thin wrapper) ─────────────────────────
 
@@ -164,43 +179,70 @@ class Executor:
         context_header: str | None = None,
     ) -> NodeResult:
         """Execute a task node using an in-process AgentLoop."""
-        from ...core.builder import Agent
-
         full_prompt = f"{context_header}\n\n---\nTask: {task}" if context_header else task
 
-        tools = self._parent_agent.tool_registry.derived(
-            exclude={"sub_agent", "compact"}
-        )
+        # Reset template agent for this node (new hook, clear messages/counters)
         hook = _WorkflowNodeHook(node_id, self._emit)
+        self._template_agent.reset(hooks=HookRunner([hook]))
 
-        temp_agent = (
-            Agent()
-            .provider(self._parent_agent.provider)
-            .prompt(self._parent_agent.system_prompt)
-            .tools(tools)
-            .hooks([hook])
-            .config(self._parent_agent.config)
-            .build()
+        t0 = time.monotonic()
+        try:
+            result = await asyncio.wait_for(
+                self._template_agent.chat(full_prompt),
+                timeout=self.timeout,
+            )
+            output = result or ""
+            return self._build_result(
+                node_id, task, output, 0, t0, self._template_agent,
+                sections=parse_sections(output),
+            )
+        except asyncio.TimeoutError:
+            return self._build_result(
+                node_id, task, "", 1, t0, self._template_agent,
+                error=f"timed out after {self.timeout}s",
+            )
+        except Exception as e:
+            return self._build_result(
+                node_id, task, "", 1, t0, self._template_agent,
+                error=str(e),
+            )
+
+    async def _exec_map_child(
+        self,
+        child_id: str,
+        task: str,
+        context_header: str | None = None,
+    ) -> NodeResult:
+        """Execute a map child node — needs its own AgentLoop (concurrent)."""
+        full_prompt = f"{context_header}\n\n---\nTask: {task}" if context_header else task
+
+        hook = _WorkflowNodeHook(child_id, self._emit)
+        agent = AgentLoop(
+            provider=self._provider,
+            system_prompt=self._system_prompt,
+            tools=self._node_tools,
+            hooks=HookRunner([hook]),
+            config=self._config,
         )
 
         t0 = time.monotonic()
         try:
             result = await asyncio.wait_for(
-                temp_agent.chat(full_prompt),
+                agent.chat(full_prompt),
                 timeout=self.timeout,
             )
             output = result or ""
             return self._build_result(
-                node_id, task, output, 0, t0, temp_agent,
+                child_id, task, output, 0, t0, agent,
                 sections=parse_sections(output),
             )
         except asyncio.TimeoutError:
             return self._build_result(
-                node_id, task, "", 1, t0, temp_agent,
+                child_id, task, "", 1, t0, agent,
                 error=f"timed out after {self.timeout}s",
             )
         except Exception as e:
             return self._build_result(
-                node_id, task, "", 1, t0, temp_agent,
+                child_id, task, "", 1, t0, agent,
                 error=str(e),
             )

@@ -639,14 +639,11 @@ class TestRunnerErrorHandling:
         mock_agent._tool_call_count = 5
         mock_agent._total_usage = Usage(1200, 300)
         mock_agent.chat = AsyncMock(return_value="done")
+        mock_agent.reset = MagicMock()  # no-op — preserve pre-set state
 
-        mock_builder = MagicMock()
-        mock_builder.build.return_value = mock_agent
-        for method in ("provider", "prompt", "tools", "hooks", "config"):
-            getattr(mock_builder, method).return_value = mock_builder
-
-        with patch("mocode.core.builder.Agent", return_value=mock_builder):
-            result = await runner._exec_node("a", "Do it")
+        # Patch the template agent on the executor
+        runner._executor._template_agent = mock_agent
+        result = await runner._exec_node("a", "Do it")
 
         assert result.exit_code == 0
         assert result.tool_calls == 5
@@ -665,13 +662,9 @@ class TestRunnerErrorHandling:
         mock_agent._total_usage = Usage(0, 0)
         mock_agent.chat = AsyncMock(side_effect=RuntimeError("kaboom"))
 
-        mock_builder = MagicMock()
-        mock_builder.build.return_value = mock_agent
-        for method in ("provider", "prompt", "tools", "hooks", "config"):
-            getattr(mock_builder, method).return_value = mock_builder
-
-        with patch("mocode.core.builder.Agent", return_value=mock_builder):
-            result = await runner._exec_node("a", "Boom")
+        # Patch the template agent on the executor
+        runner._executor._template_agent = mock_agent
+        result = await runner._exec_node("a", "Boom")
 
         assert result.exit_code == 1
         assert "kaboom" in result.error
