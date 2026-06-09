@@ -58,6 +58,11 @@ class DAGRunner:
         self._on_event = on_event
         self.run_id = run_id
         self.run_store = run_store
+        # Ensure run directory exists and cache path
+        self._run_dir: str | None = None
+        if self.run_store and self.run_id:
+            rd = self.run_store.ensure_run_dir(self.run_id)
+            self._run_dir = str(rd)
         self._semaphore = asyncio.Semaphore(workflow.concurrency)
         self.partial_results: list[NodeResult] = []  # populated on cancellation
         self._executor = Executor(
@@ -90,6 +95,8 @@ class DAGRunner:
         """Execute the full workflow DAG. Returns all NodeResults."""
         wf = self.workflow
         state = RunState.from_workflow(wf, args)
+        if self._run_dir:
+            state.context["run_dir"] = self._run_dir
 
         try:
             while state.ready_queue and not state.should_stop():
@@ -167,7 +174,7 @@ class DAGRunner:
         task_text = fill_template(node.task, state.context)
 
         context_header = (
-            self._executor._build_node_context_header(node, wf)
+            self._executor._build_node_context_header(node, wf, self._run_dir)
             if self.node_context else None
         )
         async with self._semaphore:
@@ -194,7 +201,7 @@ class DAGRunner:
 
         # Build context header once (same for all children)
         context_header = (
-            self._executor._build_node_context_header(node, wf)
+            self._executor._build_node_context_header(node, wf, self._run_dir)
             if self.node_context else None
         )
 

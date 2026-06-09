@@ -24,7 +24,7 @@ Use this when you have a list of tasks to execute sequentially, each with its ow
 
 ## Board Format
 
-The board is a Markdown file (typically `.mocode/plans/<name>-tasks.md`).
+The board is a Markdown file at `{run_dir}/board.md` (inside the run output directory).
 
 ### Required
 
@@ -89,7 +89,7 @@ nodes:
       You are an engineer. The project directory is the current working directory.
 
       ## Read Board
-      Read `{board}`, find the first `- [ ]` task.
+      Read `{run_dir}/board.md`, find the first `- [ ]` task.
       If no unclaimed tasks remain, output "ALL_DONE" and stop.
 
       ## Claim
@@ -106,9 +106,19 @@ nodes:
       After tests pass, git commit.
 
       ## Update Board
+      Count total tasks in `{run_dir}/board.md`.
+
+      **If ≤ 8 tasks:**
       1. `- [ ]` → `- [x]`
       2. `Status: in-progress` → `Status: done`
-      3. Fill in completion details below the task
+      3. Fill in completion details directly in board.md below the task
+
+      **If > 8 tasks:**
+      1. `- [ ]` → `- [x]`
+      2. `Status: in-progress` → `Status: done`
+      3. Write full execution details to `{run_dir}/tasks/<task-id>.md`
+      4. In board.md, only update the status — keep it as a summary table:
+         `| ID | Task | Status | Detail |`
 
       ## Output
       Report: completed task, what was done, test results, commit hash.
@@ -127,8 +137,23 @@ nodes:
   - id: done
     description: Generate summary
     task: |
-      Read `{board}`, summarize all completed tasks into a brief report.
+      Read `{run_dir}/board.md`, summarize all completed tasks into a brief report.
     depends: [check_more]
+```
+
+---
+
+## Output Directory
+
+Each run produces a directory at `{run_dir}/` containing:
+
+```
+{run_dir}/
+├── run.json           # Run metadata (auto-managed)
+├── board.md           # Task board with status tracking
+└── tasks/             # Per-task detail files (only when > 8 tasks)
+    ├── A1-refactor-auth.md
+    └── A2-add-tests.md
 ```
 
 ---
@@ -138,5 +163,6 @@ nodes:
 - **`concurrency: 1`** — keep serial to avoid board file conflicts
 - **`max_iterations`** — set higher than task count as safety net
 - **Router `max`** — set to task count to prevent infinite loops
-- **Board path** — pass as param for reusability
+- **Board path** — `{run_dir}/board.md` is auto-created in the run output directory
+- **Adaptive layout** — ≤ 8 tasks: details inline in board.md; > 8 tasks: board.md is a summary table, full details go to `tasks/<id>.md`
 - **Failure handling** — if a task can't be completed after retries, revert status back to `unclaimed` and report the error

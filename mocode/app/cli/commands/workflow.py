@@ -103,6 +103,7 @@ async def _run(ctx: CommandContext, args_str: str) -> CommandResult:
 
     ctx.app.wf_renderer.summary(wf, results)
     ctx.display.info(f"Run ID: {run_id}")
+    ctx.display.info(f"Run dir: {store.run_dir(run_id)}")
     return CommandResult.CONTINUE
 
 
@@ -135,6 +136,38 @@ async def _status(ctx: CommandContext, args_str: str) -> CommandResult:
 
     text = ctx.app.wf_renderer.run_detail(record, status)
     ctx.display.info(text)
+    return CommandResult.CONTINUE
+
+
+async def _result(ctx: CommandContext, args_str: str) -> CommandResult:
+    """Show output files for a run."""
+    store = WorkflowRunStore()
+    raw = args_str.strip()
+    record = _resolve_run(store, raw)
+    if record is None:
+        ctx.display.warn(f"Run '{raw}' not found.")
+        return CommandResult.CONTINUE
+
+    run_id = record["run_id"]
+    rd = store.run_dir(run_id)
+
+    if not rd.exists():
+        ctx.display.warn(f"Run directory not found: {rd}")
+        return CommandResult.CONTINUE
+
+    # Collect files in run directory
+    files: list[str] = []
+    for p in sorted(rd.rglob("*")):
+        if p.is_file():
+            rel = p.relative_to(rd)
+            size = p.stat().st_size
+            files.append(f"  {rel}  ({size} bytes)")
+
+    if not files:
+        ctx.display.info(f"Run {run_id} — no output files yet.")
+    else:
+        header = f"Run {run_id} — output files:"
+        ctx.display.info(header + "\n" + "\n".join(files))
     return CommandResult.CONTINUE
 
 
@@ -217,6 +250,7 @@ command = Command(
         Subcommand("show", "Show workflow details", _show),
         Subcommand("run", "Run a workflow", _run),
         Subcommand("status", "Check run status or view recent runs", _status),
+        Subcommand("result", "Show run output files", _result),
     ),
     menu=_interactive_menu,
 )

@@ -120,11 +120,16 @@ class Executor:
     # ── Node context header ───────────────────────────────────
 
     @staticmethod
-    def _build_node_context_header(node: Node, workflow: Workflow) -> str:
+    def _build_node_context_header(
+        node: Node, workflow: Workflow, run_dir: str | None = None
+    ) -> str:
         """Build context header with graph structure info for a node."""
         lines = [f'You are node "{node.id}" in workflow "{workflow.name}".']
         if node.description:
             lines.append(f"Description: {node.description}")
+
+        if run_dir:
+            lines.append(f"Run directory: {run_dir}")
 
         if node.depends:
             lines.append("Input from:")

@@ -210,4 +210,5 @@ Overall risk: HIGH
 | `{nodes.X.duration}` | Node execution duration |
 | `{previous}` | Last completed node output |
 | `{env.VAR}` | Environment variable |
+| `{run_dir}` | Run output directory path (e.g. `~/.mocode/runs/wf_abc123`) |
 | `{as_var}` | Each iteration variable (inside fan-out) |

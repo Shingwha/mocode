@@ -17,17 +17,36 @@ from .models import NodeResult
 class WorkflowRunStore:
     """File-based store for workflow run records.
 
-    Each run is a single JSON file at ``~/.mocode/workflow_runs/<run_id>.json``.
+    Each run lives in its own directory: ``~/.mocode/runs/<run_id>/run.json``.
+    Auxiliary files (board.md, task results) coexist in the same directory.
     """
 
     def __init__(self, base_dir: Path | None = None):
-        self._base_dir = base_dir or Path.home() / ".mocode" / "workflow_runs"
+        self._base_dir = base_dir or Path.home() / ".mocode" / "runs"
 
     def _path(self, run_id: str) -> Path:
-        return self._base_dir / f"{run_id}.json"
+        return self._base_dir / run_id / "run.json"
 
     def _ensure_dir(self) -> None:
         self._base_dir.mkdir(parents=True, exist_ok=True)
+
+    def run_dir(self, run_id: str) -> Path:
+        """Return the directory for a run (may not exist yet)."""
+        return self._base_dir / run_id
+
+    def ensure_run_dir(self, run_id: str) -> Path:
+        """Create and return the run directory."""
+        d = self.run_dir(run_id)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def board_path(self, run_id: str) -> Path:
+        """Return the path to ``board.md`` inside the run directory."""
+        return self.run_dir(run_id) / "board.md"
+
+    def task_path(self, run_id: str, task_id: str) -> Path:
+        """Return the path to ``tasks/<task_id>.md`` inside the run directory."""
+        return self.run_dir(run_id) / "tasks" / f"{task_id}.md"
 
     # ── Create / Write ─────────────────────────────────────────
 
@@ -107,8 +126,10 @@ class WorkflowRunStore:
         """List recent runs sorted by started_at descending."""
         self._ensure_dir()
         records: list[dict[str, Any]] = []
-        for f in self._base_dir.glob("wf_*.json"):
-            data = read_json(f)
+        for d in self._base_dir.glob("wf_*"):
+            if not d.is_dir():
+                continue
+            data = read_json(d / "run.json")
             if data is not None:
                 records.append(data)
         records.sort(key=lambda r: r.get("started_at", ""), reverse=True)
