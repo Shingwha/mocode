@@ -1,7 +1,6 @@
 """PlanTool — LLM 注册活动 plan 的工具 + PlanRegistry 双位置扫描。"""
 from __future__ import annotations
 
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -48,32 +47,6 @@ class PlanRegistry:
     def get(self, name: str) -> Path | None:
         """Find a plan by stem name (without .md extension)."""
         return self._scan().get(name)
-
-    def move(self, name: str, target: str) -> Path | None:
-        """Move a plan between project-local and global locations.
-
-        target: "local" → project-local, "global" → global dir.
-        Returns the new path on success, None if not found or error.
-        """
-        src = self.get(name)
-        if src is None:
-            return None
-
-        if target == "local":
-            dst_dir = Path.cwd() / ".mocode" / "plans"
-        elif target == "global":
-            dst_dir = Path.home() / ".mocode" / "plans"
-        else:
-            return None
-
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        dst = dst_dir / src.name
-
-        if src == dst:
-            return dst  # already in the target location
-
-        shutil.move(str(src), str(dst))
-        return dst
 
     def location(self, name: str) -> str | None:
         """Return 'local' or 'global' for where a plan currently resides."""

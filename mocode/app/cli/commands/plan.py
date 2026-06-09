@@ -138,53 +138,6 @@ async def _show(ctx: CommandContext, args: str) -> CommandResult:
     return CommandResult.CONTINUE
 
 
-async def _move(ctx: CommandContext, args: str) -> CommandResult:
-    """Move a plan between project-local and global locations.
-
-    Usage:
-        /plan move <name>          → toggle between local/global
-        /plan move <name> --global → move to global
-        /plan move <name> --local  → move to project-local
-    """
-    parts = args.strip().split()
-    if not parts:
-        ctx.display.warn("Usage: /plan move <name> [--global|--local]")
-        return CommandResult.CONTINUE
-
-    name = parts[0]
-    registry = ctx.app.plan_registry
-    current_loc = registry.location(name)
-    if current_loc is None:
-        ctx.display.error(f"Plan not found: {name}")
-        return CommandResult.CONTINUE
-
-    # Determine target
-    flag = parts[1] if len(parts) > 1 else ""
-    if flag == "--global":
-        target = "global"
-    elif flag == "--local":
-        target = "local"
-    else:
-        # toggle
-        target = "local" if current_loc == "global" else "global"
-
-    new_path = registry.move(name, target)
-    if new_path is None:
-        ctx.display.error(f"Failed to move plan: {name}")
-        return CommandResult.CONTINUE
-
-    # Update active plan path if it was the one being moved
-    if ctx.app.plan_state.active_plan_path:
-        old_path = ctx.app.plan_state.active_plan_path
-        # Check if old_path no longer exists (was moved)
-        from pathlib import Path as _P
-        if not _P(old_path).exists():
-            ctx.app.plan_state.active_plan_path = str(new_path)
-
-    ctx.display.info(f"Moved {name}: {current_loc} → {target} ({new_path})")
-    return CommandResult.CONTINUE
-
-
 async def _copy(ctx: CommandContext, args: str) -> CommandResult:
     path = ctx.app.plan_state.active_plan_path
     if not path:
@@ -240,7 +193,6 @@ command = Command(
         Subcommand("view", "Show plan content (real-time read)", _view),
         Subcommand("list", "List all plans (local + global)", _list),
         Subcommand("show", "Show plan content by name", _show),
-        Subcommand("move", "Move plan between local/global", _move),
         Subcommand("clear", "Clear the active plan", _clear),
         Subcommand("copy", "Copy plan to clipboard", _copy),
     ),
