@@ -67,7 +67,7 @@ async def _view(ctx: CommandContext, args: str) -> CommandResult:
         return CommandResult.CONTINUE
 
     ctx.display.divider()
-    ctx.display.text_response(content)
+    ctx.display.print(content.strip())
     ctx.display.divider()
     return CommandResult.CONTINUE
 
