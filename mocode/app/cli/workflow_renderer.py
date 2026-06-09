@@ -311,7 +311,7 @@ class WorkflowRenderer:
                 last_output_result = r
                 break
         if last_output_result:
-            self._d.print(self._p.s("─" * 48, "warning"))
+            self._d.divider()
             for ol in last_output_result.output.splitlines():
                 self._d.print(ol)
         # Show errors from any failed result
@@ -319,7 +319,7 @@ class WorkflowRenderer:
             if not r.error or r.exit_code == 0:
                 continue
             if not last_output_result:
-                self._d.print(self._p.s("─" * 48, "warning"))
+                self._d.divider()
                 last_output_result = r
             self._d.print(self._p.s(f"Error: {r.error}", "error"))
 

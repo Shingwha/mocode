@@ -126,6 +126,10 @@ class Display:
         for line in content.splitlines():
             self.render_line(style, line)
 
+    def divider(self, style: str = "warning", width: int = 48) -> None:
+        """Print a horizontal divider line."""
+        self.print(self._p.s("─" * width, style))
+
     # ── Output: user message ──────────────────────────────
 
     def user_message(self, content: str) -> None:

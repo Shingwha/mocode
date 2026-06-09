@@ -46,6 +46,32 @@ async def _status(ctx: CommandContext, args: str) -> CommandResult:
     return CommandResult.CONTINUE
 
 
+async def _view(ctx: CommandContext, args: str) -> CommandResult:
+    path = ctx.app.active_plan_path
+    if not path:
+        ctx.display.warn("No active plan. Use /plan <description> to create one.")
+        return CommandResult.CONTINUE
+
+    plan_path = Path(path).expanduser()
+    try:
+        content = plan_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        ctx.display.error(f"Plan file not found: {path}")
+        return CommandResult.CONTINUE
+    except Exception as e:
+        ctx.display.error(f"Failed to read plan: {e}")
+        return CommandResult.CONTINUE
+
+    if not content.strip():
+        ctx.display.warn(f"Plan file is empty: {path}")
+        return CommandResult.CONTINUE
+
+    ctx.display.divider()
+    ctx.display.text_response(content)
+    ctx.display.divider()
+    return CommandResult.CONTINUE
+
+
 async def _clear(ctx: CommandContext, args: str) -> CommandResult:
     ctx.app.active_plan_path = None
     ctx.display.info("Active plan cleared.")
@@ -104,6 +130,7 @@ command = Command(
         Subcommand("start", "Execute plan (keep context)", _start),
         Subcommand("start-clean", "Execute plan (clear context)", _start_clean),
         Subcommand("status", "Show active plan path", _status),
+        Subcommand("view", "Show plan content (real-time read)", _view),
         Subcommand("clear", "Clear the active plan", _clear),
         Subcommand("copy", "Copy plan to clipboard", _copy),
     ),
