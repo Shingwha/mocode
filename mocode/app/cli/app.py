@@ -6,6 +6,10 @@ import asyncio
 import signal
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ...providers.openai import OpenAIProvider
 
 from ..config import Config
 from ..session import Session, SessionManager, SessionStore
@@ -19,7 +23,6 @@ from ..workflow import WorkflowRegistry
 from ..workflow.cli import make_registry as _make_workflow_registry
 from ...hooks import CompactHook
 from ...prompts.app import build_system_prompt
-from ...providers.openai import OpenAIProvider
 from ...tools import (
     BashTool,
     EditTool,
@@ -119,6 +122,8 @@ class CLIApp:
 
     def _create_provider(self) -> OpenAIProvider:
         """Create an OpenAIProvider from the current config entry."""
+        from ...providers.openai import OpenAIProvider  # lazy — avoids openai SDK at startup
+
         entry = self.config.current
         return OpenAIProvider(
             api_key=entry.api_key,

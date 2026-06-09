@@ -8,16 +8,13 @@ from __future__ import annotations
 from typing import Any
 
 from ..core.provider import Response, ToolCall, Usage
-from openai import (
-    RateLimitError,
-    InternalServerError,
-    APIConnectionError,
-    APITimeoutError,
-)
 
 
 class OpenAIProvider:
     """OpenAI-compatible API provider — implements Provider Protocol."""
+
+    # Lazy-loaded exception classes — first call triggers openai import
+    _exc_classes: tuple[type[Exception], ...] | None = None
 
     def __init__(
         self,
@@ -43,11 +40,26 @@ class OpenAIProvider:
     def model(self) -> str:
         return self._model
 
+    @classmethod
+    def _load_exc_classes(cls) -> tuple[type[Exception], ...]:
+        """Lazy-load openai exception classes (avoids SDK import at startup)."""
+        if cls._exc_classes is None:
+            from openai import (
+                RateLimitError,
+                InternalServerError,
+                APIConnectionError,
+                APITimeoutError,
+            )
+            cls._exc_classes = (
+                RateLimitError,
+                InternalServerError,
+                APIConnectionError,
+                APITimeoutError,
+            )
+        return cls._exc_classes
+
     def is_retriable(self, exc: Exception) -> bool:
-        return isinstance(
-            exc,
-            (RateLimitError, InternalServerError, APIConnectionError, APITimeoutError),
-        )
+        return isinstance(exc, self._load_exc_classes())
 
     async def call(
         self,
