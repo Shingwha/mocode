@@ -6,9 +6,9 @@ delegating to AgentLoop internally to avoid duplicating tool execution logic.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from .agent import AgentConfig, AgentLoop
+from .agent import AgentConfig, AgentLoop, LoopResult
 from .hook import AgentHook, HookRunner
 from .tool import ToolRegistry
 
@@ -20,14 +20,6 @@ class SubAgentConfig:
     max_tokens: int = 4096
     tool_timeout: int | None = 240
     tool_result_limit: int = 0
-
-
-@dataclass
-class SubAgentResult:
-    content: str = ""
-    tool_calls_made: int = 0
-    messages: list[dict] = field(default_factory=list)
-    had_error: bool = False
 
 
 class SubAgent:
@@ -63,16 +55,10 @@ class SubAgent:
             config=agent_config,
         )
 
-    async def run(self, user_prompt: str) -> SubAgentResult:
+    async def run(self, user_prompt: str) -> LoopResult:
         messages = [{"role": "user", "content": user_prompt}]
         return await self.run_messages(messages)
 
-    async def run_messages(self, messages: list[dict]) -> SubAgentResult:
+    async def run_messages(self, messages: list[dict]) -> LoopResult:
         loop = self._build_agent_loop()
-        result = await loop.run_with_messages(messages)
-        return SubAgentResult(
-            content=result.content,
-            tool_calls_made=result.iterations,
-            messages=result.messages,
-            had_error=result.had_error,
-        )
+        return await loop.run_with_messages(messages)

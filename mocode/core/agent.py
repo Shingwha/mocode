@@ -28,7 +28,7 @@ class AgentConfig:
 @dataclass
 class LoopResult:
     content: str = ""
-    iterations: int = 0
+    tool_calls_made: int = 0
     messages: list[dict] = field(default_factory=list)
     had_error: bool = False
 
@@ -81,13 +81,13 @@ class AgentLoop:
             content = await self._loop()
             return LoopResult(
                 content=content,
-                iterations=self._tool_call_count,
+                tool_calls_made=self._tool_call_count,
                 messages=self.messages,
             )
         except Exception as e:
             return LoopResult(
                 content=str(e),
-                iterations=self._tool_call_count,
+                tool_calls_made=self._tool_call_count,
                 messages=self.messages,
                 had_error=True,
             )

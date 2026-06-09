@@ -15,7 +15,7 @@ from __future__ import annotations
 __all__ = [
     "ReadTool", "WriteTool", "EditTool", "GlobTool", "GrepTool",
     "BashTool", "FetchTool", "SkillTool", "SubAgent", "SubAgentConfig",
-    "SubAgentResult", "SubAgentTool", "PlanTool",
+    "SubAgentTool", "PlanTool",
 ]
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
@@ -29,7 +29,6 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "SkillTool": (".skill", "SkillTool"),
     "SubAgent": ("..core", "SubAgent"),
     "SubAgentConfig": ("..core", "SubAgentConfig"),
-    "SubAgentResult": ("..core", "SubAgentResult"),
     "SubAgentTool": (".subagent", "SubAgentTool"),
     "PlanTool": (".plan", "PlanTool"),
 }
