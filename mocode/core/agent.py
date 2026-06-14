@@ -19,7 +19,7 @@ from .tool import ToolError, ToolRegistry
 
 @dataclass
 class AgentConfig:
-    max_tokens: int = 8192
+    max_tokens: int = 32768
     tool_result_limit: int = 25000
     tool_timeout: int = 240
     max_iterations: int = 0  # 0 = unlimited
@@ -116,6 +116,7 @@ class AgentLoop:
             if ctx._needs_compact:
                 old_count = len(ctx.messages)
                 from .hook import CompactContext
+
                 compact_ctx = CompactContext(messages=ctx.messages, old_count=old_count)
                 await self.hooks.on_compact(compact_ctx)
                 compact_ctx.new_count = len(ctx.messages)
@@ -149,7 +150,8 @@ class AgentLoop:
                 ctx.usage = response.usage
                 self._total_usage = Usage(
                     self._total_usage.prompt_tokens + response.usage.prompt_tokens,
-                    self._total_usage.completion_tokens + response.usage.completion_tokens,
+                    self._total_usage.completion_tokens
+                    + response.usage.completion_tokens,
                 )
             if response.content is not None:
                 final_response = response.content
@@ -268,7 +270,9 @@ class AgentLoop:
         """Returns tool result string."""
         call_id = self._next_call_id()
 
-        tc = ToolCallContext(tool_name=tool_name, tool_args=tool_args, tool_call_id=call_id)
+        tc = ToolCallContext(
+            tool_name=tool_name, tool_args=tool_args, tool_call_id=call_id
+        )
         await self.hooks.on_tool_start(tc)
 
         tool = self._tools.get(tool_name)
