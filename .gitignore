@@ -2,3 +2,4 @@
 __pycache__/
 session_*.json
 .mocode/
+.mimocode/
