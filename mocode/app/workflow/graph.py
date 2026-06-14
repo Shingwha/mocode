@@ -29,8 +29,8 @@ def _validate_router_node(node: Node, node_map: dict[str, Node], errors: list[st
                 errors.append(f"Router '{node.id}' route targets unknown node '{target}'")
 
 
-def _validate_task_each_node(node: Node, errors: list[str]) -> None:
-    """Validate a task node with each (fan-out mode)."""
+def _validate_map_node(node: Node, errors: list[str]) -> None:
+    """Validate a map node (fan-out mode via each/as_)."""
     if not node.each:
         errors.append(f"Task+each node '{node.id}' must have 'each'")
     if not node.task:
@@ -62,8 +62,8 @@ def validate_workflow(nodes: list[Node], node_map: dict[str, Node]) -> None:
     for n in nodes:
         if n.type == "router":
             _validate_router_node(n, node_map, type_errors)
-        elif n.each:
-            _validate_task_each_node(n, type_errors)
+        elif n.type == "map":
+            _validate_map_node(n, type_errors)
         else:
             _validate_task_node(n, type_errors)
     if type_errors:

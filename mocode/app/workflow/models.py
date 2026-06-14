@@ -41,28 +41,35 @@ class Route:
 class Node:
     """A node in the workflow graph.
 
-    type "task"   — has a ``task`` template, runs via AgentLoop.
-                  With ``each`` + ``as_``: fans out to N child tasks.
+    type "task"   — has a ``task`` template, runs via a single AgentLoop.
+    type "map"    — like task but fans out to N child tasks via ``each``/``as_``.
     type "router" — has ``routes``, no ``task``; evaluates conditions.
+
+    For backward-compatibility, a ``task`` node that declares ``each`` is
+    automatically promoted to ``map`` in :meth:`__post_init__`.
 
     ``depends`` is auto-inferred from ``{nodes.<id>.*}`` references in the
     ``task`` and ``each`` templates, merged with any explicit ``depends``.
     """
 
     id: str = ""
-    type: str = "task"  # "task" | "router"
+    type: str = "task"  # "task" | "router" | "map"
     description: str = ""  # brief human-readable label
     task: str = ""  # template string (empty for router)
     depends: list[str] = field(default_factory=list)
     routes: list[Route] = field(default_factory=list)
-    # task+each fields (fan-out mode)
+    # map fields (fan-out mode; ignored unless type == "map")
     each: str = ""  # list source expression (empty = no fan-out)
     as_: str = ""  # iteration variable name (required when each is set)
 
     def __post_init__(self) -> None:
-        """Auto-infer depends from {nodes.X.*} refs, merged with explicit depends."""
+        # Promote task+each → map (DX-friendly: callers may omit explicit type).
+        if self.type == "task" and self.each:
+            self.type = "map"
+
+        # Auto-infer depends from {nodes.X.*} refs, merged with explicit depends.
         templates = []
-        if self.task and self.type in ("task", "router"):
+        if self.task and self.type in ("task", "router", "map"):
             templates.append(self.task)
         if self.each:
             templates.append(self.each)

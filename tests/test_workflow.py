@@ -641,8 +641,8 @@ class TestRunnerErrorHandling:
         mock_agent.chat = AsyncMock(return_value="done")
         mock_agent.reset = MagicMock()  # no-op — preserve pre-set state
 
-        # Patch the template agent on the executor
-        runner._executor._template_agent = mock_agent
+        # Patch the template agent on the task handler
+        runner._task_handler._template_agent = mock_agent
         result = await runner._exec_node("a", "Do it")
 
         assert result.exit_code == 0
@@ -662,8 +662,8 @@ class TestRunnerErrorHandling:
         mock_agent._total_usage = Usage(0, 0)
         mock_agent.chat = AsyncMock(side_effect=RuntimeError("kaboom"))
 
-        # Patch the template agent on the executor
-        runner._executor._template_agent = mock_agent
+        # Patch the template agent on the task handler
+        runner._task_handler._template_agent = mock_agent
         result = await runner._exec_node("a", "Boom")
 
         assert result.exit_code == 1

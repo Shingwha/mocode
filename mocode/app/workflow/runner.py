@@ -1,8 +1,9 @@
 """DAGRunner — async event-driven execution engine for Workflow DAGs.
 
-Each task node runs as an in-process AgentLoop (no subprocess).
-Router nodes evaluate conditions. Back-edges from routers enable loops.
-Nodes execute serially (max_concurrency=1) to avoid overloading LLM APIs.
+Node execution is delegated to per-type :class:`NodeHandler` instances looked
+up from a registry, so adding a new node type no longer touches this module.
+The runner owns: the main loop, fan-out coordination, result recording,
+event emission, and persistence.
 """
 
 from __future__ import annotations
@@ -12,33 +13,32 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
+    from .handlers import NodeHandlerRegistry
     from .models import Node, NodeResult, Workflow
     from .run_store import WorkflowRunStore
 
     from ..core.agent import AgentLoop
 
 from .events import (
-    MapFanOutEvent,
-    MapItemDoneEvent,
     NodeDoneEvent,
     NodeSkippedEvent,
-    NodeStartEvent,
     ProgressEvent,
     WorkflowEvent,
 )
-from .executor import Executor
-from .hooks import _WorkflowNodeHook  # noqa: F401 — re-export for backward compat
-from .models import fill_template, parse_items, parse_sections, resolve_list_expr
-from .scheduler import Scheduler  # noqa: F401 — re-export for backward compat
+from .handlers import default_registry
+from .handlers.base import NodeExecContext
+from .hooks import _WorkflowNodeHook  # noqa: F401 — re-exported for compatibility
+from .models import NodeResult
+from .scheduler import Scheduler
 from .state import RunState
 
 
 class DAGRunner:
-    """Executes a Workflow DAG by running each task node as an in-process AgentLoop.
+    """Executes a Workflow DAG by dispatching each node to its registered handler.
 
-    Supports three node types: task, router, and map.
-    Map nodes fan out to N child tasks and run them concurrently.
-    ``concurrency`` controls max parallel execution (default 1 = serial).
+    Built-in node types: ``task`` (single AgentLoop), ``map`` (fan-out to N
+    children), ``router`` (condition evaluation + back-edge loops). New types
+    register their handler in the registry without modifying this class.
     """
 
     def __init__(
@@ -65,11 +65,12 @@ class DAGRunner:
             self._run_dir = str(rd)
         self._semaphore = asyncio.Semaphore(workflow.concurrency)
         self.partial_results: list[NodeResult] = []  # populated on cancellation
-        self._executor = Executor(
-            parent_agent,
-            timeout=timeout,
-            on_event=on_event,
+
+        # Handler registry + task handler (for _exec_node test seam).
+        self._handlers: NodeHandlerRegistry = default_registry(
+            parent_agent, timeout=timeout
         )
+        self._task_handler = self._handlers.get("task")
         self._scheduler = Scheduler(
             workflow,
             emit=on_event or (lambda e: None),
@@ -81,13 +82,30 @@ class DAGRunner:
         if self._on_event:
             self._on_event(event)
 
-    # ── Persistence ─────────────────────────────────────────────
+    # ── Persistence ───────────────────────────────────────────
 
     def _persist(self, results: list[NodeResult], status: str) -> None:
         """Write results to run_store if configured."""
         if self.run_store and self.run_id:
             finished = datetime.now().isoformat() if status != "running" else None
             self.run_store.update(self.run_id, results, status, finished)
+
+    # ── Single-node execution seam (test contract) ───────────
+
+    async def _exec_node(
+        self,
+        node_id: str,
+        task: str,
+        context_header: str | None = None,
+    ) -> NodeResult:
+        """Delegate single-node execution to the task handler.
+
+        Kept as a thin wrapper so ``patch.object(runner, "_exec_node", ...)``
+        in tests continues to intercept node execution without modification.
+        """
+        return await self._task_handler.execute_node(
+            node_id, task, context_header, emit=self._on_event
+        )
 
     # ── Main execution loop ───────────────────────────────────
 
@@ -96,41 +114,53 @@ class DAGRunner:
         wf = self.workflow
         state = RunState.from_workflow(wf, args)
         if self._run_dir:
-            state.context["run_dir"] = self._run_dir
+            state.set_run_dir(self._run_dir)
 
         try:
-            while state.ready_queue and not state.should_stop():
+            while state.has_ready() and not state.should_stop():
                 self._scheduler.announce_waves(state)
 
                 # Collect all ready nodes at once for potential parallelism.
-                # Filter out any nodes that were queued then skipped by
-                # propagate_skip before we got to process them.
-                batch = [nid for nid in state.ready_queue if nid not in state.skipped]
-                state.ready_queue.clear()
+                # Filter out nodes queued then skipped before we process them.
+                batch = [
+                    nid for nid in state.drain_ready() if not state.is_skipped(nid)
+                ]
 
-                # Run the batch concurrently
-                tasks = []
+                # Partition into synchronous (router) and asynchronous handlers.
+                sync_nodes: list[Node] = []
+                async_nodes: list[Node] = []
                 for nid in batch:
                     node = wf.node_map[nid]
-                    state.iteration[nid] += 1
-
-                    if node.type == "router":
-                        # Routers are sync — run inline, add to batch of 1
-                        self._scheduler.evaluate_router(node, state)
+                    state.increment_iteration(nid)
+                    handler = self._handlers.get(node.type)
+                    if getattr(handler, "synchronous", False):
+                        sync_nodes.append(node)
                     else:
-                        tasks.append(self._run_task_node(node, state))
+                        async_nodes.append(node)
 
-                if tasks:
-                    await asyncio.gather(*tasks)
+                exec_ctx = self._make_exec_ctx(state)
+
+                # Routers first (they decide which downstream nodes activate).
+                for node in sync_nodes:
+                    await self._handlers.get(node.type).execute(node, exec_ctx)
+
+                # Then run task/map nodes concurrently.
+                if async_nodes:
+                    await asyncio.gather(
+                        *(
+                            self._handlers.get(node.type).execute(node, exec_ctx)
+                            for node in async_nodes
+                        )
+                    )
 
                 if state.should_stop():
                     break
 
             # Remaining unactivated nodes → skipped
             for n in wf.nodes:
-                if n.id not in state.completed and n.id not in state.skipped:
+                if not state.is_completed(n.id) and not state.is_skipped(n.id):
                     state.skip(n.id, "not activated")
-                    wave = state.node_wave.get(n.id, 0)
+                    wave = state.wave_of(n.id)
                     self._emit(
                         NodeSkippedEvent(
                             node_id=n.id,
@@ -139,185 +169,90 @@ class DAGRunner:
                         )
                     )
 
-            self._persist(state.results, "completed")
-            return state.results
+            self._persist(state.get_results(), "completed")
+            return state.get_results()
 
         except asyncio.CancelledError:
-            self.partial_results = list(state.results)
-            self._persist(state.results, "cancelled")
+            self.partial_results = state.snapshot_results()
+            self._persist(state.get_results(), "cancelled")
             raise
         except Exception:
-            self._persist(state.results, "failed")
+            self._persist(state.get_results(), "failed")
             raise
 
-    # ── Delegated node execution (to Executor) ───────────────
+    # ── Execution context factory ─────────────────────────────
 
-    async def _run_task_node(self, node: Node, state: RunState) -> None:
-        """Fill template, execute via AgentLoop, record result.
+    def _make_exec_ctx(self, state: RunState) -> NodeExecContext:
+        """Build the handler context for the current run.
 
-        If ``node.each`` is set, fan-out to N child tasks instead of single execution.
+        ``on_complete`` and ``reset_for_loop`` are closures bound to this run's
+        state, so handlers can report completion or trigger a loop reset
+        without the runner passing state around explicitly.
         """
-        if node.each:
-            items = _resolve_items(node.each, state.context)
-            if not items:
-                self._executor._finalize_empty_map(node, state, self._record_node_done)
-                return
-            async with self._semaphore:
-                self._emit(NodeStartEvent(node_id=node.id, description=node.description))
-            child_results = await self._fan_out_children(node, items, state)
-            self._executor._finalize_map(
-                node, items, child_results, state, self._record_node_done
-            )
-            return
-
         wf = self.workflow
-        task_text = fill_template(node.task, state.context)
 
-        context_header = (
-            self._executor._build_node_context_header(node, wf, self._run_dir)
-            if self.node_context else None
-        )
-        async with self._semaphore:
-            self._emit(NodeStartEvent(node_id=node.id, description=node.description))
-            nr = await self._exec_node(node.id, task_text, context_header)
-        state.total_executions += 1
+        def on_complete(
+            node: Node, nr: NodeResult, progress_message: str | None
+        ) -> None:
+            """Record node completion: update state, persist, emit, activate downstream."""
+            node_ctx: dict = {
+                "output": nr.output,
+                "exit_code": nr.exit_code,
+                "duration": nr.duration,
+                "error": nr.error or "",
+            }
+            for tag, values in nr.sections.items():
+                node_ctx[tag] = values
+            state.record_node_done(node.id, nr, node_ctx)
+            self._persist(state.get_results(), "running")
 
-        self._record_node_done(
-            node,
-            nr,
-            state,
-            progress_message=f"Node '{node.id}' done ({nr.duration:.1f}s)",
-        )
-
-    async def _fan_out_children(
-        self, node: Node, items: list[str], state: RunState
-    ) -> list[NodeResult]:
-        """Create and run child tasks concurrently, return their results."""
-        wf = self.workflow
-        wave_idx = state.node_wave.get(node.id, 0)
-        self._emit(
-            MapFanOutEvent(map_id=node.id, item_count=len(items), wave_idx=wave_idx)
-        )
-
-        # Build context header once (same for all children)
-        context_header = (
-            self._executor._build_node_context_header(node, wf, self._run_dir)
-            if self.node_context else None
-        )
-
-        child_ids: list[str] = []
-        child_tasks: list[asyncio.Task[NodeResult]] = []
-        for idx, item_val in enumerate(items):
-            child_id = f"{node.id}::{idx}"
-            child_ids.append(child_id)
-            # Inject item into context top level, fill_template handles {as_}
-            state.context[node.as_] = item_val
-            child_task_text = fill_template(node.task, state.context)
-            child_tasks.append(
-                asyncio.create_task(
-                    self._run_map_child(child_id, child_task_text, context_header)
-                )
-            )
-
-        # Clean up injected item
-        state.context.pop(node.as_, None)
-
-        state.map_children[node.id] = child_ids
-        child_results: list[NodeResult] = list(await asyncio.gather(*child_tasks))
-
-        # Emit per-item events
-        for idx, nr in enumerate(child_results):
+            wave_idx = state.wave_of(node.id)
             self._emit(
-                MapItemDoneEvent(
-                    map_id=node.id,
-                    item_index=idx,
-                    total_count=len(items),
-                    item_value=items[idx][:80],
-                    duration=nr.duration,
-                    tool_calls=nr.tool_calls,
-                    prompt_tokens=nr.prompt_tokens,
-                    completion_tokens=nr.completion_tokens,
-                )
-            )
-
-        return child_results
-
-    async def _run_map_child(
-        self, child_id: str, task: str, context_header: str | None
-    ) -> NodeResult:
-        """Run a single map child task under the semaphore."""
-        async with self._semaphore:
-            return await self._exec_node(child_id, task, context_header)
-
-    async def _exec_node(
-        self,
-        node_id: str,
-        task: str,
-        context_header: str | None = None,
-    ) -> NodeResult:
-        """Delegate node execution to the Executor.
-
-        Kept as a thin wrapper so that ``patch.object(runner, "_exec_node")``
-        in tests continues to work without modification.
-        """
-        return await self._executor._exec_node(node_id, task, context_header)
-
-    # ── Node completion helper ────────────────────────────────
-
-    def _record_node_done(
-        self,
-        node: Node,
-        nr: NodeResult,
-        state: RunState,
-        *,
-        progress_message: str | None = None,
-    ) -> None:
-        """Record node completion: update state, persist, emit events, activate downstream.
-
-        Centralises the ~15-line sequence duplicated in _run_task_node,
-        _finalize_empty_map, and _finalize_map.
-        """
-        wf = self.workflow
-        state.results.append(nr)
-        node_ctx: dict = {
-            "output": nr.output,
-            "exit_code": nr.exit_code,
-            "duration": nr.duration,
-            "error": nr.error or "",
-        }
-        # Register [TAG] sections as top-level keys in node context
-        for tag, values in nr.sections.items():
-            node_ctx[tag] = values
-        state.context["nodes"][node.id] = node_ctx
-        state.context["previous"] = nr.output
-        state.completed.add(node.id)
-        self._persist(state.results, "running")
-
-        wave_idx = state.node_wave.get(node.id, 0)
-        self._emit(
-            NodeDoneEvent(
-                node_id=node.id,
-                description=node.description,
-                result=nr,
-                wave_idx=wave_idx,
-            )
-        )
-        if progress_message is not None:
-            self._emit(
-                ProgressEvent(
-                    message=progress_message,
+                NodeDoneEvent(
                     node_id=node.id,
-                    detail=f"done ({nr.duration:.1f}s)",
+                    description=node.description,
+                    result=nr,
+                    wave_idx=wave_idx,
                 )
             )
-        Scheduler.activate_downstream(node.id, wf, state)
+            if progress_message is not None:
+                self._emit(
+                    ProgressEvent(
+                        message=progress_message,
+                        node_id=node.id,
+                        detail=f"done ({nr.duration:.1f}s)",
+                    )
+                )
+            Scheduler.activate_downstream(node.id, wf, state)
 
+        def reset_for_loop(
+            router: Node, target_id: str, route_key: str, route_idx: int
+        ) -> None:
+            """Back-edge callback: delegate to Scheduler.reset_for_loop."""
+            self._scheduler.reset_for_loop(
+                router, target_id, route_key, route_idx, state
+            )
 
-def _resolve_items(each_expr: str, context: dict) -> list[str]:
-    """Resolve ``each`` expression to a list of strings.
+        async def exec_node(
+            node_id: str, task: str, context_header: str | None = None
+        ) -> NodeResult:
+            """Single-node execution seam bound to this runner.
 
-    Delegates to :func:`resolve_list_expr` in models module.
-    Kept as a thin wrapper for backward compatibility.
-    """
-    return resolve_list_expr(each_expr, context)
+            Handlers MUST run nodes through this rather than calling their
+            own execute method directly, so that
+            ``patch.object(runner, "_exec_node", ...)`` in tests intercepts
+            all node execution (including map children).
+            """
+            return await self._exec_node(node_id, task, context_header)
 
+        return NodeExecContext(
+            workflow=wf,
+            state=state,
+            emit=self._emit,
+            semaphore=self._semaphore,
+            run_dir=self._run_dir,
+            node_context_enabled=self.node_context,
+            on_complete=on_complete,
+            reset_for_loop=reset_for_loop,
+            exec_node=exec_node,
+        )

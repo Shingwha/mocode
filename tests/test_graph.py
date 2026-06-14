@@ -7,7 +7,7 @@ import pytest
 from mocode.app.workflow.graph import (
     _validate_task_node,
     _validate_router_node,
-    _validate_task_each_node,
+    _validate_map_node,
     validate_workflow,
 )
 from mocode.app.workflow.models import Node, Route
@@ -96,35 +96,35 @@ class TestValidateRouterNode:
 # ── _validate_map_node ───────────────────────────────────────
 
 
-class TestValidateTaskEachNode:
-    def test_valid_task_each_node(self):
+class TestValidateMapNode:
+    def test_valid_map_node(self):
         node = Node(id="m1", each="a\nb", as_="item", task="process {item}")
         errors: list[str] = []
-        _validate_task_each_node(node, errors)
+        _validate_map_node(node, errors)
         assert errors == []
 
     def test_missing_each(self):
         node = Node(id="m1", each="", as_="item", task="x")
         errors: list[str] = []
-        _validate_task_each_node(node, errors)
+        _validate_map_node(node, errors)
         assert any("must have 'each'" in e for e in errors)
 
     def test_missing_task(self):
         node = Node(id="m1", each="a", as_="item", task="")
         errors: list[str] = []
-        _validate_task_each_node(node, errors)
+        _validate_map_node(node, errors)
         assert any("must have 'task'" in e for e in errors)
 
     def test_missing_as(self):
         node = Node(id="m1", each="a", as_="", task="x")
         errors: list[str] = []
-        _validate_task_each_node(node, errors)
+        _validate_map_node(node, errors)
         assert any("must have 'as'" in e for e in errors)
 
     def test_multiple_errors_collected(self):
         node = Node(id="m1", each="", as_="", task="")
         errors: list[str] = []
-        _validate_task_each_node(node, errors)
+        _validate_map_node(node, errors)
         assert len(errors) == 3  # missing each, missing task, missing as
 
 
