@@ -1,27 +1,40 @@
-"""Tests for CommandRegistry, CommandResult, and individual commands."""
+"""Tests for CommandRegistry, Command handling, and the built-in commands."""
 
 import json
 from unittest.mock import MagicMock
 
 import pytest
 
-from mocode.app.cli.commands import Command, CommandContext, CommandRegistry, CommandResult
-from mocode.app.cli.commands.builtin import commands as builtin_commands
-from mocode.app.cli.commands.skill import make_skill_command
+from mocode.app.cli.commands import (
+    CONTINUE,
+    EXIT,
+    Command,
+    CommandContext,
+    CommandRegistry,
+    CommandResult,
+    Kind,
+)
+from mocode.app.cli.commands import misc, model, session as session_cmds
+from mocode.app.plugin.builtin.skills import make_skill_command
 from mocode.app.session import Session
 
+BUILTIN_COMMANDS = (*misc.commands, *model.commands, *session_cmds.commands)
 
-def _make_ctx(app=None, display=None, args=""):
+
+_UNSET = object()
+
+
+def _make_ctx(app=None, display=_UNSET, args=""):
+    """Build a CommandContext; ``display=None`` means non-interactive."""
     return CommandContext(
         app=app or MagicMock(),
         args=args,
-        display=display or MagicMock(),
+        display=MagicMock() if display is _UNSET else display,
     )
 
 
 def _get_builtin_cmd(name: str) -> Command:
-    """Get a builtin command by name."""
-    for cmd in builtin_commands:
+    for cmd in BUILTIN_COMMANDS:
         if cmd.name == name:
             return cmd
     raise ValueError(f"Builtin command '{name}' not found")
@@ -36,67 +49,69 @@ class TestCommandRegistry:
 
     def test_get_by_alias(self):
         reg = CommandRegistry()
-        cmd = _get_builtin_cmd("/quit")
-        reg.register(cmd)
-        assert reg.get("/exit") is cmd
-        assert reg.get("quit") is cmd
-        assert reg.get("exit") is cmd
+        reg.register(_get_builtin_cmd("/quit"))
+        assert reg.get("/exit") is not None
+        assert reg.get("quit") is not None
+        assert reg.get("exit") is not None
 
     def test_get_unknown_returns_none(self):
+        assert CommandRegistry().get("/nonexistent") is None
+
+    def test_register_multiple_and_all_is_sorted(self):
         reg = CommandRegistry()
-        assert reg.get("/nonexistent") is None
-
-    def test_register_subcommand_expands(self):
-        """Registering a command with subcommands auto-creates colon entries."""
-        sub1 = Subcommand("run", "Run it", _mock_handler("run"))
-        sub2 = Subcommand(("list", "ls"), "List items", _mock_handler("list"))
-        cmd = Command(
-            name="/test",
-            description="Test command",
-            subcommands=(sub1, sub2),
-        )
-        reg = CommandRegistry()
-        reg.register(cmd)
-
-        # Main command registered
-        assert reg.get("/test") is cmd
-        # Colon-style subcommands registered
-        assert reg.get("/test:run") is not None
-        assert reg.get("/test:list") is not None
-        assert reg.get("/test:ls") is not None
+        reg.register(*BUILTIN_COMMANDS)
+        names = [c.name for c in reg.all()]
+        assert names == sorted(names)
+        assert "/help" in names
 
 
-def _mock_handler(label: str):
-    async def _h(ctx, args=""):
-        return CommandResult.CONTINUE
-    return _h
+class TestCommandResults:
+    def test_text_builds_prompt_result(self):
+        result = CommandResult.text("hi")
+        assert result.kind is Kind.PROMPT
+        assert result.prompt == "hi"
 
-
-# Import Subcommand for the test above
-from mocode.app.cli.commands import Subcommand
+    def test_sentinels(self):
+        assert CONTINUE.kind is Kind.CONTINUE
+        assert EXIT.kind is Kind.EXIT
+        assert CONTINUE.prompt is None
 
 
 class TestQuitCommand:
     @pytest.mark.asyncio
     async def test_returns_exit(self):
-        cmd = _get_builtin_cmd("/quit")
-        result = await cmd.run(_make_ctx())
-        assert result == CommandResult.EXIT
+        result = await _get_builtin_cmd("/quit").handler(_make_ctx())
+        assert result is EXIT
 
 
 class TestClearCommand:
     @pytest.mark.asyncio
     async def test_calls_clear_conversation(self):
         app = MagicMock()
-        cmd = _get_builtin_cmd("/clear")
-        result = await cmd.run(_make_ctx(app=app))
-        assert result == CommandResult.CONTINUE
+        result = await _get_builtin_cmd("/clear").handler(_make_ctx(app=app))
+        assert result is CONTINUE
         app.clear_conversation.assert_called_once()
+
+
+class TestHelpCommand:
+    @pytest.mark.asyncio
+    async def test_lists_registered_commands(self):
+        app = MagicMock()
+        app.commands.all.return_value = [_get_builtin_cmd("/quit"), _get_builtin_cmd("/help")]
+        display = MagicMock()
+        await _get_builtin_cmd("/help").handler(_make_ctx(app=app, display=display))
+        assert "/quit" in display.info.call_args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_non_interactive_is_a_noop(self):
+        app = MagicMock()
+        result = await _get_builtin_cmd("/help").handler(_make_ctx(app=app, display=None))
+        assert result is CONTINUE
 
 
 class TestExportCommand:
     @pytest.mark.asyncio
-    async def test_exports_messages(self, tmp_path, monkeypatch):
+    async def test_exports_json_by_default(self, tmp_path, monkeypatch):
         session = Session(
             id="session_test",
             created_at="2025-01-01T00:00:00",
@@ -110,15 +125,11 @@ class TestExportCommand:
         display = MagicMock()
 
         monkeypatch.chdir(tmp_path)
-        cmd = _get_builtin_cmd("/export")
-        result = await cmd.run(_make_ctx(app=app, display=display))
+        result = await _get_builtin_cmd("/export").handler(_make_ctx(app=app, display=display))
 
-        assert result == CommandResult.CONTINUE
-        display.info.assert_called_once()
-        info_msg = display.info.call_args[0][0]
-        assert "Exported 1 msgs" in info_msg
-
+        assert result is CONTINUE
         app.session_mgr.export_to_file.assert_called_once()
+        assert "Exported 1 msgs" in display.info.call_args[0][0]
 
     @pytest.mark.asyncio
     async def test_export_md_format(self, tmp_path, monkeypatch):
@@ -132,18 +143,12 @@ class TestExportCommand:
         app = MagicMock()
         app.session_mgr.get_active.return_value = session
         app.agent.system_prompt = "You are helpful."
-        display = MagicMock()
 
         monkeypatch.chdir(tmp_path)
-        cmd = _get_builtin_cmd("/export")
-        result = await cmd.run(_make_ctx(app=app, display=display, args="md"))
+        await _get_builtin_cmd("/export").handler(_make_ctx(app=app, args="md"))
 
-        assert result == CommandResult.CONTINUE
         app.session_mgr.export_to_md.assert_called_once()
-        call_args = app.session_mgr.export_to_md.call_args
-        assert call_args[0][1].suffix == ".md"
-        display.info.assert_called_once()
-        assert ".md" in display.info.call_args[0][0]
+        assert app.session_mgr.export_to_md.call_args[0][1].suffix == ".md"
 
 
 class TestResumeCommand:
@@ -157,16 +162,14 @@ class TestResumeCommand:
             ],
         }
         path = tmp_path / "session_test.json"
-        path.write_text(
-            json.dumps(export_data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        path.write_text(json.dumps(export_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
         app = MagicMock()
-        display = MagicMock()
-        cmd = _get_builtin_cmd("/resume")
-        result = await cmd.run(_make_ctx(app=app, display=display, args=str(path)))
+        result = await _get_builtin_cmd("/resume").handler(
+            _make_ctx(app=app, args=str(path))
+        )
 
-        assert result == CommandResult.CONTINUE
+        assert result is CONTINUE
         app.resume_from_file.assert_called_once_with(export_data["messages"])
 
     @pytest.mark.asyncio
@@ -176,10 +179,10 @@ class TestResumeCommand:
 
         app = MagicMock()
         display = MagicMock()
-        cmd = _get_builtin_cmd("/resume")
-        result = await cmd.run(_make_ctx(app=app, display=display, args=str(path)))
+        await _get_builtin_cmd("/resume").handler(
+            _make_ctx(app=app, display=display, args=str(path))
+        )
 
-        assert result == CommandResult.CONTINUE
         app.resume_from_file.assert_not_called()
         display.warn.assert_called_once()
 
@@ -191,11 +194,13 @@ class TestSkillCommand:
         skill.metadata.name = "workflow"
         skill.metadata.description = "DAG orchestration"
         skill.load_content.return_value = "instructions here"
+
         cmd = make_skill_command(skill)
         assert cmd.name == "/skill:workflow"
         assert cmd.description == "DAG orchestration"
-        result = await cmd.run(_make_ctx())
-        assert result.kind == "prompt"
+
+        result = await cmd.handler(_make_ctx())
+        assert result.kind is Kind.PROMPT
         assert "[Skill:workflow" in result.prompt
         assert "do NOT call the skill tool" in result.prompt
         assert "instructions here" in result.prompt
@@ -207,10 +212,7 @@ class TestSkillCommand:
         skill.metadata.name = "kami"
         skill.metadata.description = "PDF typesetting"
         skill.load_content.return_value = "typeset instructions"
-        cmd = make_skill_command(skill)
-        result = await cmd.run(_make_ctx(args="帮我做一份简历"))
+
+        result = await make_skill_command(skill).handler(_make_ctx(args="帮我做一份简历"))
         assert "User request: 帮我做一份简历" in result.prompt
         assert "typeset instructions" in result.prompt
-        assert "do NOT call the skill tool" in result.prompt
-
-

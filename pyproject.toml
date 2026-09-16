@@ -13,6 +13,7 @@ dependencies = [
     "prompt-toolkit>=3.0.52",
     "questionary>=2.1.1",
     "pyperclip>=1.8",
+    "wcwidth>=0.2",
 ]
 
 [project.scripts]

@@ -1,112 +1,67 @@
-"""Miscellaneous commands — /quit, /help, /clear, /copy, /compact."""
+"""Miscellaneous commands — /quit, /help, /clear, /copy."""
 
 from __future__ import annotations
 
-from ....core.compact import compact_messages
-from ....prompts.compact import summary_system_prompt, COMPACT_USER_TEMPLATE
-from . import Command, CommandContext, CommandResult
-
-
-# ── /quit ─────────────────────────────────────────────────
+from . import CONTINUE, EXIT, Command, CommandContext, CommandResult
 
 
 async def _quit(ctx: CommandContext) -> CommandResult:
-    return CommandResult.EXIT
-
-
-# ── /help ─────────────────────────────────────────────────
+    return EXIT
 
 
 async def _help(ctx: CommandContext) -> CommandResult:
+    """List every registered command — including plugin-contributed ones."""
     commands = ctx.app.commands.all()
-    if not commands:
-        ctx.display.info("No commands available.")
-        return CommandResult.CONTINUE
+    if not commands or ctx.display is None:
+        return CONTINUE
 
-    max_len = max(len(c.name) for c in commands)
+    width = max(len(c.name) for c in commands)
     lines = []
     for cmd in commands:
-        alias_str = ""
-        if cmd.aliases:
-            readable = ", ".join(a for a in cmd.aliases if not a.startswith("/"))
-            if readable:
-                alias_str = f"  (also: {readable})"
-        lines.append(f"  {cmd.name:<{max_len}}  {cmd.description}{alias_str}")
-
+        readable = ", ".join(a for a in cmd.aliases if not a.startswith("/"))
+        alias = f"  (also: {readable})" if readable else ""
+        lines.append(f"  {cmd.name:<{width}}  {cmd.description}{alias}")
     ctx.display.info("Commands:\n" + "\n".join(lines))
-    return CommandResult.CONTINUE
-
-
-# ── /clear ────────────────────────────────────────────────
+    return CONTINUE
 
 
 async def _clear(ctx: CommandContext) -> CommandResult:
     ctx.app.clear_conversation()
-    ctx.display.info("Session saved and cleared.")
-    return CommandResult.CONTINUE
-
-
-# ── /copy ─────────────────────────────────────────────────
+    if ctx.display:
+        ctx.display.info("Session saved and cleared.")
+    return CONTINUE
 
 
 async def _copy(ctx: CommandContext) -> CommandResult:
-    messages = ctx.app.agent.messages
+    """Copy the last plain assistant response to the clipboard."""
+    display = ctx.display
+    if display is None:
+        return CONTINUE
 
-    for msg in reversed(messages):
-        if msg.get("role") == "assistant":
-            content = msg.get("content", "")
-            tool_calls = msg.get("tool_calls")
-            if content and not tool_calls:
-                try:
-                    import pyperclip
+    for msg in reversed(ctx.app.agent.messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if not content or msg.get("tool_calls"):
+            continue
+        try:
+            import pyperclip
 
-                    pyperclip.copy(content)
-                    preview = content[:60].replace("\n", " ").strip()
-                    suffix = "…" if len(content) > 60 else ""
-                    ctx.display.info(f"Copied: {preview}{suffix}")
-                except Exception as e:
-                    ctx.display.error(f"Clipboard error: {e}")
-                return CommandResult.CONTINUE
+            pyperclip.copy(content)
+            preview = content[:60].replace("\n", " ").strip()
+            suffix = "…" if len(content) > 60 else ""
+            display.info(f"Copied: {preview}{suffix}")
+        except Exception as e:
+            display.error(f"Clipboard error: {e}")
+        return CONTINUE
 
-    ctx.display.warn("No assistant response to copy.")
-    return CommandResult.CONTINUE
+    display.warn("No assistant response to copy.")
+    return CONTINUE
 
-
-# ── /compact ──────────────────────────────────────────────
-
-
-async def _compact(ctx: CommandContext) -> CommandResult:
-    agent = ctx.app.agent
-    if not agent.messages:
-        ctx.display.info("No messages to compact.")
-        return CommandResult.CONTINUE
-
-    old_count = len(agent.messages)
-    ctx.display.info("Compacting conversation...")
-
-    new_messages = await compact_messages(
-        agent.provider,
-        agent.messages,
-        summary_system_prompt.build(fmt="xml"),
-        COMPACT_USER_TEMPLATE,
-    )
-    agent.messages.clear()
-    agent.messages.extend(new_messages)
-
-    new_count = len(new_messages)
-    ctx.display.info(f"Compacted: {old_count} → {new_count} messages")
-
-    ctx.app._save_current_session()
-    return CommandResult.CONTINUE
-
-
-# ── Commands list ─────────────────────────────────────────
 
 commands: list[Command] = [
-    Command("/quit", "Exit the application", aliases=("/exit", "quit", "exit"), handler=_quit),
+    Command("/quit", "Exit the application", handler=_quit, aliases=("/exit", "quit", "exit")),
     Command("/help", "Show available commands", handler=_help),
     Command("/clear", "Clear the current conversation", handler=_clear),
     Command("/copy", "Copy the last assistant response to clipboard", handler=_copy),
-    Command("/compact", "Compress conversation history to free up context window",
-            aliases=("compact",), handler=_compact),
 ]

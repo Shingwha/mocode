@@ -1,4 +1,4 @@
-"""Agent builder — the composition root.
+"""Agent builder — the composition root for embedding MoCode's core.
 
 Usage:
     from mocode.core import Agent
@@ -16,10 +16,10 @@ from __future__ import annotations
 
 from typing import Any, Self
 
-from .agent import AgentLoop, AgentConfig
+from .agent import AgentConfig, AgentLoop
 from .hook import AgentHook, HookRunner
 from .prompt import Prompt, Section
-from .provider import Provider
+from .provider import ModelSpec, Provider
 from .tool import Tool, ToolRegistry
 
 
@@ -32,8 +32,8 @@ class Agent:
         self._tools: ToolRegistry | list[Tool] | None = None
         self._hooks: list[AgentHook] | None = None
         self._agent_config: AgentConfig | None = None
+        self._model: ModelSpec | None = None
         self._prompt_context: dict[str, Any] | None = None
-        self._prompt_format: str = "xml"
 
     def provider(self, provider: Provider) -> Self:
         self._provider = provider
@@ -55,12 +55,13 @@ class Agent:
         self._agent_config = config
         return self
 
-    def prompt_context(self, **kwargs: Any) -> Self:
-        self._prompt_context = kwargs
+    def model(self, model: ModelSpec) -> Self:
+        """Describe the model being driven (name, context window, output cap)."""
+        self._model = model
         return self
 
-    def prompt_format(self, format: str) -> Self:
-        self._prompt_format = format
+    def prompt_context(self, **kwargs: Any) -> Self:
+        self._prompt_context = kwargs
         return self
 
     def build(self) -> AgentLoop:
@@ -69,30 +70,8 @@ class Agent:
         if self._system_prompt is None:
             raise ValueError("System prompt is required. Call .prompt() first.")
 
-        # Tools
-        if isinstance(self._tools, list):
-            registry = ToolRegistry()
-            for tool in self._tools:
-                registry.register(tool)
-        elif isinstance(self._tools, ToolRegistry):
-            registry = self._tools
-        else:
-            registry = ToolRegistry()
-
-        # Prompt
-        if isinstance(self._system_prompt, list):
-            pb = Prompt()
-            for s in self._system_prompt:
-                pb.register(s)
-            ctx = self._prompt_context or {}
-            prompt_str = pb.context(**ctx).build(fmt=self._prompt_format)
-        elif isinstance(self._system_prompt, Prompt):
-            ctx = self._prompt_context or {}
-            prompt_str = self._system_prompt.context(**ctx).build(
-                fmt=self._prompt_format
-            )
-        else:
-            prompt_str = self._system_prompt
+        registry = self._as_registry(self._tools)
+        prompt_str = self._as_prompt(self._system_prompt)
 
         return AgentLoop(
             provider=self._provider,
@@ -100,4 +79,25 @@ class Agent:
             tools=registry,
             hooks=HookRunner(self._hooks or []),
             config=self._agent_config or AgentConfig(),
+            model=self._model,
         )
+
+    @staticmethod
+    def _as_registry(tools: ToolRegistry | list[Tool] | None) -> ToolRegistry:
+        if isinstance(tools, ToolRegistry):
+            return tools
+        registry = ToolRegistry()
+        for tool in tools or []:
+            registry.register(tool)
+        return registry
+
+    def _as_prompt(self, prompt: str | Prompt | list[Section]) -> str:
+        if isinstance(prompt, str):
+            return prompt
+        if isinstance(prompt, list):
+            pb = Prompt()
+            for section in prompt:
+                pb.register(section)
+        else:
+            pb = prompt
+        return pb.context(**(self._prompt_context or {})).build()

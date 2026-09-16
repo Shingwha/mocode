@@ -1,10 +1,15 @@
 """AgentHook — class-based lifecycle hooks for AgentLoop.
 
-Override methods on AgentHook to observe or modify agent loop state.
-Methods receive typed context objects:
+Override methods on AgentHook to observe or intercept the agent loop. Methods
+receive typed context objects:
+
   - IterationContext  (before_iteration / on_response / after_tools / after_iteration)
   - ToolCallContext   (on_tool_start / on_tool_complete)
-  - CompactContext    (on_compact)
+
+Hooks may rewrite loop state — ``ctx.messages``, ``ctx.tool_args``,
+``ctx.tool_result`` — or veto a tool call by setting ``ctx.deny``. They may
+also publish arbitrary events to the host with ``await ctx.emit(event)``; the
+loop only transports events and never inspects their types.
 """
 
 from __future__ import annotations
@@ -12,15 +17,24 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
     from .provider import Response, ToolCall, Usage
 
 
+async def _noop_emit(event: object) -> None:
+    """Default event sink for contexts built outside a running loop."""
+
+
 @dataclass
 class IterationContext:
-    """before_iteration / on_response / after_tools / after_iteration"""
+    """before_iteration / on_response / after_tools / after_iteration
+
+    ``messages`` is the live list — a hook may replace its contents in place
+    (``ctx.messages[:] = ...``) or rebind it (``ctx.messages = ...``); the loop
+    re-reads it after every hook call.
+    """
 
     messages: list[dict] = field(default_factory=list)
     iteration: int = 0
@@ -32,33 +46,35 @@ class IterationContext:
     error: Exception | None = None
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_results: list[dict] = field(default_factory=list)
-    _needs_compact: bool = False
+    emit: Callable[[object], Awaitable[None]] = _noop_emit
 
 
 @dataclass
 class ToolCallContext:
-    """on_tool_start / on_tool_complete — one independent instance per concurrent tool call"""
+    """on_tool_start / on_tool_complete — one independent instance per concurrent tool call.
+
+    Interception protocol:
+      - ``on_tool_start`` may rewrite ``tool_args``, or set ``deny`` to veto the
+        call (the denial text becomes the tool result).
+      - ``on_tool_complete`` may rewrite ``tool_result`` before it reaches the model.
+
+    ``status`` is one of ``ok`` / ``error`` / ``timeout`` / ``denied`` / ``not_found``.
+    """
 
     tool_name: str = ""
     tool_args: dict = field(default_factory=dict)
     tool_call_id: str = ""
+    deny: str | None = None
+    status: str = "ok"
+    error_code: str | None = None
     tool_result: str | None = None
-    tool_error: str | None = None
     tool_timeout: int | None = None
-
-
-@dataclass
-class CompactContext:
-    """on_compact"""
-
-    messages: list[dict] = field(default_factory=list)  # mutable reference, hook modifies in place
-    old_count: int = 0
-    new_count: int = 0
+    emit: Callable[[object], Awaitable[None]] = _noop_emit
 
 
 @dataclass
 class ToolTimingTracker:
-    """Reusable tracker for per-call timing and per-tool-name error/elapsed tracking.
+    """Reusable tracker for per-call timing and per-tool-name error tracking.
 
     Provides start(call_id) / complete(call_id, name, error, timeout) / reset()
     so that multiple Hook classes can share the same timing logic via composition.
@@ -114,7 +130,7 @@ class ToolTimingTracker:
 class AgentHook:
     """Base class for AgentLoop lifecycle hooks.
 
-    Override any method to observe or modify agent loop state.
+    Override any method to observe or intercept agent loop state.
     All methods are no-ops by default.
     """
 
@@ -131,13 +147,13 @@ class AgentHook:
         """After each loop iteration completes."""
 
     async def on_tool_start(self, ctx: ToolCallContext) -> None:
-        """Before a single tool executes. Read ctx.tool_name/tool_args/tool_call_id."""
+        """Before a single tool executes. May rewrite ctx.tool_args or set ctx.deny."""
 
     async def on_tool_complete(self, ctx: ToolCallContext) -> None:
-        """After a single tool completes. Read ctx.tool_result/tool_error/tool_timeout."""
+        """After a single tool completes. May rewrite ctx.tool_result."""
 
-    async def on_compact(self, ctx: CompactContext) -> None:
-        """When context is compacted. Read/write ctx.messages, ctx.old_count/new_count."""
+    async def on_event(self, event: object) -> None:
+        """Receives events emitted via ctx.emit(). Ignore what you don't handle."""
 
 
 class HookRunner:
@@ -150,6 +166,9 @@ class HookRunner:
 
     def add(self, hook: AgentHook) -> None:
         self._hooks.append(hook)
+
+    def all(self) -> list[AgentHook]:
+        return list(self._hooks)
 
     async def _dispatch(self, method: str, **kwargs) -> None:
         for h in self._hooks:
@@ -178,5 +197,5 @@ class HookRunner:
     async def on_tool_complete(self, ctx: ToolCallContext) -> None:
         await self._dispatch("on_tool_complete", ctx=ctx)
 
-    async def on_compact(self, ctx: CompactContext) -> None:
-        await self._dispatch("on_compact", ctx=ctx)
+    async def on_event(self, event: object) -> None:
+        await self._dispatch("on_event", event=event)

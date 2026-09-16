@@ -1,66 +1,154 @@
-"""CLI visual configuration — Theme as composition wrapper."""
+"""CLI theme — ANSI tokens, semantic palette, styles, and the Theme bundle."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .palette import ColorPalette, DEFAULT_PALETTE
-from .styles import DisplayStyles, WorkflowStyles, SpinnerStyles
+
+class C:
+    """ANSI escape tokens — the only place raw codes are defined."""
+
+    RST = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    GRAY = "\033[90m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    MAGENTA = "\033[95m"
+    CYAN = "\033[96m"
+    SOFT_CYAN = "\033[36m"
+    BG_DARK = "\033[100m"
+
+
+@dataclass(frozen=True)
+class ColorPalette:
+    """Semantic colour names → ANSI codes. Re-skin by replacing this object."""
+
+    # status
+    success: str = C.GREEN
+    error: str = C.RED
+    warning: str = C.YELLOW
+    info: str = C.SOFT_CYAN
+
+    # hierarchy
+    bold: str = C.BOLD
+    dim: str = C.DIM
+    muted: str = C.GRAY
+    accent: str = C.CYAN
+    highlight: str = C.MAGENTA
+
+    # surfaces
+    bg_input: str = C.BG_DARK
+    reset: str = C.RST
+
+    def resolve(self, name: str) -> str:
+        """Semantic name → ANSI code. Already-escaped values pass through.
+
+        Space-separated names combine, e.g. ``"dim highlight"``.
+        """
+        if not name:
+            return ""
+        if name.startswith("\033["):
+            return name
+        codes = []
+        for part in name.split():
+            value = getattr(self, part, None)
+            if value is None:
+                raise ValueError(f"Unknown color: {part!r}")
+            codes.append(value)
+        return "".join(codes)
+
+    def s(self, text: str, *colors: str) -> str:
+        """Colour *text* with the given semantic colour names."""
+        codes = "".join(self.resolve(c) for c in colors)
+        return f"{codes}{text}{self.reset}" if codes else text
+
+
+DEFAULT_PALETTE = ColorPalette()
+
+
+@dataclass(frozen=True, slots=True)
+class Style:
+    """Atomic style descriptor — appearance only, no rendering policy.
+
+    ``fg`` / ``icon_fg`` / ``bg`` are semantic colour names resolved by a palette.
+    """
+
+    icon: str = ""
+    fg: str = ""
+    icon_fg: str = ""  # defaults to fg
+    bg: str = ""
+
+    def render(
+        self,
+        text: str,
+        palette: ColorPalette,
+        *,
+        suffix: str = "",
+        elapsed: float = -1,
+        error: str = "",
+    ) -> str:
+        """Render one line as an ANSI string."""
+        parts: list[str] = []
+        p = palette
+
+        if self.icon:
+            parts.append(f"{p.resolve(self.icon_fg or self.fg)}{self.icon}{p.reset}")
+
+        fg = p.resolve(self.fg)
+        bg = p.resolve(self.bg)
+        if bg and fg:
+            parts.append(f"{bg}{fg}{text}{p.reset}")
+        elif fg:
+            parts.append(f"{fg}{text}{p.reset}")
+        else:
+            parts.append(text)
+
+        if suffix:
+            parts.append(f"{p.dim}{suffix}{p.reset}")
+        if error:
+            parts.append(f"{p.resolve(self.icon_fg or self.fg)}{error}{p.reset}")
+        if elapsed >= 0.1:
+            parts.append(f"{p.dim}{elapsed:.1f}s{p.reset}")
+
+        return " ".join(parts)
+
+
+@dataclass(frozen=True)
+class DisplayStyles:
+    """Styles used by Display."""
+
+    tool_done: Style = Style(icon="✓", icon_fg="success", fg="accent")
+    tool_fail: Style = Style(icon="✗", icon_fg="error", fg="accent")
+    user_input: Style = Style(icon="❯", fg="bold", bg="bg_input")
+    reasoning: Style = Style(icon="┊", fg="dim")
+    text: Style = Style(icon="│", fg="dim highlight")
+    response: Style = Style()
+    usage: Style = Style(icon="✦", fg="dim")
+    info: Style = Style(fg="info")
+    warn: Style = Style(fg="warning")
+    error: Style = Style(fg="error")
+
+
+@dataclass(frozen=True)
+class SpinnerStyles:
+    """Styles used by the spinner."""
+
+    frame: str = "dim"
+    elapsed: str = "info"
 
 
 @dataclass
 class Theme:
-    """样式配置包 — 组合 palette + 所有组件样式组。
+    """Bundle of palette plus per-component styles.
 
-    Theme 不是"样式注册表"，而是"打包方便传递"的组合对象。
-    组件不应直接读取 Theme，而应接收自己需要的 *Styles 子集。
+    Components receive only the subset they need, never the whole Theme::
 
-    换肤方式::
-
-        # 方式 1：换 palette（所有颜色跟着变）
-        Theme(palette=ColorPalette(success="\\033[92m", ...))
-
-        # 方式 2：换个别样式（只改一个组件的一个样式）
-        from .style import Style
+        Theme(palette=ColorPalette(success="\\033[92m"))
         Theme(display=DisplayStyles(tool_done=Style(icon="✔", fg="success")))
-
-        # 方式 3：换整个组件样式组
-        Theme(workflow=WorkflowStyles(separator=Style(fg="accent")))
     """
 
     palette: ColorPalette = field(default_factory=lambda: DEFAULT_PALETTE)
-
     display: DisplayStyles = field(default_factory=DisplayStyles)
-    workflow: WorkflowStyles = field(default_factory=WorkflowStyles)
     spinner: SpinnerStyles = field(default_factory=SpinnerStyles)
-
-    # ── 便捷方法：组件用来提取自己需要的部分 ──
-
-    def for_display(self) -> tuple[DisplayStyles, ColorPalette]:
-        return self.display, self.palette
-
-    def for_workflow(self) -> tuple[WorkflowStyles, ColorPalette]:
-        return self.workflow, self.palette
-
-    def for_spinner(self) -> tuple[SpinnerStyles, ColorPalette]:
-        return self.spinner, self.palette
-
-
-def questionary_style(theme: Theme | None = None):
-    """Build a questionary Style matching the CLI theme."""
-    from questionary import Style as _QStyle
-
-    return _QStyle(
-        [
-            ("qmark", "fg:ansicyan bold"),
-            ("question", "bold"),
-            ("answer", "fg:ansigreen bold"),
-            ("pointer", "fg:ansicyan bold"),
-            ("highlighted", "fg:ansicyan bold"),
-            ("selected", "fg:ansigreen"),
-            ("separator", "fg:ansibrightblack"),
-            ("instruction", "fg:ansibrightblack"),
-            ("text", ""),
-            ("disabled", "fg:ansibrightblack italic"),
-        ]
-    )

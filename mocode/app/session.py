@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .utils import read_json, write_json
+from .io import read_json, write_json
 
 
 @dataclass
@@ -74,7 +74,7 @@ class SessionStore:
         if not d.exists():
             return []
         sessions = []
-        for f in d.glob("session_*.json"):
+        for f in d.glob("*.json"):
             data = read_json(f)
             if data is not None:
                 try:
@@ -110,7 +110,7 @@ class SessionStore:
             return False
 
 
-def _extract_title(messages: list[dict[str, Any]]) -> str:
+def extract_title(messages: list[dict[str, Any]]) -> str:
     for msg in messages:
         if msg.get("role") == "user":
             content = msg.get("content", "")
@@ -177,7 +177,7 @@ class SessionManager:
     ) -> Session:
         now = datetime.now().isoformat()
         if title is None:
-            title = _extract_title(messages)
+            title = extract_title(messages)
 
         if self._active_id:
             session = self._store.load(self._workdir, self._active_id)
@@ -234,7 +234,7 @@ class SessionManager:
         data = read_json(path)
         if isinstance(data, dict) and "messages" in data:
             messages = data["messages"]
-            title = _extract_title(messages) or path.stem
+            title = extract_title(messages) or path.stem
             return messages, title
         return None
 

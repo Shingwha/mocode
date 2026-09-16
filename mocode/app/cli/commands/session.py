@@ -6,8 +6,8 @@ from datetime import datetime
 from pathlib import Path
 
 from ...session import SessionManager
-from ..prompts import Choice, select
-from . import Command, CommandContext, CommandResult
+from .. import dialogs
+from . import CONTINUE, Command, CommandContext, CommandResult
 
 
 # ── /export ───────────────────────────────────────────────
@@ -17,7 +17,7 @@ async def _export(ctx: CommandContext) -> CommandResult:
     session = ctx.app.session_mgr.get_active()
     if session is None or not session.messages:
         ctx.display.warn("No active session to export.")
-        return CommandResult.CONTINUE
+        return CONTINUE
 
     fmt = ctx.args.strip().lower() or "json"
     system_prompt = ctx.app.agent.system_prompt
@@ -35,7 +35,7 @@ async def _export(ctx: CommandContext) -> CommandResult:
         )
 
     ctx.display.info(f"Exported {len(session.messages)} msgs → {path}")
-    return CommandResult.CONTINUE
+    return CONTINUE
 
 
 # ── /resume ───────────────────────────────────────────────
@@ -74,7 +74,7 @@ async def _resume_interactive(ctx: CommandContext):
         return
 
     choices = [
-        Choice(
+        dialogs.Choice(
             title=(s.title or "Untitled")[:60],
             value=s.id,
             description=f"{s.updated_at[:10]} · {len(s.messages)} msgs",
@@ -84,14 +84,14 @@ async def _resume_interactive(ctx: CommandContext):
 
     if truncated:
         choices.append(
-            Choice(
+            dialogs.Choice(
                 title="(older sessions omitted — use /resume <file.json> to load one)",
                 value="__truncated__",
                 disabled=True,
             )
         )
 
-    chosen = await select("Resume a session:", choices)
+    chosen = await dialogs.select("Resume a session:", choices)
     if chosen is None or chosen == "__truncated__":
         return
 
@@ -112,7 +112,7 @@ async def _resume(ctx: CommandContext) -> CommandResult:
         await _resume_from_file(ctx, ctx.args)
     else:
         await _resume_interactive(ctx)
-    return CommandResult.CONTINUE
+    return CONTINUE
 
 
 # ── Commands list ─────────────────────────────────────────

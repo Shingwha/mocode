@@ -1,24 +1,29 @@
-"""CLIDisplayHook — bridges AgentHook lifecycle to CLI Display."""
+"""CLIDisplayHook — bridges AgentHook lifecycle to the CLI Display."""
 
 from __future__ import annotations
 
-from ...core.hook import AgentHook, CompactContext, IterationContext, ToolCallContext, ToolTimingTracker
-from ..utils import group_tool_calls
-from .display import merge_summaries
+from ...core.hook import (
+    AgentHook,
+    IterationContext,
+    ToolCallContext,
+    ToolTimingTracker,
+)
+from ...core.tool import ToolRegistry
+from .display import group_tool_calls, merge_summaries
 from .spinner import Priority, Truncate
 
 
 class CLIDisplayHook(AgentHook):
     """Renders tool calls, reasoning, and usage to the terminal.
 
-    Tool calls update the spinner while running; detailed status lines
-    (one per tool type, with parameters) are printed after all tools complete.
+    Tool calls update the spinner while running; one status line per tool name
+    is printed once the whole batch completes.
     """
 
-    def __init__(self, display):
+    def __init__(self, display, tools: ToolRegistry):
         self._d = display
+        self._tools = tools
         self._prompt = self._completion = 0
-        # Tool execution tracking (reset per batch)
         self._tool_groups: list[tuple[str, list[str]]] = []
         self._tracker = ToolTimingTracker()
 
@@ -30,14 +35,13 @@ class CLIDisplayHook(AgentHook):
         if ctx.usage:
             self._prompt += ctx.usage.prompt_tokens
             self._completion += ctx.usage.completion_tokens
-        # Update spinner with tool info instead of printing immediately
         if ctx.response and ctx.response.tool_calls:
-            groups = group_tool_calls(ctx.response.tool_calls)
+            groups = group_tool_calls(ctx.response.tool_calls, self._tools)
             self._tool_groups = groups
             self._tracker.reset()
             self._update_spinner_for_tools(groups)
 
-    async def after_iteration(self, ctx):
+    async def after_iteration(self, ctx: IterationContext) -> None:
         if self._prompt or self._completion:
             self._d.usage(self._prompt, self._completion)
             self._prompt = self._completion = 0
@@ -46,11 +50,13 @@ class CLIDisplayHook(AgentHook):
         self._tracker.start(ctx.tool_call_id)
 
     async def on_tool_complete(self, ctx: ToolCallContext) -> None:
-        self._tracker.complete(
-            ctx.tool_call_id, ctx.tool_name, ctx.tool_error, ctx.tool_timeout
-        )
+        if ctx.status == "timeout":
+            self._tracker.complete(ctx.tool_call_id, ctx.tool_name, timeout=ctx.tool_timeout)
+            return
+        error = None if ctx.status == "ok" else (ctx.tool_result or ctx.status)
+        self._tracker.complete(ctx.tool_call_id, ctx.tool_name, error)
 
-    async def after_tools(self, ctx):
+    async def after_tools(self, ctx: IterationContext) -> None:
         for name, summaries in self._tool_groups:
             merged = merge_summaries(summaries)
             elapsed = self._tracker.elapsed.get(name, 0)
@@ -59,37 +65,29 @@ class CLIDisplayHook(AgentHook):
             else:
                 self._d.tool_done(name, merged, elapsed)
 
-        # Reset spinner for next LLM call
         self._d.spinner_remove("tools_tag")
         self._d.spinner_remove("tools_detail")
-        self._d.spinner_set("thinking", "Thinking",
-                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
+        self._d.spinner_set(
+            "thinking", "Thinking", priority=Priority.NORMAL, truncate=Truncate.TAIL
+        )
         self._tool_groups = []
         self._tracker.reset()
 
-    async def on_compact(self, ctx: CompactContext) -> None:
-        self._d.spinner_remove("thinking")
-        self._d.spinner_set("compact", "Compacting",
-                            priority=Priority.NORMAL, truncate=Truncate.TAIL)
-        self._d.compact(ctx.old_count, ctx.new_count)
+    async def on_event(self, event: object) -> None:
+        """Render events emitted by any hook (compaction, plugin notices, ...)."""
+        self._d.render_event(event)
 
     # ── Internal ───────────────────────────────────────────
 
-    def _update_spinner_for_tools(self, groups):
-        """Update spinner segments to show running tools.
-
-        Format: ``{count} tool(s) · {detail}``
-        - detail for single tool: ``read(src/main.py)``
-        - detail for multiple:   ``read×2, bash``
-        """
-        total = sum(len(s) for _, s in groups)
+    def _update_spinner_for_tools(self, groups: list[tuple[str, list[str]]]) -> None:
+        """Show running tools in the spinner: ``{n} tool(s) · read(a, b)``."""
+        total = sum(len(summaries) for _, summaries in groups)
         label = "running 1 tool" if total == 1 else f"running {total} tools"
 
         parts = []
         for name, summaries in groups:
             count = len(summaries)
             if total == 1:
-                # Single tool: show name + merged args
                 parts.append(f"{name}({merge_summaries(summaries)})")
             elif count > 1:
                 parts.append(f"{name}×{count}")
@@ -97,9 +95,9 @@ class CLIDisplayHook(AgentHook):
                 parts.append(name)
 
         self._d.spinner_remove("thinking")
-        self._d.spinner_set("tools_tag", label,
-                            priority=Priority.HIGH, truncate=Truncate.TAIL)
-        self._d.spinner_set("tools_detail", ", ".join(parts),
-                            priority=Priority.LOW, truncate=Truncate.MIDDLE)
-
-
+        self._d.spinner_set(
+            "tools_tag", label, priority=Priority.HIGH, truncate=Truncate.TAIL
+        )
+        self._d.spinner_set(
+            "tools_detail", ", ".join(parts), priority=Priority.LOW, truncate=Truncate.MIDDLE
+        )

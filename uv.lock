@@ -188,6 +188,7 @@ dependencies = [
     { name = "pyperclip" },
     { name = "pyyaml" },
     { name = "questionary" },
+    { name = "wcwidth" },
 ]
 
 [package.optional-dependencies]
@@ -211,6 +212,7 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "questionary", specifier = ">=2.1.1" },
+    { name = "wcwidth", specifier = ">=0.2" },
 ]
 provides-extras = ["dev"]
 

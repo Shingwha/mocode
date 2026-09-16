@@ -11,7 +11,7 @@ from mocode.app.session import Session, SessionManager
 
 
 def _make_app() -> CLIApp:
-    """Create a CLIApp with mock agent and session manager."""
+    """Create a CLIApp with a stubbed agent and session manager."""
     config = Config(
         active_provider="test",
         active_model="test-model",
@@ -19,27 +19,21 @@ def _make_app() -> CLIApp:
             "test": ProviderEntry(
                 name="Test",
                 api_key="sk-test",
-                models=[ModelEntry(name="test-model")],
+                models={"test-model": ModelEntry()},
             ),
         },
     )
     config.save = MagicMock()
 
-    mock_display = MagicMock()
+    fake_agent = MagicMock(messages=[], system_prompt="")
     mock_session_mgr = MagicMock(spec=SessionManager)
     with (
-        patch.object(
-            CLIApp,
-            "_build_agent",
-            return_value=MagicMock(messages=[], system_prompt=""),
-        ),
-        patch.object(CLIApp, "_build_prompt", return_value="test-prompt"),
+        patch("mocode.app.cli.app.PluginHost.run", return_value=fake_agent),
         patch("mocode.app.cli.app.SessionManager", return_value=mock_session_mgr),
     ):
-        app = CLIApp(config=config, display=mock_display)
+        app = CLIApp(config=config, display=MagicMock())
     app._session_mgr = mock_session_mgr
     mock_session_mgr.reset_mock()
-    app._build_prompt = MagicMock(return_value="test-prompt")
     return app
 
 
@@ -92,7 +86,7 @@ class TestResumeFromFile:
 
         app.resume_from_file(msgs)
 
-        app.display.render_messages.assert_called_once_with(msgs)
+        assert app.display.render_messages.call_args[0][0] == msgs
 
 
 class TestResumeSession:

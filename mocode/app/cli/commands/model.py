@@ -2,67 +2,59 @@
 
 from __future__ import annotations
 
-from ..prompts import Choice, select
-from . import Command, CommandContext, CommandResult
-
-
-# ── /model ────────────────────────────────────────────────
+from .. import dialogs
+from . import CONTINUE, Command, CommandContext, CommandResult
 
 
 async def _model(ctx: CommandContext) -> CommandResult:
-    # Build provider choices
-    provider_choices = []
-    for key, entry in ctx.app.config.providers.items():
-        title = entry.name or key
-        preview = ", ".join(entry.model_names()) or ctx.app.config.active_model
-        provider_choices.append(Choice(title=title, value=key, description=preview))
+    config = ctx.app.config
 
+    provider_choices = [
+        dialogs.Choice(
+            title=entry.label(key),
+            value=key,
+            description=", ".join(entry.model_names()) or "(no models defined)",
+        )
+        for key, entry in config.providers.items()
+    ]
     if not provider_choices:
-        ctx.display.warn("No providers configured.")
-        return CommandResult.CONTINUE
+        ctx.display.warn(f"No providers defined in {config.path}.")
+        return CONTINUE
 
-    chosen_key = await select(
-        "Select a provider:",
-        provider_choices,
-        default=ctx.app.config.active_provider,
+    chosen_key = await dialogs.select(
+        "Select a provider:", provider_choices, default=config.active_provider
     )
     if chosen_key is None:
-        return CommandResult.CONTINUE
+        return CONTINUE
 
-    entry = ctx.app.config.providers[chosen_key]
+    entry = config.providers[chosen_key]
     models = entry.model_names()
-    # Skip model picker if there's only one (or zero) models
-    if len(models) <= 1:
-        ctx.app.switch_provider(
-            chosen_key, models[0] if models else ctx.app.config.active_model
-        )
-        return CommandResult.CONTINUE
+    if not models:
+        ctx.display.warn(f"Provider '{chosen_key}' has no models defined in {config.path}.")
+        return CONTINUE
 
-    model_choices = [
-        Choice(
-            title=m,
-            value=m,
-            description="current" if m == ctx.app.config.active_model else None,
-        )
-        for m in models
-    ]
-    chosen_model = await select(
-        f"Select a model for {entry.name or chosen_key}:",
-        model_choices,
-        default=(
-            ctx.app.config.active_model
-            if ctx.app.config.active_model in models
-            else models[0]
-        ),
+    if len(models) == 1:
+        ctx.app.switch_provider(chosen_key, models[0])
+        return CONTINUE
+
+    chosen_model = await dialogs.select(
+        f"Select a model for {entry.label(chosen_key)}:",
+        [
+            dialogs.Choice(
+                title=name,
+                value=name,
+                description="current" if name == config.active_model else None,
+            )
+            for name in models
+        ],
+        default=config.active_model if config.active_model in models else models[0],
     )
     if chosen_model is None:
-        return CommandResult.CONTINUE
+        return CONTINUE
 
     ctx.app.switch_provider(chosen_key, chosen_model)
-    return CommandResult.CONTINUE
+    return CONTINUE
 
-
-# ── Commands list ─────────────────────────────────────────
 
 commands: list[Command] = [
     Command("/model", "Switch provider and model", handler=_model),

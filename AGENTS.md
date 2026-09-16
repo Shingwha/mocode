@@ -1,160 +1,125 @@
-# MoCode 0.3 — Development Guide
+# MoCode — Development Guide
 
 ## Dev Commands
 
 ```bash
-# Install dependencies (uses uv + hatchling)
-# Always use uv for python!!!
+# Install dependencies (uses uv + hatchling) — always use uv for Python
 uv sync
 
 # Run all tests
 uv run pytest
 
-# Run single test file
-uv run pytest tests/test_builder.py
+# Single test file / class / method
+uv run pytest tests/test_agent_loop.py
+uv run pytest tests/test_plugins.py::TestPluginHost
 
-# Run single test class/method
-uv run pytest tests/test_builder.py::TestBuilder::test_minimal_build
-
-# Run Python one-liner (ad-hoc scripts, quick checks)
-uv run python -c "from mocode.core import Tool; t = Tool('x','desc',{'p':{'type':'string','description':'p'}}, lambda a:'ok'); print(t.to_schema())"
+# Ad-hoc check
+uv run python -c "from mocode.core import Tool; t = Tool('x','d',{'p':{'type':'string','description':'p'}}, lambda a:'ok'); print(t.to_schema())"
 ```
 
-## Architecture Overview
+## The One Rule
 
-MoCode is a lean agent framework with a layered design:
+> **A concept that could be written as a plugin does not belong in `core/`.**
+
+Everything below follows from it. Workflows, sub-agents, context compaction, web fetch and the virtual file system were all removed from this codebase because they are capabilities, not mechanism. If you are tempted to add an `if` for a specific tool, hook or feature inside `core/`, write a plugin instead.
+
+## Architecture
 
 ```
 mocode/
-├── core/          # Framework primitives (no app dependencies)
-│   ├── agent.py       # AgentLoop — LLM chat engine with parallel tool execution
-│   ├── builder.py     # Agent — fluent builder for AgentLoop
-│   ├── provider.py    # Provider Protocol + Response/ToolCall/Usage DTOs
-│   ├── tool.py        # Tool + ToolRegistry — instance-scoped, sync/async
-│   ├── hook.py        # AgentHook + HookRunner — lifecycle hooks with error isolation
-│   ├── prompt.py      # Prompt + Section — section-based, format-aware (xml/text)
-│   ├── skill.py       # Skill + SkillManager — directory-based discovery
-│   ├── virtualfs.py   # VirtualFS — in-memory vfs:// file system
-│   ├── subagent.py    # SubAgent — isolated child agent (moved from tools/)
-│   └── compact.py     # Context compression logic (moved from tools/)
-├── app/           # Application layer
-│   ├── cli/           # CLIApp, Display, Input, Spinner, Commands
-│   │   └── commands/  # Command modules (builtin, workflow, session, model, plan, skill, misc)
-│   ├── config.py      # Config — JSON load/save, multi-provider
-│   ├── session.py     # Session + SessionManager + SessionStore
-│   ├── export.py      # Session export (JSON/Markdown)
-│   ├── utils.py       # Shared utilities (read_json, write_json, etc.)
-│   └── workflow/      # DAG engine (split from monolithic runner.py)
-│       ├── models.py      # Node, Workflow, Route, NodeResult data models
-│       ├── graph.py       # DAG validation + wave computation (topological sort)
-│       ├── state.py       # RunState — mutable state for one workflow execution
-│       ├── events.py      # WorkflowEvent types (NodeStart, NodeDone, Router, Loop, Map, etc.)
-│       ├── runner.py      # DAGRunner — main coordinator (delegates to executor/scheduler)
-│       ├── executor.py    # Executor — AgentLoop instantiation + each result helpers
-│       ├── scheduler.py   # Scheduler — wave announcement, router eval, back-edges, downstream activation
-│       ├── hooks.py       # _WorkflowNodeHook
-│       ├── registry.py    # WorkflowRegistry — YAML discovery
-│       ├── cli.py         # CLI entry point for /workflow commands
-│       └── run_store.py   # WorkflowRunStore — persist run results
-├── tools/         # Built-in tools (class-based, subclass Tool)
-│   ├── file.py        # ReadTool, WriteTool, EditTool
-│   ├── glob.py        # GlobTool
-│   ├── grep.py        # GrepTool
-│   ├── bash.py        # BashTool
-│   ├── fetch.py       # FetchTool
-│   ├── skill.py       # SkillTool
-│   ├── subagent.py    # SubAgentTool
-│   ├── plan.py        # PlanTool
-│   └── utils.py       # Shared tool utilities
-├── hooks/         # Built-in hooks
-│   └── compact.py     # CompactHook — auto-trigger context compression
-├── prompts/       # System prompts
-│   ├── app.py         # Main system prompt builder (reads AGENTS.md, tools, skills)
-│   ├── compact.py     # Compression prompt templates
-│   └── subagent.py    # Sub-agent prompt builder (layers onto parent prompt)
-├── providers/     # LLM providers (OpenAI-compatible)
-│   └── openai.py      # OpenAIProvider
-└── skills/        # Built-in skills with SKILL.md + references/
+├── core/        kernel — mechanism only, zero app dependencies
+│   ├── agent.py     AgentConfig, LoopResult, AgentLoop (+ derive())
+│   ├── builder.py   Agent — fluent builder
+│   ├── hook.py      AgentHook, HookRunner, IterationContext, ToolCallContext, ToolTimingTracker
+│   ├── prompt.py    Prompt, Section — section-based XML assembly
+│   ├── provider.py  Provider protocol, Response/ToolCall/Usage, with_retry
+│   └── tool.py      Tool, ToolError, ToolRegistry, ERROR_PREFIX/TIMEOUT_PREFIX/DENIED_PREFIX
+├── app/
+│   ├── config.py    Config, ProviderEntry, ModelEntry (+ plugins section)
+│   ├── session.py   Session, SessionStore, SessionManager
+│   ├── export.py    session → Markdown
+│   ├── text.py      visible_width, ellipsize_*, terminal_width, count_visual_lines, decode_bytes
+│   ├── io.py        read_json, write_json
+│   ├── prompt.py    build_system_prompt(ctx)
+│   ├── plugin/
+│   │   ├── base.py      Plugin
+│   │   ├── context.py   HostContext
+│   │   ├── loader.py    discover / load_plugin / parse_frontmatter
+│   │   ├── host.py      PluginHost, builtin_plugins
+│   │   └── builtin/     filesystem, shell, skills, cli  ← the shipped plugins
+│   └── cli/         app.py (CLIApp), display.py, hook.py, input.py, spinner.py,
+│                    theme.py, dialogs.py, commands/{__init__,misc,model,session}.py
+├── providers/openai.py  OpenAI-compatible provider (lazy SDK import, no streaming)
+├── plugins/__init__.py  public SDK: Plugin, HostContext, Tool, AgentHook, Command, Section, ...
+├── examples/plugins/    a complete example plugin
+└── cli_args.py, main.py
 ```
 
-### Key Design Decisions
+### Kernel primitives that enable plugins
 
-1. **Core has zero app dependencies** — `mocode/core/` never imports from `mocode/app/`. The `Provider` is a Protocol, not a base class.
+| Primitive | Where | Unlocks |
+|---|---|---|
+| `AgentLoop.derive(*, system_prompt, tools, hooks, config, model)` | `core/agent.py` | sub-agents, workflow-style nodes — any nested agent with narrower tools |
+| `ModelSpec(name, context_window, max_output)` | `core/provider.py` | model facts as first-class data: the loop passes `max_output` to the provider (`None` = send no cap), plugins read `ctx.model.context_window` to budget context |
+| Event channel: `await ctx.emit(event)` → `AgentHook.on_event` | `core/hook.py`, `core/agent.py` | a plugin telling the UI something happened without the kernel knowing the concept |
+| Interception: `ctx.deny`, writable `ctx.tool_args` / `ctx.tool_result`, structured `ctx.status` | `core/hook.py` | permission gates, sandboxes, redaction, result post-processing |
+| `Tool(tags=..., summary_key=...)`, `ToolRegistry.select(...)` | `core/tool.py` | capability scoping by tag instead of hard-coded name lists; display summaries without a central table |
 
-2. **Tools are class-based** — `ReadTool(Tool)`, `WriteTool(Tool)` etc. are subclasses of `Tool`. Constructor captures dependencies (e.g. `ReadTool(vfs=vfs)` binds the VFS). Call `super().__init__(name, description, params, func)` where `func` is typically `self._execute`.
+### Where config values belong
 
-3. **AgentHook is class-based** — Override methods like `before_iteration`, `on_response`, `after_tools`, `on_tool_start`, `on_tool_complete`, `on_compact`. `HookRunner` fans out to all hooks with error isolation (one hook's exception doesn't break others). Methods are dispatched via `__getattr__` — only `_METHODS` frozenset members are forwarded.
+| Value | Owner | Why |
+|---|---|---|
+| `context_window`, `max_output`, `extra_body` | **model** (`providers.<p>.models.<m>`) | physical properties of the model; absence means "unknown", never a guessed default |
+| `tool_timeout`, `max_iterations` | **`agent` block** | host execution policy, identical whatever model is loaded |
+| `tool_result_limit` | **`AgentConfig` in core** | a loop-internal safety valve, deliberately not user-facing (default 50k chars) |
+| `plugins.<name>` | **plugin** | read through `ctx.plugin_config(name)` |
+| unknown top-level keys | **whoever wrote them** | preserved verbatim across load → save (`Config.foreign`) |
 
-4. **Prompt uses Sections with priority** — `Prompt` builds XML or text from `Section` objects sorted by `(priority, name)`. Sections can hold strings, nested `Section` lists, or callables that receive context dicts. The system prompt (`prompts/app.py`) orders sections by priority: guidelines(10) → agents(20) → environment(30) → vfs(35) → tools(40) → skills(50) → workflows(60) to maximize LLM prefix cache hit rate.
+API keys resolve as `api_key` → `$<PROVIDER_KEY>_API_KEY` (see `config.env_var_for`); nothing to declare in the file. MoCode never writes a `max_tokens` it made up — an unset `max_output` means the request carries no cap.
 
-5. **Workflow is a DAG engine with two node types** — `task` (runs via in-process AgentLoop; with `each` + `as` fields for fan-out over lists) and `router` (evaluates regex conditions against dependency outputs; supports loops via back-edges with `max` iteration limits). Nodes can output `[TAG]` sections for structured downstream references (`{nodes.id.TAG}`, `{nodes.id.TAG[0]}`). Dependencies are auto-inferred from `{nodes.id.*}` template references.
+### Assembly
 
-6. **Workflow runner is split into three concerns** — `DAGRunner` (coordinator: main loop, each fan-out, node completion), `Executor` (AgentLoop creation, node context header, each finalization), `Scheduler` (wave announcement, router evaluation, back-edge handling, downstream activation). This split happened because runner.py grew to 600+ lines.
-
-7. **Skills are directory-based** — Each skill has a `SKILL.md` with YAML frontmatter (name, description) and body content. Reference files are mounted into VirtualFS at `vfs://skill-name/path`.
-
-8. **AGENTS.md is read at prompt build time** — Two locations: `~/.mocode/AGENTS.md` (global) and `./AGENTS.md` (project). Both are optional and merged into the `<agents>` section of the system prompt.
-
-9. **SubAgent and Compact live in core/** — `SubAgent` (`core/subagent.py`) creates an isolated `AgentLoop` with its own message history, sharing the parent's provider but with a filtered tool set (`sub_agent` and `compact` are blocked by default). The sub-agent inherits the parent's full system prompt (AGENTS.md, environment, tools, skills) via `build_subagent_prompt()` which layers sub-agent identity and guidelines on top of the parent prompt — injected through `SubAgentTool(system_prompt=...)`. `compact_messages` (`core/compact.py`) generates LLM summaries; extracted from `tools/` to break the `hooks → tools → prompts` dependency chain.
-
-10. **Lazy imports everywhere** — Both `mocode/core/__init__.py` and `mocode/tools/__init__.py` use `__getattr__` + `_LAZY_IMPORTS` dicts to defer module loading. This reduced startup from ~1900ms to ~180ms.
-
-### Data Flow
-
-```
-User Input → CLIApp._dispatch() → Command or AgentLoop.chat()
-                                        ↓
-                              Provider.call() ← system_prompt + tools + messages
-                                        ↓
-                              Response (content/tool_calls/usage)
-                                        ↓
-                              HookRunner.on_response()
-                                        ↓
-                              Tool execution (parallel via asyncio.gather)
-                                        ↓
-                              HookRunner.after_tools()
-                                        ↓
-                              Loop continues or returns final response
+```python
+ctx = HostContext(home=..., cwd=..., config=..., interactive=..., display=...)
+agent = PluginHost(ctx).run(provider=..., config=AgentConfig(...))
 ```
 
-### Workflow Execution Flow
+`PluginHost.load()` → built-ins (fixed order) + `./.mocode/plugins/` + `~/.mocode/plugins/`, skipping reserved names. `build_all()` runs each `build(ctx)` inside try/except. `assemble()` builds the prompt from the finished tool/skill set, constructs the loop and assigns `ctx.agent`. A plugin needing the agent reads `ctx.agent` at call time — never capture it in `build()`.
 
-```
-CLIApp → DAGRunner.run()
-              ↓
-         RunState.from_workflow() → compute waves, activate root nodes
-              ↓
-         Main loop: while ready_queue and not should_stop()
-              ↓
-         Scheduler.announce_waves() → emit WaveReadyEvent
-              ↓
-         For each ready node:
-           router     → Scheduler.evaluate_router() → regex match routes → activate targets / back-edge
-           task+each  → resolve items → fan_out_children() → concurrent AgentLoop per item
-           task       → Executor._exec_node() → AgentLoop.chat(full_prompt) → parse_sections() → NodeResult
-              ↓
-         _record_node_done() → update state.context, persist, emit events, activate_downstream
-              ↓
-         Scheduler.activate_downstream() → decrement pending_deps, enqueue ready nodes
-```
+## Hard Invariants
+
+1. `core/` never imports `app/`, `providers/` or `plugins/`, and contains no specific tool name, feature name or config key beyond `AgentConfig`.
+2. Exactly one way to build an agent: the `Agent` builder or `AgentLoop.derive()`. Never a third hand-rolled `AgentLoop(...)`.
+3. Tools, commands, hooks and prompt sections are contributed only through `Plugin.build(ctx)` — the host hard-codes none.
+4. No string-protocol parsing between layers: outcomes are carried by `ctx.status`, UI notifications by events.
+5. No central tables of tool names to keep in sync — the `ToolRegistry` and `Tool` metadata are the source of truth.
 
 ## Code Conventions
 
-- **`from __future__ import annotations`** — Used in every module for PEP 604 unions.
-- **Dataclasses over Pydantic** — All models (`Config`, `Session`, `Node`, `Workflow`, `Response`, etc.) use `@dataclass`. Serialization is manual `to_dict()`/`from_dict()`.
-- **Async-first** — `AgentLoop.chat()` and all hooks are async. Sync tools run via `asyncio.to_thread()`.
-- **TYPE_CHECKING guard** — Import types used only for annotations under `if TYPE_CHECKING:` to avoid circular imports.
-- **No global state** — All dependencies are constructor-injected. `CLIApp` is the composition root that wires everything.
-- **Tool parameter dicts** — Tool parameters use `dict[str, dict]` with keys `type`, `description`, optional `default`/`optional`. Not JSON Schema — it's a simplified format. Defaults propagate into `to_schema()`.
-- **Tool subclasses pass `self._execute` as func** — e.g. `super().__init__(name="read", description=..., params=..., func=self._execute)`. The `_execute` method contains the actual logic.
-- **Command system** — Commands use `Command` dataclass with subcommands, handlers, and auto-expansion of `/prefix:subname` aliases. Commands are split across `mocode/app/cli/commands/` by domain.
-- **Spinner segments** — The spinner uses composable `Segment` objects with `Priority` (LOW/NORMAL/HIGH) and `Truncate` (TAIL/MIDDLE/NONE) strategies for responsive terminal display.
-- **Standard library preference** — `urllib.request` over `httpx`, `asyncio.to_thread` for sync wrappers. Only 5 runtime dependencies: `openai`, `pyyaml`, `prompt-toolkit`, `questionary`, `pyperclip`.
+- `from __future__ import annotations` in every module.
+- **Dataclasses over Pydantic**; serialization is manual `to_dict()` / `from_dict()`. `Config.from_dict` passes through every declared field generically — adding a field to the dataclass is enough.
+- **Async-first**: `AgentLoop.chat()` and all hooks are async. Sync tools run via `asyncio.to_thread`.
+- **TYPE_CHECKING guards** for types used only in annotations.
+- **No global state**: dependencies are constructor-injected; `CLIApp` is the composition root.
+- **Tool params** are `dict[str, dict]` with `type`, `description`, optional `default` / `optional` — not JSON Schema.
+- **Heavy imports stay lazy**: `openai` (inside `OpenAIProvider._ensure_client`), `questionary` (`app/cli/dialogs.py` resolves it on first use), `prompt_toolkit` (inside `Input` methods). Startup depends on this — keep the whole app importing and building under ~150 ms.
+- **Standard library first**: `urllib.request` over `httpx`, `subprocess` over shell wrappers. Runtime deps are `openai`, `pyyaml`, `prompt-toolkit`, `questionary`, `pyperclip`, `wcwidth`.
 
 ## Testing Patterns
 
-- **MockProvider** — Create a mock provider with canned `Response` objects for deterministic agent tests.
-- **`_make_app()` helper** — Patches `CLIApp._build_agent` and `SessionManager` to isolate CLIApp tests from real LLM/config.
-- **Display capture** — Override `display.print` with a list append to capture output for assertions.
-- **Async tests** — Use `@pytest.mark.asyncio` decorator (not `async def test_` without it).
-- **Test classes** — Group related tests in classes (no `unittest.TestCase` inheritance — plain pytest classes).
+- **`MockProvider`** with canned `Response` objects drives deterministic loop tests (`tests/test_agent_loop.py`).
+- **Plugin fixtures**: write a `PLUGIN.md` + `plugin.py` into `tmp_path` and point `PluginHost(ctx, plugin_dirs=[...])` at it (`tests/test_plugins.py`).
+- **CLI tests** stub `mocode.app.cli.app.PluginHost.run` rather than assembling for real.
+- **Display capture**: override `display.print` with a list append.
+- **Async tests**: `@pytest.mark.asyncio` (no bare `async def test_`).
+- **Plain pytest classes**, no `unittest.TestCase`.
+
+## Things that are deliberately absent
+
+Do not re-add these to `core/` without re-reading the rule at the top:
+
+- Context compaction — belongs in a hook that rewrites `ctx.messages` and emits an event (see `docs/plugins.md` for a worked example).
+- Sub-agents — a tool built on `derive()`.
+- Virtual filesystem — skills return their real `base_dir`; the filesystem tools read it.
+- Workflow / DAG engine — a plugin.
+- Permission prompts — an `on_tool_start` hook that sets `ctx.deny`.

@@ -5,6 +5,13 @@ from __future__ import annotations
 import inspect
 from typing import Callable
 
+#: Prefixes AgentLoop puts on failed tool results. Display layers use them when
+#: re-rendering saved history; live rendering reads ToolCallContext.status instead.
+ERROR_PREFIX = "error:"
+TIMEOUT_PREFIX = "timeout:"
+DENIED_PREFIX = "denied:"
+ERROR_PREFIXES: tuple[str, ...] = (ERROR_PREFIX, TIMEOUT_PREFIX, DENIED_PREFIX)
+
 
 class ToolError(Exception):
     """Tool execution error — callers catch this."""
@@ -18,6 +25,13 @@ class ToolError(Exception):
 class Tool:
     """Tool — supports sync and async functions.
 
+    Metadata beyond the schema:
+      - ``tags``: semantic capabilities (e.g. ``{"fs"}``, ``{"shell"}``,
+        ``{"delegation"}``). Registries are filtered by tag rather than by a
+        hard-coded list of tool names.
+      - ``summary_key``: which argument to show in one-line activity summaries.
+        Defaults to the first parameter.
+
     run() / run_async() propagate ToolError and Exception upward.
     The caller (AgentLoop) decides how to handle errors.
     """
@@ -28,9 +42,14 @@ class Tool:
         description: str,
         params: dict[str, dict],
         func: Callable[[dict], str],
+        *,
+        tags: frozenset[str] = frozenset(),
+        summary_key: str = "",
     ):
         self.name = name
         self.description = description
+        self.tags = frozenset(tags)
+        self.summary_key = summary_key or (next(iter(params), ""))
         self._required = []
         normalized = {}
         for k, v in params.items():
@@ -119,15 +138,43 @@ class ToolRegistry:
     def all(self) -> list[Tool]:
         return list(self._tools.values())
 
+    def names(self) -> list[str]:
+        return list(self._tools.keys())
+
     def all_schemas(self) -> list[dict]:
         if self._schema_cache is None:
             self._schema_cache = [t.to_schema() for t in self._tools.values()]
         return self._schema_cache
 
-    def derived(self, exclude: set[str] | None = None) -> ToolRegistry:
+    def select(
+        self,
+        *,
+        include_tags: set[str] | None = None,
+        exclude_tags: set[str] | None = None,
+        include_names: set[str] | None = None,
+        exclude_names: set[str] | None = None,
+    ) -> ToolRegistry:
+        """Create a filtered view sharing the same Tool instances.
+
+        A tool is kept when it matches every filter that is supplied:
+        ``include_tags`` / ``include_names`` are allow-lists, ``exclude_tags`` /
+        ``exclude_names`` are deny-lists.
+        """
         new = ToolRegistry()
-        if exclude:
-            new._tools = {k: v for k, v in self._tools.items() if k not in exclude}
-        else:
-            new._tools = dict(self._tools)
+        for name, tool in self._tools.items():
+            if include_names is not None and name not in include_names:
+                continue
+            if exclude_names and name in exclude_names:
+                continue
+            if include_tags is not None and not (tool.tags & include_tags):
+                continue
+            if exclude_tags and (tool.tags & exclude_tags):
+                continue
+            new._tools[name] = tool
         return new
+
+    def __len__(self) -> int:
+        return len(self._tools)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._tools

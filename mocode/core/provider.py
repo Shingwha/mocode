@@ -38,6 +38,20 @@ class Response:
     reasoning_content: str | None = None
 
 
+@dataclass(frozen=True)
+class ModelSpec:
+    """What the kernel knows about the model it is driving.
+
+    Both limits are optional because MoCode does not invent them. An absent
+    ``max_output`` means the request carries no output cap at all and the server
+    applies its own — guessing low would silently truncate answers.
+    """
+
+    name: str
+    context_window: int | None = None
+    max_output: int | None = None
+
+
 @runtime_checkable
 class Provider(Protocol):
     """LLM provider protocol."""
@@ -52,7 +66,7 @@ class Provider(Protocol):
         messages: list[dict[str, Any]],
         system: str,
         tools: list[dict[str, Any]],
-        max_tokens: int,
+        max_tokens: int | None,
     ) -> Response: ...
 
 

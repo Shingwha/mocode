@@ -29,7 +29,7 @@
 MoCode abstracts LLM communication through a **Protocol-based provider system**. The LLM consumer (primarily `AgentLoop`) only ever touches three DTOs (`Response`, `ToolCall`, `Usage`) and never imports any SDK-specific types. This clean separation means:
 
 - Adding a new LLM backend requires implementing a single Protocol.
-- The rest of the framework (tools, hooks, prompts, workflow engine) is LLM-agnostic.
+- The rest of the framework (the agent loop, tools, hooks, prompt assembly) is LLM-agnostic.
 - Multiple providers can coexist — `Config` holds a registry of `ProviderEntry` objects.
 
 The providers layer consists of two files:
@@ -109,7 +109,7 @@ class Provider(Protocol):
         messages: list[dict[str, Any]],
         system: str,
         tools: list[dict[str, Any]],
-        max_tokens: int,
+        max_tokens: int | None,
     ) -> Response: ...
 ```
 
@@ -121,7 +121,7 @@ Returns the model identifier string (e.g. `"gpt-4o"`, `"deepseek-r1"`). Used by:
 
 - `AgentLoop` for logging and display.
 - `Config` to track which model is active.
-- `CompactHook` to determine context window limits.
+- Building the `ModelSpec` when a model is not listed in the config catalog.
 
 ### `is_retriable(exc) -> bool`
 
@@ -135,7 +135,7 @@ async def call(
     messages: list[dict[str, Any]],   # conversation history (role/content/tool_calls/tool)
     system: str,                        # system prompt (single string)
     tools: list[dict[str, Any]],        # tool JSON schemas (empty list = no tools)
-    max_tokens: int,                    # maximum response tokens
+    max_tokens: int | None,                    # output cap, or None to let the server decide
 ) -> Response: ...
 ```
 
@@ -146,7 +146,7 @@ async def call(
 | `messages` | `list[dict[str, Any]]` | OpenAI-format message list. Each dict has `role` and either `content`, `tool_calls`, or `tool_call_id`. |
 | `system` | `str` | The complete system prompt — a single string, not a message. The provider is responsible for placing it as the system message. |
 | `tools` | `list[dict[str, Any]]` | JSON Schema tool definitions. An empty list means no tools are available (the provider should omit the `tools` parameter from the API call). |
-| `max_tokens` | `int` | Maximum tokens for the response. Default in `Config` is 8192. |
+| `max_tokens` | `int \| None` | Output cap for one response. `None` means MoCode sends no cap at all — the server applies its own. Set per model via `max_output`. |
 
 **The provider must:**
 
@@ -274,7 +274,7 @@ async def call(
     messages: list[dict[str, Any]],
     system: str,
     tools: list[dict[str, Any]],
-    max_tokens: int,
+    max_tokens: int | None,
 ) -> Response:
 ```
 
@@ -282,7 +282,7 @@ async def call(
 
 1. **Normalize messages** — calls `_normalize_messages()` to strip orphaned tool calls (see below).
 2. **Prepend system message** — creates `openai_messages` list with system message first, followed by normalized conversation messages.
-3. **Call the API** — `await self._ensure_client().chat.completions.create(...)` with model, messages, tools, max_tokens, and extra_body.
+3. **Call the API** — `await self._ensure_client().chat.completions.create(...)` with model, messages, tools and extra_body, plus `max_tokens` only when a cap is configured (an unset cap must not be invented).
 4. **Extract tool calls** — maps `message.tool_calls` to `ToolCall` DTOs.
 5. **Extract usage** — maps `raw.usage` to a `Usage` DTO (handles `None` values).
 6. **Extract reasoning** — reads `message.reasoning_content` via `getattr()` (not all models support this).
@@ -463,7 +463,7 @@ class AnthropicProvider:
         messages: list[dict[str, Any]],
         system: str,
         tools: list[dict[str, Any]],
-        max_tokens: int,
+        max_tokens: int | None,
     ) -> Response:
         # 1. Convert messages to your SDK's format
         # 2. Call the API
@@ -513,7 +513,7 @@ The `Config` → `ProviderEntry` → `Provider` wiring in `CLIApp._build_provide
 
 1. Add a `provider_type` field or use `base_url` to distinguish provider types.
 2. Map `ProviderEntry` fields to your constructor parameters.
-3. Register the provider in the `/connect` command flow.
+3. Make it reachable — `CLIApp._create_provider()` picks the provider class for the active entry; turn it into a registry lookup if you add a second implementation.
 
 ### Step 4: Handle Provider-Specific Message Formats
 

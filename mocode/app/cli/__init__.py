@@ -2,44 +2,37 @@
 
 from __future__ import annotations
 
+from .app import CLIApp
+from .commands import (
+    CONTINUE,
+    EXIT,
+    Command,
+    CommandContext,
+    CommandRegistry,
+    CommandResult,
+    Kind,
+)
+from .display import Display
+from .hook import CLIDisplayHook
+from .spinner import Priority, Spinner, Truncate
+from .theme import ColorPalette, DisplayStyles, Style, Theme
+
 __all__ = [
     "CLIApp",
-    "Display",
     "CLIDisplayHook",
-    "WorkflowRenderer",
+    "CONTINUE",
+    "ColorPalette",
+    "Command",
+    "CommandContext",
+    "CommandRegistry",
+    "CommandResult",
+    "Display",
+    "DisplayStyles",
+    "EXIT",
+    "Kind",
+    "Priority",
     "Spinner",
     "Style",
     "Theme",
-    "select",
-    "multiselect",
-    "confirm",
-    "text_input",
-    "Choice",
+    "Truncate",
 ]
-
-_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
-    "CLIApp": (".app", "CLIApp"),
-    "Display": (".display", "Display"),
-    "CLIDisplayHook": (".hook", "CLIDisplayHook"),
-    "WorkflowRenderer": (".workflow_renderer", "WorkflowRenderer"),
-    "Spinner": (".spinner", "Spinner"),
-    "Style": (".style", "Style"),
-    "Theme": (".theme", "Theme"),
-    "Choice": (".prompts", "Choice"),
-    "select": (".prompts", "select"),
-    "multiselect": (".prompts", "multiselect"),
-    "confirm": (".prompts", "confirm"),
-    "text_input": (".prompts", "text_input"),
-}
-
-
-def __getattr__(name: str):
-    if name in _LAZY_IMPORTS:
-        module_path, attr = _LAZY_IMPORTS[name]
-        import importlib
-
-        module = importlib.import_module(module_path, __name__)
-        value = getattr(module, attr)
-        globals()[name] = value  # cache for subsequent access
-        return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

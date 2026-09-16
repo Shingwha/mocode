@@ -4,6 +4,7 @@ import asyncio
 import pytest
 
 from mocode.core import (
+    ModelSpec,
     Agent,
     AgentLoop,
     AgentConfig,
@@ -115,10 +116,20 @@ class TestBuilder:
             Agent()
             .provider(MockProvider())
             .prompt("t")
-            .config(AgentConfig(max_tokens=4096))
+            .config(AgentConfig(tool_result_limit=4096))
             .build()
         )
-        assert agent.config.max_tokens == 4096
+        assert agent.config.tool_result_limit == 4096
+
+    def test_model_spec(self):
+        spec = ModelSpec(name="some-model", context_window=100_000, max_output=4096)
+        agent = Agent().provider(MockProvider()).prompt("t").model(spec).build()
+        assert agent.model is spec
+
+    def test_model_spec_defaults_from_provider(self):
+        agent = Agent().provider(MockProvider()).prompt("t").build()
+        assert agent.model.name == MockProvider().model
+        assert agent.model.max_output is None
 
     def test_no_tools_valid(self):
         agent = Agent().provider(MockProvider()).prompt("t").build()
@@ -268,7 +279,7 @@ class TestChat:
 
 class TestPrompt:
     def test_xml_format(self):
-        result = Prompt().register(Section("a", "x")).build(fmt="xml")
+        result = Prompt().register(Section("a", "x")).build()
         assert "<system-prompt>" in result
         assert "<a>" in result
 
@@ -277,14 +288,23 @@ class TestPrompt:
             Prompt()
             .register(Section("z", "second", priority=20))
             .register(Section("a", "first", priority=10))
-            .build(fmt="text")
+            .build()
         )
         assert result.index("first") < result.index("second")
+
+    def test_insertion_order_within_a_priority(self):
+        result = (
+            Prompt()
+            .register(Section("first", "aaa", priority=10))
+            .register(Section("second", "bbb", priority=10))
+            .build()
+        )
+        assert result.index("aaa") < result.index("bbb")
 
     def test_disable(self):
         p = Prompt().register(Section("a", "vis")).register(Section("b", "hid"))
         p.disable("b")
-        assert "hid" not in p.build(fmt="text")
+        assert "hid" not in p.build()
 
     def test_nested_section_xml(self):
         tools = Section(
@@ -294,7 +314,7 @@ class TestPrompt:
                 Section("tool", "Read files", attrs={"name": "read"}),
             ],
         )
-        result = Prompt().register(tools).build(fmt="xml")
+        result = Prompt().register(tools).build()
         assert "<tools>" in result
         assert '<tool name="bash">' in result
         assert "Run bash" in result

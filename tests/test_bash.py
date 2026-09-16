@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mocode.tools.bash import BashSession
+from mocode.app.plugin.builtin.shell import BashSession
 
 
 class TestBashSession:

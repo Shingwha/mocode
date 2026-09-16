@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mocode.tools.file import ReadTool
+from mocode.app.plugin.builtin.filesystem import ReadTool
 
 
 class TestReadDirectory:
@@ -41,11 +41,11 @@ class TestReadDirectory:
         assert "2.0 KB" in result
 
     def test_read_directory_hint_message(self, tmp_path: Path):
-        """read() on a directory should include hint about using glob."""
+        """read() on a directory should explain that it is a directory."""
         tool = ReadTool()
         result = tool.run({"path": str(tmp_path)})
         assert "directory" in result.lower()
-        assert "glob" in result.lower()
+        assert "bash" in result.lower()
 
     def test_read_directory_format_header(self, tmp_path: Path):
         """read() on a directory should use [bracket] header like glob/grep."""

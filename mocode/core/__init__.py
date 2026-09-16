@@ -1,72 +1,44 @@
-"""MoCode 0.3 — Core package."""
+"""MoCode core — the agent kernel.
+
+Mechanism only: the loop, tools, hooks, prompt assembly and provider protocol.
+Nothing in here knows about a specific feature — sub-agents, context compaction
+or any other capability is a plugin built on these primitives.
+"""
 
 from __future__ import annotations
 
+from .agent import AgentConfig, AgentLoop, LoopResult
+from .builder import Agent
+from .hook import (
+    AgentHook,
+    HookRunner,
+    IterationContext,
+    ToolCallContext,
+    ToolTimingTracker,
+)
+from .prompt import Prompt, Section
+from .provider import ModelSpec, Provider, Response, ToolCall, Usage, with_retry
+from .tool import Tool, ToolError, ToolRegistry
+
 __all__ = [
     "Agent",
-    "AgentLoop",
     "AgentConfig",
+    "AgentHook",
+    "AgentLoop",
+    "HookRunner",
+    "IterationContext",
     "LoopResult",
-    "SubAgent",
-    "SubAgentConfig",
+    "ModelSpec",
+    "Prompt",
     "Provider",
     "Response",
-    "ToolCall",
-    "Usage",
-    "Tool",
-    "ToolRegistry",
-    "ToolError",
-    "AgentHook",
-    "IterationContext",
-    "ToolCallContext",
-    "CompactContext",
-    "HookRunner",
-    "ToolTimingTracker",
-    "Prompt",
     "Section",
-    "Skill",
-    "SkillMetadata",
-    "SkillManager",
-    "make_builtin_skill",
-    "VirtualFS",
+    "Tool",
+    "ToolCall",
+    "ToolCallContext",
+    "ToolError",
+    "ToolRegistry",
+    "ToolTimingTracker",
+    "Usage",
+    "with_retry",
 ]
-
-_LAZY_IMPORTS: dict[str, tuple[str, str]] = {
-    "Agent": (".builder", "Agent"),
-    "AgentLoop": (".agent", "AgentLoop"),
-    "AgentConfig": (".agent", "AgentConfig"),
-    "LoopResult": (".agent", "LoopResult"),
-    "SubAgent": (".subagent", "SubAgent"),
-    "SubAgentConfig": (".subagent", "SubAgentConfig"),
-    "Provider": (".provider", "Provider"),
-    "Response": (".provider", "Response"),
-    "ToolCall": (".provider", "ToolCall"),
-    "Usage": (".provider", "Usage"),
-    "Tool": (".tool", "Tool"),
-    "ToolRegistry": (".tool", "ToolRegistry"),
-    "ToolError": (".tool", "ToolError"),
-    "AgentHook": (".hook", "AgentHook"),
-    "IterationContext": (".hook", "IterationContext"),
-    "ToolCallContext": (".hook", "ToolCallContext"),
-    "CompactContext": (".hook", "CompactContext"),
-    "HookRunner": (".hook", "HookRunner"),
-    "ToolTimingTracker": (".hook", "ToolTimingTracker"),
-    "Prompt": (".prompt", "Prompt"),
-    "Section": (".prompt", "Section"),
-    "Skill": (".skill", "Skill"),
-    "SkillMetadata": (".skill", "SkillMetadata"),
-    "SkillManager": (".skill", "SkillManager"),
-    "make_builtin_skill": (".skill", "make_builtin_skill"),
-    "VirtualFS": (".virtualfs", "VirtualFS"),
-}
-
-
-def __getattr__(name: str):
-    if name in _LAZY_IMPORTS:
-        import importlib
-        module_path, attr = _LAZY_IMPORTS[name]
-        module = importlib.import_module(module_path, __name__)
-        value = getattr(module, attr)
-        globals()[name] = value
-        return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

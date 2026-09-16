@@ -1,8 +1,8 @@
 # MoCode
 
-A lean AI agent framework — build custom agents with composable tools, prompts, and providers.
+A lean AI agent framework — a small, plugin-extensible core you can build custom agents on.
 
-MoCode gives you an interactive REPL (or CLI one-shot) where an LLM can read/write files, run shell commands, search code, delegate sub-tasks, and orchestrate multi-step workflows — all through a simple tool-based architecture you can extend with Python.
+MoCode gives you an interactive REPL (or one-shot CLI) where an LLM can read and write files, run shell commands, and load reusable skills. Everything beyond the kernel — and that includes the built-in tools — is a plugin you can replace, disable, or write yourself.
 
 ---
 
@@ -16,15 +16,10 @@ MoCode gives you an interactive REPL (or CLI one-shot) where an LLM can read/wri
 ```bash
 # Direct install
 uv tool install git+https://github.com/Shingwha/mocode.git
-```
 
-### Developer Install
-
-```bash
+# Developer install
 git clone https://github.com/Shingwha/mocode.git
 cd mocode
-
-# Install in editable mode
 uv tool install -e .
 ```
 
@@ -33,23 +28,20 @@ uv tool install -e .
 ## Quick Start
 
 ```bash
-# 1. Configure a provider (interactive wizard)
-mocode
-> /connect
+# 1. Describe your provider and model in ~/.mocode/config.json (see Configuration)
+#    Leave api_key out and export INTERN_API_KEY instead if you prefer.
 
 # 2. Start chatting
+mocode
 > What does this project do?
 ```
 
-Or one-shot mode:
+One-shot mode:
 
 ```bash
 mocode -p "Explain what mocode/core/agent.py does"
-```
 
-With piped input:
-
-```bash
+# with piped input as context
 cat error.log | mocode -p "Summarize these errors"
 ```
 
@@ -57,171 +49,136 @@ cat error.log | mocode -p "Summarize these errors"
 
 ## Configuration
 
-MoCode stores all config in `~/.mocode/config.json`. The file is created when you first add a provider via `/connect`.
-
-### Config Structure
+MoCode reads `~/.mocode/config.json`. The file is organised by who owns each value: connection details per provider, model facts per model, and host policy on its own.
 
 ```jsonc
 {
-  "active_provider": "deepseek",
-  "active_model": "deepseek-v4-pro",
-  "max_tokens": 8192,
-  "tool_result_limit": 25000,
-  "tool_timeout": 240,
+  "active_provider": "intern",
+  "active_model": "Atria-Dawn-Preview",
+
+  "agent": {                       // host policy — the same whatever model is loaded
+    "tool_timeout": 240,           // seconds before a tool call is abandoned
+    "max_iterations": 0            // 0 = no limit on tool-calling rounds
+  },
+
   "providers": {
-    "deepseek": {
-      "name": "DeepSeek",
-      "api_key": "sk-...",
-      "base_url": "https://api.deepseek.com",
-      "models": [
-        {
-          "name": "deepseek-v4-flash",
-          "extra_body": {
-            "thinking": { "type": "enabled" }
-          }
-        },
-        {
-          "name": "deepseek-v4-pro",
-          "extra_body": {
-            "thinking": { "type": "enabled" }
-          }
+    "intern": {
+      "name": "Intern Discovery",
+      "base_url": "https://discovery-api.intern-ai.org.cn/v1",
+      "api_key": "sk-...",         // optional — see below
+      "models": {                  // keyed by model name
+        "Atria-Dawn-Preview": {
+          "context_window": 200000,  // optional; for plugins that budget context
+          "max_output": 32768,       // optional; no cap is sent when absent
+          "extra_body": {}           // optional; provider-specific request fields
         }
-      ]
-    },
-    "mimo": {
-      "name": "Xiaomi MiMo",
-      "api_key": "tp-...",
-      "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
-      "models": [
-        { "name": "mimo-v2.5-pro" },
-        { "name": "mimo-v2.5" }
-      ]
+      }
     }
+  },
+
+  "plugins": {
+    "shell": { "enabled": false }
   }
 }
 ```
 
-### Provider Fields
+### API keys
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `name` | No | Display name shown in `/model` |
-| `api_key` | Yes | API key for the provider |
-| `base_url` | No | Custom API endpoint (for OpenAI-compatible providers) |
-| `models` | Yes | List of model names or `{name, extra_body}` objects |
+Leave `api_key` out and MoCode looks for `INTERN_API_KEY` — the provider key, upper-cased, with non-alphanumerics as underscores (`my-gateway` → `MY_GATEWAY_API_KEY`). Nothing to declare:
 
-### Global Settings
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `active_provider` | — | Key of the currently active provider |
-| `active_model` | — | Model name to use for chat |
-| `max_tokens` | `8192` | Max tokens per LLM response |
-| `tool_result_limit` | `25000` | Truncate tool results beyond this character count |
-| `tool_timeout` | `240` | Seconds before a tool call times out |
-
-### Managing Providers
-
-Use the `/connect` command in the interactive REPL to add, edit, or delete providers. You can also edit `~/.mocode/config.json` directly.
-
-```
-> /connect          # opens interactive provider manager
-> /model            # switch between providers and models
+```bash
+export INTERN_API_KEY=sk-...
 ```
 
-### Using Non-OpenAI Providers
+An explicit `api_key` in the file wins over the environment.
 
-Any OpenAI-compatible API works — just set `base_url`. The main config above shows DeepSeek and Xiaomi MiMo as examples. For local Ollama:
+### Output caps
 
-```jsonc
-{
-  "ollama": {
-    "name": "Ollama (local)",
-    "api_key": "ollama",
-    "base_url": "http://localhost:11434/v1",
-    "models": [{ "name": "llama3.1" }]
-  }
-}
-```
+MoCode sends **no** `max_tokens` unless you set `max_output` on the model. Guessing low silently truncates answers, and guessing high can be rejected outright, so the server's own default applies until you say otherwise.
 
-### Per-Model `extra_body`
+### Model facts
 
-Pass provider-specific parameters on a per-model basis. For example, enable DeepSeek's extended thinking mode:
+`context_window` and `max_output` are optional and stay absent until you fill them in — MoCode never invents a model's limits. They are what plugins read (a compaction hook, for example, needs the window size) and what the request carries.
 
-```jsonc
-"models": [
-  {
-    "name": "deepseek-v4-pro",
-    "extra_body": {
-      "thinking": { "type": "enabled" }
-    }
-  }
-]
-```
+Any OpenAI-compatible API works — just set `base_url`. Per-model `extra_body` passes provider-specific fields straight through (DeepSeek's `thinking`, llama.cpp's samplers, and so on).
+
+`> /model` switches provider and model and writes the choice back to the file.
+
+Keys MoCode does not recognise are preserved untouched when it saves.
 
 ---
 
 ## Built-in Tools
 
-| Tool | Description |
-|------|-------------|
-| `read` | Read files with line numbers; supports offset/limit |
-| `write` | Write or append content to files |
-| `edit` | Find-and-replace text in files |
-| `glob` | Find files matching a pattern |
-| `grep` | Search file contents with regex |
-| `bash` | Run shell commands in a persistent session |
-| `fetch` | Fetch a URL and convert to Markdown |
-| `skill` | Load a skill by name |
-| `sub_agent` | Delegate a task to a sub-agent |
+Shipped as the `filesystem` and `shell` plugins:
+
+| Tool | Plugin | Description |
+|------|--------|-------------|
+| `read` | `filesystem` | Read a file with line numbers (supports offset/limit, lists directories) |
+| `write` | `filesystem` | Write or append to a file |
+| `edit` | `filesystem` | Find-and-replace in a file |
+| `bash` | `shell` | Run commands in a persistent bash session (cwd and env survive) |
+| `skill` | `skills` | Load a skill's instructions by name |
+
+Need `glob`, `grep`, web fetch, sub-agents or context compaction? Those are plugins. See [docs/plugins.md](docs/plugins.md) — a sub-agent tool is about 40 lines on top of the kernel's `derive()` primitive.
 
 ---
 
 ## Skills
 
-Skills are directory-based extensions. Each skill has a `SKILL.md` (YAML frontmatter + content) and optional reference files.
+A skill is a directory with a `SKILL.md` (YAML frontmatter + instructions) and optional reference files the agent can read.
 
-**Built-in:** `workflow` — DAG-based multi-step task orchestration.
-
-**Custom skills:** Place skill directories in `~/.mocode/skills/`. Each needs a `SKILL.md`:
+```
+~/.mocode/skills/my-skill/SKILL.md
+./.mocode/skills/my-skill/SKILL.md
+```
 
 ```markdown
 ---
 name: my-skill
-description: What this skill does.
+description: What this skill does, and when to use it.
 ---
 
-Instructions for the agent when this skill is loaded...
+Instructions the agent follows once this skill is loaded.
 ```
 
-Load a skill in chat: `> /skill:my-skill` or use the `skill` tool.
+Two ways to use one: `> /skill:my-skill` injects it into the conversation, or the agent calls the `skill` tool on its own when the description matches the request.
 
 ---
 
-## Workflows
+## Plugins
 
-Multi-step task orchestration as a YAML DAG. Each node runs an independent LLM session.
+A plugin is a directory with `PLUGIN.md` and (optionally) `plugin.py`:
 
-```yaml
-name: code-review
-params:
-  - path
-  - focus: "general"
-
-nodes:
-  - id: scan
-    task: Scan {path} for issues, focus on {focus}.
-
-  - id: report
-    task: Summarize: {nodes.scan.output}
-    depends: [scan]
+```
+./.mocode/plugins/git-helper/     project-local (wins on name conflicts)
+~/.mocode/plugins/git-helper/     user-global
+├── PLUGIN.md
+└── plugin.py
 ```
 
-```bash
-> /workflow run code-review ./src security
+```python
+from mocode.plugins import Plugin, Tool
+
+class GitStatusTool(Tool):
+    def __init__(self):
+        super().__init__(
+            name="git_status",
+            description="Show the working tree status of the current repo.",
+            params={},
+            func=lambda args: "clean",
+        )
+
+class GitHelperPlugin(Plugin):
+    name = "git-helper"
+
+    def build(self, ctx):
+        ctx.tools.register(GitStatusTool())
+        # also: ctx.register(Command(...)), ctx.hooks.append(...),
+        #       ctx.prompt_sections.append(Section(...))
 ```
 
-Node types: `task` (LLM prompt), `router` (conditional routing), `map` (fan-out over a list).
+Restart MoCode and it is live. A complete example lives in [examples/plugins/git-status](examples/plugins/git-status). Plugins are trusted code — installing one runs it.
 
 ---
 
@@ -230,40 +187,34 @@ Node types: `task` (LLM prompt), `router` (conditional routing), `map` (fan-out 
 | Command | Description |
 |---------|-------------|
 | `/help` | Show all commands |
-| `/connect` | Manage providers |
 | `/model` | Switch provider/model |
-| `/resume [id]` | Resume a previous session |
-| `/export [json\|md]` | Export current session |
-| `/clear` | Save and clear conversation |
-| `/copy` | Copy last response to clipboard |
-| `/compact` | Compress conversation to free context |
-| `/init` | Analyze project and create AGENTS.md |
-| `/fix <issue>` | Fix a bug with guided process |
-| `/workflow` | Workflow management |
+| `/resume [file.json]` | Browse and resume sessions |
+| `/export [json\|md]` | Export the current session |
+| `/clear` | Save and clear the conversation |
+| `/copy` | Copy the last response to the clipboard |
+| `/skill:<name>` | Inject a skill into the conversation |
 | `/quit` | Exit |
 
 ---
 
 ## AGENTS.md
 
-MoCode reads `AGENTS.md` files to give the agent project-specific context:
+Two files are merged into the system prompt, global first:
 
-- `~/.mocode/AGENTS.md` — global instructions (all projects)
-- `./AGENTS.md` — project-level instructions (working directory)
-
-Use `/init` to auto-generate a project AGENTS.md, or write one manually.
+- `~/.mocode/AGENTS.md` — instructions for all your projects
+- `./AGENTS.md` — instructions for this project
 
 ---
 
-## Project Structure
+## Project Layout
 
 ```
 ~/.mocode/
-├── config.json          # Provider & model config
-├── AGENTS.md            # Global instructions
-├── sessions/            # Saved conversation sessions
-├── skills/              # Custom skills
-└── workflow_runs/       # Workflow run results
+├── config.json      # Providers, models, plugin switches
+├── AGENTS.md        # Global instructions
+├── sessions/        # Saved conversations
+├── skills/          # Your skills
+└── plugins/         # Your plugins
 ```
 
 ---

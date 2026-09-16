@@ -9,20 +9,31 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from .hook import HookRunner, IterationContext, ToolCallContext
-from .provider import Provider, Response, Usage, with_retry
-from .tool import ToolError, ToolRegistry
+from .provider import ModelSpec, Provider, Response, Usage, with_retry
+from .tool import (
+    DENIED_PREFIX,
+    ERROR_PREFIX,
+    TIMEOUT_PREFIX,
+    ToolError,
+    ToolRegistry,
+)
 
 
 @dataclass
 class AgentConfig:
-    max_tokens: int = 32768
-    tool_result_limit: int = 25000
+    """Loop execution policy. Facts about the model live in :class:`ModelSpec`."""
+
+    tool_result_limit: int = 50000
     tool_timeout: int = 240
     max_iterations: int = 0  # 0 = unlimited
+
+    def replace(self, **changes) -> AgentConfig:
+        """Return a copy with the given fields changed (e.g. for derived agents)."""
+        return replace(self, **changes)
 
 
 @dataclass
@@ -34,7 +45,11 @@ class LoopResult:
 
 
 class AgentLoop:
-    """LLM chat engine — receives all dependencies via constructor."""
+    """LLM chat engine — receives all dependencies via constructor.
+
+    Public mutable state: ``provider`` (swappable at runtime), ``system_prompt``,
+    ``messages``, ``hooks``. Derived agents are created with :meth:`derive`.
+    """
 
     INTERRUPT_MSG = "[Response was interrupted by the user before completion.]"
     INTERRUPT_TOOL_MSG = (
@@ -48,8 +63,10 @@ class AgentLoop:
         tools: ToolRegistry,
         hooks: HookRunner,
         config: AgentConfig | None = None,
+        model: ModelSpec | None = None,
     ):
         self.provider = provider
+        self.model = model if model is not None else ModelSpec(name=provider.model)
         self.system_prompt = system_prompt
         self._tools = tools
         self.hooks = hooks
@@ -61,7 +78,31 @@ class AgentLoop:
         self._iteration_count = 0
         self._tool_call_count = 0
 
-    def reset(self, *, hooks: HookRunner | None = None) -> None:
+    def derive(
+        self,
+        *,
+        system_prompt: str | None = None,
+        tools: ToolRegistry | None = None,
+        hooks: HookRunner | None = None,
+        config: AgentConfig | None = None,
+        model: ModelSpec | None = None,
+    ) -> AgentLoop:
+        """Create an independent agent that shares this one's provider.
+
+        Message history is always fresh; everything else is inherited unless
+        overridden. This is the primitive behind sub-agents, workflow nodes and
+        any other "run a nested agent with narrower tools" feature.
+        """
+        return AgentLoop(
+            provider=self.provider,
+            system_prompt=self.system_prompt if system_prompt is None else system_prompt,
+            tools=self._tools if tools is None else tools,
+            hooks=hooks if hooks is not None else HookRunner(),
+            config=self.config if config is None else config,
+            model=self.model if model is None else model,
+        )
+
+    def reset(self) -> None:
         """Reset mutable state for reuse. Shared deps (provider, prompt, tools) stay."""
         self.messages = []
         self._last_usage = None
@@ -69,8 +110,6 @@ class AgentLoop:
         self._call_seq = 0
         self._iteration_count = 0
         self._tool_call_count = 0
-        if hooks is not None:
-            self.hooks = hooks
 
     # ---- Chat ----
 
@@ -104,23 +143,18 @@ class AgentLoop:
             )
 
     async def _loop(self) -> str:
-        ctx = IterationContext(messages=self.messages)
+        ctx = IterationContext(messages=self.messages, emit=self.hooks.on_event)
         final_response = ""
         self._iteration_count = 0
         self._tool_call_count = 0
         self._total_usage = Usage(0, 0)
 
         while True:
+            self._iteration_count += 1
+            ctx.iteration = self._iteration_count
+
             await self.hooks.before_iteration(ctx)
             self.messages = ctx.messages
-            if ctx._needs_compact:
-                old_count = len(ctx.messages)
-                from .hook import CompactContext
-
-                compact_ctx = CompactContext(messages=ctx.messages, old_count=old_count)
-                await self.hooks.on_compact(compact_ctx)
-                compact_ctx.new_count = len(ctx.messages)
-                ctx._needs_compact = False
 
             try:
                 response: Response = await with_retry(
@@ -129,7 +163,7 @@ class AgentLoop:
                     self.messages,
                     self.system_prompt,
                     self._tools.all_schemas(),
-                    self.config.max_tokens,
+                    self.model.max_output,
                 )
             except asyncio.CancelledError:
                 self.messages.append(
@@ -174,7 +208,7 @@ class AgentLoop:
                 ]
                 try:
                     tool_results = await self._run_tool_calls_parallel(
-                        response.tool_calls, ctx
+                        response.tool_calls, ctx.emit
                     )
                 except asyncio.CancelledError:
                     tool_results = [
@@ -198,7 +232,6 @@ class AgentLoop:
                 await self.hooks.after_tools(ctx)
                 self.messages = ctx.messages
 
-                self._iteration_count += 1
                 if (
                     self.config.max_iterations > 0
                     and self._iteration_count >= self.config.max_iterations
@@ -264,55 +297,80 @@ class AgentLoop:
             return result[:limit] + "\n... [truncated]"
         return result
 
-    async def _run_tool_async(
-        self, tool_name: str, tool_args: dict, messages: list[dict]
+    async def _run_tool(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        emit=None,
     ) -> str:
-        """Returns tool result string."""
-        call_id = self._next_call_id()
+        """Run one tool call. Returns the tool result string.
 
+        Hooks intercept at two points: ``on_tool_start`` (rewrite args, veto via
+        deny) and ``on_tool_complete`` (rewrite the result). ``status`` records
+        the structured outcome so callers never parse the result text.
+        """
         tc = ToolCallContext(
-            tool_name=tool_name, tool_args=tool_args, tool_call_id=call_id
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_call_id=self._next_call_id(),
+            emit=emit or self.hooks.on_event,
         )
         await self.hooks.on_tool_start(tc)
 
-        tool = self._tools.get(tool_name)
+        if tc.deny:
+            tc.status = "denied"
+            tc.tool_result = f"{DENIED_PREFIX} {tc.deny}"
+        else:
+            await self._execute_tool(tc)
+
+        tc.tool_result = self._truncate(tc.tool_result or "")
+        await self.hooks.on_tool_complete(tc)
+        return tc.tool_result
+
+    async def _execute_tool(self, tc: ToolCallContext) -> None:
+        """Execute tc's tool, recording status/result on the context."""
+        tool = self._tools.get(tc.tool_name)
         if tool is None:
-            tc.tool_error = f"unknown tool '{tool_name}'"
-            await self.hooks.on_tool_complete(tc)
-            return f"unknown tool '{tool_name}'"
+            tc.status = "not_found"
+            tc.tool_result = f"unknown tool '{tc.tool_name}'"
+            return
 
         try:
             if tool.is_async:
                 result = await asyncio.wait_for(
-                    tool.run_async(tool_args),
+                    tool.run_async(tc.tool_args),
                     timeout=self.config.tool_timeout,
                 )
             else:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(tool.run, tool_args),
+                    asyncio.to_thread(tool.run, tc.tool_args),
                     timeout=self.config.tool_timeout,
                 )
         except asyncio.TimeoutError:
+            tc.status = "timeout"
             tc.tool_timeout = self.config.tool_timeout
-            await self.hooks.on_tool_complete(tc)
-            return self._truncate(f"timeout: {self.config.tool_timeout}s")
+            tc.tool_result = f"{TIMEOUT_PREFIX} {self.config.tool_timeout}s"
         except ToolError as e:
-            result = f"{e.code}: {e.message}"
-            tc.tool_error = result
+            tc.status = "error"
+            tc.error_code = e.code
+            tc.tool_result = f"{e.code}: {e.message}"
         except Exception as e:
-            result = f"error: {e}"
-            tc.tool_error = result
+            tc.status = "error"
+            tc.tool_result = f"{ERROR_PREFIX} {e}"
+        else:
+            tc.tool_result = result if isinstance(result, str) else str(result)
 
-        tc.tool_result = self._truncate(result)
-        await self.hooks.on_tool_complete(tc)
-        return tc.tool_result
-
-    async def _run_tool_calls_parallel(
-        self, tool_calls: list, ctx: IterationContext
-    ) -> list[dict]:
+    async def _run_tool_calls_parallel(self, tool_calls: list, emit) -> list[dict]:
         async def _run_one(tc):
-            tool_args = json.loads(tc.arguments)
-            result = await self._run_tool_async(tc.name, tool_args, ctx.messages)
+            try:
+                tool_args = json.loads(tc.arguments)
+            except json.JSONDecodeError as e:
+                return {
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": f"error: invalid JSON arguments ({e})",
+                }
+            result = await self._run_tool(tc.name, tool_args, emit)
             return {"role": "tool", "tool_call_id": tc.id, "content": result}
 
         raw_results = await asyncio.gather(
@@ -345,12 +403,13 @@ class AgentLoop:
 
     @property
     def iteration(self) -> int:
-        """Number of LLM iterations completed in the last chat() loop.
+        """Number of LLM calls made in the last chat() loop."""
+        return self._iteration_count
 
-        Returns tool-call batches + 1 (the final no-tool-call response).
-        Minimum 1 after a chat() call.
-        """
-        return self._iteration_count + 1 if self._iteration_count else 0
+    @property
+    def tool_call_count(self) -> int:
+        """Number of tool calls executed in the last chat() loop."""
+        return self._tool_call_count
 
     @property
     def last_usage(self) -> Usage | None:

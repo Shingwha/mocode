@@ -1,12 +1,14 @@
-"""Prompt building — section-based, format-aware.
+"""Prompt building — section-based, XML output.
 
-v0.3: Core only — no built-in renderers, no system_prompt() factory.
+Sections are rendered in ``(priority, insertion order)`` order, so a builder can
+place stable content first and volatile content last to keep the provider's
+prefix cache warm. Nested sections become nested XML tags.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal, Self
+from typing import Any, Callable, Self
 
 
 def _xml_tag(tag: str, content: str = "", **attrs: str) -> str:
@@ -17,8 +19,6 @@ def _xml_tag(tag: str, content: str = "", **attrs: str) -> str:
 
 
 Content = str | list["Section"] | Callable[[dict[str, Any]], str]
-
-Format = Literal["text", "xml"]
 
 
 @dataclass
@@ -69,7 +69,7 @@ class Prompt:
         self._context.update(kwargs)
         return self
 
-    def _render_xml(self, section: Section) -> str | None:
+    def _render(self, section: Section) -> str | None:
         content = section.content
         if callable(content):
             content = content(self._context)
@@ -79,61 +79,29 @@ class Prompt:
             for child in content:
                 if not child.enabled:
                     continue
-                child_content = self._render_xml(child)
+                child_content = self._render(child)
                 if not child_content:
                     continue
                 parts.append(_xml_tag(child.name, child_content, **child.attrs))
             return "\n\n".join(parts) if parts else None
         return content if content else None
 
-    def _render_text(self, section: Section, indent: int = 0) -> str | None:
-        content = section.content
-        if callable(content):
-            content = content(self._context)
-
-        prefix = "  " * indent
-        name_part = section.name
-        if section.attrs:
-            attrs_str = ", ".join(f"{k}={v}" for k, v in section.attrs.items())
-            name_part = f"{name_part} ({attrs_str})"
-
-        if isinstance(content, list):
-            lines = [f"{prefix}{name_part}:"]
-            for child in content:
-                if not child.enabled:
-                    continue
-                child_text = self._render_text(child, indent + 1)
-                if child_text:
-                    lines.append(child_text)
-            return "\n".join(lines) if len(lines) > 1 else None
-
-        if not content:
-            return None
-        if "\n" in content:
-            return f"{prefix}{name_part}:\n{content}"
-        return f"{prefix}{name_part}: {content}"
-
-    def build(self, fmt: str = "text", wrap: str | None = None) -> str:
-        render = self._render_xml if fmt == "xml" else self._render_text
-        sorted_sections = sorted(
-            self._sections.values(), key=lambda s: (s.priority, s.name)
+    def build(self, wrap: str = "system-prompt") -> str:
+        """Render all enabled sections into one XML string."""
+        ordered = sorted(
+            enumerate(self._sections.values()),
+            key=lambda pair: (pair[1].priority, pair[0]),
         )
         parts = []
-        for s in sorted_sections:
+        for _, s in ordered:
             if not s.enabled:
                 continue
-            content = render(s)
+            content = self._render(s)
             if not content:
                 continue
-            if fmt == "xml":
-                parts.append(_xml_tag(s.name, content, **s.attrs))
-            else:
-                parts.append(content)
+            parts.append(_xml_tag(s.name, content, **s.attrs))
         body = "\n\n".join(parts)
-        if fmt == "xml":
-            tag = wrap or "system-prompt"
-            return f"<{tag}>\n\n{body}\n\n</{tag}>"
-        return body
+        return f"<{wrap}>\n\n{body}\n\n</{wrap}>"
 
     def __repr__(self) -> str:
         sections = ", ".join(

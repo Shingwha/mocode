@@ -9,9 +9,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 
-from ..utils import ellipsize_middle, ellipsize_tail, terminal_width, visible_width
-from .palette import DEFAULT_PALETTE, ColorPalette
-from .styles import SpinnerStyles
+from ..text import ellipsize_middle, ellipsize_tail, terminal_width, visible_width
+from .theme import DEFAULT_PALETTE, ColorPalette, SpinnerStyles
 
 
 # ── Spinner style ────────────────────────────────────────────
@@ -43,63 +42,10 @@ _PRESETS: dict[str, Spinner] = {
     "sweep": Spinner.from_list(
         _ping_pong([f"{'░' * i}█{'░' * (9 - i)}" for i in range(10)]), 0.10
     ),
-    "chase": Spinner.from_list(
-        [" ".join("●" if j == i else "○" for j in range(5)) for i in range(5)], 0.18
-    ),
-    # --- Fun additions ---
     "triangle": Spinner(frames=("△", "▷", "▽", "◁"), speed=0.18),
-    "wave": Spinner.from_list(
-        ["".join("▁▂▃▄▅▆▇█▇▆▅▄▃▂"[(i + j) % 14] for j in range(10)) for i in range(14)],
-        0.10,
-    ),
-    "fill": Spinner(frames=("░", "▒", "▓", "█", "▓", "▒"), speed=0.15),
-    "music": Spinner(frames=("♩", "♪", "♫", "♬"), speed=0.30),
-    "chess": Spinner(frames=("♔", "♕", "♖", "♗", "♘", "♙"), speed=0.25),
-    "math": Spinner(frames=("∑", "∏", "∫", "∂", "∇", "√"), speed=0.28),
-    "bounce": Spinner.from_list(
-        _ping_pong(["●····", "·●···", "··●··", "···●·", "····●"]), 0.15
-    ),
-    "signal": Spinner(frames=("○○○○", "●○○○", "●●○○", "●●●○", "●●●●"), speed=0.25),
-    "equalizer": Spinner(
-        frames=(
-            "▃▅▇",
-            "▅▇▅",
-            "▇▅▃",
-            "▅▃▁",
-            "▃▁▃",
-            "▁▃▅",
-        ),
-        speed=0.12,
-    ),
-    "ripple": Spinner(frames=("···", "·∘·", "∘○∘", "○◌○", "◌·◌"), speed=0.2),
-    "rain": Spinner(frames=("│···", "·│··", "··│·", "···│"), speed=0.15),
-    "scroll": Spinner(
-        frames=(
-            "░▒▓█▓▒░",
-            "▒▓█▓▒░░",
-            "▓█▓▒░░░",
-            "█▓▒░░░░",
-            "▓▒░░░░░",
-            "▒░░░░░░",
-            "░░░░░░░",
-            "░░░░░░▒",
-            "░░░░░▒▓",
-            "░░░░▒▓█",
-            "░░░▒▓█▓",
-            "░░▒▓█▓▒",
-            "░▒▓█▓▒░",
-        ),
-        speed=0.06,
-    ),
-    # --- Single-emoji spinners (one emoji per frame, width-stable) ---
-    "globe": Spinner(frames=("🌍", "🌎", "🌏"), speed=0.45),
     "clock": Spinner(
         frames=("🕐", "🕑", "🕒", "🕓", "🕔", "🕕", "🕖", "🕗", "🕘", "🕙", "🕚", "🕛"),
         speed=0.15,
-    ),
-    # --- Track animation (fixed-width) ---
-    "runner": Spinner.from_list(
-        _ping_pong([f"{'─' * i}🏃{'─' * (14 - i)}" for i in range(15)]), 0.10
     ),
 }
 

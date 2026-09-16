@@ -33,7 +33,12 @@ def _run_app(
     """Unified entry: create CLIApp, check config, dispatch to run or run_oneshot."""
     from .app.cli import CLIApp
 
-    app = CLIApp(interactive=interactive)
+    try:
+        app = CLIApp(interactive=interactive)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)
+
     if app.config is None:
         print("Config not found. Create ~/.mocode/config.json first.", file=sys.stderr)
         sys.exit(1)

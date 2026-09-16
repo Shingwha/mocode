@@ -66,20 +66,25 @@ class OpenAIProvider:
         messages: list[dict[str, Any]],
         system: str,
         tools: list[dict[str, Any]],
-        max_tokens: int,
+        max_tokens: int | None,
     ) -> Response:
         openai_messages = [
             {"role": "system", "content": system},
             *self._normalize_messages(messages),
         ]
 
-        raw = await self._ensure_client().chat.completions.create(
-            model=self._model,
-            messages=openai_messages,
-            tools=tools or None,  # type: ignore[arg-type]
-            max_tokens=max_tokens,
-            extra_body=self._extra_body,
-        )
+        request: dict[str, Any] = {
+            "model": self._model,
+            "messages": openai_messages,
+            "tools": tools or None,
+            "extra_body": self._extra_body,
+        }
+        # No cap configured → send none and let the server apply its own limit,
+        # rather than capping the answer at a number MoCode made up.
+        if max_tokens is not None:
+            request["max_tokens"] = max_tokens
+
+        raw = await self._ensure_client().chat.completions.create(**request)
 
         choice = raw.choices[0]
         message = choice.message
