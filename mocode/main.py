@@ -31,10 +31,12 @@ def _run_app(
     *, interactive: bool, prompt: str | None = None, stdin_text: str | None = None
 ):
     """Unified entry: create CLIApp, check config, dispatch to run or run_oneshot."""
-    from .app.cli import CLIApp
+    from .cli import CLIApp
 
     try:
-        app = CLIApp(interactive=interactive)
+        # A one-shot on a terminal draws its turn as it happens; redirected, it
+        # prints only the answer. Interactive already implies a frontend.
+        app = CLIApp(interactive=interactive, render=sys.stdout.isatty())
     except ValueError as e:
         print(f"error: {e}", file=sys.stderr)
         sys.exit(1)

@@ -5,9 +5,9 @@ Depends on the `openai` package. Install with: uv pip install "mocode[openai]"
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, AsyncIterator
 
-from ..core.provider import Response, ToolCall, Usage
+from ..core.provider import Chunk, ToolCallDelta, Usage
 
 
 class OpenAIProvider:
@@ -27,7 +27,17 @@ class OpenAIProvider:
         self._base_url = base_url
         self._client = None  # lazy — created on first call
         self._model = model
-        self._extra_body = extra_body
+
+        # `stream_options` is accepted as a key inside extra_body, because
+        # token accounting is configured per endpoint and MoCode's config
+        # already has a free-form escape hatch for that. Lift it out so it is
+        # not sent twice.
+        body = dict(extra_body) if extra_body else {}
+        self._stream_options: dict[str, Any] = {"include_usage": True}
+        configured = body.pop("stream_options", None)
+        if isinstance(configured, dict):
+            self._stream_options = configured
+        self._extra_body = body or None
 
     def _ensure_client(self):
         if self._client is None:
@@ -61,13 +71,13 @@ class OpenAIProvider:
     def is_retriable(self, exc: Exception) -> bool:
         return isinstance(exc, self._load_exc_classes())
 
-    async def call(
+    async def stream(
         self,
         messages: list[dict[str, Any]],
         system: str,
         tools: list[dict[str, Any]],
         max_tokens: int | None,
-    ) -> Response:
+    ) -> AsyncIterator[Chunk]:
         openai_messages = [
             {"role": "system", "content": system},
             *self._normalize_messages(messages),
@@ -78,44 +88,59 @@ class OpenAIProvider:
             "messages": openai_messages,
             "tools": tools or None,
             "extra_body": self._extra_body,
+            "stream": True,
+            "stream_options": self._stream_options,
         }
         # No cap configured → send none and let the server apply its own limit,
         # rather than capping the answer at a number MoCode made up.
         if max_tokens is not None:
             request["max_tokens"] = max_tokens
 
-        raw = await self._ensure_client().chat.completions.create(**request)
+        # The await performs the request, so a rate limit or a dead connection
+        # surfaces here — inside the retry window, before any chunk is handed
+        # to the caller.
+        raw_stream = await self._ensure_client().chat.completions.create(**request)
 
-        choice = raw.choices[0]
-        message = choice.message
+        async for raw in raw_stream:
+            chunk = self._to_chunk(raw)
+            if chunk is not None:
+                yield chunk
 
-        tool_calls = None
-        if message.tool_calls:
-            tool_calls = [
-                ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=tc.function.arguments,
-                )
-                for tc in message.tool_calls
-            ]
+    @staticmethod
+    def _to_chunk(raw: Any) -> Chunk | None:
+        """Map one SDK chunk to a kernel Chunk, or None if it carries nothing."""
+        chunk = Chunk()
 
-        usage = None
-        if raw.usage:
-            usage = Usage(
-                prompt_tokens=raw.usage.prompt_tokens or 0,
-                completion_tokens=raw.usage.completion_tokens or 0,
+        usage = getattr(raw, "usage", None)
+        if usage is not None:
+            chunk.usage = Usage(
+                prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             )
 
-        reasoning_content = getattr(message, "reasoning_content", None)
+        # The usage-only chunk that closes the stream has no choices at all.
+        choices = getattr(raw, "choices", None) or ()
+        if not choices:
+            return chunk if chunk.usage is not None else None
 
-        return Response(
-            content=message.content,
-            tool_calls=tool_calls,
-            usage=usage,
-            finish_reason=choice.finish_reason,
-            reasoning_content=reasoning_content,
-        )
+        choice = choices[0]
+        delta = getattr(choice, "delta", None)
+        if delta is not None:
+            content = getattr(delta, "content", None)
+            chunk.text = content if isinstance(content, str) else ""
+            chunk.reasoning = _reasoning_text(delta)
+
+            tool_calls = getattr(delta, "tool_calls", None)
+            if tool_calls:
+                chunk.tool_call = _tool_call_delta(tool_calls[0])
+
+        finish_reason = getattr(choice, "finish_reason", None)
+        if finish_reason is not None:
+            chunk.finish_reason = finish_reason
+
+        if not (chunk.text or chunk.reasoning or chunk.tool_call):
+            return chunk if (chunk.usage is not None or chunk.finish_reason) else None
+        return chunk
 
     @staticmethod
     def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -164,3 +189,26 @@ class OpenAIProvider:
         return result
 
 
+def _reasoning_text(delta: Any) -> str:
+    """Reasoning arrives as ``reasoning_content`` on most compatible endpoints.
+
+    Some carry it as ``reasoning`` instead, and the newest OpenAI models use
+    ``reasoning`` for a structured object rather than text — accept only
+    strings, so a structured field is ignored instead of stringified.
+    """
+    for attr in ("reasoning_content", "reasoning"):
+        value = getattr(delta, attr, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
+def _tool_call_delta(part: Any) -> ToolCallDelta:
+    """One tool call fragment. ``index`` is 0 when an endpoint omits it."""
+    function = getattr(part, "function", None)
+    return ToolCallDelta(
+        index=getattr(part, "index", 0) or 0,
+        id=getattr(part, "id", None) or "",
+        name=(getattr(function, "name", None) or "") if function else "",
+        arguments=(getattr(function, "arguments", None) or "") if function else "",
+    )

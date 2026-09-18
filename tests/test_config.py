@@ -1,10 +1,10 @@
-"""Tests for mocode.app.config — providers, models, settings, load/save."""
+"""Tests for mocode.host.config — providers, models, settings, load/save."""
 
 import json
 
 import pytest
 
-from mocode.app.config import (
+from mocode.host.config import (
     AgentSettings,
     Config,
     ModelEntry,

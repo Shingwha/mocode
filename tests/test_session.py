@@ -1,8 +1,8 @@
-"""Tests for mocode.app.session — Session, SessionStore, SessionManager."""
+"""Tests for mocode.host.session — Session, SessionStore, SessionManager."""
 
 import pytest
 
-from mocode.app.session import (
+from mocode.host.session import (
     Session,
     SessionManager,
     SessionStore,

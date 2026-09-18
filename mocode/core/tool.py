@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import inspect
-from typing import Callable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from .hook import ToolCallContext
 
 #: Prefixes AgentLoop puts on failed tool results. Display layers use them when
 #: re-rendering saved history; live rendering reads ToolCallContext.status instead.
@@ -22,6 +26,44 @@ class ToolError(Exception):
         super().__init__(message)
 
 
+@dataclass
+class ToolResult:
+    """What a tool returns when a bare string is not enough.
+
+    ``content`` is what the model reads. ``details`` is structured data for
+    everything else — a frontend, a plugin, an application reading
+    ``run.state``. Keep the model's context clean and the UI rich by putting
+    formatting in ``content`` and facts in ``details``.
+
+    A tool may still return a plain ``str``; that is exactly
+    ``ToolResult(content=s)`` with no details.
+    """
+
+    content: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+
+
+def split_result(result: "str | ToolResult") -> tuple[str, dict[str, Any]]:
+    """Normalize a tool's return value into (content, details)."""
+    if isinstance(result, ToolResult):
+        return result.content, dict(result.details)
+    return str(result), {}
+
+
+def _accepts_context(func: Callable) -> bool:
+    """Whether *func* declares a second parameter for its ToolCallContext."""
+    try:
+        params = inspect.signature(func).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional = [
+        p
+        for p in params
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional) >= 2 or any(p.kind == p.VAR_POSITIONAL for p in params)
+
+
 class Tool:
     """Tool — supports sync and async functions.
 
@@ -31,6 +73,18 @@ class Tool:
         hard-coded list of tool names.
       - ``summary_key``: which argument to show in one-line activity summaries.
         Defaults to the first parameter.
+      - ``result_key``: which entry of :class:`ToolResult` ``details`` to show
+        alongside that summary, so the same line can report what came back.
+        Empty means "show nothing extra".
+
+    A tool may declare a second parameter to receive its
+    :class:`~mocode.core.hook.ToolCallContext`. That is how a long-running tool
+    reports progress (``await ctx.emit(ToolOutput(...))``) or reads the
+    arguments a hook rewrote. Tools that don't ask for it keep the plain
+    ``(args) -> str`` shape.
+
+    A tool may return a :class:`ToolResult` instead of a string when it has
+    structured facts worth passing on.
 
     run() / run_async() propagate ToolError and Exception upward.
     The caller (AgentLoop) decides how to handle errors.
@@ -45,11 +99,13 @@ class Tool:
         *,
         tags: frozenset[str] = frozenset(),
         summary_key: str = "",
+        result_key: str = "",
     ):
         self.name = name
         self.description = description
         self.tags = frozenset(tags)
         self.summary_key = summary_key or (next(iter(params), ""))
+        self.result_key = result_key
         self._required = []
         normalized = {}
         for k, v in params.items():
@@ -64,16 +120,23 @@ class Tool:
         self.params = normalized
         self.func = func
         self.is_async = inspect.iscoroutinefunction(func)
+        self.wants_context = _accepts_context(func)
 
-    def run(self, args: dict) -> str:
+    def run(self, args: dict, ctx: "ToolCallContext | None" = None) -> "str | ToolResult":
         validated = self._validate_args(args)
+        if self.wants_context:
+            return self.func(validated, ctx)
         return self.func(validated)
 
-    async def run_async(self, args: dict) -> str:
+    async def run_async(
+        self, args: dict, ctx: "ToolCallContext | None" = None
+    ) -> "str | ToolResult":
         validated = self._validate_args(args)
         if self.is_async:
+            if self.wants_context:
+                return await self.func(validated, ctx)
             return await self.func(validated)
-        return self.func(validated)
+        return self.run(validated, ctx)
 
     def _validate_args(self, args: dict) -> dict:
         result = dict(args)

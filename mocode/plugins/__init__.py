@@ -30,7 +30,24 @@ Plugins are trusted code — installing one means running it.
 
 from __future__ import annotations
 
-from ..app.cli.commands import (
+from ..core.events import (
+    Event,
+    IterationFinished,
+    IterationStarted,
+    Notice,
+    ReasoningDelta,
+    RunFailed,
+    RunFinished,
+    RunStarted,
+    TextDelta,
+    ToolCallFinished,
+    ToolCallStarted,
+    ToolOutput,
+)
+from ..core.hook import AgentHook, HookRunner, IterationContext, ToolCallContext
+from ..core.prompt import Prompt, Section
+from ..core.tool import Tool, ToolError, ToolRegistry, ToolResult
+from ..host.command import (
     CONTINUE,
     EXIT,
     Command,
@@ -38,17 +55,9 @@ from ..app.cli.commands import (
     CommandResult,
     Kind,
 )
-from ..app.plugin.base import Plugin
-from ..app.plugin.context import HostContext
-from ..core.hook import (
-    AgentHook,
-    HookRunner,
-    IterationContext,
-    ToolCallContext,
-    ToolTimingTracker,
-)
-from ..core.prompt import Prompt, Section
-from ..core.tool import Tool, ToolError, ToolRegistry
+from ..host.frontend import Frontend
+from ..host.plugin.base import Plugin
+from ..host.plugin.context import HostContext
 
 __all__ = [
     "AgentHook",
@@ -57,16 +66,29 @@ __all__ = [
     "CommandContext",
     "CommandResult",
     "EXIT",
+    "Event",
+    "Frontend",
     "HookRunner",
     "HostContext",
     "IterationContext",
+    "IterationFinished",
+    "IterationStarted",
     "Kind",
+    "Notice",
     "Plugin",
     "Prompt",
+    "ReasoningDelta",
+    "RunFailed",
+    "RunFinished",
+    "RunStarted",
     "Section",
+    "TextDelta",
     "Tool",
     "ToolCallContext",
+    "ToolCallFinished",
+    "ToolCallStarted",
     "ToolError",
+    "ToolOutput",
     "ToolRegistry",
-    "ToolTimingTracker",
+    "ToolResult",
 ]
