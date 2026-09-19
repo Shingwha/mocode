@@ -12,6 +12,7 @@ from mocode.core.events import (
     Notice,
     ReasoningDelta,
     RunFinished,
+    RunStarted,
     TextDelta,
     ToolCallFinished,
     ToolCallStarted,
@@ -170,6 +171,11 @@ class TestEventStream:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+        # A reader going away cancels the turn, but the turn tears itself down
+        # on its own schedule — wait for the ending it reports.
+        terminal = await agent.turn.wait()
+        assert terminal.cancelled
 
         # Every assistant tool call still has an answer, so the history can be
         # sent back to the model on the next turn.
@@ -653,3 +659,117 @@ class TestChat:
     def test_summary_key_defaults_to_the_first_param(self):
         tool = Tool("t", "d", {"pattern": {"type": "string", "description": "p"}}, lambda a: "")
         assert tool.summary_key == "pattern"
+
+
+# ── turns: addressable, watched by many, cancellable ────────
+
+
+def _slow_provider() -> MockProvider:
+    class Slow(MockProvider):
+        async def stream(self, *args):
+            await asyncio.sleep(30)
+            yield  # pragma: no cover - never reached
+
+    return Slow()
+
+
+class TestTurns:
+    @pytest.mark.asyncio
+    async def test_a_turn_refuses_to_start_while_one_is_running(self):
+        agent = _make_agent(provider=_slow_provider())
+
+        # No await needed: start() is a plain call, so the refusal is immediate
+        # rather than surfacing on the first read of a stream.
+        turn = agent.start("hi")
+        assert agent.busy
+        with pytest.raises(RuntimeError, match="already running"):
+            agent.start("again")
+
+        turn.cancel()
+        await turn.wait()
+
+    @pytest.mark.asyncio
+    async def test_a_turn_can_be_watched_after_it_started(self):
+        agent = _make_agent(provider=MockProvider([_plain_answer("hello")]))
+
+        turn = agent.start("hi")
+        events = [event async for event in turn.subscribe()]
+
+        assert isinstance(events[0], RunStarted)
+        assert isinstance(events[-1], RunFinished)
+        assert all(event.run_id == turn.id for event in events)
+
+    @pytest.mark.asyncio
+    async def test_two_readers_see_the_same_run(self):
+        agent = _make_agent(provider=MockProvider([_plain_answer("hello")], chunk_size=1))
+
+        turn = agent.start("hi")
+        first = turn.subscribe()
+        second = turn.subscribe()
+
+        watched = [event async for event in first]
+        mirrored = [event async for event in second]
+
+        assert [e.seq for e in watched] == [e.seq for e in mirrored]
+        assert mirrored[-1].content == "hello"
+
+    @pytest.mark.asyncio
+    async def test_the_run_outlives_a_reader_that_walks_away(self):
+        agent = _make_agent(provider=MockProvider([_plain_answer("hello")]))
+
+        turn = agent.start("hi")
+        sub = turn.subscribe()
+        await sub.get()
+        sub.close()
+
+        terminal = await turn.wait()
+        assert terminal.content == "hello"
+        assert not terminal.cancelled
+
+    @pytest.mark.asyncio
+    async def test_giving_up_on_the_wait_does_not_stop_the_turn(self):
+        agent = _make_agent(provider=_slow_provider())
+        turn = agent.start("hi")
+
+        waiter = asyncio.ensure_future(turn.wait())
+        await asyncio.sleep(0.01)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        assert agent.busy
+        turn.cancel()
+        assert (await turn.wait()).cancelled
+
+    @pytest.mark.asyncio
+    async def test_cancelling_ends_the_turn_and_the_agent_runs_again(self):
+        agent = _make_agent(provider=_slow_provider())
+
+        turn = agent.start("hi")
+        await asyncio.sleep(0.01)
+        turn.cancel()
+        terminal = await turn.wait()
+
+        assert terminal.cancelled is True
+        assert terminal.content == ""
+        assert agent.state.status == "cancelled"
+        assert not agent.busy
+
+        agent.provider = MockProvider([_plain_answer("second")])
+        assert await agent.chat("again") == "second"
+
+    @pytest.mark.asyncio
+    async def test_a_derived_agent_can_report_into_the_parents_channel(self):
+        parent = _make_agent(provider=MockProvider([_plain_answer("from the child")]))
+        child = parent.derive(channel=parent.channel)
+        reader = parent.channel.subscribe()
+
+        await child.chat("hi")
+
+        seen = []
+        while reader.pending():
+            seen.append(await reader.get())
+        assert any(isinstance(e, TextDelta) for e in seen)
+        # The parent's own history is untouched: it was the child's turn.
+        assert parent.messages == []
+        assert not any(e.run_id == "" for e in seen)

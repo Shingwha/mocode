@@ -138,7 +138,10 @@ class RunState:
                         self.usage.completion_tokens + event.usage.completion_tokens,
                     )
             case RunFinished():
-                self.status = FAILED if event.had_error else DONE
+                if event.cancelled:
+                    self.status = CANCELLED
+                else:
+                    self.status = FAILED if event.had_error else DONE
                 self.iteration = event.iterations or self.iteration
                 self.answer = event.content
                 # This event is the run's own summary, so its totals are

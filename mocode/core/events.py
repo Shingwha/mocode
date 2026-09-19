@@ -97,6 +97,11 @@ class RunFinished(Event):
     what a caller wants as "the reply". Text streamed during earlier iterations
     was commentary around tool calls; a consumer that rendered the deltas has
     already shown it.
+
+    ``cancelled`` marks a turn that was stopped rather than completed: it is
+    still a normal ending (the terminal event of that turn), and ``content`` is
+    empty because no iteration produced an answer. What had streamed so far is
+    in ``RunState.content``.
     """
 
     content: str = ""
@@ -104,6 +109,7 @@ class RunFinished(Event):
     iterations: int = 0
     tool_calls_made: int = 0
     had_error: bool = False
+    cancelled: bool = False
     type: ClassVar[str] = "run_finished"
 
 

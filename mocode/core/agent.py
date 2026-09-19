@@ -1,13 +1,17 @@
 """AgentLoop — LLM chat engine.
 
-:meth:`AgentLoop.stream` is the only execution entry point. It publishes one
-ordered :class:`~mocode.core.events.Event` per thing that happens — model text
-as it arrives, tool calls as they start and finish — and ``chat()`` is a thin
-wrapper that runs it to completion and returns the final answer.
+One loop drives one conversation, and one turn at a time. A turn is started
+with :meth:`AgentLoop.start`, which returns a :class:`Turn`: an addressable
+object that can be watched, waited on and cancelled independently of whoever
+started it. Every event it produces goes into the loop's
+:class:`~mocode.core.channel.EventChannel`, so the run is observable by more
+than one reader and outlives any single one of them — a frontend that
+reconnects, a status endpoint and a logger can all read the same run.
 
-Cancellation propagates as ``asyncio.CancelledError``; whatever work is in
-flight is torn down in ``finally`` blocks and the conversation is left in a
-consistent state.
+:meth:`AgentLoop.stream` and :meth:`AgentLoop.chat` are conveniences over
+``start()``: they run a turn and scope it to the caller (stop reading, or be
+cancelled, and the turn stops). Nothing else gets its own path through the
+loop.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from pathlib import Path
 from typing import AsyncIterator
 from uuid import uuid4
 
+from .channel import EventChannel, Subscription
 from .events import (
     Event,
     IterationFinished,
@@ -52,10 +57,6 @@ from .tool import (
     split_result,
 )
 
-#: Marks one finished task inside a tool batch. A sentinel rather than a
-#: callback so the queue stays the single ordering point for batch events.
-_BATCH_DONE = object()
-
 
 @dataclass
 class AgentConfig:
@@ -78,14 +79,108 @@ class LoopResult:
     had_error: bool = False
 
 
+def _ends_run(event: Event) -> bool:
+    """Whether *event* is the terminal event of its run."""
+    return isinstance(event, (RunFinished, RunFailed))
+
+
+class Turn:
+    """One execution of the loop: addressable, watchable, cancellable.
+
+    It belongs to the loop, not to the caller — a reader that goes away does
+    not stop it, and a reader that arrives late replays what it missed from the
+    channel's buffer. ``id`` is the ``run_id`` every event of this turn carries.
+
+    A turn always ends with :class:`~mocode.core.events.RunFinished` — including
+    one that was cancelled, which says so in ``cancelled`` — or with
+    :class:`~mocode.core.events.RunFailed`. Nothing else ends a turn.
+    """
+
+    def __init__(
+        self,
+        *,
+        agent: "AgentLoop",
+        id: str,
+        first_seq: int,
+        user_input: str | None = None,
+        images: list[str] | None = None,
+    ):
+        self.id = id
+        #: Channel ``seq`` before this turn published anything — the default
+        #: replay point for :meth:`subscribe`.
+        self.first_seq = first_seq
+        self.state = RunState()
+        #: The exception a failed turn ended on, for a caller that wants to raise it.
+        self.failure: BaseException | None = None
+        #: Whether the turn was stopped rather than finished.
+        self.cancelled = False
+        self._agent = agent
+        self._started = False
+        self._stopped = False
+        self._stop_requested = False
+        self._task = asyncio.create_task(agent._drive(id, user_input, images))
+
+    # ── Watching ───────────────────────────────────────────
+
+    @property
+    def done(self) -> bool:
+        return self._task.done()
+
+    def subscribe(self, *, since: int | None = None) -> Subscription:
+        """This turn's events, from ``since`` (default: before it started).
+
+        The view closes on the turn's terminal event. ``since`` older than the
+        channel's buffer yields a gap in ``seq``, not a silently partial run.
+        """
+        return self._agent.channel.subscribe(
+            since=self.first_seq if since is None else since,
+            keep=self._is_mine,
+            ends=_ends_run,
+        )
+
+    def _is_mine(self, event: Event) -> bool:
+        return event.run_id == self.id
+
+    async def wait(self) -> RunFinished | RunFailed:
+        """Wait for the turn to end and return its terminal event.
+
+        The wait is shielded: giving up on it — or being cancelled — leaves the
+        turn running, because the turn belongs to the loop and not to whoever is
+        watching. Use :meth:`cancel` to stop it.
+        """
+        return await asyncio.shield(self._task)
+
+    def cancel(self) -> None:
+        """Stop the turn. Idempotent: a finished or already-stopped turn ignores it.
+
+        A stop asked for before the turn took its first step is recorded and
+        delivered the moment it starts — a task cancelled before it runs any
+        code at all could never report the ending its readers are waiting for.
+        """
+        if self._task.done() or self._stopped:
+            return
+        self._stopped = True
+        if self._started:
+            self._task.cancel()
+        else:
+            self._stop_requested = True
+
+    def _begin(self) -> bool:
+        """Called by the loop as the turn's first act. True = stop immediately."""
+        self._started = True
+        return self._stop_requested
+
+
 class AgentLoop:
     """LLM chat engine — receives all dependencies via constructor.
 
     Public mutable state: ``provider`` (swappable at runtime), ``system_prompt``,
     ``messages``, ``hooks``. ``state`` is a live snapshot of the current or last
-    turn. Derived agents are created with :meth:`derive`.
+    turn, and ``channel`` is where every event goes.
 
-    One instance runs one turn at a time — ``messages`` and ``state`` are shared.
+    One instance owns one conversation and runs one turn at a time: a second
+    :meth:`start` while one is in flight raises instead of interleaving two
+    histories into one.
     """
 
     INTERRUPT_MSG = "[Response was interrupted by the user before completion.]"
@@ -101,6 +196,7 @@ class AgentLoop:
         hooks: HookRunner,
         config: AgentConfig | None = None,
         model: ModelSpec | None = None,
+        channel: EventChannel | None = None,
     ):
         self.provider = provider
         self.model = model if model is not None else ModelSpec(name=provider.model)
@@ -109,11 +205,16 @@ class AgentLoop:
         self.hooks = hooks
         self.config = config or AgentConfig()
         self.messages: list[dict] = []
-        self.state = RunState()
+        #: Where this conversation's events go. Pass one to let a derived agent
+        #: report into the same stream as its parent.
+        self.channel = channel if channel is not None else EventChannel()
+        self._turn: Turn | None = None
         self._run_id = ""
-        self._seq = 0
         self._call_seq = 0
         self._failure: BaseException | None = None
+        # Observation is in-band for hooks: the channel awaits them, so a hook
+        # still sees every event before the run moves on.
+        self._unsubscribe_hooks = self.channel.inline(self.hooks.on_event)
 
     def derive(
         self,
@@ -123,6 +224,7 @@ class AgentLoop:
         hooks: HookRunner | None = None,
         config: AgentConfig | None = None,
         model: ModelSpec | None = None,
+        channel: EventChannel | None = None,
     ) -> AgentLoop:
         """Create an independent agent that shares this one's provider.
 
@@ -131,6 +233,10 @@ class AgentLoop:
         other field is inherited unless overridden. This is the primitive behind
         sub-agents, workflow nodes and any other "run a nested agent with
         narrower tools" feature.
+
+        Pass ``channel=self.channel`` to have the sub-agent publish into the
+        parent's stream instead of a private one; the channel's inline
+        subscribers then see the sub-agent's events too.
         """
         return AgentLoop(
             provider=self.provider,
@@ -139,72 +245,86 @@ class AgentLoop:
             hooks=hooks if hooks is not None else HookRunner(),
             config=self.config if config is None else config,
             model=self.model if model is None else model,
+            channel=channel,
         )
 
     def reset(self) -> None:
-        """Reset mutable state for reuse. Shared deps (provider, prompt, tools) stay."""
+        """Drop the conversation and the last turn. Shared deps (provider, prompt, tools) stay."""
         self.messages = []
-        self.state = RunState()
-        self._seq = 0
-        self._call_seq = 0
+        self._turn = None
         self._failure = None
 
     # ---- Execution ----
 
-    async def stream(
-        self,
-        user_input: str | None = None,
-        *,
-        images: list[str] | None = None,
-    ) -> AsyncIterator[Event]:
-        """Run one turn, yielding every event as it happens.
+    def start(
+        self, user_input: str | None = None, *, images: list[str] | None = None
+    ) -> Turn:
+        """Begin a turn and return it. Raises if one is already running.
 
         ``user_input`` is appended to the history first; pass ``None`` to run
-        against the history as it stands. Cancel by cancelling the task that is
-        consuming this — the loop is torn down on the way out.
-
-        The stream ends with exactly one of :class:`RunFinished` (the turn
-        completed, including a cancelled one) or :class:`RunFailed` (an
-        unhandled error). A turn that was cancelled outright publishes neither:
-        there is nobody left to read it.
+        against the history as it stands.
         """
-        if user_input is not None:
-            content = (
-                self._build_user_content(user_input, images) if images else user_input
+        if self.busy:
+            raise RuntimeError(
+                "this agent is already running a turn — one conversation runs one "
+                "turn at a time; cancel it or wait for it to finish"
             )
-            self.messages.append({"role": "user", "content": content})
+        turn = Turn(
+            agent=self,
+            id=uuid4().hex[:12],
+            first_seq=self.channel.seq,
+            user_input=user_input,
+            images=images,
+        )
+        # The turn's task cannot start before this returns (creating a task only
+        # schedules it), so the loop already owns the turn when it first runs.
+        self._turn = turn
+        return turn
 
-        self._run_id = uuid4().hex[:12]
-        self._seq = 0
-        self._failure = None
-        self.state = RunState()
+    def stream(
+        self, user_input: str | None = None, *, images: list[str] | None = None
+    ) -> AsyncIterator[Event]:
+        """Run one turn and yield its events.
 
+        A view of :meth:`start` scoped to this caller: stop iterating — or be
+        cancelled — and the turn stops with you. Use ``start()`` when the run
+        should outlive the reader.
+        """
+        return self._watched(self.start(user_input, images=images))
+
+    async def _watched(self, turn: Turn) -> AsyncIterator[Event]:
+        sub = turn.subscribe()
         try:
-            async for event in self._loop():
+            async for event in sub:
                 yield event
-        except asyncio.CancelledError:
-            self.messages.append({"role": "assistant", "content": self.INTERRUPT_MSG})
-            raise
-        except Exception as exc:
-            self._failure = exc
-            yield await self._publish(RunFailed(error=str(exc), kind=type(exc).__name__))
         finally:
-            if self.state.status == RUNNING:
-                self.state.status = FAILED if self._failure else CANCELLED
+            sub.close()
+            turn.cancel()
 
-    async def chat(self, user_input: str, images: list[str] | None = None) -> str:
+    async def chat(
+        self, user_input: str | None = None, images: list[str] | None = None
+    ) -> str:
         """One conversation turn, returning the final answer.
 
-        Convenience wrapper over :meth:`stream` for callers that only want the
-        reply. Provider failures raise, exactly as they would mid-stream.
+        Convenience wrapper over :meth:`start` for callers that only want the
+        reply. Provider failures raise, exactly as they would mid-stream, and
+        cancelling this coroutine stops the turn.
         """
-        return await self._drain(user_input, images)
+        turn = self.start(user_input, images=images)
+        try:
+            terminal = await turn.wait()
+        except asyncio.CancelledError:
+            turn.cancel()
+            raise
+        if isinstance(terminal, RunFailed):
+            raise turn.failure or RuntimeError(terminal.error)
+        return terminal.content
 
     async def run_with_messages(self, messages: list[dict]) -> LoopResult:
         """Run the loop with a pre-existing message list (shallow-copied)."""
         self.messages = list(messages)
         try:
-            content = await self._drain(None, None)
+            content = await self.chat(None)
             return LoopResult(
                 content=content,
                 tool_calls_made=self.tool_call_count,
@@ -218,32 +338,63 @@ class AgentLoop:
                 had_error=True,
             )
 
-    async def _drain(self, user_input: str | None, images: list[str] | None) -> str:
-        async for event in self.stream(user_input, images=images):
-            if isinstance(event, RunFinished):
-                return event.content
-        if self._failure is not None:
-            raise self._failure
-        return ""
+    # ---- The turn ----
 
-    # ---- The loop ----
+    async def _drive(
+        self, run_id: str, user_input: str | None, images: list[str] | None
+    ) -> RunFinished | RunFailed:
+        """Run one turn and return its terminal event — never raises for it.
 
-    async def _loop(self) -> AsyncIterator[Event]:
-        # Events a hook publishes through ctx.emit arrive between yields, so
-        # they are buffered here and handed to the consumer as soon as the hook
-        # returns. Tools get a different sink (see _run_tool_batch) because
-        # theirs arrive concurrently.
-        pending: list[Event] = []
+        Cancellation is a normal ending here, not an exception the caller has to
+        catch: the turn belongs to the loop, so whoever stopped it and whoever
+        is watching both get the same terminal event.
+        """
+        self._run_id = run_id
+        self._failure = None
+        turn = self._turn
+        try:
+            if turn is not None and turn._begin():
+                raise asyncio.CancelledError()
+            terminal = await self._iterate(user_input, images)
+        except asyncio.CancelledError:
+            self.messages.append({"role": "assistant", "content": self.INTERRUPT_MSG})
+            if turn is not None:
+                turn.cancelled = True
+            terminal = await self._publish(
+                RunFinished(
+                    content="",
+                    cancelled=True,
+                    usage=self.state.usage,
+                    iterations=self.state.iteration,
+                    tool_calls_made=self.state.tool_calls_made,
+                )
+            )
+        except Exception as exc:
+            self._failure = exc
+            if turn is not None:
+                turn.failure = exc
+            terminal = await self._publish(
+                RunFailed(error=str(exc), kind=type(exc).__name__)
+            )
+        finally:
+            if self.state.status == RUNNING:
+                self.state.status = FAILED if self._failure else CANCELLED
+        return terminal
 
-        async def emit(event: Event) -> None:
-            await self._publish(event)
-            pending.append(event)
+    async def _iterate(
+        self, user_input: str | None, images: list[str] | None
+    ) -> RunFinished:
+        if user_input is not None:
+            content = (
+                self._build_user_content(user_input, images) if images else user_input
+            )
+            self.messages.append({"role": "user", "content": content})
 
-        ctx = IterationContext(messages=self.messages, emit=emit)
+        ctx = IterationContext(messages=self.messages, emit=self._emit)
         answer = ""
         iteration = 0
 
-        yield await self._publish(
+        await self._publish(
             RunStarted(model=self.model.name, tools=self._tools.names())
         )
 
@@ -256,11 +407,8 @@ class AgentLoop:
             await self.hooks.before_iteration(ctx)
             self.messages = ctx.messages
             self.system_prompt = ctx.system_prompt
-            for event in pending:
-                yield event
-            pending.clear()
 
-            yield await self._publish(IterationStarted(iteration=iteration))
+            await self._publish(IterationStarted(iteration=iteration))
 
             acc = StreamAccumulator()
             async for chunk in with_retry_stream(
@@ -278,12 +426,12 @@ class AgentLoop:
                 # emitting them the other way round makes a renderer bounce
                 # between the two blocks mid-sentence.
                 if chunk.reasoning:
-                    yield await self._publish(ReasoningDelta(text=chunk.reasoning))
+                    await self._publish(ReasoningDelta(text=chunk.reasoning))
                 if chunk.text:
-                    yield await self._publish(TextDelta(text=chunk.text))
+                    await self._publish(TextDelta(text=chunk.text))
 
             response = acc.build()
-            yield await self._publish(
+            await self._publish(
                 IterationFinished(
                     iteration=iteration,
                     usage=response.usage,
@@ -297,11 +445,10 @@ class AgentLoop:
                 )
                 results: list[dict] = []
                 try:
-                    async for event in self._run_tool_batch(response.tool_calls, results):
-                        yield event
+                    await self._run_tool_batch(response.tool_calls, results)
                 except BaseException:
-                    # Cancellation, or the consumer closing us mid-batch: leave
-                    # every tool call answered so the history stays replayable.
+                    # Cancellation: leave every tool call answered so the
+                    # history stays replayable.
                     self.messages.append(assistant)
                     self.messages.extend(self._interrupt_results(response.tool_calls))
                     raise
@@ -319,7 +466,7 @@ class AgentLoop:
                 answer = response.content or ""
                 break
 
-        yield await self._publish(
+        return await self._publish(
             RunFinished(
                 content=answer,
                 usage=self.state.usage,
@@ -332,47 +479,18 @@ class AgentLoop:
 
     async def _run_tool_batch(
         self, tool_calls: list[ToolCall], out: list[dict]
-    ) -> AsyncIterator[Event]:
-        """Run a batch concurrently, yielding each call's events as they land.
+    ) -> None:
+        """Run a batch concurrently, in call order, while events flow to the channel.
 
-        Tools run as sibling tasks so the batch stays parallel, but every event
-        from all of them funnels through one queue drained here. That is what
-        makes a slow tool stop holding back the others' output, while keeping
-        this generator the only place that yields.
+        The batch is still parallel and its results still land in the order the
+        model asked for them; what it no longer needs is a queue to funnel
+        events through, because the channel is the ordering point for everyone
+        watching.
         """
-        queue: asyncio.Queue = asyncio.Queue()
-
-        async def emit(event: Event) -> None:
-            """Sink for tools and tool hooks — published and handed over immediately."""
-            await self._publish(event)
-            queue.put_nowait(event)
-
-        async def _one(call: ToolCall) -> dict:
-            try:
-                args, parse_error = self._parse_args(call)
-                return await self._run_tool(
-                    call_id=self._next_call_id(call.id),
-                    provider_id=call.id,
-                    name=call.name,
-                    args=args,
-                    parse_error=parse_error,
-                    emit=emit,
-                )
-            finally:
-                queue.put_nowait(_BATCH_DONE)
-
-        tasks = [asyncio.create_task(_one(call)) for call in tool_calls]
-
+        tasks = [asyncio.create_task(self._one(call)) for call in tool_calls]
         try:
-            pending = len(tasks)
-            while pending:
-                event = await queue.get()
-                if event is _BATCH_DONE:
-                    pending -= 1
-                else:
-                    yield event
-
-            for call, result in zip(tool_calls, await asyncio.gather(*tasks, return_exceptions=True)):
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for call, result in zip(tool_calls, results):
                 if isinstance(result, BaseException):
                     out.append(
                         {
@@ -389,6 +507,16 @@ class AgentLoop:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def _one(self, call: ToolCall) -> dict:
+        args, parse_error = self._parse_args(call)
+        return await self._run_tool(
+            call_id=self._next_call_id(call.id),
+            provider_id=call.id,
+            name=call.name,
+            args=args,
+            parse_error=parse_error,
+        )
+
     async def _run_tool(
         self,
         *,
@@ -397,7 +525,6 @@ class AgentLoop:
         name: str,
         args: dict,
         parse_error: str | None,
-        emit,
     ) -> dict:
         """Run one tool call, publishing Started/Output/Finished around it.
 
@@ -411,12 +538,12 @@ class AgentLoop:
             tool_name=name,
             tool_args=args,
             tool_call_id=call_id,
-            emit=emit,
+            emit=self._emit,
         )
         if parse_error is None:
             await self.hooks.on_tool_start(tc)
 
-        await emit(
+        await self._publish(
             ToolCallStarted(call_id=call_id, name=name, args=dict(tc.tool_args))
         )
 
@@ -434,7 +561,7 @@ class AgentLoop:
         tc.tool_result = self._truncate(tc.tool_result or "")
         await self.hooks.on_tool_complete(tc)
 
-        await emit(
+        await self._publish(
             ToolCallFinished(
                 call_id=call_id,
                 name=name,
@@ -499,18 +626,21 @@ class AgentLoop:
 
     # ---- Helpers ----
 
-    async def _publish(self, event: Event) -> Event:
-        """Stamp an event, hand it to the hooks, and return it for the consumer.
+    async def _emit(self, event: Event) -> None:
+        """Sink for hooks and tools — publish an event on the run's behalf."""
+        await self._publish(event)
 
-        Every event a run produces goes through here, so ``on_event`` sees the
-        whole run — the loop's own events included, not just plugin ones — and
-        ``self.state`` is already up to date by the time a hook looks at it.
+    async def _publish(self, event: Event) -> Event:
+        """Stamp an event, fold it into the turn's state, and publish it.
+
+        Every event a run produces goes through here, so the channel carries the
+        whole run and ``state`` is already up to date by the time an inline
+        subscriber (a hook) looks at it.
         """
-        self._seq += 1
         event.run_id = self._run_id
-        event.seq = self._seq
-        self.state.apply(event)
-        await self.hooks.on_event(event)
+        if self._turn is not None:
+            self._turn.state.apply(event)
+        await self.channel.publish(event)
         return event
 
     def _next_call_id(self, provider_id: str = "") -> str:
@@ -586,6 +716,23 @@ class AgentLoop:
         if text:
             parts.append({"type": "text", "text": text})
         return parts
+
+    # ---- State ----
+
+    @property
+    def busy(self) -> bool:
+        """Whether a turn is running right now."""
+        return self._turn is not None and not self._turn.done
+
+    @property
+    def turn(self) -> Turn | None:
+        """The current or last turn, or ``None`` before the first one."""
+        return self._turn
+
+    @property
+    def state(self) -> RunState:
+        """Live snapshot of the current or last turn."""
+        return self._turn.state if self._turn is not None else RunState()
 
     @property
     def tool_registry(self) -> ToolRegistry:
