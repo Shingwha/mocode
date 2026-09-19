@@ -116,6 +116,7 @@ class AgentLoop:
         #: report into the same stream as its parent.
         self.channel = channel if channel is not None else EventChannel()
         self._turn: Turn | None = None
+        self._idle_state = RunState()
         self._run_id = ""
         self._call_seq = 0
         self._failure: BaseException | None = None
@@ -131,26 +132,33 @@ class AgentLoop:
         hooks: HookRunner | None = None,
         config: AgentConfig | None = None,
         model: ModelSpec | None = None,
+        provider: Provider | None = None,
         channel: EventChannel | None = None,
     ) -> AgentLoop:
-        """Create an independent agent that shares this one's provider.
+        """Create an independent agent sharing this one's setup.
 
-        Message history is always fresh, and hooks are *not* inherited unless
-        passed — a sub-agent should not inherit the host's display hooks. Every
-        other field is inherited unless overridden. This is the primitive behind
-        sub-agents, workflow nodes and any other "run a nested agent with
-        narrower tools" feature.
+        History is always fresh, and hooks are *not* inherited unless passed —
+        a sub-agent should not inherit the host's display hooks. Tools and
+        config are inherited as *copies*: the child keeps the parent's
+        capability set but gets its own registry and policy, so a child that
+        disables a tool or changes a limit never reaches back into the parent.
+        Pass ``provider`` (usually with ``model``) to run the child on a
+        different backend or a cheaper model.
 
-        Pass ``channel=self.channel`` to have the sub-agent publish into the
-        parent's stream instead of a private one; the channel's inline
-        subscribers then see the sub-agent's events too.
+        This is the primitive behind sub-agents, workflow nodes and any other
+        "run a nested agent with narrower tools" feature. Pass
+        ``channel=self.channel`` to have the sub-agent publish into the
+        parent's stream instead of a private one: the channel's subscribers
+        then see the child's events interleaved on the same timeline — but a
+        parent's :class:`Turn` views and each loop's own ``state`` stay scoped
+        to their own run, so watch a child through the child's ``Turn``.
         """
         return AgentLoop(
-            provider=self.provider,
+            provider=provider if provider is not None else self.provider,
             system_prompt=self.system_prompt if system_prompt is None else system_prompt,
-            tools=self._tools if tools is None else tools,
+            tools=self._tools.select() if tools is None else tools,
             hooks=hooks if hooks is not None else HookRunner(),
-            config=self.config if config is None else config,
+            config=self.config.replace() if config is None else config,
             model=self.model if model is None else model,
             channel=channel,
         )
@@ -160,6 +168,19 @@ class AgentLoop:
         self.messages = []
         self._turn = None
         self._failure = None
+        self._idle_state = RunState()
+
+    def close(self) -> None:
+        """Detach this loop from its channel's inline subscribers. Idempotent.
+
+        Only the loop's own attachment goes: the channel belongs to whoever
+        created it and stays open for other readers. A derived agent that
+        borrowed the parent's channel should be closed when it is done, so its
+        (empty) hook fan-out does not stay subscribed forever.
+        """
+        if self._unsubscribe_hooks is not None:
+            self._unsubscribe_hooks()
+            self._unsubscribe_hooks = None
 
     # ---- Execution ----
 
@@ -276,6 +297,19 @@ class AgentLoop:
                 turn.failure = exc
             terminal = await self._publish(
                 RunFailed(error=str(exc), kind=type(exc).__name__)
+            )
+        except BaseException as exc:
+            # SystemExit, KeyboardInterrupt, anything else that is not an
+            # Exception: the turn still ends exactly like any other failed
+            # turn — terminal event published, the exception parked on
+            # ``turn.failure`` for whoever wants to re-raise it (``chat()``
+            # does). Re-raising here instead would push it straight through
+            # the task into the event loop, past every reader.
+            self._failure = exc
+            if turn is not None:
+                turn.failure = exc
+            terminal = await self._publish(
+                RunFailed(error=str(exc) or type(exc).__name__, kind=type(exc).__name__)
             )
         return terminal
 
@@ -472,7 +506,7 @@ class AgentLoop:
         tool = self._tools.get(tc.tool_name)
         if tool is None:
             tc.status = "not_found"
-            tc.tool_result = f"unknown tool '{tc.tool_name}'"
+            tc.tool_result = f"{ERROR_PREFIX} unknown tool '{tc.tool_name}'"
             return
 
         try:
@@ -487,13 +521,20 @@ class AgentLoop:
                     timeout=self.config.tool_timeout,
                 )
         except asyncio.TimeoutError:
+            # The await is cancelled, not the worker: a sync tool keeps
+            # running until it notices the signal. The event tells it to.
+            tc.cancel_event.set()
             tc.status = "timeout"
             tc.tool_timeout = self.config.tool_timeout
             tc.tool_result = f"{TIMEOUT_PREFIX} {self.config.tool_timeout}s"
+        except asyncio.CancelledError:
+            # Same cooperative signal for a turn cancelled mid-call.
+            tc.cancel_event.set()
+            raise
         except ToolError as e:
             tc.status = "error"
             tc.error_code = e.code
-            tc.tool_result = f"{e.code}: {e.message}"
+            tc.tool_result = f"{ERROR_PREFIX} {e.code}: {e.message}"
         except Exception as e:
             tc.status = "error"
             tc.tool_result = f"{ERROR_PREFIX} {e}"
@@ -590,7 +631,7 @@ class AgentLoop:
     @property
     def state(self) -> RunState:
         """Live snapshot of the current or last turn."""
-        return self._turn.state if self._turn is not None else RunState()
+        return self._turn.state if self._turn is not None else self._idle_state
 
     @property
     def tool_registry(self) -> ToolRegistry:

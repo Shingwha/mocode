@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+import time
 
 import pytest
 
@@ -11,6 +13,7 @@ from mocode.core.events import (
     Event,
     Notice,
     ReasoningDelta,
+    RunFailed,
     RunFinished,
     RunStarted,
     TextDelta,
@@ -21,7 +24,7 @@ from mocode.core.events import (
 from mocode.core.hook import AgentHook, HookRunner, IterationContext, ToolCallContext
 from mocode.core.provider import Response, ToolCall, Usage
 from mocode.core.state import DONE, RUNNING, RunState
-from mocode.core.tool import Tool, ToolError, ToolRegistry, ToolResult
+from mocode.core.tool import ERROR_PREFIX, TIMEOUT_PREFIX, Tool, ToolError, ToolRegistry, ToolResult
 
 from .providers import MockProvider, tool_call_response
 
@@ -559,7 +562,7 @@ class TestEventChannel:
 
 
 class TestDerive:
-    def test_shares_provider_and_starts_empty(self):
+    def test_inherits_copies_not_shared_mutable_state(self):
         parent = _make_agent(_echo_tool())
         parent.messages.append({"role": "user", "content": "old"})
 
@@ -567,9 +570,32 @@ class TestDerive:
 
         assert child.provider is parent.provider
         assert child.system_prompt == parent.system_prompt
-        assert child.config == parent.config
         assert child.messages == []
-        assert child.tool_registry is parent.tool_registry
+        # The capability set is inherited, the management surface is not:
+        # a child that disables or registers reaches nothing of the parent's.
+        assert child.tool_registry is not parent.tool_registry
+        assert child.tool_registry.names() == parent.tool_registry.names()
+        assert child.config == parent.config
+        assert child.config is not parent.config
+
+    def test_child_registry_changes_do_not_reach_the_parent(self):
+        parent = _make_agent(_echo_tool("a"), _echo_tool("b"))
+
+        child = parent.derive()
+        child.tool_registry.disable("a")
+        child.tool_registry.register(_echo_tool("c"))
+
+        assert child.tool_registry.names() == ["b", "c"]
+        assert parent.tool_registry.names() == ["a", "b"]
+
+    def test_provider_override(self):
+        parent = _make_agent(_echo_tool())
+
+        replacement = MockProvider([], model="cheap-model")
+        child = parent.derive(provider=replacement)
+
+        assert child.provider is replacement
+        assert parent.provider is not replacement
 
     def test_overrides_are_independent(self):
         parent = _make_agent(_echo_tool("a"), _echo_tool("b"))
@@ -773,3 +799,159 @@ class TestTurns:
         # The parent's own history is untouched: it was the child's turn.
         assert parent.messages == []
         assert not any(e.run_id == "" for e in seen)
+
+
+# ── the terminal-event guarantee ───────────────────────────
+
+
+class TestTerminalEventGuarantee:
+    @pytest.mark.asyncio
+    async def test_a_base_exception_still_ends_the_turn_for_readers(self):
+        """SystemExit/KeyboardInterrupt must not leave subscribers hanging.
+
+        The turn ends like any failed turn — terminal event published, failure
+        parked on the Turn — instead of pushing the exception through the task
+        into the event loop, past every reader.
+        """
+
+        class Exploding(MockProvider):
+            async def stream(self, *args):
+                raise KeyboardInterrupt  # a BaseException, not an Exception
+                yield  # pragma: no cover — makes this a generator
+
+        agent = _make_agent(provider=Exploding())
+        turn = agent.start("hi")
+        reader = turn.subscribe()
+
+        terminal = await turn.wait()
+
+        assert isinstance(terminal, RunFailed)
+        assert isinstance(turn.failure, KeyboardInterrupt)
+        events = [event async for event in reader]
+        assert events[-1] is terminal
+        assert agent.state.status == "failed"
+        assert not agent.busy
+
+
+# ── cooperative cancellation for sync tools ────────────────
+
+
+def _patient_tool(noticed: list, started: threading.Event) -> Tool:
+    """A sync tool that waits for the loop's signal instead of spinning."""
+
+    def patient(args, ctx):
+        started.set()
+        noticed.append(ctx.cancel_event.wait(timeout=5))
+        return "finally"
+
+    return Tool("patient", "waits politely", {}, patient)
+
+
+async def _until(predicate, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, "timed out waiting for the tool thread"
+        await asyncio.sleep(0.01)
+
+
+async def _thread_started(started: threading.Event, timeout: float = 5.0) -> None:
+    """Let the loop run while the tool's worker reaches its first line."""
+    await _until(started.is_set, timeout)
+
+
+class TestSyncToolCancellation:
+    @pytest.mark.asyncio
+    async def test_a_timed_out_sync_tool_sees_the_cancel_signal(self):
+        noticed: list = []
+        started = threading.Event()
+        agent = _make_agent(
+            _patient_tool(noticed, started), config=AgentConfig(tool_timeout=1)
+        )
+        agent.provider = MockProvider(
+            [tool_call_response("patient"), _plain_answer("given up waiting")]
+        )
+
+        events = await _events(agent)
+
+        finished = next(e for e in events if isinstance(e, ToolCallFinished))
+        assert finished.status == "timeout"
+        assert started.is_set()
+        await _until(lambda: bool(noticed))
+        assert noticed == [True]  # the worker noticed it was abandoned
+
+    @pytest.mark.asyncio
+    async def test_cancelling_the_turn_signals_a_running_sync_tool(self):
+        noticed: list = []
+        started = threading.Event()
+        agent = _make_agent(
+            _patient_tool(noticed, started),
+            provider=MockProvider([tool_call_response("patient")]),
+        )
+
+        turn = agent.start("hi")
+        await _thread_started(started)
+        turn.cancel()
+
+        assert (await turn.wait()).cancelled is True
+        await _until(lambda: bool(noticed))
+        assert noticed == [True]
+
+
+# ── the persisted outcome protocol ─────────────────────────
+
+
+class TestErrorPrefixes:
+    """Every failed call's persisted result says so with a prefix.
+
+    A saved session is a message list — the prefix is the only place an
+    outcome survives for whoever replays it (see core/tool.py).
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_tool_error_result_carries_the_error_prefix(self):
+        def broken(args):
+            raise ToolError("it broke", "custom_code")
+
+        agent = _make_agent(Tool("boom", "b", {}, broken))
+        agent.provider = MockProvider(
+            [tool_call_response("boom"), _plain_answer("moved on")]
+        )
+
+        events = await _events(agent)
+
+        finished = next(e for e in events if isinstance(e, ToolCallFinished))
+        assert finished.status == "error"
+        assert finished.error_code == "custom_code"
+        assert finished.result.startswith(f"{ERROR_PREFIX} custom_code:")
+        tool_message = next(m for m in agent.messages if m["role"] == "tool")
+        assert tool_message["content"].startswith(ERROR_PREFIX)
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_tool_result_carries_the_error_prefix(self):
+        agent = _make_agent()
+        agent.provider = MockProvider(
+            [tool_call_response("nope"), _plain_answer("moved on")]
+        )
+
+        events = await _events(agent)
+
+        finished = next(e for e in events if isinstance(e, ToolCallFinished))
+        assert finished.status == "not_found"
+        assert finished.result.startswith(f"{ERROR_PREFIX} unknown tool")
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_result_carries_the_timeout_prefix(self):
+        noticed: list = []
+        started = threading.Event()
+        agent = _make_agent(
+            _patient_tool(noticed, started), config=AgentConfig(tool_timeout=1)
+        )
+        agent.provider = MockProvider(
+            [tool_call_response("patient"), _plain_answer("given up waiting")]
+        )
+
+        events = await _events(agent)
+
+        finished = next(e for e in events if isinstance(e, ToolCallFinished))
+        assert finished.status == "timeout"
+        assert finished.result.startswith(TIMEOUT_PREFIX)

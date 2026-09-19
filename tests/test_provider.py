@@ -157,8 +157,8 @@ class TestChunkMapping:
 
         chunks = await _stream(provider)
 
-        assert chunks[0].tool_call.name == "echo"
-        assert chunks[1].tool_call.arguments == '{"v"'
+        assert chunks[0].tool_calls[0].name == "echo"
+        assert chunks[1].tool_calls[0].arguments == '{"v"'
 
 
 class TestStreamAccumulator:
@@ -183,9 +183,9 @@ class TestStreamAccumulator:
         from mocode.core.provider import Chunk, ToolCallDelta
 
         acc = self._feed(
-            Chunk(tool_call=ToolCallDelta(index=0, id="c1", name="echo")),
-            Chunk(tool_call=ToolCallDelta(index=0, arguments='{"a":')),
-            Chunk(tool_call=ToolCallDelta(index=0, arguments="1}")),
+            Chunk(tool_calls=[ToolCallDelta(index=0, id="c1", name="echo")]),
+            Chunk(tool_calls=[ToolCallDelta(index=0, arguments='{"a":')]),
+            Chunk(tool_calls=[ToolCallDelta(index=0, arguments="1}")]),
         )
         calls = acc.build().tool_calls
         assert [(c.id, c.name, c.arguments) for c in calls] == [("c1", "echo", '{"a":1}')]
@@ -194,12 +194,30 @@ class TestStreamAccumulator:
         from mocode.core.provider import Chunk, ToolCallDelta
 
         acc = self._feed(
-            Chunk(tool_call=ToolCallDelta(index=0, id="c1", name="a")),
-            Chunk(tool_call=ToolCallDelta(index=1, id="c2", name="b")),
-            Chunk(tool_call=ToolCallDelta(index=1, arguments="{}")),
-            Chunk(tool_call=ToolCallDelta(index=0, arguments="{}")),
+            Chunk(tool_calls=[ToolCallDelta(index=0, id="c1", name="a")]),
+            Chunk(tool_calls=[ToolCallDelta(index=1, id="c2", name="b")]),
+            Chunk(tool_calls=[ToolCallDelta(index=1, arguments="{}")]),
+            Chunk(tool_calls=[ToolCallDelta(index=0, arguments="{}")]),
         )
         assert [c.name for c in acc.build().tool_calls] == ["a", "b"]
+
+    def test_parallel_calls_in_one_chunk(self):
+        """One delta may carry several call fragments; none may be lost."""
+        from mocode.core.provider import Chunk, ToolCallDelta
+
+        acc = self._feed(
+            Chunk(
+                tool_calls=[
+                    ToolCallDelta(index=0, id="c1", name="a"),
+                    ToolCallDelta(index=1, id="c2", name="b", arguments="{}"),
+                ]
+            ),
+            Chunk(tool_calls=[ToolCallDelta(index=0, arguments="{}")]),
+        )
+        assert [(c.name, c.arguments) for c in acc.build().tool_calls] == [
+            ("a", "{}"),
+            ("b", "{}"),
+        ]
 
     def test_an_empty_stream_builds_a_contentless_response(self):
         response = StreamAccumulator().build()

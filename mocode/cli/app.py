@@ -198,10 +198,11 @@ class CLIApp:
                     self.display.user_message(user_input)
                     await self._run_chat(result.prompt, subscription)
                     self._drain(subscription)
-                    self.conversation.save()
         finally:
             subscription.close()
-            self.conversation.save()
+            # Full lifecycle close, inside the loop: the terminal event lands
+            # and plugins are released before the channel goes away.
+            await self.conversation.aclose()
 
     def run(self) -> None:
         """Sync entry point for the interactive CLI."""
@@ -210,7 +211,9 @@ class CLIApp:
         except KeyboardInterrupt:
             self.conversation.save()
         finally:
-            self.conversation.close()
+            # aclose() already ran on every normal path; this only releases
+            # what an abrupt exit left behind.
+            self.conversation.close(save=False)
 
     # ── Oneshot ────────────────────────────────────────────
 
@@ -237,21 +240,26 @@ class CLIApp:
             print(result)
 
     async def _oneshot(self, prompt: str, stdin_text: str | None):
-        result = await self._dispatch(prompt)
-        if result.kind is not Kind.PROMPT or not result.prompt:
-            return None
-
-        text = _compose_prompt(result.prompt, stdin_text)
-        if self.display is None:
-            return await self.conversation.chat(text)
-
-        # Rendered on the way past, so there is nothing left to print.
-        subscription = self.conversation.subscribe()
         try:
-            await self._run_chat(text, subscription)
+            result = await self._dispatch(prompt)
+            if result.kind is not Kind.PROMPT or not result.prompt:
+                return None
+
+            text = _compose_prompt(result.prompt, stdin_text)
+            if self.display is None:
+                return await self.conversation.chat(text)
+
+            # Rendered on the way past, so there is nothing left to print.
+            subscription = self.conversation.subscribe()
+            try:
+                await self._run_chat(text, subscription)
+            finally:
+                subscription.close()
+            return None
         finally:
-            subscription.close()
-        return None
+            # A one-shot is not a session: it saves nothing, and releases
+            # whatever the plugins built for it.
+            await self.conversation.aclose(save=False)
 
 
 def _compose_prompt(prompt: str, stdin_text: str | None) -> str:

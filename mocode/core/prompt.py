@@ -7,12 +7,23 @@ prefix cache warm. Nested sections become nested XML tags.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Self
+from xml.sax.saxutils import quoteattr
+
+#: A section name becomes an XML tag, so it must be a valid one. Names come
+#: from code, not from users — an invalid name is a bug worth failing on.
+_XML_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 
 
 def _xml_tag(tag: str, content: str = "", **attrs: str) -> str:
-    attr_str = "".join(f' {k}="{v}"' for k, v in attrs.items())
+    if not _XML_NAME.match(tag):
+        raise ValueError(
+            f"section name {tag!r} is not a valid XML tag name "
+            "(letters, digits, '_', '-', '.', not starting with a digit)"
+        )
+    attr_str = "".join(f" {k}={quoteattr(str(v))}" for k, v in attrs.items())
     if not content:
         return f"<{tag}{attr_str}></{tag}>"
     return f"<{tag}{attr_str}>\n{content}\n</{tag}>"

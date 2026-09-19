@@ -53,6 +53,11 @@ class TestAgentLoopAssembly:
         a, b = _loop(), _loop()
         assert a.channel is not b.channel
 
+    def test_state_is_stable_before_the_first_turn(self):
+        agent = _loop()
+        assert agent.state is agent.state
+        assert agent.state.status == "idle"
+
 
 class TestContainerSurface:
     """ToolRegistry and Prompt are the same shape of container.

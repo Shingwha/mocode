@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from mocode.core.events import RunFinished, TextDelta
 from mocode.core.provider import Response, Usage
+from mocode.host.config import Config, ModelEntry, ProviderEntry
 from mocode.host.runtime import MoCode
 
 from .conftest import make_config, strip_ansi
@@ -60,6 +62,59 @@ class TestTheRuntime:
         conversation = mc.new_conversation(cwd=tmp_path)
         assert conversation.id.startswith("session_")
         assert mc.store.list_all() == []
+
+    def test_the_default_provider_type_is_openai(self, mc: MoCode):
+        from mocode.providers.openai import OpenAIProvider
+
+        provider = mc.provider_for("test", "test-model")
+        assert isinstance(provider, OpenAIProvider)
+        assert provider.model == "test-model"
+
+
+class TestProviderTypes:
+    """A provider implementation is a capability, and arrives from outside."""
+
+    @staticmethod
+    def _fake_factory(entry, key, model):
+        return SimpleNamespace(model=model, built_from=key, api_key=entry.api_key_for(key))
+
+    def test_a_registered_type_is_built_from_the_config_entry(self, make_mc):
+        config = make_config()
+        config.providers["local"] = ProviderEntry(
+            type="local", models={"llama": ModelEntry()}
+        )
+        mc = make_mc(config)
+        mc.register_provider_type("local", self._fake_factory)
+
+        provider = mc.provider_for("local", "llama")
+
+        assert (provider.model, provider.built_from) == ("llama", "local")
+        assert provider.api_key == ""  # LOCAL_API_KEY is not set
+
+    def test_an_unregistered_type_is_a_configuration_mistake(self, make_mc):
+        config = make_config()
+        config.providers["local"] = ProviderEntry(
+            type="local", models={"llama": ModelEntry()}
+        )
+        mc = make_mc(config)
+
+        with pytest.raises(ValueError, match="register_provider_type"):
+            mc.provider_for("local", "llama")
+
+    def test_the_type_round_trips_through_the_file(self, tmp_path: Path):
+        config = make_config()
+        config.providers["local"] = ProviderEntry(
+            type="local", models={"llama": ModelEntry()}
+        )
+        path = tmp_path / "config.json"
+        config.save(path)
+
+        loaded = Config.load(path)
+
+        assert loaded.providers["local"].type == "local"
+        # The default stays implicit: a file without "type" means openai.
+        assert loaded.providers["test"].type == "openai"
+        assert "type" not in config.providers["test"].to_dict()
 
 
 class TestAConversation:

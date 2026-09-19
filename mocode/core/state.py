@@ -87,6 +87,11 @@ class RunState:
     ``content`` is everything streamed this turn, including the commentary the
     model wraps around tool calls. ``answer`` is the last iteration's text —
     the reply itself, and what ``chat()`` returns.
+
+    Folding is guarded, so the same events may be applied more than once —
+    a reconnect replaying a range the reader had already folded — and events
+    from another run sharing the channel are ignored. Each ``RunState`` is one
+    run's view, not the channel's.
     """
 
     run_id: str = ""
@@ -100,9 +105,19 @@ class RunState:
     usage: Usage = field(default_factory=lambda: Usage(0, 0))
     last_usage: Usage | None = None
     error: str = ""
+    #: Highest stamped ``seq`` folded so far. An unstamped event (``seq == 0``)
+    #: is one the loop folds *before* the channel stamps it — those always
+    #: pass, so the live path keeps its ordering; replayed events, already
+    #: stamped, are deduplicated here instead.
+    _last_seq: int = field(default=0, repr=False)
 
     def apply(self, event: Event) -> None:
         """Fold one event into the snapshot. Unknown events are ignored."""
+        if event.seq and event.seq <= self._last_seq:
+            return  # already folded — an overlapping replay
+        if self.run_id and event.run_id and event.run_id != self.run_id:
+            return  # another run sharing this channel
+        self._last_seq = max(self._last_seq, event.seq)
         match event:
             case RunStarted():
                 self.run_id = event.run_id

@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
 
@@ -56,12 +56,14 @@ class Chunk:
     """One streaming delta.
 
     Every field is optional: a chunk carries whatever arrived. Text and
-    reasoning accumulate by concatenation, tool calls by ``index``.
+    reasoning accumulate by concatenation, tool calls by ``index`` — and one
+    chunk may carry several call fragments at once, because not every backend
+    splits parallel calls into separate deltas.
     """
 
     text: str = ""
     reasoning: str = ""
-    tool_call: ToolCallDelta | None = None
+    tool_calls: list[ToolCallDelta] = field(default_factory=list)
     usage: Usage | None = None
     finish_reason: str | None = None
 
@@ -128,8 +130,7 @@ class StreamAccumulator:
         if chunk.finish_reason is not None:
             self.finish_reason = chunk.finish_reason
 
-        delta = chunk.tool_call
-        if delta is not None:
+        for delta in chunk.tool_calls:
             slot = self._tool_slots.setdefault(delta.index, ToolCallDelta(index=delta.index))
             # id and name arrive once; arguments arrive split across chunks.
             if delta.id:
@@ -170,9 +171,17 @@ class StreamAccumulator:
 class Provider(Protocol):
     """LLM provider protocol.
 
-    ``stream`` is the only required call. A provider that cannot stream
-    natively yields a single chunk holding the whole response — the loop does
-    not care which it is.
+    The kernel's interchange dialect is the OpenAI wire format: ``messages``
+    are OpenAI role dicts (``user`` / ``assistant`` with ``tool_calls`` /
+    ``tool`` with ``tool_call_id``), ``tools`` are OpenAI function schemas,
+    ``system`` travels separately, and the output cap is called ``max_tokens``.
+    A provider for a backend that speaks something else translates at this
+    edge — the dialect is declared here rather than abstracted away, so the
+    kernel has exactly one message shape to keep correct.
+
+    All three members are required. A provider that cannot stream natively
+    yields a single chunk holding the whole response — the loop does not care
+    which it is.
     """
 
     @property

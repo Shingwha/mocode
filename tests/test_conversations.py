@@ -451,3 +451,45 @@ class TestPluginsAreLoadedOnce:
 
         assert mc.plugin_sources_for(first) == [plugin]
         assert mc.plugin_sources_for(second) == []
+
+
+# ── ending a conversation ──────────────────────────────────
+
+
+class TestGracefulClose:
+    @pytest.mark.asyncio
+    async def test_a_new_session_is_refused_while_a_turn_runs(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        conversation = _conversation(mc, _project(tmp_path, "a"))
+        conversation.agent.provider = SlowProvider()
+        turn = conversation.run("slow")
+
+        with pytest.raises(RuntimeError, match="cancel it first"):
+            await conversation.new_session()
+
+        turn.cancel()
+        await turn.wait()
+
+    @pytest.mark.asyncio
+    async def test_aclose_delivers_the_ending_before_the_stream_closes(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        """The full close: terminal event first, plugins released, then closed."""
+        conversation = _conversation(mc, _project(tmp_path, "a"))
+        conversation.agent.provider = SlowProvider()
+        reader = conversation.subscribe()
+        turn = conversation.run("slow")
+
+        await conversation.aclose()
+
+        events = []
+        while True:
+            event = await reader.get()
+            if event is None:
+                break
+            events.append(event)
+        assert isinstance(events[-1], RunFinished)
+        assert events[-1].cancelled is True
+        assert turn.done and turn.cancelled
+        assert conversation.agent.channel.closed

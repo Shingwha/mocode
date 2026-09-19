@@ -9,7 +9,7 @@ conversations as it likes, in as many projects, on as many models at once::
 
     mc = MoCode()                                  # ~/.mocode/config.json
     conv = mc.new_conversation(cwd="/srv/proj-a")  # one conversation
-    async for event in conv.chat("list the tests"):
+    async for event in conv.stream("list the tests"):
         ...                                        # text, tool calls, usage
 
     conv.state.answer                              # live snapshot
@@ -24,7 +24,7 @@ one way back in from a stored id.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 from ..core.agent import AgentConfig
 from ..core.tool import ToolRegistry
@@ -42,7 +42,24 @@ from .session import Session, SessionStore, new_session_id, timestamp
 
 if TYPE_CHECKING:
     from ..core.provider import Provider
+    from .config import ProviderEntry
     from .plugin.base import Plugin
+
+#: Builds a Provider from a config entry: ``(entry, provider key, model name)``.
+ProviderFactory = Callable[["ProviderEntry", str, str], "Provider"]
+
+
+def _openai_factory(entry: "ProviderEntry", key: str, model: str) -> "Provider":
+    """The built-in OpenAI-compatible implementation (lazy SDK import)."""
+    from ..providers.openai import OpenAIProvider
+
+    model_entry = entry.models.get(model)
+    return OpenAIProvider(
+        api_key=entry.api_key_for(key),
+        model=model,
+        base_url=entry.base_url,
+        extra_body=model_entry.extra_body if model_entry else None,
+    )
 
 
 class MoCode:
@@ -70,6 +87,10 @@ class MoCode:
         #: Loaded plugin sets, keyed by project. Loading is per working
         #: directory; building is per conversation.
         self._plugins: dict[str, LoadedPlugins] = {}
+        #: Provider implementations, keyed by a config entry's ``type``.
+        self._provider_types: dict[str, ProviderFactory] = {
+            "openai": _openai_factory,
+        }
 
     # ── Conversations ──────────────────────────────────────
 
@@ -162,27 +183,36 @@ class MoCode:
 
     # ── Providers ──────────────────────────────────────────
 
+    def register_provider_type(self, type_name: str, factory: ProviderFactory) -> None:
+        """Teach this runtime to build providers of *type_name*.
+
+        A provider implementation is a capability, so it arrives from outside:
+        a plugin, an embedding application, a script — one call, and config
+        entries with ``"type": type_name`` start working. Registering a name
+        again replaces it, which is what a reloaded plugin wants.
+        """
+        self._provider_types[type_name] = factory
+
     def provider_for(self, key: str, model: str) -> "Provider":
         """Build a provider for a ``(provider key, model)`` pair.
 
-        Raises ``ValueError`` when the config does not know the provider — a
-        model MoCode cannot reach is a configuration mistake, not a fallback.
+        Raises ``ValueError`` when the config does not know the provider, or
+        when its ``type`` names an implementation nobody registered — a model
+        MoCode cannot reach is a configuration mistake, not a fallback.
         """
-        from ..providers.openai import OpenAIProvider  # lazy — no SDK at startup
-
         entry = self.config.providers.get(key)
         if entry is None:
             raise ValueError(
                 f"Provider {key!r} is not defined in {self.config.path} — add it "
                 "there, or point active_provider at an existing one."
             )
-        model_entry = entry.models.get(model)
-        return OpenAIProvider(
-            api_key=entry.api_key_for(key),
-            model=model,
-            base_url=entry.base_url,
-            extra_body=model_entry.extra_body if model_entry else None,
-        )
+        factory = self._provider_types.get(entry.type)
+        if factory is None:
+            raise ValueError(
+                f"Provider {key!r} has type {entry.type!r}, which no one has "
+                "registered — call register_provider_type first."
+            )
+        return factory(entry, key, model)
 
     def set_default_model(self, key: str, model: str) -> None:
         """Record the provider/model new conversations start from.

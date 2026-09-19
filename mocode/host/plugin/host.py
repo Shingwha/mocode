@@ -102,6 +102,7 @@ class PluginHost:
         self.plugins = list(plugins)
         #: Names of plugins whose build() or close() failed — the rest still worked.
         self.failures: list[str] = []
+        self._closed = False
 
     def build_all(self) -> None:
         """Run every plugin's build(). One failure never stops the host."""
@@ -136,7 +137,10 @@ class PluginHost:
         return self.assemble(provider=provider, config=config)
 
     def close(self) -> None:
-        """Tell every plugin this conversation is over."""
+        """Tell every plugin this conversation is over. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
         for plugin in self.plugins:
             try:
                 plugin.close(self.ctx)

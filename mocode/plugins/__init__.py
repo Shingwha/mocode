@@ -43,7 +43,7 @@ Plugins are trusted code — installing one means running it.
 
 from __future__ import annotations
 
-from ..core.agent import AgentConfig, Turn
+from ..core.agent import AgentConfig, LoopResult, Turn
 from ..core.channel import EventChannel, Subscription
 from ..core.events import (
     Event,
@@ -61,7 +61,15 @@ from ..core.events import (
 )
 from ..core.hook import AgentHook, HookRunner, IterationContext, ToolCallContext
 from ..core.prompt import Prompt, Section
-from ..core.provider import ModelSpec
+from ..core.provider import (
+    Chunk,
+    ModelSpec,
+    Provider,
+    StreamAccumulator,
+    ToolCall,
+    ToolCallDelta,
+    Usage,
+)
 from ..core.state import RunState
 from ..core.tool import Tool, ToolError, ToolRegistry, ToolResult
 from ..host.command import (
@@ -80,6 +88,7 @@ from ..host.plugin.context import HostContext
 __all__ = [
     "AgentConfig",
     "AgentHook",
+    "Chunk",
     "CONTINUE",
     "Command",
     "CommandContext",
@@ -95,20 +104,25 @@ __all__ = [
     "IterationFinished",
     "IterationStarted",
     "Kind",
+    "LoopResult",
     "ModelSpec",
     "Notice",
     "Plugin",
     "Prompt",
+    "Provider",
     "ReasoningDelta",
     "RunFailed",
     "RunFinished",
     "RunStarted",
     "RunState",
     "Section",
+    "StreamAccumulator",
     "Subscription",
     "TextDelta",
     "Tool",
+    "ToolCall",
     "ToolCallContext",
+    "ToolCallDelta",
     "ToolCallFinished",
     "ToolCallStarted",
     "ToolError",
@@ -116,4 +130,5 @@ __all__ = [
     "ToolRegistry",
     "ToolResult",
     "Turn",
+    "Usage",
 ]

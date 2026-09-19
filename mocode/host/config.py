@@ -100,8 +100,16 @@ class ModelEntry:
 
 @dataclass
 class ProviderEntry:
-    """One provider: credentials, endpoint, and the models it serves."""
+    """One provider: its implementation type, credentials, endpoint, models.
 
+    ``type`` selects the implementation a :class:`~mocode.host.runtime.MoCode`
+    runtime builds for it — ``"openai"`` ships built in; anything else must
+    have been registered with ``MoCode.register_provider_type`` first. A
+    missing ``type`` means ``"openai"``, so configurations written before the
+    field existed keep working.
+    """
+
+    type: str = "openai"
     name: str = ""
     api_key: str = ""
     base_url: str | None = None
@@ -125,6 +133,7 @@ class ProviderEntry:
             for name, raw in (data.get("models") or {}).items()
         }
         return cls(
+            type=str(data.get("type") or "openai"),
             name=str(data.get("name") or ""),
             api_key=str(data.get("api_key") or ""),
             base_url=data.get("base_url") or None,
@@ -133,6 +142,8 @@ class ProviderEntry:
 
     def to_dict(self) -> dict[str, Any]:
         out: dict[str, Any] = {"models": {n: m.to_dict() for n, m in self.models.items()}}
+        if self.type != "openai":
+            out["type"] = self.type
         if self.name:
             out["name"] = self.name
         if self.api_key:

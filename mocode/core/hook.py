@@ -18,6 +18,7 @@ denied call appears as ``ToolCallFinished(status="denied")``.
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable
 
@@ -79,6 +80,20 @@ class ToolCallContext:
     tool_details: dict = field(default_factory=dict)
     tool_timeout: int | None = None
     emit: EmitFn = _noop_emit
+    #: Set when the loop stops waiting for this call — a timeout, or the turn
+    #: being cancelled. Async tools are unwound by cancellation; a sync tool
+    #: keeps its worker thread and must notice this signal itself.
+    cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether the caller stopped waiting: check this in long loops.
+
+        ``tool_timeout`` is cooperative for sync tools — the loop gives up
+        waiting, sets this flag, and answers the model; the tool's side
+        effects continue until the tool notices and returns.
+        """
+        return self.cancel_event.is_set()
 
 
 class AgentHook:

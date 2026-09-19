@@ -191,6 +191,10 @@ class Conversation:
 
     async def new_session(self, messages: list[dict] | None = None) -> str:
         """Begin a new session in the same project, optionally seeded."""
+        if self.busy:
+            raise RuntimeError(
+                "cannot start a new session while a turn is running — cancel it first"
+            )
         self.save()
         self.id = new_session_id()
         self.created_at = timestamp()
@@ -224,16 +228,38 @@ class Conversation:
         """Sessions recorded for this project, newest first."""
         return self.runtime.store.list(str(self.cwd))
 
+    async def aclose(self, *, save: bool = True) -> None:
+        """End the conversation and wait for the ending: the full lifecycle.
+
+        The turn's terminal event reaches every reader before the channel
+        closes, and plugins are released only after the run has stopped using
+        them. Prefer this over :meth:`close` wherever an event loop is running.
+        """
+        turn = self.agent.turn
+        self.cancel()
+        if turn is not None and not turn.done:
+            try:
+                await turn.wait()
+            except BaseException:
+                pass  # the turn ended badly; closing continues regardless
+        self._teardown(save=save)
+
     def close(self, *, save: bool = True) -> None:
-        """End the conversation: stop the turn, persist, release, close the stream.
+        """End the conversation without waiting: the emergency path.
 
         A running turn is *asked* to stop, not waited for — this stays callable
-        from a `finally` — so the ending it reports arrives after this returns.
+        from a `finally` — so the ending it reports arrives after this returns,
+        possibly onto an already-closed channel. Use :meth:`aclose` instead
+        wherever you can await.
         """
         self.cancel()
+        self._teardown(save=save)
+
+    def _teardown(self, *, save: bool) -> None:
         if save:
             self.save()
         self.host.close()
+        self.agent.close()
         self.agent.channel.close(reason=f"conversation {self.id} closed")
 
     # ── Talking to whoever is watching ─────────────────────

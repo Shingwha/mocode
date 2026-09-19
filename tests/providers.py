@@ -26,12 +26,16 @@ def response_to_chunks(response: Response, chunk_size: int = 0) -> Iterable[Chun
             yield Chunk(text=part)
 
     for index, call in enumerate(response.tool_calls or []):
-        yield Chunk(tool_call=ToolCallDelta(index=index, id=call.id, name=call.name))
+        yield Chunk(
+            tool_calls=[ToolCallDelta(index=index, id=call.id, name=call.name)]
+        )
         for start in range(0, len(call.arguments), ARG_FRAGMENT):
             yield Chunk(
-                tool_call=ToolCallDelta(
-                    index=index, arguments=call.arguments[start : start + ARG_FRAGMENT]
-                )
+                tool_calls=[
+                    ToolCallDelta(
+                        index=index, arguments=call.arguments[start : start + ARG_FRAGMENT]
+                    )
+                ]
             )
 
     if response.finish_reason:

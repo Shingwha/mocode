@@ -149,6 +149,46 @@ class TestRunState:
         state = self._state(ev.RunStarted(), PluginEvent())
         assert state.status == RUNNING
 
+    def test_an_overlapping_replay_does_not_double_count(self):
+        """A reconnect that re-reads a range it had folded stays correct."""
+        events = [
+            self._stamped(ev.RunStarted(run_id="r1"), 1),
+            self._stamped(ev.TextDelta(run_id="r1", text="think"), 2),
+            self._stamped(ev.TextDelta(run_id="r1", text="ing"), 3),
+            self._stamped(ev.RunFinished(run_id="r1", content="thinking"), 4),
+        ]
+        state = RunState()
+        for event in events:
+            state.apply(event)
+
+        for event in events[1:]:  # the overlap, replayed
+            state.apply(event)
+
+        assert state.content == "thinking"
+        assert state.status == DONE
+
+    def test_unstamped_events_always_apply(self):
+        """The loop folds an event before the channel stamps it: seq 0 is live."""
+        state = RunState()
+        state.apply(ev.RunStarted(run_id="r1"))
+        state.apply(ev.TextDelta(text="a"))
+        state.apply(ev.TextDelta(text="b"))
+        assert state.content == "ab"
+
+    def test_another_runs_events_do_not_fold_in(self):
+        """One RunState is one run's view, even on a channel others share."""
+        state = RunState()
+        state.apply(self._stamped(ev.RunStarted(run_id="parent"), 1))
+        state.apply(self._stamped(ev.TextDelta(run_id="child", text="noise"), 2))
+        state.apply(self._stamped(ev.ToolCallStarted(run_id="child", call_id="c1"), 3))
+        assert state.content == ""
+        assert state.tool_calls == {}
+
+    @staticmethod
+    def _stamped(event: ev.Event, seq: int) -> ev.Event:
+        event.seq = seq
+        return event
+
     def test_to_dict_is_plain_data(self):
         state = self._state(
             ev.RunStarted(model="m"),

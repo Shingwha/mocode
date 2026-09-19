@@ -123,13 +123,13 @@ class OpenAIProvider:
 
             tool_calls = getattr(delta, "tool_calls", None)
             if tool_calls:
-                chunk.tool_call = _tool_call_delta(tool_calls[0])
+                chunk.tool_calls = [_tool_call_delta(part) for part in tool_calls]
 
         finish_reason = getattr(choice, "finish_reason", None)
         if finish_reason is not None:
             chunk.finish_reason = finish_reason
 
-        if not (chunk.text or chunk.reasoning or chunk.tool_call):
+        if not (chunk.text or chunk.reasoning or chunk.tool_calls):
             return chunk if (chunk.usage is not None or chunk.finish_reason) else None
         return chunk
 
