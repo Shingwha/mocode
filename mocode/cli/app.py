@@ -5,8 +5,9 @@ Assembly (config → plugins → agent → session) lives in
 the same setup. This class adds only what a terminal needs: the REPL, input,
 slash-command dispatch and Ctrl-C handling.
 
-Its own contributions — the display hook and the terminal commands — go in
-through :mod:`mocode.cli.plugin`, the same channel a third-party plugin uses.
+Its commands go in through :mod:`mocode.cli.plugin`, the same channel a
+third-party plugin uses. Its renderer it installs itself: drawing a terminal is
+not a plugin contribution, it is this frontend consuming the event stream.
 """
 
 from __future__ import annotations
@@ -81,6 +82,18 @@ class CLIApp:
             commands=self.commands,
             extra_plugins=[cli_plugin],
         )
+
+        # Installed here rather than contributed by a plugin: the renderer is
+        # what this frontend does with the event stream. It is added after
+        # `MoCode` so it can read the finished tool registry, and it survives a
+        # config that disables the `cli` plugin — losing the terminal's commands
+        # must not mean losing the screen.
+        if self.display is not None:
+            from .hook import CLIDisplayHook
+
+            self.runtime.agent.hooks.add(
+                CLIDisplayHook(self.display, self.runtime.tools)
+            )
 
     # ── Dispatch ───────────────────────────────────────────
 

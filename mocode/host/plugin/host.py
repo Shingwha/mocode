@@ -21,7 +21,7 @@ from .loader import discover, load_plugin
 def builtin_plugins() -> list[Plugin]:
     """The plugins MoCode ships, in a fixed (prompt-stable) order.
 
-    The CLI's plugin is deliberately absent: it renders a terminal, so a
+    The CLI's plugin is deliberately absent: it belongs to a terminal, so a
     terminal passes it in through ``extra_plugins`` rather than the host having
     to know one exists.
     """

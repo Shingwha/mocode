@@ -100,10 +100,13 @@ class TestTheTerminal:
         assert "cli" in [p.name for p in app.runtime.host.plugins]
         assert "cli" not in [p.name for p in builtin_plugins()]
 
-    def test_the_terminal_renderer_is_installed_as_a_hook(self, app):
+    def test_the_terminal_installs_its_own_renderer(self, app):
+        """The frontend draws itself — no plugin, and not the host, supplies it."""
         from mocode.cli.hook import CLIDisplayHook
 
-        assert any(isinstance(h, CLIDisplayHook) for h in app.runtime.ctx.hooks)
+        assert any(
+            isinstance(h, CLIDisplayHook) for h in app.runtime.agent.hooks.all()
+        )
 
     @pytest.mark.asyncio
     async def test_a_turn_is_echoed_and_answered(self, app, capsys):
@@ -145,7 +148,9 @@ class TestTheTerminal:
         )
 
         assert app.display is not None
-        assert any(isinstance(h, CLIDisplayHook) for h in app.runtime.ctx.hooks)
+        assert any(
+            isinstance(h, CLIDisplayHook) for h in app.runtime.agent.hooks.all()
+        )
 
     def test_interactive_implies_rendering(self, tmp_path, monkeypatch):
         """`render` can only ask for a frontend, never take one away."""
@@ -185,7 +190,29 @@ class TestTheTerminal:
         app = CLIApp(config=_config(tmp_path), home=tmp_path / "home", interactive=False)
 
         assert "/help" in {c.name for c in app.commands.all()}
-        assert not any(isinstance(h, CLIDisplayHook) for h in app.runtime.ctx.hooks)
+        assert not any(
+            isinstance(h, CLIDisplayHook) for h in app.runtime.agent.hooks.all()
+        )
+
+    def test_disabling_the_cli_plugin_costs_commands_but_not_the_renderer(
+        self, tmp_path, monkeypatch
+    ):
+        """A plugin the user can switch off must not be what draws the screen."""
+        from mocode.cli import CLIApp
+        from mocode.cli.hook import CLIDisplayHook
+
+        monkeypatch.setattr(
+            "mocode.host.runtime.SessionStore",
+            lambda: SessionStore(base_dir=tmp_path / "sessions"),
+        )
+        config = _config(tmp_path)
+        config.plugins = {"cli": {"enabled": False}}
+        app = CLIApp(config=config, home=tmp_path / "home", interactive=True)
+
+        assert "/help" not in {c.name for c in app.commands.all()}
+        assert any(
+            isinstance(h, CLIDisplayHook) for h in app.runtime.agent.hooks.all()
+        )
 
 
 class TestChat:

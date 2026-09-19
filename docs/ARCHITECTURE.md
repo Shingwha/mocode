@@ -30,7 +30,7 @@ mocode/
 │       └── builtin/     the plugins MoCode ships: filesystem, shell, skills
 ├── cli/                 the terminal front-end — a consumer of host/
 │   ├── app.py           CLIApp — the REPL, dispatch and Ctrl-C
-│   ├── plugin.py        the terminal's own plugin: display hook + its commands
+│   ├── plugin.py        the terminal's own plugin: its commands
 │   ├── hook.py          CLIDisplayHook — renders the event stream
 │   ├── lines.py         Line + builders — what a turn looks like, as data
 │   ├── display.py       Display (primitives + Frontend), theme, input, dialogs
@@ -143,7 +143,7 @@ mc.state                            # live snapshot
 
 The system prompt is assembled from framework sections (`guidelines`, `agents`, `environment`, `tools`) plus `ctx.prompt_sections` contributed by plugins, rendered in `(priority, insertion order)` order so stable content stays in front of volatile content for prefix caching.
 
-`CLIApp` is `MoCode` plus a terminal: a REPL, input, slash-command dispatch and Ctrl-C, plus `cli/plugin.py` to contribute its renderer and its commands. `CLIApp` holds no logic the host needs: commands reach the runtime directly through `CommandContext.app`.
+`CLIApp` is `MoCode` plus a terminal: a REPL, input, slash-command dispatch and Ctrl-C, plus `cli/plugin.py` for its commands and its own `CLIDisplayHook`, installed on the agent it built rather than contributed by a plugin. `CLIApp` holds no logic the host needs: commands reach the runtime directly through `CommandContext.app`.
 
 `CLIDisplayHook` is a pure event consumer — it implements `on_event` and no interception hooks at all. It owns only the state of the run *as it is being drawn*: which calls are in flight, and which row on screen each of them owns. Every shape it draws comes from `cli/lines.py`, as data — so the live renderer and history replay cannot drift apart, and neither needs a terminal to be tested.
 

@@ -54,7 +54,7 @@ mocode/
 │       └── builtin/     filesystem, shell, skills  ← the host's shipped plugins
 ├── cli/         the terminal front-end — a consumer of host/
 │   ├── app.py       CLIApp — REPL, dispatch, Ctrl-C
-│   ├── plugin.py    the terminal's plugin (display hook + its commands)
+│   ├── plugin.py    the terminal's plugin (its commands)
 │   ├── hook.py      CLIDisplayHook — renders the event stream
 │   ├── lines.py     Line + builders — what a turn looks like, as data
 │   ├── display.py   Display (primitives + Frontend), theme.py, input.py, dialogs.py
@@ -114,7 +114,7 @@ agent = PluginHost(ctx, extra_plugins=[...]).run(provider=..., config=AgentConfi
 4. Exactly one way to execute a turn: `AgentLoop.stream()`. `chat()` is a wrapper over it, and nothing else gets its own path through the loop.
 5. Observation goes through the event stream; anything that must *answer* (rewrite messages or the system prompt, veto a call, redact a result) is an `AgentHook`. Do not add a second way to watch the loop, and do not make a notification wait for a reply.
 6. What the model reads and what a UI shows are different channels: `ToolResult.content` vs `.details`, `ToolCallFinished.result` vs `.details`. Never make a frontend parse model-facing text to render something.
-7. Tools, commands, hooks and prompt sections are contributed only through `Plugin.build(ctx)` — the host hard-codes none, and the terminal is not an exception.
+7. Tools, commands, hooks and prompt sections are contributed only through `Plugin.build(ctx)` — the host hard-codes none, and the terminal is not an exception. A frontend installing its own renderer on the agent it built is not a contribution: drawing a terminal is what the frontend does with the event stream, never an extension point (`CLIApp` adds `CLIDisplayHook` itself).
 8. No string-protocol parsing between layers: outcomes are carried by `ctx.status`, notifications by typed events.
 9. No central tables of tool names to keep in sync — the `ToolRegistry` and `Tool` metadata are the source of truth.
 10. No central registry of event types to keep in sync either — an event renders itself through `summary()`.

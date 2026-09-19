@@ -1,6 +1,8 @@
 # Writing plugins
 
-A plugin contributes tools, commands, hooks and prompt sections to the host. The built-in capabilities — `filesystem`, `shell`, `skills` — are written against exactly this API, and so is the terminal: `cli/plugin.py` is a plugin like yours, registering its commands and its renderer. Anything you can do in a plugin is the same thing MoCode does for itself.
+A plugin contributes tools, commands, hooks and prompt sections to the host. The built-in capabilities — `filesystem`, `shell`, `skills` — are written against exactly this API, and so is the terminal: `cli/plugin.py` is a plugin like yours, registering its commands. Anything you can do in a plugin is the same thing MoCode does for itself.
+
+**A frontend draws itself.** The terminal's renderer is not a contribution — `cli/app.py` installs `CLIDisplayHook` on the agent it built, because rendering is what a frontend *does* with the event stream, not something a plugin hands to the host. A plugin that wants something on screen publishes an event; see [the compaction example](#context-compaction) for how far that gets you.
 
 **Plugins are frontend-agnostic.** A plugin is built once per conversation against a `HostContext` that may or may not have a `display`; it never learns whether a terminal is attached. Bring a message to the user through the `Frontend` protocol or an event, and it will show up in whatever is running.
 
