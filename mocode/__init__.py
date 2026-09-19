@@ -2,25 +2,27 @@
 
 Two ways in, both import-light:
 
-* **Embed it** — :class:`MoCode` is a headless runtime. It reads config, loads
-  plugins, assembles the agent and hands you an event stream. Nothing is
-  printed; you decide what a run looks like.
-* **Build on the kernel** — :mod:`mocode.core` has the loop, the event
-  contract, the tool/hook registries and the provider protocol, with no
-  application dependencies at all.
+* **Embed it** — :class:`MoCode` is a runtime. It holds the config, the plugin
+  loading and the session store, and opens as many conversations as you like,
+  each with its own project, model and event stream. Nothing is printed; you
+  decide what a run looks like.
+* **Build on the kernel** — :mod:`mocode.core` has the loop, the event channel,
+  the tool/hook registries and the provider protocol, with no application
+  dependencies at all.
 
 ::
 
     from mocode import MoCode
 
     mc = MoCode()
-    async for event in mc.chat("list the tests"):
+    conv = mc.new_conversation(cwd="/srv/proj-a")
+    async for event in conv.chat("list the tests"):
         ...
 """
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # Resolved on first access so that `import mocode` and `import mocode.core`
 # stay cheap — pulling in the host layer costs imports the kernel alone does

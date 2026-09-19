@@ -2,7 +2,7 @@
 
 A lean AI agent framework — a small, plugin-extensible core you can build custom agents on.
 
-MoCode gives you an interactive REPL (or one-shot CLI) where an LLM can read and write files, run shell commands, and load reusable skills. Everything beyond the kernel — and that includes the built-in tools — is a plugin you can replace, disable, or write yourself.
+MoCode gives you an interactive REPL (or one-shot CLI) where an LLM can read and write files, run shell commands, and load reusable skills. Underneath it is a runtime an application embeds: one process can hold many conversations at once, each in its own project, on its own model. Everything beyond the kernel — and that includes the built-in tools — is a plugin you can replace, disable, or write yourself.
 
 ---
 
@@ -129,8 +129,9 @@ Need `glob`, `grep`, web fetch, sub-agents or context compaction? Those are plug
 A skill is a directory with a `SKILL.md` (YAML frontmatter + instructions) and optional reference files the agent can read.
 
 ```
-~/.mocode/skills/my-skill/SKILL.md
-./.mocode/skills/my-skill/SKILL.md
+~/.mocode/skills/my-skill/SKILL.md       your own, every project
+./.mocode/skills/my-skill/SKILL.md       your own, this project
+<plugin>/skills/my-skill/SKILL.md        shipped by a plugin
 ```
 
 ```markdown
@@ -148,23 +149,27 @@ Two ways to use one: `> /skill:my-skill` injects it into the conversation, or th
 
 ## Plugins
 
-A plugin is a directory with `PLUGIN.md` and (optionally) `plugin.py`:
+A plugin is a directory laid out the way the [Agent Plugins](https://agent-plugins.org) standard defines: the root holds what any compatible client understands, and client-specific code lives under a namespace directory.
 
 ```
 ./.mocode/plugins/git-helper/     project-local (wins on name conflicts)
 ~/.mocode/plugins/git-helper/     user-global
-├── PLUGIN.md
-└── plugin.py
+├── plugin.json              the manifest — name, version, description
+├── skills/<name>/SKILL.md   portable skills (standard)
+├── mcp.json                 MCP servers (standard; not served yet)
+├── mocode/plugin.py         contributions to the agent: tools, commands, hooks, prompt
+└── mocode.cli/plugin.py     contributions to the terminal: chrome only it can honour
 ```
 
 ```python
+# mocode/plugin.py — works in every frontend
 from mocode.plugins import Plugin, Tool
 
 class GitStatusTool(Tool):
-    def __init__(self):
+    def __init__(self, cwd):
         super().__init__(
             name="git_status",
-            description="Show the working tree status of the current repo.",
+            description="Show the working tree status of the project.",
             params={},
             func=lambda args: "clean",
         )
@@ -173,12 +178,34 @@ class GitHelperPlugin(Plugin):
     name = "git-helper"
 
     def build(self, ctx):
-        ctx.tools.register(GitStatusTool())
+        ctx.tools.register(GitStatusTool(ctx.cwd))
         # also: ctx.register(Command(...)), ctx.hooks.append(...),
         #       ctx.prompt_sections.append(Section(...))
 ```
 
-Restart MoCode and it is live. A complete example lives in [examples/plugins/git-status](examples/plugins/git-status). Plugins are trusted code — installing one runs it.
+Restart MoCode and it is live. A complete example with both surfaces lives in [examples/plugins/git-status](examples/plugins/git-status). Plugins are trusted code — installing one runs it.
+
+A single `<name>.py` file next to the plugin directories works too, for a plugin with no portable parts.
+
+---
+
+## Embedding
+
+MoCode is a library before it is a CLI. One runtime opens as many conversations as you like, in as many projects, on as many models, at the same time:
+
+```python
+from mocode import MoCode
+
+mc = MoCode()                                        # config + home
+conv = mc.new_conversation(cwd="/srv/proj-a")         # one conversation
+async for event in conv.chat("list the tests"):
+    ...                                              # text, tool calls, usage
+
+conv.state.to_dict()                                 # status endpoint
+conv.save()                                          # → ~/.mocode/sessions/…
+```
+
+A conversation owns its project, its model, its history and its event stream; `conv.subscribe(since=seq)` is how a reader catches up, including one that reconnects. See [docs/embedding.md](docs/embedding.md).
 
 ---
 

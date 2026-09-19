@@ -1,9 +1,11 @@
 # Embedding MoCode
 
-MoCode is a Python library before it is a CLI. `MoCode` gives you a configured
-agent and one thing to consume: a stream of events. It prints nothing and knows
-nothing about a terminal, so an editor, a web backend, a test harness and the
-built-in CLI are all the same kind of consumer.
+MoCode is a Python library before it is a CLI. `MoCode` is a runtime you embed: it
+holds the config, the plugin loading and the session store, and it opens
+**conversations**. A conversation is one project, one model, one history and one
+event stream — start as many as you like, in as many projects, at the same time.
+Nothing prints and nothing knows about a terminal, so an editor, a web backend, a
+test harness and the built-in CLI are all the same kind of consumer.
 
 ```python
 from mocode import MoCode
@@ -23,9 +25,10 @@ from mocode.core import TextDelta, ToolCallStarted, ToolCallFinished, RunFinishe
 
 
 async def main():
-    mc = MoCode()                       # ~/.mocode/config.json, current directory
+    mc = MoCode()                        # ~/.mocode/config.json
+    conv = mc.new_conversation()         # in the current directory
 
-    async for event in mc.chat("what does tests/test_agent_loop.py cover?"):
+    async for event in conv.chat("what does tests/test_agent_loop.py cover?"):
         match event:
             case TextDelta(text=text):
                 print(text, end="", flush=True)
@@ -41,40 +44,56 @@ asyncio.run(main())
 ```
 
 `MoCode()` raises `ValueError` if there is no usable config at
-`~/.mocode/config.json`; `Config.load()` and the path constant are exported
-from `mocode.host` if you want to check first.
+`~/.mocode/config.json`; `Config.load()` and the path constant are exported from
+`mocode.host` if you want to check first.
 
-### Constructor
+### The runtime
 
 ```python
 MoCode(
-    config: Config | None = None,     # None loads ~/.mocode/config.json
-    home: Path | None = None,         # ~/.mocode — plugins, skills, sessions
-    cwd: Path | None = None,          # Path.cwd() — project plugins, AGENTS.md
-    display: Frontend | None = None,  # something to show the run, or None
+    config: Config | None = None,          # None loads ~/.mocode/config.json
+    home: Path | None = None,              # ~/.mocode — plugins, skills, sessions
+    plugin_dirs: Sequence[Path] | None = None,   # default: <cwd>/.mocode/plugins, <home>/plugins
+)
+
+mc.config        # the Config everything shares
+mc.home          # where plugins, skills and sessions live
+mc.store         # SessionStore: list(workdir) / list_all() / find(session_id)
+mc.plugins_for(cwd)          # the plugins a project loads (loaded once, cached)
+mc.plugin_sources_for(cwd)   # the directories they were loaded from
+mc.provider_for(key, model)  # build a provider for a pair
+mc.set_default_model(key, model)   # the only thing that writes config.json
+```
+
+### Opening a conversation
+
+```python
+conv = mc.new_conversation(
+    cwd: Path | str | None = None,     # None: the process working directory
+    provider: str | None = None,       # None: the config's active provider
+    model: str | None = None,          # None: the config's active model
     commands: CommandRegistry | None = None,
-    plugin_dirs: list[Path] | None = None,
-    extra_plugins: list[Plugin] | None = None,
+    session: Session | None = None,    # continue a stored one
 )
 ```
 
-`display` is the only thing that makes a run look different. Everything else —
-which plugins load, which tools are registered, where sessions go — is
-identical either way. A `Frontend` is anything with `info` / `warn` / `error` /
-`conversation_changed`; the built-in `Display` is one, and so is a class you
-write yourself.
+Everything the conversation needs follows from `cwd` and the provider/model:
+its plugins (loaded once per project, built once per conversation), its tools
+(relative paths resolve into that project, `bash` starts there), its system
+prompt, and the session it will be saved as. Two conversations in one process
+share the config, the plugin loading and the session store, and nothing else.
 
-`MoCode` lives in `mocode.host.runtime`; `from mocode import MoCode` is a lazy
-alias for it. Everything else in this document is exported from `mocode.host`
-and `mocode.core`.
+`mc.resume(session_id)` is the one-line way back into a stored conversation: it
+finds the session wherever its project was and opens it on the model it used.
 
 ---
 
 ## The event stream
 
-Every turn emits one ordered stream. Events are plain data: each has a `type`
-string, a `run_id`, a monotonic `seq`, and a `to_dict()` that flattens it (and
-any nested `Usage` or argument dicts) into JSON-ready values.
+A conversation has one stream, and every turn publishes into it. Events are plain
+data: each has a `type` string, a `run_id`, a monotonic `seq`, and a `to_dict()`
+that flattens it (and any nested `Usage` or argument dicts) into JSON-ready
+values.
 
 | Event | Carries | When |
 |---|---|---|
@@ -86,29 +105,61 @@ any nested `Usage` or argument dicts) into JSON-ready values.
 | `ToolCallStarted` | `call_id`, `name`, `args` | a tool is about to run; args are final |
 | `ToolOutput` | `call_id`, `text`, `stream` | a running tool produced output |
 | `ToolCallFinished` | `call_id`, `name`, `status`, `result`, `error_code`, `duration` | a tool finished |
-| `RunFinished` | `content`, `usage`, `iterations`, `tool_calls_made`, `had_error` | the turn ended |
+| `RunFinished` | `content`, `usage`, `iterations`, `tool_calls_made`, `cancelled` | the turn ended |
 | `RunFailed` | `error`, `kind` | the turn ended on an unhandled error |
-| `Notice` | `message`, `level` | a plugin wants to say something |
+| `Notice` | `message`, `level` | a plugin or the host wants to say something |
+| `ConversationChanged` | — | the history was replaced; re-read the conversation |
 
-Three rules make the stream safe to build on:
+Four rules make the stream safe to build on:
 
-**Text arrives in fragments; concatenate them in `seq` order.** A `TextDelta`
-is not a whole message. If you only want the final answer, read
+**Text arrives in fragments; concatenate them in `seq` order.** A `TextDelta` is
+not a whole message. If you only want the final answer, read
 `RunFinished.content` instead and ignore deltas entirely.
 
-**A tool call is an object with an identity, not a return value.** All three
-tool events carry the same `call_id`, which correlates with the tool message in
-`mc.messages` (`tool_call_id`), so a UI can match events to history.
+**A tool call is an object with an identity, not a return value.** All three tool
+events carry the same `call_id`, which correlates with the tool message in
+`conv.messages` (`tool_call_id`), so a UI can match events to history.
 
-**A turn ends with exactly one of `RunFinished` or `RunFailed`** — except a
-turn that was cancelled outright, which emits neither because nothing is left
-to read it. `status` is one of `ok` / `error` / `timeout` / `denied` /
-`not_found`.
+**A turn ends with exactly one of `RunFinished` or `RunFailed`** — including a
+turn that was cancelled, which reports `cancelled=True`. `status` is one of
+`ok` / `error` / `timeout` / `denied` / `not_found`.
 
-### Running one turn without a loop
+**`seq` keeps counting across turns.** A reader that remembers a number can
+always ask for what it missed.
+
+### Watching, from anywhere
 
 ```python
-answer = await mc.agent.chat("hello")          # ⟵ drains the same stream
+reader = conv.subscribe()                 # live from now on
+async for event in reader:
+    ...
+```
+
+`conv.subscribe(since=seq)` replays everything the channel still remembers after
+that number before continuing live — that is how a reconnecting client catches
+up, and `Subscription.dropped` (plus the gaps you can see in `seq`) says honestly
+when it could not. A reader never slows the run down: it has a bounded backlog
+and loses its oldest events rather than holding up the model.
+
+A turn is its own window on the same stream:
+
+```python
+turn = conv.run("summarize the diff")     # raises if a turn is already running
+async for event in turn.subscribe():      # this turn's events, replay included
+    ...
+terminal = await turn.wait()              # RunFinished or RunFailed
+turn.cancel()                             # stop it — from any coroutine
+```
+
+`conv.run()` belongs to the conversation: a client that disconnects does not kill
+it, and a second client can join with `conv.subscribe()` or `turn.subscribe()`
+while it runs. `conv.stream()` / `conv.chat()` are the scoped conveniences —
+stop reading, or be cancelled, and the turn stops with you.
+
+### Running one turn and waiting
+
+```python
+answer = await conv.chat("hello")          # drains the same stream
 ```
 
 `chat()` is a convenience wrapper: it consumes the stream and returns
@@ -119,19 +170,19 @@ answer = await mc.agent.chat("hello")          # ⟵ drains the same stream
 ## Getting the work state
 
 The stream is push. For pull — "what is happening right now" — read
-`mc.state`, a `RunState` that the loop keeps live by folding every event into it
+`conv.state`, a `RunState` that the loop keeps live by folding every event into it
 as it is published:
 
 ```python
-mc.state.status                 # "idle" | "running" | "done" | "failed" | "cancelled"
-mc.state.iteration              # which LLM call
-mc.state.content                # everything streamed this turn
-mc.state.answer                 # the final answer ("" if the turn did not finish)
-mc.state.usage                  # Usage, summed over the turn
-mc.state.tool_calls_made        # how many tool calls started
-mc.state.running_tool_calls     # [ToolCallState, ...] still executing
-mc.state.failed_tool_calls      # those that did not end "ok"
-mc.state.tool_calls["c1"]       # one call by id
+conv.state.status                 # "idle" | "running" | "done" | "failed" | "cancelled"
+conv.state.iteration              # which LLM call
+conv.state.content                # everything streamed this turn
+conv.state.answer                 # the final answer ("" if the turn did not finish)
+conv.state.usage                  # Usage, summed over the turn
+conv.state.tool_calls_made        # how many tool calls started
+conv.state.running_tool_calls     # [ToolCallState, ...] still executing
+conv.state.failed_tool_calls      # those that did not end "ok"
+conv.state.tool_calls["c1"]       # one call by id
 ```
 
 Each `ToolCallState` has `name`, `args`, `status`, `result`, `details`,
@@ -140,7 +191,7 @@ streamed while it ran.
 
 `result` is what went to the model. `details` is whatever structured data the
 tool attached for *you* — it never entered the conversation. A `read` call
-reports `{"lines": 412, "total_lines": 412}`, `bash` reports its exit code:
+reports `{"lines": 412, "total_lines": 412}`, `bash` reports its exit code.
 
 Because it is just a reducer over the events, you can hold your own:
 
@@ -148,116 +199,160 @@ Because it is just a reducer over the events, you can hold your own:
 from mocode.core import RunState
 
 mirror = RunState()
-async for event in mc.chat("..."):
-    mirror.apply(event)         # identical to mc.state once the turn is done
+async for event in conv.subscribe():
+    mirror.apply(event)             # identical to conv.state once the turn is done
 ```
 
-`mc.state.to_dict()` gives the whole snapshot as plain data, which is the shape
+`conv.state.to_dict()` gives the whole snapshot as plain data, which is the shape
 to put behind an HTTP status endpoint.
 
 Polling while a turn runs:
 
 ```python
-async def watch(mc):
-    while mc.state.status == "running":
-        running = ", ".join(c.name for c in mc.state.running_tool_calls)
-        print(f"\riteration {mc.state.iteration}: {running or 'thinking'}", end="")
+async def watch(conv):
+    while conv.state.status == "running":
+        running = ", ".join(c.name for c in conv.state.running_tool_calls)
+        print(f"\riteration {conv.state.iteration}: {running or 'thinking'}", end="")
         await asyncio.sleep(0.25)
 ```
 
 ---
 
-## Cancelling
+## Many conversations at once
 
-Cancel the task that is consuming the stream. Pending work is torn down and the
-conversation is left replayable — every assistant tool call still has an answer,
-so the history can be sent back to the model on the next turn.
+This is what the runtime exists for. Every conversation has its own project, its
+own model, its own plugins (built for it, so its shell session and skill index
+are its own), its own history and its own stream.
 
 ```python
-task = asyncio.create_task(consume(mc.chat("...")))
-...
-task.cancel()
+mc = MoCode()
+
+frontend = mc.new_conversation(cwd="/srv/web", provider="intern", model="Atlas")
+backend  = mc.new_conversation(cwd="/srv/api", provider="intern", model="Atlas")
+
+# both at the same time — different projects, different shells, one process
+await asyncio.gather(
+    frontend.chat("run the tests"),
+    backend.chat("update the changelog"),
+)
 ```
 
-The turn's state ends as `cancelled`, and whatever had streamed so far is still
-in `mc.state.content`.
+What a web backend does with that:
+
+```python
+live: dict[str, Conversation] = {}
+
+@app.post("/conversations")
+async def create(project: str, provider: str = "", model: str = ""):
+    conv = mc.new_conversation(cwd=project, provider=provider or None, model=model or None)
+    live[conv.id] = conv
+    return {"id": conv.id}
+
+@app.get("/conversations/{cid}/events")            # SSE
+async def events(cid: str, since: int = 0):
+    conv = live[cid]
+    async for event in conv.subscribe(since=since or None):
+        yield f"data: {json.dumps(event.to_dict())}\n\n"
+
+@app.get("/conversations/{cid}/status")
+async def status(cid: str):
+    return live[cid].state.to_dict()
+
+@app.post("/conversations/{cid}/stop")
+async def stop(cid: str):
+    live[cid].cancel()
+
+@app.get("/sessions")
+async def sessions():
+    return [s.to_dict() for s in mc.store.list_all()]   # every project
+```
+
+The transport is yours; the host gives you an addressable run, a resumable
+stream, a snapshot and a stop button. Keep the application's own dictionary
+keyed by `conv.id` — the runtime deliberately keeps no registry of live
+conversations, because the identity a conversation has in an application is that
+application's business.
+
+Two things to know: a conversation runs **one turn at a time** (a second `run()`
+raises rather than interleaving two histories — queue it or cancel first), and
+two conversations opened on the same session id would fight over one file, so key
+your dictionary by id.
 
 ---
 
 ## Conversations and sessions
 
-`mc.messages` is the live conversation in OpenAI message format — read it, or
+`conv.messages` is the live conversation in OpenAI message format — read it, or
 hand it back elsewhere.
 
 ```python
-mc.save_session(title="optional")     # persist to ~/.mocode/sessions/<hash>/<id>.json
-mc.start_session()                    # save, then begin a fresh one
-mc.start_session(messages)            # begin fresh, seeded from elsewhere
-mc.use_session(session)               # continue an existing one, same identity
-mc.replace_messages(messages)         # swap the conversation in place
-mc.rebuild_prompt()                   # re-read AGENTS.md after a change on disk
+conv.save(title="optional")     # persist to ~/.mocode/sessions/<hash>/<id>.json
+await conv.start()              # save, then begin a fresh session in this project
+await conv.start(messages)      # begin fresh, seeded from an export file
+await conv.resume(session)      # continue a stored session: history, id, and model
+conv.rebuild_prompt()           # re-read AGENTS.md after a change on disk
+conv.close(save=True)           # stop the turn, save, release plugins, end the stream
 
-mc.sessions.list()                    # [Session, ...] for this working directory
-mc.sessions.get_active()
+conv.list_sessions()            # [Session, ...] for this project, newest first
+conv.delete_session(session_id)
+mc.store.list_all()             # every session in the store, across projects
+mc.resume(session_id)           # open a stored session wherever it lives
 ```
 
 Conversations are stored as messages, not as events: the message list is what
-the provider needs, and it is the thing worth persisting. Replay a saved
-conversation into a UI with `Display.conversation_changed(messages, mc.tools)` if
-you want the terminal's rendering, or just read `mc.messages` yourself.
+the provider needs, and it is the thing worth persisting. `Session` records where
+it ran, which model it used, and when — which is what makes `resume()` restore
+the model as well as the history, and what lets a UI group sessions by project.
 
 ---
 
 ## Swapping the model
 
 ```python
-mc.switch_provider("intern", "Atria-Dawn-Preview")
+conv.set_model("intern", "Atria-Dawn-Preview")     # this conversation only
+mc.set_default_model("intern", "Atria-Dawn-Preview")  # what new conversations start on
 ```
 
-That writes the choice back to config, rebuilds the provider and updates
-`mc.model` (the `ModelSpec` plugins read). Failures raise `ValueError`.
+The two are deliberately separate. Switching a conversation's model touches no
+other conversation and writes no file; the only thing that writes `config.json`
+is `set_default_model`. Unknown providers raise `ValueError` in both.
 
 ---
 
 ## Dispatching commands
 
-Commands are a host concept, not a terminal one. `mc.commands` holds whatever
-plugins registered — the skills plugin contributes `/skill:<name>`, a plugin of
-yours can add more, and the terminal's own `/help`, `/model`, `/resume` are just
-its plugin's contribution.
-
-The runtime itself contributes none, so a headless app starts with an empty
-registry and dispatches whatever is there:
+Commands are a host concept, not a terminal one. `conv.commands` holds whatever
+plugins registered — the skills plugin contributes `/skill:<name>`, a third-party
+plugin can add more, and the terminal's own `/help`, `/model`, `/resume` live in
+*its* registry.
 
 ```python
-from mocode.host import CommandContext, Kind
+from mocode.host import dispatch, Kind
 
-cmd = mc.commands.get("/skill:release")
-if cmd is not None:
-    result = await cmd.handler(CommandContext(app=mc, args="", frontend=None))
-    if result.kind is Kind.PROMPT:
-        async for event in mc.chat(result.prompt):
-            ...
+result = await dispatch("/skill:release", conversation=conv, commands=conv.commands)
+if result.kind is Kind.PROMPT:
+    async for event in conv.chat(result.prompt):
+        ...
 ```
 
-`Kind.PROMPT` means "send this text to the agent instead" — that is how a skill
-or a template command works. `Kind.EXIT` means "end this interaction", which is
-yours to interpret; a web backend might close a socket, a script might stop
-looping. `Kind.CONTINUE` means the command did whatever it was going to do.
+`dispatch()` is the shared resolver: a line that names a command runs it, and
+anything else comes back as `Kind.PROMPT` for you to send as a user message.
+`Kind.EXIT` means "end this interaction", which is yours to interpret; a web
+backend might close a socket, a script might stop looping.
 
-Some commands need a screen — `/resume` picks from a list, `/export` says where
-it wrote the file. Those live with the terminal and are not in your registry.
-Anything a plugin contributes works headless, which is the point of keeping the
-contract in the host.
+A command handler gets the conversation (`ctx.conversation`), its arguments, and
+the registry. It says things by publishing — `await ctx.conversation.notify("…")`
+— so it works the same with a terminal, a browser or nothing at all watching.
+
+Some commands need a screen: `/resume` picks from a list and `/copy` uses the
+clipboard. Those live with the terminal and are not in your registry.
+
+---
 
 ## Observing and intercepting
 
-Attach an `AgentHook` to `mc.ctx.hooks` before the run, or pass hooks when you
-build your own agent with the `Agent` builder.
-
-**Observation goes through the stream.** A hook that only wants to watch
-implements `on_event` and sees everything, including events other plugins
-publish:
+**Observation goes through the stream.** Subscribe, or implement `on_event` on a
+hook if you want to be in-band:
 
 ```python
 from mocode.core import AgentHook
@@ -268,10 +363,15 @@ class Audit(AgentHook):
         log.write(json.dumps(event.to_dict()) + "\n")
 ```
 
-Publish your own event with `await ctx.emit(...)`. Give it a `Notice`, or
-subclass `Event`. Pick a `type` string as the discriminator, give it a
-`summary()` so any frontend can show it without knowing the type, and the
-`run_id` and `seq` are stamped for you:
+A hook's `on_event` is called inline — the loop waits for it — so use it for what
+must not be missed (a commit log, a gate). A subscription never holds the loop
+up; use it for anything that can fall behind.
+
+Publish your own event with `await ctx.emit(...)`, from a hook, a tool, or
+between runs through `ctx.conversation.notify()`. Give it a `Notice`, or subclass
+`Event`. Pick a `type` string as the discriminator, give it a `summary()` so any
+frontend can show it without knowing the type, and the `run_id` and `seq` are
+stamped for you:
 
 ```python
 from dataclasses import dataclass
@@ -310,9 +410,18 @@ class PermissionGate(AgentHook):
 reports `ToolCallFinished(status="denied")`. `ctx.tool_args`, `ctx.tool_result`
 and `ctx.tool_details` are writable, as are `ctx.messages` and
 `ctx.system_prompt` in `before_iteration`. A `system_prompt` rewrite sticks for
-the rest of the run.
-All of it is observable downstream, because a hook's decision shows up in the
-events it caused.
+the rest of the run. All of it is observable downstream, because a hook's
+decision shows up in the events it caused.
+
+Because a hook can await, a gate that needs a *human* answer is just a hook that
+waits for one:
+
+```python
+class Approval(AgentHook):
+    async def on_tool_start(self, ctx):
+        if needs_approval(ctx.tool_name):
+            ctx.deny = await ask_the_user(ctx.tool_name, ctx.tool_args)
+```
 
 A raising hook is logged and skipped; it never breaks the run.
 
@@ -346,7 +455,7 @@ tool = Tool(
 ```
 
 Consumers get `ToolOutput` events live and can accumulate them from
-`mc.state.tool_calls[call_id].output_text`. The built-in `bash` tool works
+`conv.state.tool_calls[call_id].output_text`. The built-in `bash` tool works
 exactly this way — its stdout and stderr are published while the command is
 still running. (The terminal shows only that a call is running and how it
 ended, so it does not draw these; a frontend that wants to watch a command work
@@ -388,9 +497,6 @@ the terminal renders `✓ lint  src/a.py · issues=3`, and a tool that declares 
 `result_key` renders exactly as it did before. Any consumer is free to ignore
 both and read whatever keys it wants.
 
-The built-in `bash` tool works this way: its stdout and stderr arrive as
-`ToolOutput` while the command is still running.
-
 ---
 
 ## Building a bare agent
@@ -412,12 +518,13 @@ agent = (
     .build()
 )
 
-async for event in agent.stream("hello"):
-    ...
+turn = agent.start("hello")               # or: async for event in agent.stream("hello")
+terminal = await turn.wait()
 ```
 
 A sub-agent is `agent.derive(tools=agent.tool_registry.select(include_tags={"read"}), system_prompt=...)`
-— an independent agent with a narrower tool set sharing the same provider.
+— an independent agent with a narrower tool set sharing the same provider. Pass
+`channel=agent.channel` to have it publish into the parent's stream.
 
 ---
 
@@ -426,20 +533,23 @@ A sub-agent is `agent.derive(tools=agent.tool_registry.select(include_tags={"rea
 Events are already plain data, so crossing a process boundary is a loop:
 
 ```python
-async for event in mc.chat(prompt):
-    queue.put(event.to_dict())          # {"type": "text_delta", "run_id": ..., ...}
+async for event in conv.subscribe(since=last_seq):
+    queue.put(event.to_dict())          # {"type": "text_delta", "run_id": ..., "seq": ...}
 ```
 
 That is all a JSON-lines CLI mode or an SSE endpoint needs; neither requires a
 change in the kernel. `RunState.to_dict()` gives the same treatment to a status
-snapshot.
+snapshot, and `since=seq` is the reconnect protocol.
 
 ---
 
 ## What is deliberately not here
 
 - **No server.** MoCode does not ship an HTTP or SSE transport. The event stream
-  is the contract, and a transport is a thin adapter over it.
+  is the contract, and a transport is a thin adapter over it — the channel
+  already provides fan-out, replay and a snapshot to hand it.
+- **No conversation registry.** The runtime opens conversations and forgets them;
+  an application keyed by its own ids is the only thing that knows what is live.
 - **No callback per feature.** If you find yourself wanting the kernel to know
-  about your feature, write a plugin or a hook — see
-  [plugins.md](plugins.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+  about your feature, write a plugin or a hook — see [plugins.md](plugins.md) and
+  [ARCHITECTURE.md](ARCHITECTURE.md).

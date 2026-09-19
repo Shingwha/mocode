@@ -8,69 +8,58 @@ Ordered roughly by what would be reached for next.
 
 ---
 
-## 1. Sessions and concurrency
+## 1. ~~Sessions and concurrency~~ — resolved
 
-`MoCode` runs one turn at a time (`AgentLoop` shares `messages` and `state`),
-and a second `MoCode` in the same process re-does all plugin discovery. Three
-concrete problems, in the order they would bite:
+`MoCode` used to *be* one conversation: one cwd, one agent, one history, and no
+guard against two turns at once. What replaced it:
 
-- **No busy guard.** Two concurrent `chat()` calls on one `MoCode` interleave
-  into one corrupted history. This is a bug even without concurrency as a
-  feature — it should refuse, not corrupt.
-- **`switch_provider` writes shared state.** It mutates `Config` (which every
-  `MoCode` built from that config object shares) and calls `config.save()`, so
-  switching a model for one conversation changes it for all of them and for the
-  file. Model choice is per-conversation; persistence is a separate, deliberate
-  act.
-- **No session pool.** Each conversation pays for `PluginHost.load()` — the disk
-  scan and module imports. `load()` is already separate from `build_all()`, so
-  the fix is to let `MoCode` accept pre-loaded plugins: load once, build per
-  conversation. The supporting invariant is already documented (plugin
-  instances are stateless; conversation state is created in `build()`), and
-  `extra_plugins` / `plugin_dirs` are the two parameters that carry it.
+- **A turn belongs to the conversation.** `AgentLoop.start()` returns a `Turn`
+  that can be watched, waited for and cancelled by anyone; `stream()` and `chat()`
+  are views over it. A second `start()` while one runs raises — immediately, since
+  `start()` is a plain call — instead of interleaving two histories.
+- **Events go to a channel, not to the caller.** One `EventChannel` per
+  conversation, `seq` monotonic across turns, fan-out to any number of readers,
+  `subscribe(since=seq)` for replay, and a bounded backlog per reader so a slow
+  one falls behind instead of holding up the model.
+- **A conversation is the unit:** `MoCode.new_conversation(cwd=..., provider=...,
+  model=...)` gives it its own project, tools, plugins build, history, model and
+  stream. The runtime keeps no registry of them.
+- **Model choice is per conversation.** `conversation.set_model()` touches nothing
+  else and writes no file; `MoCode.set_default_model()` is the only writer of
+  `config.json`.
+- **Tools work in the conversation's project.** `bash` starts in `ctx.cwd` and
+  `restart` returns there; the filesystem tools resolve relative paths against it.
+- **Plugins load once per project** (`MoCode.plugins_for`) and build once per
+  conversation (`PluginHost.build_all`) — the invariant being that a plugin
+  instance is stateless.
 
-**Done looks like:** a process can hold N conversations whose tool state (bash
-cwd/env, skill lookups) does not leak between them, and a turn that is already
-running refuses a second one.
-
-**Do not build yet:** a session registry or pool abstraction. A pool is a few
-lines of `setdefault`; a framework around it would be speculation.
-
----
-
-## 2. `Frontend` is a holding position
-
-`HostContext.display` exists so a plugin can say something without knowing a
-terminal exists. The intended destination is that **notifications become
-events** and the protocol shrinks or disappears — `info` / `warn` / `error` are
-the last place a frontend-shaped concept sits in the plugin contract.
-
-The blocker is ordering, not design: an event needs a stream to travel on, and
-event streams are per-run. A notification emitted between runs has nowhere to
-go. Either the host grows a session-level channel, or notifications stay on the
-protocol and only its vocabulary shrinks.
-
-Related: `conversation_changed` is on `Frontend` for the same reason — it fires
-between runs. It is arguably correct there (it is a *redraw instruction*, like
-`prompt()`), but a plugin cannot observe a session switch at all. Making that
-observable means **session hooks** with a defined lifecycle
-(`before_switch` / `started` / `shutdown`), which is a real addition rather than
-a re-shuffle. Not proposed until something needs it.
+**Not built:** a *live conversation registry*. An application keyed by its own id
+is the only thing that knows what is open, which is deliberate — the identity a
+conversation has in an application is that application's business.
 
 ---
 
-## 3. Interception is thin in two places
+## 2. ~~`Frontend` was a holding position~~ — resolved
 
-Hooks cover the loop's own decisions (rewrite messages or the system prompt,
-veto a tool call, rewrite a result). Two gaps:
+The protocol is gone. `info` / `warn` / `error` are `Notice` events and
+`conversation_changed` is `ConversationChanged`, both published into the
+conversation's channel — which exists between runs, so a message that has nothing
+to do with a turn now has somewhere to go. A frontend is a reader and nothing
+else; `host/` no longer has a field a plugin can reach a user through.
 
-- **Provider requests.** Nothing sits between the loop and `provider.stream()`.
-  To inspect or replace the payload — headers, an extra field, a rewritten
-  message list — you must wrap the provider object. A `before_request` /
-  `after_response` hook pair would be the shape.
-- **User input.** `CLIApp._dispatch` decides what a typed line means and lives
-  in the terminal, so a plugin cannot intercept or rewrite a prompt before it
-  reaches the agent.
+---
+
+## 3. Interception is thin in one place
+
+**Provider requests.** Nothing sits between the loop and `provider.stream()`. To
+inspect or replace the payload — headers, an extra field, a rewritten message
+list — you must wrap the provider object. A `before_request` / `after_response`
+hook pair would be the shape.
+
+The other half of the old gap — user input — closed itself: input resolution is
+`host.command.dispatch(text, *, conversation, commands)`, a plain function any
+frontend calls (and can wrap), and what a frontend does out of `Kind.PROMPT` is
+that frontend's business.
 
 ---
 
@@ -87,12 +76,8 @@ revisit only if plain-text transcripts matter.
 
 ## 5. ~~A slow, silent tool shows nothing~~ — resolved
 
-Removing the spinner removed the "something is running" signal, and a tool's
-header used to be printed lazily, so a tool that was both slow *and* quiet
-showed nothing until it finished.
-
-Resolved by claiming the row eagerly and rewriting it in place: a call shows as
-a dim `· name  args…` from the moment it starts, and that same row becomes the
+Resolved by claiming the row eagerly and rewriting it in place: a call shows as a
+dim `· name  args…` from the moment it starts, and that same row becomes the
 verdict when it ends. Eager feedback with no extra line, and a parallel batch
 keeps one row per call in call order. The cost is that a call's own output is no
 longer printed live — the model still reads all of it.
@@ -103,16 +88,28 @@ longer printed live — the model still reads all of it.
 
 Kept here so the reasoning is not rediscovered:
 
-- **Plugin hot reload.** The seam exists — `load()` / `build_all()` / `assemble()`
-  are separate and `MoCode` merely calls them in order. It is not built because
-  MoCode is not a self-extensible agent; the value would be low against the
-  risk of a live tool set changing under a running turn.
+- **MCP servers.** A plugin's `mcp.json` is recognised and ignored: adding the
+  servers needs a client (stdio and Streamable HTTP), which is a project of its
+  own. The portable *other* half of the standard — `skills/` inside a plugin — is
+  already read.
 - **A transport layer** (HTTP/SSE, or a JSON-lines CLI mode). Every event has
-  `to_dict()` and a `run_id`/`seq`, and `RunState.to_dict()` is the status
-  endpoint — so this is a thin adapter, deliberately left until something needs
-  it. Designing a wire format with only one frontend produces the wrong one.
-- **UI component registration** (plugins contributing widgets). Deliberately
-  absent: it is the door back to the host knowing about a terminal.
+  `to_dict()` and a `run_id`/`seq`, `RunState.to_dict()` is the status endpoint,
+  and `conversation.subscribe(since=seq)` is the reconnect protocol — so this is
+  a thin adapter, deliberately left until something needs it. Designing a wire
+  format with only one frontend produces the wrong one.
+- **A live conversation registry.** See §1. Two conversations opened on the same
+  session id would also write the same file, and nothing in the host prevents it:
+  the application keys its dictionary by id, which is the same place the guard
+  belongs.
+- **Plugin hot reload.** The seam exists — `load_plugins()` / `build_all()` /
+  `assemble()` are separate, and `MoCode.plugins_for()` caches per project — but
+  the cache would have to be invalidated, and a live tool set changing under a
+  running turn is a real hazard. Not built because MoCode is not a
+  self-extensible agent.
+- **UI component registration.** Plugins contributing widgets is the door back to
+  the host knowing about a screen. A frontend's own namespace
+  (`mocode.cli/plugin.py`) is where that belongs, and it is the frontend that
+  decides what a namespace may contain.
 
 ---
 
@@ -120,5 +117,7 @@ Kept here so the reasoning is not rediscovered:
 
 - `cli/input.py` — the paste store, the slash completer and the keybindings have
   no tests. They are the last interactive code without coverage.
-- `run_oneshot` is not driven end to end with a real display; only its
-  construction is asserted.
+- `cli/dialogs.py` — `usable()` (the no-TTY guard) is exercised only indirectly,
+  by the commands that treat a `None` answer as "nothing chosen".
+- The channel's lag path is covered by unit tests; nothing drives a slow reader
+  through a real turn to assert the resync story end to end.

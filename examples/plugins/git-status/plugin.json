@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/v1.json",
+  "name": "git-status",
+  "version": "1.0.0",
+  "description": "A git status tool, a /branch command and a commit skill — a complete example plugin",
+  "license": "MIT",
+  "keywords": ["git", "example"]
+}

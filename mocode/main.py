@@ -1,4 +1,4 @@
-"""MoCode 0.3 — CLI entry point.
+"""MoCode 0.4 — CLI entry point.
 
 Usage:
     mocode                                              Launch interactive CLI
