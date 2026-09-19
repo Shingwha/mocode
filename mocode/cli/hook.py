@@ -2,13 +2,14 @@
 
 A pure event consumer: it implements no interception hooks at all, and every
 shape it draws comes from :mod:`mocode.cli.lines`. What it owns is the state of
-the run *as it is being drawn* — which tool calls are open, how much of each
-one's output has been shown, what the turn has cost so far.
+the run *as it is being drawn* — which tool calls are in flight, and which row
+on screen each of them owns.
 
-A tool call prints a header only once it has something to say. That keeps a
-silent tool to a single line (its verdict), and makes a talkative one read
-top-down: header, its output, verdict — instead of the output floating above
-the line that names it.
+A tool call owns a row from the moment it starts: a dim placeholder that is
+rewritten in place with its verdict when it ends. That gives a slow, quiet tool
+a visible row while it runs at no cost in lines, and it keeps a parallel batch
+to one row per call, in the order the calls were made rather than the order
+they happen to finish.
 """
 
 from __future__ import annotations
@@ -28,24 +29,17 @@ from ..core.hook import AgentHook
 from ..core.tool import ToolRegistry
 from . import lines as L
 
-#: Lines of a single tool call's output to show live. A command that dumps a
-#: thousand lines would otherwise bury the conversation; the model still gets
-#: all of it, and the omission is reported rather than hidden.
-OUTPUT_LINES = 20
-
 
 class CLIDisplayHook(AgentHook):
-    """Draws the run: streamed text, tool blocks, the rule that closes a turn."""
+    """Draws the run: streamed text, the row of each tool call, the closing rule."""
 
     def __init__(self, display, tools: ToolRegistry):
         self._d = display
         self._tools = tools
-        #: call_id -> (name, args) for calls still in flight
-        self._running: dict[str, tuple[str, dict]] = {}
-        #: calls whose header has been printed
-        self._opened: set[str] = set()
-        #: call_id -> displayable lines seen, for the output budget
-        self._lines: dict[str, int] = {}
+        #: call_id -> args, for calls still in flight (their verdict needs them)
+        self._running: dict[str, dict] = {}
+        #: call_id -> the row its placeholder owns, when the terminal can redraw
+        self._rows: dict[str, int | None] = {}
 
     async def on_event(self, event: Event) -> None:
         match event:
@@ -56,24 +50,27 @@ class CLIDisplayHook(AgentHook):
                 self._d.stream(event.text, kind="reasoning")
 
             case ToolCallStarted():
-                self._running[event.call_id] = (event.name, event.args)
-                self._lines[event.call_id] = 0
-                self._d.end_stream()
-
-            case ToolOutput():
-                self._tool_output(event)
+                self._tool_start(event)
 
             case ToolCallFinished():
                 self._tool_done(event)
 
+            case ToolOutput():
+                # A running tool's output feeds the model, not the reader: what
+                # a call did is worth a line, what it printed is not.
+                pass
+
             case RunFinished():
                 self._d.end_stream()
+                self._usage(event)
                 self._d.render(L.divider())
+                self._clear()
 
             case RunFailed():
                 self._d.end_stream()
                 self._d.error(f"{event.kind}: {event.error}")
                 self._d.render(L.divider())
+                self._clear()
 
             case Notice():
                 {"warn": self._d.warn, "error": self._d.error}.get(
@@ -86,51 +83,32 @@ class CLIDisplayHook(AgentHook):
             case _:
                 self._d.render_event(event)  # a plugin-defined event
 
-    # ── Tool blocks ────────────────────────────────────────
+    # ── Tool calls ─────────────────────────────────────────
 
-    def _tool_output(self, event: ToolOutput) -> None:
-        """Show a running tool's own output, up to a per-call line budget.
+    def _tool_start(self, event: ToolCallStarted) -> None:
+        """Claim the call's row, so its verdict has somewhere to land.
 
-        The budget counts *lines*, not events, so a tool that emits one large
-        chunk cannot walk past it.
+        Nothing else may be drawn while a batch runs, or the row offsets this
+        row is addressed by stop being true — the display freezes the block the
+        moment anything else is printed.
         """
-        state = self._running.get(event.call_id)
-        if state is None:
-            return  # output for a call we do not know about
-        name, args = state
-
-        if event.call_id not in self._opened:
-            self._d.render(L.tool_open(name, args, self._tools))
-            self._opened.add(event.call_id)
-
-        # Label only while a peer is actually running — that is when two blocks
-        # can interleave and a bare line would be unattributable. A batch whose
-        # other calls are silent or already done needs no label at all.
-        label = f"{name}  " if len(self._running) > 1 else ""
-
-        seen = self._lines.get(event.call_id, 0)
-        for line in event.text.splitlines():
-            if not line.strip():
-                continue
-            if seen < OUTPUT_LINES:
-                self._d.render(L.tool_output(line, stream=event.stream, label=label))
-            seen += 1
-        self._lines[event.call_id] = seen
+        self._running[event.call_id] = event.args
+        self._rows[event.call_id] = self._d.place(
+            L.tool_pending(event.name, event.args, self._tools)
+        )
 
     def _tool_done(self, event: ToolCallFinished) -> None:
-        _, args = self._running.pop(event.call_id, (event.name, {}))
-        opened = event.call_id in self._opened
-        self._opened.discard(event.call_id)
+        args = self._running.pop(event.call_id, {})
+        row = self._rows.pop(event.call_id, None)
+        self._d.rewrite(row, L.tool_close(event, args, self._tools))
 
-        elided = self._lines.pop(event.call_id, 0) - OUTPUT_LINES
-        if elided > 0:
-            self._d.render(L.tool_output(f"… +{elided} more lines"))
+    def _usage(self, event: RunFinished) -> None:
+        """What the turn cost — skipped when the provider reported nothing."""
+        usage = event.usage
+        if usage and (usage.prompt_tokens or usage.completion_tokens):
+            self._d.render(L.tokens(usage))
 
-        self._d.end_stream()
-        self._d.render(
-            L.tool_close(
-                # A peer still in flight means its header may be between this
-                # verdict and our own.
-                event, args, self._tools, opened=opened, labelled=bool(self._running)
-            )
-        )
+    def _clear(self) -> None:
+        """Forget the batch. A turn that ended cleanly has nothing left in it."""
+        self._running.clear()
+        self._rows.clear()

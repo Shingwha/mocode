@@ -21,11 +21,9 @@ RESET = "\033[0m"
 #: Reasoning deliberately has no marker: it is set apart by dimness alone, so
 #: the thinking reads as prose rather than as a marked-up log.
 USER = "❯"
-TOOL = "→"
-#: A tool's own output. It brackets the lines belonging to the call above it,
-#: which is what indentation used to do — and does it without breaking when a
-#: long line wraps.
-PIPE = "│"
+#: A tool call while it is still running. Its line is replaced in place by the
+#: verdict, so this only ever marks work in flight.
+PENDING = "·"
 OK = "✓"
 FAIL = "✗"
 RULE = "─"
@@ -41,7 +39,10 @@ class Theme:
     #: Its thinking. The dimmest text here — present, but never competing.
     reasoning: str = "\033[90m"
 
-    user: str = "\033[1m\033[100m"
+    #: What you typed, echoed back above the reply. Bold, and nothing else —
+    #: no background block, so it reads as one more line of the conversation
+    #: rather than as a filled-in field.
+    user: str = "\033[1m"
     accent: str = "\033[96m"
     muted: str = "\033[90m"
     dim: str = "\033[2m"
@@ -60,10 +61,9 @@ __all__ = [
     "DEFAULT_THEME",
     "FAIL",
     "OK",
-    "PIPE",
+    "PENDING",
     "RESET",
     "RULE",
-    "TOOL",
     "Theme",
     "USER",
 ]

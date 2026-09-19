@@ -127,7 +127,8 @@ class TestTheTerminal:
         out = ESCAPES.sub("", capsys.readouterr().out.replace("\r", "\n"))
         rendered = [line.rstrip() for line in out.splitlines() if line.strip()]
         assert rendered[:2] == ["❯ ping", "pong"]
-        assert set(rendered[2]) == {"─"}  # the turn is ruled off before the next prompt
+        assert rendered[2] == "↑1 ↓1 tokens"   # what the turn cost
+        assert set(rendered[3]) == {"─"}       # the rule closes it before the next prompt
 
     def test_a_one_shot_can_render_without_a_repl(self, tmp_path, monkeypatch):
         """`-p` on a terminal draws the turn; `render` asks for that."""

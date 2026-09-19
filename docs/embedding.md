@@ -346,10 +346,11 @@ tool = Tool(
 ```
 
 Consumers get `ToolOutput` events live and can accumulate them from
-`mc.state.tool_calls[call_id].output_text`. The built-in terminal shows them
-under the running call as they arrive (capped per call, with the omission
-reported), and the built-in `bash` tool works exactly this way — its stdout and
-stderr appear while the command is still running.
+`mc.state.tool_calls[call_id].output_text`. The built-in `bash` tool works
+exactly this way — its stdout and stderr are published while the command is
+still running. (The terminal shows only that a call is running and how it
+ended, so it does not draw these; a frontend that wants to watch a command work
+is free to.)
 
 Tools that want to stream are async — a sync tool runs in a worker thread, where
 it cannot await anything. Emit whole lines: a terminal renders each `ToolOutput`
@@ -383,7 +384,7 @@ tool = Tool(
 
 `details` reaches `ToolCallFinished.details` and `state.tool_calls[id].details`
 and stops there — it is never sent to the model. `result_key` is a display hint:
-the terminal renders `✓ lint (src/a.py · issues=3)`, and a tool that declares no
+the terminal renders `✓ lint  src/a.py · issues=3`, and a tool that declares no
 `result_key` renders exactly as it did before. Any consumer is free to ignore
 both and read whatever keys it wants.
 

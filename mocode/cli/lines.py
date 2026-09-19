@@ -16,23 +16,26 @@ character is a per-line marker that survives wrapping.
     ❯ 帮我看看 tests/
                           ← blank
     用户想知道 tests 目录的内容…       ← reasoning: dimmest, no marker
-    → bash  ls tests/                 ← tool header, printed once it speaks
-    │ agent_loop.py                   ← the tool's own output
-    │ providers.py
-    ✓ 14 files · exit_code=0 · 0.1s   ← its verdict
+    · bash  ls tests/…                ← a call in flight: dim, one row per call
+    ✓ bash  ls tests/ · exit_code=0 · 0.1s   ← the same row, once it is done
 
     tests 下有 14 个测试文件。         ← the answer: unmarked and brightest
+    ↑1,234 ↓567 tokens                ← what the turn cost
     ──────────────────────────────    ← the turn is over
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from ..core.events import ToolCallFinished
 from ..core.tool import DENIED_PREFIX, ERROR_PREFIX, TIMEOUT_PREFIX, ToolRegistry
 from ..host.text import ellipsize_middle, ellipsize_tail, terminal_width
-from .theme import FAIL, OK, PIPE, RULE, TOOL, USER
+from .theme import FAIL, OK, PENDING, RULE, USER
+
+if TYPE_CHECKING:
+    from ..core.provider import Usage
 
 #: Width budget for tool arguments inside parentheses.
 SUMMARY_WIDTH = 60
@@ -84,6 +87,18 @@ def divider() -> Line:
     return Line(text=RULE * width, style="dim")
 
 
+def tokens(usage: "Usage") -> Line:
+    """What the turn cost, as one muted line above the rule.
+
+    Quiet on purpose: it is an aside about the machinery, not part of the
+    conversation, so it carries no marker and sits below the answer.
+    """
+    return Line(
+        text=f"↑{usage.prompt_tokens:,} ↓{usage.completion_tokens:,} tokens",
+        style="muted",
+    )
+
+
 def answer(text: str) -> list[Line]:
     """The model's prose, unmarked — it is the point, and the default state."""
     return [Line(text=line) for line in text.splitlines()]
@@ -125,45 +140,29 @@ def _identity(name: str, args: dict, tools: ToolRegistry | None) -> str:
     return "  ".join(p for p in (name, tool_summary(name, args, tools)) if p)
 
 
-def tool_open(name: str, args: dict, tools: ToolRegistry | None = None) -> Line:
-    """The header of a tool block, shown once the tool has something to say."""
-    return Line(text=_identity(name, args, tools), icon=TOOL, style="accent")
+def tool_pending(name: str, args: dict, tools: ToolRegistry | None = None) -> Line:
+    """A call while it is still running — the row its verdict will replace.
 
-
-def tool_output(text: str, *, stream: str = "stdout", label: str = "") -> Line:
-    """One line a running tool produced.
-
-    stderr reads as a warning rather than a failure, because plenty of tools
-    write ordinary progress there.
+    Printed when the call starts rather than when it first speaks, so a tool that
+    is both slow and quiet still shows that something is running, at no cost in
+    lines: the row is rewritten in place when the call ends.
     """
-    return Line(
-        text=f"{label}{text}",
-        icon=PIPE,
-        style="warning" if stream == "stderr" else "muted",
-    )
+    return Line(text=f"{_identity(name, args, tools)}…", icon=PENDING, style="dim")
 
 
 def tool_close(
     event: ToolCallFinished,
     args: dict,
     tools: ToolRegistry | None,
-    *,
-    opened: bool = False,
-    labelled: bool = False,
 ) -> Line:
-    """A tool call's verdict — carrying the whole line when nothing was printed.
+    """A tool call's verdict, carrying its identity and why it ended that way.
 
-    With a header already on screen the identity is left off, unless several
-    calls are interleaved and a bare verdict would float.
+    Always the whole line, because it replaces a placeholder: whatever the row
+    says afterwards has to stand on its own.
     """
     ok = event.status == "ok"
-    if opened:
-        text = event.name if labelled else ""
-    else:
-        text = _identity(event.name, args, tools)
-
     return Line(
-        text=text,
+        text=_identity(event.name, args, tools),
         icon=OK if ok else FAIL,
         icon_style="success" if ok else "error",
         style="accent" if ok else "error",
@@ -322,9 +321,9 @@ __all__ = [
     "notice",
     "prompt",
     "reasoning",
+    "tokens",
     "tool_close",
-    "tool_open",
-    "tool_output",
+    "tool_pending",
     "tool_summary",
     "user",
 ]

@@ -13,6 +13,7 @@ from mocode.cli import lines
 from mocode.cli.lines import Line
 from mocode.core import Tool, ToolRegistry
 from mocode.core.events import ToolCallFinished
+from mocode.core.provider import Usage
 
 
 def _registry(result_key: str = "lines") -> ToolRegistry:
@@ -62,10 +63,14 @@ class TestConversation:
         assert lines.notice("hi", "warn").style == "warning"
         assert lines.notice("hi", "error").style == "error"
 
+    def test_the_turn_costs_one_line(self):
+        line = lines.tokens(Usage(prompt_tokens=1234, completion_tokens=567))
+        assert line == Line(text="↑1,234 ↓567 tokens", style="muted")
+
 
 class TestToolLines:
     def test_a_silent_tool_is_a_single_line(self):
-        """No output means no header — the verdict carries the identity."""
+        """The verdict carries the identity — nothing else was ever drawn."""
         line = lines.tool_close(
             _finished(details={"lines": 412}), {"path": "a.py"}, _registry()
         )
@@ -86,41 +91,19 @@ class TestToolLines:
         )
         assert line.note == ""
 
-    def test_a_verdict_after_a_header_leaves_the_name_off(self):
-        """The header is directly above it — repeating the name would be noise."""
-        line = lines.tool_close(
-            _finished(details={"lines": 3}), {}, _registry(), opened=True
-        )
-        assert line.text == ""
-        assert line.note == "lines=3"
+    def test_a_running_call_is_dim_and_names_itself(self):
+        """It holds the row its verdict will land on, so it has to read alone."""
+        line = lines.tool_pending("read", {"path": "a.py"}, _registry())
+        assert (line.icon, line.text, line.style) == ("·", "read  a.py…", "dim")
 
-    def test_a_verdict_names_its_call_when_blocks_interleave(self):
-        line = lines.tool_close(
-            _finished(details={"lines": 3}), {}, _registry(), opened=True, labelled=True
-        )
-        assert line.text == "read"
-
-    def test_the_header_names_the_tool_and_its_argument(self):
-        line = lines.tool_open("read", {"path": "a.py"}, _registry())
-        assert (line.icon, line.text) == ("→", "read  a.py")
-
-    def test_output_carries_a_pipe_so_it_cannot_be_mistaken_for_prose(self):
-        """Indentation used to do this, and stopped working on wrapped lines."""
-        line = lines.tool_output("agent_loop.py")
-        assert (line.icon, line.text) == ("│", "agent_loop.py")
-
-    def test_stderr_reads_as_a_warning(self):
-        assert lines.tool_output("careful", stream="stderr").style == "warning"
-        assert lines.tool_output("fine").style == "muted"
-
-    def test_parallel_output_carries_its_call_name(self):
-        assert lines.tool_output("x", label="bash  ").text == "bash  x"
+    def test_a_running_call_without_arguments_is_still_a_line(self):
+        assert lines.tool_pending("make", {}, _registry()).text == "make…"
 
     def test_a_long_argument_is_elided_in_the_middle(self):
         """Head and tail are what identify a path; the middle is what is droppable."""
-        line = lines.tool_open("read", {"path": "a/" + "b" * 200 + "/f.py"}, _registry())
+        line = lines.tool_pending("read", {"path": "a/" + "b" * 200 + "/f.py"}, _registry())
         assert "..." in line.text
-        assert line.text.startswith("read  a/") and line.text.endswith("/f.py")
+        assert line.text.startswith("read  a/") and line.text.endswith("/f.py…")
         assert len(line.text) < lines.SUMMARY_WIDTH + 10
 
 

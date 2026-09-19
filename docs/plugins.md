@@ -217,7 +217,7 @@ class LintTool(Tool):
         )
 ```
 
-The terminal shows `✓ lint (src/a.py · issues=3)`; `details` reaches every consumer through `ToolCallFinished` and `run.state`, and never enters the conversation. A hook may enrich it in `on_tool_complete` by writing to `ctx.tool_details`.
+The terminal shows `✓ lint  src/a.py · issues=3`; `details` reaches every consumer through `ToolCallFinished` and `run.state`, and never enters the conversation. A hook may enrich it in `on_tool_complete` by writing to `ctx.tool_details`.
 
 ## Rules of the road
 

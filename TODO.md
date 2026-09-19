@@ -85,13 +85,17 @@ revisit only if plain-text transcripts matter.
 
 ---
 
-## 5. A slow, silent tool shows nothing
+## 5. ~~A slow, silent tool shows nothing~~ — resolved
 
-Removing the spinner removed the "something is running" signal. A tool's header
-is printed lazily, when it first produces output, which keeps a silent call to
-one line — but a tool that is both slow *and* quiet shows nothing at all until
-it finishes. The options are printing the header eagerly (costs every silent
-call an extra line) or accepting it.
+Removing the spinner removed the "something is running" signal, and a tool's
+header used to be printed lazily, so a tool that was both slow *and* quiet
+showed nothing until it finished.
+
+Resolved by claiming the row eagerly and rewriting it in place: a call shows as
+a dim `· name  args…` from the moment it starts, and that same row becomes the
+verdict when it ends. Eager feedback with no extra line, and a parallel batch
+keeps one row per call in call order. The cost is that a call's own output is no
+longer printed live — the model still reads all of it.
 
 ---
 

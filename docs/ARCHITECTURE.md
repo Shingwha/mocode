@@ -145,7 +145,7 @@ The system prompt is assembled from framework sections (`guidelines`, `agents`, 
 
 `CLIApp` is `MoCode` plus a terminal: a REPL, input, slash-command dispatch and Ctrl-C, plus `cli/plugin.py` to contribute its renderer and its commands. `CLIApp` holds no logic the host needs: commands reach the runtime directly through `CommandContext.app`.
 
-`CLIDisplayHook` is a pure event consumer — it implements `on_event` and no interception hooks at all. It owns only the state of the run *as it is being drawn*: which calls are open, how much of each one's output has been shown, what the turn has cost. Every shape it draws comes from `cli/lines.py`, as data — so the live renderer and history replay cannot drift apart, and neither needs a terminal to be tested.
+`CLIDisplayHook` is a pure event consumer — it implements `on_event` and no interception hooks at all. It owns only the state of the run *as it is being drawn*: which calls are in flight, and which row on screen each of them owns. Every shape it draws comes from `cli/lines.py`, as data — so the live renderer and history replay cannot drift apart, and neither needs a terminal to be tested.
 
 **What a turn looks like** is a vocabulary, not a layout engine:
 
@@ -153,14 +153,18 @@ The system prompt is assembled from framework sections (`guidelines`, `agents`, 
 ❯ 用 bash 数一下 mocode 下有多少个 py 文件
 
 The user wants to count the .py files. Let me run find.
-→ bash  find mocode -name '*.py' | wc -l
-│ 47
-✓ exit_code=0
+· bash  find mocode -name '*.py' | wc -l…          ← while it runs, dim
+✓ bash  find mocode -name '*.py' | wc -l · exit_code=0 · 0.1s   ← the same row
 mocode/ 下共有 47 个 .py 文件。
+↑1,234 ↓567 tokens
 ────────────────────────────────────────
 ```
 
-Everything starts at column 0 and the first character says what the line is. There is no indentation, because a terminal has no hanging indent — a long line wraps back to column 0 regardless, and it does so most often on the content that needs it least. The answer is unmarked and left at the default foreground, so it is the brightest thing on screen. A tool prints its header (`→`) only once it has something to say, which keeps a silent call to one line and makes a talkative one read top-down; a rule closes each turn, drawn when the turn ends rather than when the next prompt arrives. A single call's live output is capped (`OUTPUT_LINES`), with the omission reported rather than hidden — the tool result itself is untouched, so the model still reads all of it.
+Everything starts at column 0 and the first character says what the line is. There is no indentation, because a terminal has no hanging indent — a long line wraps back to column 0 regardless, and it does so most often on the content that needs it least. The answer is unmarked and left at the default foreground, so it is the brightest thing on screen. A rule closes each turn, drawn when the turn ends rather than when the next prompt arrives, with what the turn cost on the line above it.
+
+A tool call claims a row the moment it starts and keeps it: a dim `· name  args…` placeholder that is rewritten in place with the verdict. A slow, quiet tool therefore shows that it is running without costing a line, and a parallel batch stays one row per call in the order the calls were made rather than the order they finish — which is also why a call's own output is not printed. `ToolOutput` still reaches the model and every other consumer; the terminal just does not draw it.
+
+Rewriting a row is only sound while the block is the last thing on screen, so `Display` guards it rather than trusting it: block lines are clamped to one terminal row (`clamp_visible`), any other output freezes the block for good, and a block taller than the screen stops claiming rows. Off a terminal (`Display.live`) the whole mechanism is off and a call appends its verdict when it finishes. The terminal's live path is in `display.py`, so everything above holds for `lines.py` regardless.
 
 `render` decides whether a frontend is attached, and it can only ask for one, never remove one — `interactive` already implies it. `main.py` passes `sys.stdout.isatty()`, so `mocode -p "…"` draws its turn on a terminal and stays a plain, escape-free pipe when redirected.
 

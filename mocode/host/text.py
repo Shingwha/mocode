@@ -42,6 +42,12 @@ def terminal_width(default: int = 80) -> int:
     return width if width > 0 else default
 
 
+def terminal_height(default: int = 24) -> int:
+    """Current terminal row count."""
+    lines = get_terminal_size((80, default)).lines
+    return lines if lines > 0 else default
+
+
 def count_visual_lines(text: str, prompt_width: int) -> int:
     """Count the terminal rows *text* occupies, accounting for wrapping and CJK.
 
