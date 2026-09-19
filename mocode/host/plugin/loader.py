@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .base import Plugin
+
 MANIFEST = "plugin.json"
 CODE_MODULE = "plugin.py"
 
@@ -62,6 +63,11 @@ MANIFEST_FIELDS = frozenset(
 _NAME_ALLOWED = re.compile(r"^[a-z0-9.-]+$")
 
 
+def report(message: str) -> None:
+    """The one way a plugin problem is said: stderr, prefixed, never fatal."""
+    print(f"[plugin] {message}", file=sys.stderr)
+
+
 @dataclass
 class PluginSpec:
     """One discovered plugin, before its code is imported."""
@@ -73,7 +79,8 @@ class PluginSpec:
     directory: Path | None = None
     #: The MoCode entry module to import, if the plugin ships code.
     module: Path | None = None
-    source: str = ""  # origin, for log messages
+    #: Where the plugin was found, for log messages.
+    source: str = ""
 
 
 def valid_name(name: str) -> bool:
@@ -121,7 +128,7 @@ def load_plugin(spec: PluginSpec) -> Plugin | None:
     """
     if spec.module is None or not spec.module.is_file():
         return None
-    module = import_module_file(spec.module, f"mocode_plugin_{_slug(spec.name)}")
+    module = import_module_file(spec.module, f"mocode_plugin_{slugify(spec.name)}")
     if module is None:
         return None
     plugin = resolve_plugin(module, Plugin, fallback_name=spec.name)
@@ -134,22 +141,25 @@ def load_plugin(spec: PluginSpec) -> Plugin | None:
     return plugin
 
 
-def namespace_dir(spec: PluginSpec, namespace: str) -> Path | None:
-    """The directory *spec* ships for *namespace*, if it ships one.
+def namespace_dir(source: "Path | PluginSpec", namespace: str) -> Path | None:
+    """The directory *source* ships for *namespace*, if it ships one.
 
-    The host never looks inside: a namespace belongs to whoever declared it.
+    Takes a plugin directory or a whole spec — a frontend holding sources and
+    the host holding specs ask the same question. The host never looks inside:
+    a namespace belongs to whoever declared it.
     """
-    if spec.directory is None:
+    directory = source if isinstance(source, Path) else source.directory
+    if directory is None:
         return None
-    candidate = spec.directory / namespace
+    candidate = directory / namespace
     return candidate if candidate.is_dir() else None
 
 
 # ── Discovery helpers ───────────────────────────────────────
 
 
-def read_manifest(path: Path) -> dict | None:
-    """Read a ``plugin.json``, or ``None`` if it is not usable.
+def read_manifest(path: Path) -> PluginSpec | None:
+    """Read a ``plugin.json`` into a spec, or ``None`` if it is not usable.
 
     The standard's rules: the schema is closed (unknown top-level fields are
     reported and ignored), and a manifest that violates it rejects the plugin
@@ -158,49 +168,45 @@ def read_manifest(path: Path) -> dict | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-        print(f"[plugin] {path}: unreadable manifest: {e}", file=sys.stderr)
+        report(f"{path}: unreadable manifest: {e}")
         return None
 
     if not isinstance(data, dict):
-        print(f"[plugin] {path}: manifest must be an object", file=sys.stderr)
+        report(f"{path}: manifest must be an object")
         return None
 
     name = str(data.get("name") or "")
     if not valid_name(name):
-        print(
-            f"[plugin] {path}: invalid name {name!r} — lowercase alphanumerics, "
-            "'-', '.', 1-64 characters, no '--' or '..'",
-            file=sys.stderr,
+        report(
+            f"{path}: invalid name {name!r} — lowercase alphanumerics, "
+            "'-', '.', 1-64 characters, no '--' or '..'"
         )
         return None
 
     unknown = sorted(set(data) - MANIFEST_FIELDS)
     if unknown:
-        print(
-            f"[plugin] {name}: unknown manifest field(s) "
-            f"{', '.join(unknown)} (ignored)",
-            file=sys.stderr,
+        report(
+            f"{name}: unknown manifest field(s) {', '.join(unknown)} (ignored)"
         )
-    return data
+    return PluginSpec(
+        name=name,
+        description=str(data.get("description") or ""),
+        version=str(data.get("version") or ""),
+        directory=path.parent,
+        source=str(path.parent),
+    )
 
 
 def _spec_from_entry(entry: Path) -> PluginSpec | None:
     if entry.is_dir():
-        manifest_path = entry / MANIFEST
-        if not manifest_path.is_file():
+        if not (entry / MANIFEST).is_file():
             return None
-        data = read_manifest(manifest_path)
-        if data is None:
+        spec = read_manifest(entry / MANIFEST)
+        if spec is None:
             return None
         code = entry / HOST_NAMESPACE / CODE_MODULE
-        return PluginSpec(
-            name=str(data["name"]),
-            description=str(data.get("description") or ""),
-            version=str(data.get("version") or ""),
-            directory=entry,
-            module=code if code.is_file() else None,
-            source=str(entry),
-        )
+        spec.module = code if code.is_file() else None
+        return spec
 
     if entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
         return PluginSpec(name=entry.stem, module=entry, source=str(entry))
@@ -208,7 +214,8 @@ def _spec_from_entry(entry: Path) -> PluginSpec | None:
     return None
 
 
-def _slug(name: str) -> str:
+def slugify(name: str) -> str:
+    """A module-name-safe rendering of a plugin name (``my-tool`` → ``my_tool``)."""
     return "".join(c if c.isalnum() else "_" for c in name)
 
 
@@ -227,7 +234,7 @@ def import_module_file(path: Path, module_name: str) -> types.ModuleType | None:
         return module
     except Exception as e:  # a broken plugin must not take the host down
         sys.modules.pop(module_name, None)
-        print(f"[plugin] failed to import {path}: {e}", file=sys.stderr)
+        report(f"failed to import {path}: {e}")
         return None
 
 
@@ -252,8 +259,5 @@ def resolve_plugin(
             and getattr(obj, "__module__", "") == module.__name__
         ):
             return obj()
-    print(
-        f"[plugin] {fallback_name}: no {base.__name__} found in the module",
-        file=sys.stderr,
-    )
+    report(f"{fallback_name}: no {base.__name__} found in the module")
     return None

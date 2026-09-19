@@ -59,7 +59,7 @@ class CommandContext:
 
     conversation: "Conversation"
     args: str = ""
-    commands: "CommandRegistry | None" = None
+    commands: "CommandRegistry" = None  # type: ignore[assignment]
 
 
 @dataclass
@@ -85,6 +85,14 @@ class CommandRegistry:
             for alias in cmd.aliases:
                 self._by_alias[alias] = cmd
 
+    def unregister(self, name: str) -> Command | None:
+        """Remove a command by name, taking its aliases with it."""
+        cmd = self._by_name.pop(name, None)
+        if cmd is not None:
+            for alias in cmd.aliases:
+                self._by_alias.pop(alias, None)
+        return cmd
+
     def get(self, text: str) -> Command | None:
         """Match by name or alias."""
         return self._by_name.get(text) or self._by_alias.get(text)
@@ -92,6 +100,9 @@ class CommandRegistry:
     def all(self) -> list[Command]:
         """All commands, sorted by name."""
         return sorted(self._by_name.values(), key=lambda c: c.name)
+
+    def __contains__(self, text: str) -> bool:
+        return self.get(text) is not None
 
 
 async def dispatch(

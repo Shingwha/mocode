@@ -27,7 +27,7 @@ character is a per-line marker that survives wrapping.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterator
 
 from ..core.events import ToolCallFinished
 from ..core.tool import DENIED_PREFIX, ERROR_PREFIX, TIMEOUT_PREFIX, ToolRegistry
@@ -76,14 +76,16 @@ def prompt(text: str) -> list[Line]:
     return [user(text), Line()]
 
 
-def divider() -> Line:
+def divider(width: int | None = None) -> Line:
     """The rule that closes a turn.
 
     Drawn when the turn ends rather than when the next prompt arrives, so it is
     already on screen while you are still typing — the boundary belongs to the
-    turn that just finished.
+    turn that just finished. *width* defaults to the terminal's; a caller with
+    no terminal (a test, an export) supplies its own.
     """
-    width = max(DIVIDER_MIN, min(terminal_width() - 1, DIVIDER_MAX))
+    if width is None:
+        width = max(DIVIDER_MIN, min(terminal_width() - 1, DIVIDER_MAX))
     return Line(text=RULE * width, style="dim")
 
 
@@ -178,7 +180,7 @@ def _verdict(event: ToolCallFinished, tools: ToolRegistry | None) -> str:
         if detail:
             parts.append(detail)
     else:
-        parts.append(failure_text(event))
+        parts.append(_failure_text(event))
 
     # A timeout already says how long it waited.
     if event.duration >= 0.1 and event.status != "timeout":
@@ -199,7 +201,7 @@ def _declared_detail(event: ToolCallFinished, tools: ToolRegistry | None) -> str
     return f"{key}={event.details[key]}"
 
 
-def failure_text(event: ToolCallFinished) -> str:
+def _failure_text(event: ToolCallFinished) -> str:
     """One phrase explaining why a tool call did not succeed."""
     if event.status == "timeout":
         return f"timed out after {event.duration:.0f}s"
@@ -231,43 +233,54 @@ def conversation(messages: list[dict], tools: ToolRegistry | None = None) -> lis
     a tool's live output (it was never stored).
     """
     out: list[Line] = []
-    i = 0
-    while i < len(messages):
-        msg = messages[i]
+    for msg, results in _grouped(messages):
         role = msg.get("role")
-
         if role == "user":
             out.extend(prompt(_flatten(msg.get("content", ""))))
-            i += 1
         elif role == "assistant":
             if msg.get("reasoning_content"):
                 out.extend(reasoning(msg["reasoning_content"]))
             if msg.get("content"):
                 out.extend(answer(msg["content"]))
-            calls = msg.get("tool_calls") or []
-            if calls:
-                i = _replay_calls(out, calls, messages, i, tools)
+            if msg.get("tool_calls"):
+                out.extend(_replay_calls(msg["tool_calls"], results, tools))
             else:
                 # An assistant message with no tool calls is where a turn ended,
                 # so it carries the rule — same as the live path.
                 out.append(divider())
-                i += 1
-        else:
-            i += 1
     return out
 
 
-def _replay_calls(
-    out: list[Line], calls: list[dict], messages: list[dict], start: int,
-    tools: ToolRegistry | None,
-) -> int:
-    """Render one assistant message's tool calls against the results that follow."""
-    j = start + 1
-    results: dict[str, str] = {}
-    while j < len(messages) and messages[j].get("role") == "tool":
-        results[messages[j].get("tool_call_id", "")] = messages[j].get("content", "")
-        j += 1
+def _grouped(messages: list[dict]) -> Iterator[tuple[dict, dict[str, str]]]:
+    """Yield each drawable message paired with the tool results that answer it.
 
+    Only user and assistant messages are drawable; the pairing exists so an
+    assistant's calls and their results are rendered as one unit, the way the
+    live renderer sees them — one batch, one row per call.
+    """
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+        if msg.get("role") == "tool":
+            i += 1  # an orphaned result (its assistant is gone) draws nothing
+            continue
+        results: dict[str, str] = {}
+        j = i + 1
+        if msg.get("role") == "assistant" and msg.get("tool_calls"):
+            while j < len(messages) and messages[j].get("role") == "tool":
+                results[messages[j].get("tool_call_id", "")] = messages[j].get(
+                    "content", ""
+                )
+                j += 1
+        yield msg, results
+        i = j
+
+
+def _replay_calls(
+    calls: list[dict], results: dict[str, str], tools: ToolRegistry | None
+) -> list[Line]:
+    """One assistant message's tool calls, against the results that answered them."""
+    out: list[Line] = []
     for call in calls:
         function = call.get("function", {})
         name = function.get("name", "?")
@@ -286,7 +299,7 @@ def _replay_calls(
                 tools,
             )
         )
-    return j
+    return out
 
 
 def _load_args(arguments: object) -> dict:
@@ -317,7 +330,6 @@ __all__ = [
     "answer",
     "conversation",
     "divider",
-    "failure_text",
     "notice",
     "prompt",
     "reasoning",

@@ -104,3 +104,13 @@ def tool_call_response(name: str, args: str = "{}", call_id: str = "c1") -> Resp
         usage=Usage(1, 1),
         finish_reason="tool_calls",
     )
+
+
+class SlowProvider(MockProvider):
+    """A provider whose turn never finishes on its own."""
+
+    async def stream(self, *args):
+        import asyncio
+
+        await asyncio.sleep(30)
+        yield  # pragma: no cover - never reached

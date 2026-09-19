@@ -17,41 +17,15 @@ import pytest
 from mocode.core.agent import AgentConfig
 from mocode.core.events import Notice, RunFinished, TextDelta
 from mocode.core.provider import ModelSpec, Response, Usage
-from mocode.host.config import Config, ModelEntry, ProviderEntry
 from mocode.host.runtime import MoCode
 from mocode.host.session import Session
 
-from .providers import MockProvider, tool_call_response
+from .conftest import make_config
+from .providers import MockProvider, SlowProvider, tool_call_response
 
 
 def _answer(text: str = "done") -> Response:
     return Response(content=text, usage=Usage(1, 1), finish_reason="stop")
-
-
-def _config(tmp_path: Path) -> Config:
-    return Config(
-        active_provider="test",
-        active_model="test-model",
-        providers={
-            "test": ProviderEntry(
-                name="Test",
-                api_key="sk-test",
-                base_url="http://localhost",
-                models={"test-model": ModelEntry(), "other-model": ModelEntry()},
-            ),
-            "second": ProviderEntry(
-                name="Second",
-                api_key="sk-other",
-                base_url="http://localhost",
-                models={"second-model": ModelEntry()},
-            ),
-        },
-    )
-
-
-@pytest.fixture
-def mc(tmp_path: Path) -> MoCode:
-    return MoCode(config=_config(tmp_path), home=tmp_path / "home", plugin_dirs=[])
 
 
 def _project(tmp_path: Path, name: str) -> Path:
@@ -66,14 +40,6 @@ def _conversation(mc: MoCode, cwd: Path, *responses: Response, chunk_size: int =
         list(responses) or [_answer()], chunk_size=chunk_size
     )
     return conversation
-
-
-class _SlowProvider(MockProvider):
-    """A provider whose turn never finishes on its own."""
-
-    async def stream(self, *args):
-        await asyncio.sleep(30)
-        yield  # pragma: no cover - never reached
 
 
 # ── the conversation as a unit ──────────────────────────────
@@ -205,7 +171,7 @@ class TestConcurrency:
         self, mc: MoCode, tmp_path: Path
     ):
         conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
-        conversation.agent.provider = _SlowProvider()
+        conversation.agent.provider = SlowProvider()
 
         turn = conversation.run("hi")
         assert conversation.busy
@@ -220,7 +186,7 @@ class TestConcurrency:
         self, mc: MoCode, tmp_path: Path
     ):
         stopped = mc.new_conversation(cwd=_project(tmp_path, "a"))
-        stopped.agent.provider = _SlowProvider()
+        stopped.agent.provider = SlowProvider()
         running = _conversation(mc, _project(tmp_path, "b"), _answer("still here"))
 
         turn = stopped.run("hi")
@@ -296,7 +262,7 @@ class TestModel:
             conversation.set_model("nope", "m")
 
     def test_setting_the_default_writes_the_config(self, tmp_path: Path):
-        config = _config(tmp_path)
+        config = make_config()
         config.save = lambda *a, **k: None
         mc = MoCode(config=config, home=tmp_path / "home", plugin_dirs=[])
 
@@ -337,7 +303,7 @@ class TestSessions:
         conversation.messages.append({"role": "user", "content": "old"})
         previous = conversation.id
 
-        new_id = await conversation.start()
+        new_id = await conversation.new_session()
 
         assert new_id != previous
         assert conversation.messages == []
@@ -356,7 +322,7 @@ class TestSessions:
         fresh = mc.new_conversation(cwd=project)
         assert fresh.model_name == "test-model"
 
-        await fresh.resume(stored)
+        await fresh.load_session(stored)
 
         assert fresh.messages == [{"role": "user", "content": "remember me"}]
         assert (fresh.provider_key, fresh.model_name) == ("second", "second-model")
@@ -378,7 +344,7 @@ class TestSessions:
         )
 
         conversation = mc.new_conversation(cwd=project)
-        await conversation.resume(stored)
+        await conversation.load_session(stored)
 
         assert conversation.model_name == "test-model"  # the current one stays
         assert conversation.messages == [{"role": "user", "content": "hi"}]
@@ -467,7 +433,7 @@ class TestPluginsAreLoadedOnce:
             return real(plugin_dirs=plugin_dirs, config=config, reserved=reserved)
 
         monkeypatch.setattr(runtime_module, "load_plugins", counting)
-        mc = MoCode(config=_config(tmp_path), home=tmp_path / "home")
+        mc = MoCode(config=make_config(), home=tmp_path / "home")
         project = _project(tmp_path, "a")
 
         mc.new_conversation(cwd=project)
@@ -476,7 +442,7 @@ class TestPluginsAreLoadedOnce:
         assert len(calls) == 1
 
     def test_different_projects_load_their_own(self, tmp_path: Path):
-        mc = MoCode(config=_config(tmp_path), home=tmp_path / "home")
+        mc = MoCode(config=make_config(), home=tmp_path / "home")
         first = _project(tmp_path, "a")
         second = _project(tmp_path, "b")
         plugin = first / ".mocode" / "plugins" / "greet"

@@ -1,12 +1,25 @@
-"""Session Markdown export — render a Session as human-readable Markdown."""
+"""Session export — render a Session as Markdown or portable JSON."""
 
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from .session import Session, extract_title
+from .io import write_json
+from .session import Session, extract_title, timestamp
+
+
+def export_session(path: Path, session: Session, system_prompt: str = "") -> None:
+    """Write a session as a portable JSON file (re-importable anywhere)."""
+    write_json(path, {"system_prompt": system_prompt, **session.to_dict()})
+
+
+def export_session_md(session: Session, path: Path, system_prompt: str = "") -> None:
+    """Write a session as a human-readable Markdown file."""
+    md = render_session_md(session, system_prompt)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(md, encoding="utf-8")
 
 
 def render_session_md(session: Session, system_prompt: str = "") -> str:
@@ -26,7 +39,7 @@ def _frontmatter(session: Session) -> list[str]:
     lines = [
         "---",
         f"session_id: {session.id}",
-        f"exported_at: {datetime.now().isoformat()}",
+        f"exported_at: {timestamp()}",
         f"workdir: {session.workdir}",
         f"message_count: {len(session.messages)}",
     ]

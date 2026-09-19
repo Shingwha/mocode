@@ -33,8 +33,10 @@ DONE = "done"
 FAILED = "failed"
 CANCELLED = "cancelled"
 
-#: ``ToolCallState.status`` while the tool is still executing.
+#: ``ToolCallState.status`` values: ``running`` while executing, then one of
+#: ``ok`` / ``error`` / ``timeout`` / ``denied`` / ``not_found``.
 TOOL_RUNNING = "running"
+TOOL_OK = "ok"
 
 
 @dataclass
@@ -138,10 +140,7 @@ class RunState:
                         self.usage.completion_tokens + event.usage.completion_tokens,
                     )
             case RunFinished():
-                if event.cancelled:
-                    self.status = CANCELLED
-                else:
-                    self.status = FAILED if event.had_error else DONE
+                self.status = CANCELLED if event.cancelled else DONE
                 self.iteration = event.iterations or self.iteration
                 self.answer = event.content
                 # This event is the run's own summary, so its totals are
@@ -169,7 +168,9 @@ class RunState:
 
     @property
     def failed_tool_calls(self) -> list[ToolCallState]:
-        return [c for c in self.tool_calls.values() if c.status not in ("ok", TOOL_RUNNING)]
+        return [
+            c for c in self.tool_calls.values() if c.status not in (TOOL_OK, TOOL_RUNNING)
+        ]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -181,17 +182,9 @@ class RunState:
             "answer": self.answer,
             "reasoning": self.reasoning,
             "tool_calls": {cid: c.to_dict() for cid, c in self.tool_calls.items()},
-            "usage": {
-                "prompt_tokens": self.usage.prompt_tokens,
-                "completion_tokens": self.usage.completion_tokens,
-            },
+            "usage": self.usage.to_dict(),
             "last_usage": (
-                None
-                if self.last_usage is None
-                else {
-                    "prompt_tokens": self.last_usage.prompt_tokens,
-                    "completion_tokens": self.last_usage.completion_tokens,
-                }
+                None if self.last_usage is None else self.last_usage.to_dict()
             ),
             "error": self.error,
         }

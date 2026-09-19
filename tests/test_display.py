@@ -8,21 +8,29 @@ conversation's event stream in, lines out.
 from __future__ import annotations
 
 import asyncio
-import re
 from unittest.mock import MagicMock
 
 import pytest
+import re
 
 from mocode.cli import lines
 from mocode.cli.display import Display, clamp_visible
 from mocode.cli.render import CLIRenderer
 from mocode.cli.theme import Theme
-from mocode.core import Agent, Event, Notice, Tool, ToolOutput, ToolRegistry, ToolResult
+from mocode.core import (
+    AgentLoop,
+    Event,
+    HookRunner,
+    Notice,
+    Tool,
+    ToolOutput,
+    ToolRegistry,
+    ToolResult,
+)
 from mocode.core.provider import Response, ToolCall, Usage
 
+from .conftest import strip_ansi
 from .providers import MockProvider, tool_call_response
-
-ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _make_display(live: bool = False) -> Display:
@@ -31,9 +39,7 @@ def _make_display(live: bool = False) -> Display:
     ``live`` is pinned rather than detected: whether stdout happens to be a real
     terminal must not decide what these assert.
     """
-    display = Display(input_=MagicMock(), theme=Theme(), live=live)
-    display.clear_screen = lambda: None  # never shell out from a test
-    return display
+    return Display(input_=MagicMock(), theme=Theme(), live=live)
 
 
 class _StubConversation:
@@ -49,7 +55,7 @@ def _renderer(display: Display, registry: ToolRegistry) -> CLIRenderer:
 
 
 def _plain(text: str) -> str:
-    return ANSI.sub("", text)
+    return strip_ansi(text)
 
 
 class TestFormatting:
@@ -174,7 +180,12 @@ class TestRenderer:
         registry = ToolRegistry()
         for tool in tools:
             registry.register(tool)
-        agent = Agent().provider(provider).prompt("t").tools(registry).build()
+        agent = AgentLoop(
+            provider=provider,
+            system_prompt="t",
+            tools=registry,
+            hooks=HookRunner(),
+        )
         renderer = _renderer(display, registry)
         async for event in agent.stream("hi"):
             renderer.draw(event)
@@ -259,16 +270,14 @@ class TestRenderer:
         display = _make_display()
         registry = ToolRegistry()
         registry.register(Tool("risky", "d", {}, lambda a: "ran"))
-        agent = (
-            Agent()
-            .provider(MockProvider([
+        agent = AgentLoop(
+            provider=MockProvider([
                 tool_call_response("risky"),
                 Response(content="ok", usage=Usage(1, 1), finish_reason="stop"),
-            ]))
-            .prompt("t")
-            .tools(registry)
-            .hooks([Denier()])
-            .build()
+            ]),
+            system_prompt="t",
+            tools=registry,
+            hooks=HookRunner([Denier()]),
         )
         renderer = _renderer(display, registry)
         async for event in agent.stream("hi"):
@@ -300,7 +309,12 @@ async def _run_parallel(display: Display, delays: dict[str, float]):
         ),
         Response(content="done", usage=Usage(1, 1), finish_reason="stop"),
     ])
-    agent = Agent().provider(provider).prompt("t").tools(registry).build()
+    agent = AgentLoop(
+        provider=provider,
+        system_prompt="t",
+        tools=registry,
+        hooks=HookRunner(),
+    )
     renderer = _renderer(display, registry)
     async for event in agent.stream("hi"):
         renderer.draw(event)
@@ -351,13 +365,14 @@ class TestLiveBlock:
         display = _make_display(live=True)
         registry = ToolRegistry()
         registry.register(Tool("noisy", "d", {}, noisy))
-        agent = (
-            Agent()
-            .provider(MockProvider([
+        agent = AgentLoop(
+            provider=MockProvider([
                 tool_call_response("noisy"),
                 Response(content="done", usage=Usage(1, 1), finish_reason="stop"),
-            ]))
-            .prompt("t").tools(registry).build()
+            ]),
+            system_prompt="t",
+            tools=registry,
+            hooks=HookRunner(),
         )
         renderer = _renderer(display, registry)
         async for event in agent.stream("hi"):

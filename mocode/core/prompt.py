@@ -31,7 +31,13 @@ class Section:
 
 
 class Prompt:
-    """Section-based prompt builder — dict-backed, API aligned with ToolRegistry."""
+    """Section-based prompt builder — the container surface ToolRegistry uses.
+
+    ``all()`` is the management view (every section); ``names()`` is what
+    ``build()`` would render (enabled sections only). A disabled section stays
+    registered and ``get()``-able, it just does not render — the same toggle
+    semantics :class:`~mocode.core.tool.ToolRegistry` gives a tool.
+    """
 
     def __init__(self, sections: list[Section] | None = None) -> None:
         self._sections: dict[str, Section] = {}
@@ -52,6 +58,10 @@ class Prompt:
 
     def all(self) -> list[Section]:
         return list(self._sections.values())
+
+    def names(self) -> list[str]:
+        """Names of the enabled sections — what ``build()`` would render."""
+        return [s.name for s in self._sections.values() if s.enabled]
 
     def enable(self, name: str) -> Self:
         s = self.get(name)
@@ -102,6 +112,12 @@ class Prompt:
             parts.append(_xml_tag(s.name, content, **s.attrs))
         body = "\n\n".join(parts)
         return f"<{wrap}>\n\n{body}\n\n</{wrap}>"
+
+    def __len__(self) -> int:
+        return len(self._sections)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._sections
 
     def __repr__(self) -> str:
         sections = ", ".join(

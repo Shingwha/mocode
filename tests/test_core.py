@@ -1,11 +1,10 @@
-"""The kernel's building blocks: the Agent builder, Prompt, Tool, HookRunner."""
+"""The kernel's building blocks: AgentLoop assembly, Prompt, Tool, HookRunner."""
 
 from __future__ import annotations
 
 import pytest
 
 from mocode.core import (
-    Agent,
     AgentConfig,
     AgentHook,
     AgentLoop,
@@ -23,65 +22,90 @@ from mocode.core import (
 from .providers import MockProvider
 
 
-class TestAgentBuilder:
-    def test_minimal_build(self):
-        agent = Agent().provider(MockProvider()).prompt("Hello").build()
+def _loop(**kwargs) -> AgentLoop:
+    """An AgentLoop with the obvious defaults filled in."""
+    kwargs.setdefault("provider", MockProvider())
+    kwargs.setdefault("system_prompt", "t")
+    kwargs.setdefault("tools", ToolRegistry())
+    kwargs.setdefault("hooks", HookRunner())
+    return AgentLoop(**kwargs)
+
+
+class TestAgentLoopAssembly:
+    def test_minimal_construction(self):
+        agent = _loop(system_prompt="Hello")
         assert isinstance(agent, AgentLoop)
         assert agent.system_prompt == "Hello"
         assert agent.tool_registry.names() == []
 
-    def test_provider_and_prompt_are_required(self):
-        with pytest.raises(ValueError, match="Provider is required"):
-            Agent().prompt("test").build()
-        with pytest.raises(ValueError, match="System prompt is required"):
-            Agent().provider(MockProvider()).build()
-
-    def test_tools_accept_a_list_or_a_registry(self):
-        tool = Tool("echo", "Echo", {}, lambda a: "ok")
-        registry = ToolRegistry()
-        registry.register(tool)
-
-        from_list = Agent().provider(MockProvider()).prompt("t").tools([tool]).build()
-        from_registry = Agent().provider(MockProvider()).prompt("t").tools(registry).build()
-
-        assert from_list.tool_registry is not registry
-        assert from_list.tool_registry.get("echo") is tool
-        assert from_registry.tool_registry is registry
-
-    def test_prompt_accepts_a_string_a_prompt_or_sections(self):
-        sections = [Section("id", "bot"), Section("rules", "help")]
-
-        from_sections = Agent().provider(MockProvider()).prompt(sections).build()
-        from_prompt = (
-            Agent().provider(MockProvider()).prompt(Prompt().register(Section("id", "bot"))).build()
-        )
-
-        assert "<id>" in from_sections.system_prompt
-        assert "<rules>" in from_sections.system_prompt
-        assert "<id>" in from_prompt.system_prompt
-
     def test_config_and_model_are_passed_through(self):
         spec = ModelSpec(name="m", context_window=100_000, max_output=4096)
-        agent = (
-            Agent()
-            .provider(MockProvider())
-            .prompt("t")
-            .config(AgentConfig(tool_result_limit=4096))
-            .model(spec)
-            .build()
-        )
+        agent = _loop(config=AgentConfig(tool_result_limit=4096), model=spec)
         assert agent.config.tool_result_limit == 4096
         assert agent.model is spec
 
     def test_model_defaults_to_the_provider_name_with_no_invented_limits(self):
-        agent = Agent().provider(MockProvider()).prompt("t").build()
+        agent = _loop()
         assert agent.model.name == "mock"
         assert (agent.model.context_window, agent.model.max_output) == (None, None)
 
-    def test_hooks_are_wrapped_in_a_runner(self):
-        agent = Agent().provider(MockProvider()).prompt("t").hooks([AgentHook()]).build()
-        assert isinstance(agent.hooks, HookRunner)
-        assert len(agent.hooks.all()) == 1
+    def test_two_loops_never_share_a_channel(self):
+        a, b = _loop(), _loop()
+        assert a.channel is not b.channel
+
+
+class TestContainerSurface:
+    """ToolRegistry and Prompt are the same shape of container.
+
+    ``all()`` is the management view; ``names()`` is the visible projection
+    (enabled only); ``in`` / ``len()`` count what is registered, enabled or not.
+    """
+
+    def test_tool_registry_management(self):
+        registry = ToolRegistry()
+        tool = Tool("t", "d", {}, lambda a: "ok")
+        assert registry.register(tool) is registry
+
+        assert len(registry) == 1
+        assert "t" in registry
+        assert registry.get("t") is tool
+        assert registry.all() == [tool]
+        assert registry.names() == ["t"]
+
+        registry.disable("t")
+        assert "t" in registry  # still registered, just not offered
+        assert registry.all_schemas() == []
+        assert registry.names() == []
+        assert registry.select().names() == []
+
+        registry.enable("t")
+        assert registry.names() == ["t"]
+
+        assert registry.unregister("t") is tool
+        assert len(registry) == 0 and "t" not in registry
+
+    def test_prompt_management(self):
+        prompt = Prompt().register(Section("a", "alpha")).register(Section("b", "beta"))
+        assert len(prompt) == 2
+        assert "a" in prompt
+        assert prompt.names() == ["a", "b"]
+
+        prompt.disable("b")
+        assert "b" in prompt  # still registered, just not rendered
+        assert prompt.names() == ["a"]
+        assert "beta" not in prompt.build()
+
+        prompt.enable("b")
+        assert "beta" in prompt.build()
+
+        assert prompt.unregister("b").name == "b"
+        assert len(prompt) == 1
+
+    def test_re_registering_a_tool_clears_its_disabled_state(self):
+        registry = ToolRegistry()
+        tool = Tool("t", "d", {}, lambda a: "ok")
+        registry.register(tool).disable("t").register(tool)
+        assert registry.names() == ["t"]
 
 
 class TestPrompt:
@@ -104,11 +128,13 @@ class TestPrompt:
         )
         assert result.index("aaa") < result.index("bbb")
 
-    def test_disable_hides_a_section(self):
-        prompt = Prompt().register(Section("a", "vis")).register(Section("b", "hid"))
-        prompt.disable("b")
+    def test_a_disabled_section_is_hidden(self):
+        prompt = (
+            Prompt()
+            .register(Section("a", "vis"))
+            .register(Section("b", "hid", enabled=False))
+        )
         assert "hid" not in prompt.build()
-
     def test_nested_sections_render_as_nested_tags(self):
         result = (
             Prompt()
@@ -149,6 +175,14 @@ class TestTool:
 
         tool = Tool("a", "d", {"v": {"type": "string", "description": "v"}}, run)
         assert await tool.run_async({"v": "x"}) == "async:x"
+
+    @pytest.mark.asyncio
+    async def test_a_sync_tool_runs_through_run_async_too(self):
+        def run(args):
+            return f"sync:{args['v']}"
+
+        tool = Tool("s", "d", {"v": {"type": "string", "description": "v"}}, run)
+        assert await tool.run_async({"v": "x"}) == "sync:x"
 
     def test_a_tool_may_declare_a_second_parameter_for_its_context(self):
         def plain(args):

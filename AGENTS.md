@@ -28,11 +28,11 @@ Everything below follows from it. Workflows, sub-agents, context compaction, web
 ```
 mocode/
 ├── core/        kernel — mechanism only, zero app dependencies
-│   ├── agent.py     AgentConfig, AgentLoop (start/stream/chat/derive), Turn
+│   ├── agent.py     AgentConfig, AgentLoop (start/stream/chat/derive), LoopResult
+│   ├── turn.py      Turn — one execution of the loop, addressable and watchable
 │   ├── channel.py   EventChannel, Subscription — where a turn's events go
 │   ├── events.py    Event + the eleven events a run emits
 │   ├── state.py     RunState — the events folded into a live snapshot
-│   ├── builder.py   Agent — fluent builder
 │   ├── hook.py      AgentHook, HookRunner, IterationContext, ToolCallContext
 │   ├── prompt.py    Prompt, Section — section-based XML assembly
 │   ├── provider.py  Provider protocol, Chunk/ToolCallDelta/Response, StreamAccumulator, with_retry_stream
@@ -73,7 +73,7 @@ Dependencies point down only — `core ← host ← cli`. `core` and `providers`
 
 | Primitive | Where | Unlocks |
 |---|---|---|
-| `AgentLoop.start()` → `Turn` | `core/agent.py` | a run that belongs to the conversation, not to the caller: addressable, cancellable, waitable, and watchable by several readers. `stream()` / `chat()` are views over it |
+| `AgentLoop.start()` → `Turn` | `core/agent.py`, `core/turn.py` | a run that belongs to the conversation, not to the caller: addressable, cancellable, waitable, and watchable by several readers. `stream()` / `chat()` are views over it |
 | `EventChannel` / `Subscription` | `core/channel.py` | one ordered stream per conversation, with `seq` that survives across turns: fan-out to N readers, replay after a reconnect, and a place for a message that has nothing to do with a run |
 | `AgentLoop.derive(*, system_prompt, tools, hooks, config, model, channel)` | `core/agent.py` | sub-agents, workflow-style nodes — any nested agent with narrower tools; pass `channel=` to report into the parent's stream |
 | `ModelSpec(name, context_window, max_output)` | `core/provider.py` | model facts as first-class data: the loop passes `max_output` to the provider (`None` = send no cap), plugins read `ctx.model.context_window` to budget context |
@@ -126,7 +126,7 @@ A single `<name>.py` file is the shortcut for a MoCode-only plugin. The host han
 
 1. `core/` never imports `host/`, `cli/`, `providers/` or `plugins/`, and contains no specific tool name, feature name or config key beyond `AgentConfig`.
 2. `host/` never imports `cli/`, and contains no terminal vocabulary — no ANSI, no prompt, no screen. An application sees a conversation only as events, and a plugin never learns what is drawing them.
-3. Exactly one way to build an agent: the `Agent` builder or `AgentLoop.derive()`. Never a third hand-rolled `AgentLoop(...)`.
+3. Exactly one way to build an agent: the `AgentLoop` constructor or `AgentLoop.derive()`. No builder on top, no second assembly site.
 4. Exactly one way to execute a turn: `AgentLoop.start()`. `stream()` and `chat()` are views over it, and nothing else gets its own path through the loop. One conversation runs one turn at a time; a second `start()` raises rather than interleaving two histories.
 5. Observation goes through the event stream — the channel is the only way anything learns what a run did. Anything that must *answer* (rewrite messages or the system prompt, veto a call, redact a result) is an `AgentHook`. A hook's `on_event` is the in-band subscriber (the publisher waits for it); every other reader is out-of-band and cannot slow the run down.
 6. What the model reads and what a UI shows are different channels: `ToolResult.content` vs `.details`, `ToolCallFinished.result` vs `.details`. Never make a frontend parse model-facing text to render something.

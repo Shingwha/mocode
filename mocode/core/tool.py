@@ -123,20 +123,21 @@ class Tool:
         self.wants_context = _accepts_context(func)
 
     def run(self, args: dict, ctx: "ToolCallContext | None" = None) -> "str | ToolResult":
-        validated = self._validate_args(args)
-        if self.wants_context:
-            return self.func(validated, ctx)
-        return self.func(validated)
+        """Call the function directly. An async tool returns its coroutine."""
+        return self._invoke(self._validate_args(args), ctx)
 
     async def run_async(
         self, args: dict, ctx: "ToolCallContext | None" = None
     ) -> "str | ToolResult":
-        validated = self._validate_args(args)
-        if self.is_async:
-            if self.wants_context:
-                return await self.func(validated, ctx)
-            return await self.func(validated)
-        return self.run(validated, ctx)
+        result = self._invoke(self._validate_args(args), ctx)
+        return await result if self.is_async else result
+
+    def _invoke(
+        self, validated: dict, ctx: "ToolCallContext | None"
+    ) -> "str | ToolResult":
+        if self.wants_context:
+            return self.func(validated, ctx)
+        return self.func(validated)
 
     def _validate_args(self, args: dict) -> dict:
         result = dict(args)
@@ -179,21 +180,32 @@ class Tool:
 
 
 class ToolRegistry:
-    """Instance-scoped tool registry — storage and schema generation."""
+    """Instance-scoped tool registry — storage and schema generation.
+
+    The container surface Prompt and HookRunner also use, with one twist on
+    meaning: ``all()`` is the management view (every registered tool), while
+    ``names()`` / ``all_schemas()`` / ``select()`` are the *visible* projection
+    — a disabled tool stays registered and ``get()``-able but is not offered to
+    the model, exactly like a disabled prompt section is not rendered.
+    """
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
+        self._disabled: set[str] = set()
         self._schema_cache: list[dict] | None = None
 
-    def register(self, tool: Tool) -> None:
+    def register(self, tool: Tool) -> "ToolRegistry":
         self._tools[tool.name] = tool
+        self._disabled.discard(tool.name)
         self._schema_cache = None
+        return self
 
     def unregister(self, name: str) -> Tool | None:
-        result = self._tools.pop(name, None)
-        if result:
+        tool = self._tools.pop(name, None)
+        self._disabled.discard(name)
+        if tool is not None:
             self._schema_cache = None
-        return result
+        return tool
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
@@ -202,11 +214,27 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def names(self) -> list[str]:
-        return list(self._tools.keys())
+        """Names of the enabled tools — the set the model is offered."""
+        return [name for name in self._tools if name not in self._disabled]
+
+    def enable(self, name: str) -> "ToolRegistry":
+        self._disabled.discard(name)
+        self._schema_cache = None
+        return self
+
+    def disable(self, name: str) -> "ToolRegistry":
+        if name in self._tools:
+            self._disabled.add(name)
+            self._schema_cache = None
+        return self
 
     def all_schemas(self) -> list[dict]:
         if self._schema_cache is None:
-            self._schema_cache = [t.to_schema() for t in self._tools.values()]
+            self._schema_cache = [
+                self._tools[name].to_schema()
+                for name in self._tools
+                if name not in self._disabled
+            ]
         return self._schema_cache
 
     def select(
@@ -219,12 +247,14 @@ class ToolRegistry:
     ) -> ToolRegistry:
         """Create a filtered view sharing the same Tool instances.
 
-        A tool is kept when it matches every filter that is supplied:
-        ``include_tags`` / ``include_names`` are allow-lists, ``exclude_tags`` /
-        ``exclude_names`` are deny-lists.
+        A tool is kept when it is enabled and matches every filter that is
+        supplied: ``include_tags`` / ``include_names`` are allow-lists,
+        ``exclude_tags`` / ``exclude_names`` are deny-lists.
         """
         new = ToolRegistry()
         for name, tool in self._tools.items():
+            if name in self._disabled:
+                continue
             if include_names is not None and name not in include_names:
                 continue
             if exclude_names and name in exclude_names:

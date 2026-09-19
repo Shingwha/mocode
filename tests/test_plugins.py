@@ -116,9 +116,11 @@ def _run_host(ctx: HostContext, plugin_dirs: list[Path]) -> PluginHost:
 class TestManifest:
     def test_reads_the_standard_fields(self, tmp_path: Path):
         _write_plugin(tmp_path, "greet", manifest={"version": "1.2.0", "description": "hi"})
-        data = read_manifest(tmp_path / "greet" / "plugin.json")
-        assert data["name"] == "greet"
-        assert data["version"] == "1.2.0"
+        spec = read_manifest(tmp_path / "greet" / "plugin.json")
+        assert spec is not None
+        assert spec.name == "greet"
+        assert spec.version == "1.2.0"
+        assert spec.description == "hi"
 
     def test_a_missing_name_rejects_the_plugin(self, tmp_path: Path, capsys):
         path = tmp_path / "plugin.json"
@@ -135,8 +137,8 @@ class TestManifest:
             json.dumps({"name": "greet", "enabled": False, "entrypoint": "X"}),
             encoding="utf-8",
         )
-        data = read_manifest(path)
-        assert data is not None and data["name"] == "greet"
+        spec = read_manifest(path)
+        assert spec is not None and spec.name == "greet"
         err = capsys.readouterr().err
         assert "enabled" in err and "entrypoint" in err
 

@@ -21,44 +21,44 @@ from mocode.core import ToolError
 class TestBashSession:
     @pytest.mark.asyncio
     async def test_runs_a_command(self, tmp_path: Path):
-        result = await BashSession(tmp_path).execute("echo hello")
+        result = await BashSession(tmp_path).execute("echo hello", timeout=10)
         assert result.content == "hello"
 
     @pytest.mark.asyncio
     async def test_the_exit_code_travels_as_a_detail(self, tmp_path: Path):
         session = BashSession(tmp_path)
-        assert (await session.execute("true")).details == {"exit_code": 0}
-        assert (await session.execute("exit 3")).details == {"exit_code": 3}
+        assert (await session.execute("true", timeout=10)).details == {"exit_code": 0}
+        assert (await session.execute("exit 3", timeout=10)).details == {"exit_code": 3}
 
     @pytest.mark.asyncio
     async def test_cd_persists(self, tmp_path: Path):
         session = BashSession(tmp_path)
-        result = await session.execute(f"cd {tmp_path}")
+        result = await session.execute(f"cd {tmp_path}", timeout=10)
         assert str(tmp_path) in result.content
         assert session.cwd == str(tmp_path)
 
     @pytest.mark.asyncio
     async def test_env_vars_persist_across_commands(self, tmp_path: Path):
         session = BashSession(tmp_path)
-        await session.execute("export MY_TEST_VAR=world")
-        assert (await session.execute("echo $MY_TEST_VAR")).content == "world"
+        await session.execute("export MY_TEST_VAR=world", timeout=10)
+        assert (await session.execute("echo $MY_TEST_VAR", timeout=10)).content == "world"
 
     @pytest.mark.asyncio
     async def test_restart_clears_state(self, tmp_path: Path):
         session = BashSession(tmp_path)
-        await session.execute("export MY_TEST_VAR=hello")
+        await session.execute("export MY_TEST_VAR=hello", timeout=10)
         session.restart()
-        assert (await session.execute("echo $MY_TEST_VAR")).content == "(empty)"
+        assert (await session.execute("echo $MY_TEST_VAR", timeout=10)).content == "(empty)"
 
     @pytest.mark.asyncio
     async def test_env_values_are_never_executed_as_shell_code(self, tmp_path: Path):
         """Env vars are passed through ``env=``, never interpolated into a script."""
         session = BashSession(tmp_path)
-        await session.execute("export EVIL='$(echo INJECTED)'")
-        await session.execute("export TICK='`echo INJECTED`'")
+        await session.execute("export EVIL='$(echo INJECTED)'", timeout=10)
+        await session.execute("export TICK='`echo INJECTED`'", timeout=10)
 
-        assert (await session.execute("echo $EVIL")).content == "$(echo INJECTED)"
-        assert (await session.execute("echo $TICK")).content == "`echo INJECTED`"
+        assert (await session.execute("echo $EVIL", timeout=10)).content == "$(echo INJECTED)"
+        assert (await session.execute("echo $TICK", timeout=10)).content == "`echo INJECTED`"
 
     @pytest.mark.asyncio
     async def test_output_is_reported_line_by_line_as_it_arrives(self, tmp_path: Path):
@@ -68,7 +68,7 @@ class TestBashSession:
             seen.append((stream, text))
 
         result = await BashSession(tmp_path).execute(
-            "echo one; echo two; echo oops >&2", on_output=on_output
+            "echo one; echo two; echo oops >&2", timeout=10, on_output=on_output
         )
 
         assert seen == [
@@ -148,7 +148,7 @@ class TestReadTool:
     def test_the_result_explains_the_path_is_a_directory(self, tmp_path: Path):
         result = ReadTool(tmp_path).run({"path": str(tmp_path)}).content.lower()
         assert "directory" in result
-        assert "bash" in result
+        assert "shell" in result  # the way out is named, no specific tool is
 
     def test_a_directory_reports_no_line_count(self, tmp_path: Path):
         """``result_key`` is lines, and a listing has none — nothing is shown."""

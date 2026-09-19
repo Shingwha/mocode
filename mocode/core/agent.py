@@ -17,15 +17,13 @@ loop.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import time
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import AsyncIterator
 from uuid import uuid4
 
-from .channel import EventChannel, Subscription
+from .channel import EventChannel
 from .events import (
     Event,
     IterationFinished,
@@ -47,7 +45,7 @@ from .provider import (
     Usage,
     with_retry_stream,
 )
-from .state import CANCELLED, FAILED, RUNNING, RunState
+from .state import RunState
 from .tool import (
     DENIED_PREFIX,
     ERROR_PREFIX,
@@ -56,6 +54,7 @@ from .tool import (
     ToolRegistry,
     split_result,
 )
+from .turn import Turn
 
 
 @dataclass
@@ -77,98 +76,6 @@ class LoopResult:
     tool_calls_made: int = 0
     messages: list[dict] = field(default_factory=list)
     had_error: bool = False
-
-
-def _ends_run(event: Event) -> bool:
-    """Whether *event* is the terminal event of its run."""
-    return isinstance(event, (RunFinished, RunFailed))
-
-
-class Turn:
-    """One execution of the loop: addressable, watchable, cancellable.
-
-    It belongs to the loop, not to the caller — a reader that goes away does
-    not stop it, and a reader that arrives late replays what it missed from the
-    channel's buffer. ``id`` is the ``run_id`` every event of this turn carries.
-
-    A turn always ends with :class:`~mocode.core.events.RunFinished` — including
-    one that was cancelled, which says so in ``cancelled`` — or with
-    :class:`~mocode.core.events.RunFailed`. Nothing else ends a turn.
-    """
-
-    def __init__(
-        self,
-        *,
-        agent: "AgentLoop",
-        id: str,
-        first_seq: int,
-        user_input: str | None = None,
-        images: list[str] | None = None,
-    ):
-        self.id = id
-        #: Channel ``seq`` before this turn published anything — the default
-        #: replay point for :meth:`subscribe`.
-        self.first_seq = first_seq
-        self.state = RunState()
-        #: The exception a failed turn ended on, for a caller that wants to raise it.
-        self.failure: BaseException | None = None
-        #: Whether the turn was stopped rather than finished.
-        self.cancelled = False
-        self._agent = agent
-        self._started = False
-        self._stopped = False
-        self._stop_requested = False
-        self._task = asyncio.create_task(agent._drive(id, user_input, images))
-
-    # ── Watching ───────────────────────────────────────────
-
-    @property
-    def done(self) -> bool:
-        return self._task.done()
-
-    def subscribe(self, *, since: int | None = None) -> Subscription:
-        """This turn's events, from ``since`` (default: before it started).
-
-        The view closes on the turn's terminal event. ``since`` older than the
-        channel's buffer yields a gap in ``seq``, not a silently partial run.
-        """
-        return self._agent.channel.subscribe(
-            since=self.first_seq if since is None else since,
-            keep=self._is_mine,
-            ends=_ends_run,
-        )
-
-    def _is_mine(self, event: Event) -> bool:
-        return event.run_id == self.id
-
-    async def wait(self) -> RunFinished | RunFailed:
-        """Wait for the turn to end and return its terminal event.
-
-        The wait is shielded: giving up on it — or being cancelled — leaves the
-        turn running, because the turn belongs to the loop and not to whoever is
-        watching. Use :meth:`cancel` to stop it.
-        """
-        return await asyncio.shield(self._task)
-
-    def cancel(self) -> None:
-        """Stop the turn. Idempotent: a finished or already-stopped turn ignores it.
-
-        A stop asked for before the turn took its first step is recorded and
-        delivered the moment it starts — a task cancelled before it runs any
-        code at all could never report the ending its readers are waiting for.
-        """
-        if self._task.done() or self._stopped:
-            return
-        self._stopped = True
-        if self._started:
-            self._task.cancel()
-        else:
-            self._stop_requested = True
-
-    def _begin(self) -> bool:
-        """Called by the loop as the turn's first act. True = stop immediately."""
-        self._started = True
-        return self._stop_requested
 
 
 class AgentLoop:
@@ -256,9 +163,7 @@ class AgentLoop:
 
     # ---- Execution ----
 
-    def start(
-        self, user_input: str | None = None, *, images: list[str] | None = None
-    ) -> Turn:
+    def start(self, user_input: str | None = None) -> Turn:
         """Begin a turn and return it. Raises if one is already running.
 
         ``user_input`` is appended to the history first; pass ``None`` to run
@@ -274,25 +179,24 @@ class AgentLoop:
             id=uuid4().hex[:12],
             first_seq=self.channel.seq,
             user_input=user_input,
-            images=images,
         )
         # The turn's task cannot start before this returns (creating a task only
         # schedules it), so the loop already owns the turn when it first runs.
         self._turn = turn
         return turn
 
-    def stream(
-        self, user_input: str | None = None, *, images: list[str] | None = None
-    ) -> AsyncIterator[Event]:
+    def stream(self, user_input: str | None = None) -> AsyncIterator[Event]:
         """Run one turn and yield its events.
 
         A view of :meth:`start` scoped to this caller: stop iterating — or be
         cancelled — and the turn stops with you. Use ``start()`` when the run
-        should outlive the reader.
+        should outlive the reader. The turn starts when iteration starts, not
+        when this is called.
         """
-        return self._watched(self.start(user_input, images=images))
+        return self._watched(user_input)
 
-    async def _watched(self, turn: Turn) -> AsyncIterator[Event]:
+    async def _watched(self, user_input: str | None) -> AsyncIterator[Event]:
+        turn = self.start(user_input)
         sub = turn.subscribe()
         try:
             async for event in sub:
@@ -301,16 +205,14 @@ class AgentLoop:
             sub.close()
             turn.cancel()
 
-    async def chat(
-        self, user_input: str | None = None, images: list[str] | None = None
-    ) -> str:
+    async def chat(self, user_input: str | None = None) -> str:
         """One conversation turn, returning the final answer.
 
         Convenience wrapper over :meth:`start` for callers that only want the
         reply. Provider failures raise, exactly as they would mid-stream, and
         cancelling this coroutine stops the turn.
         """
-        turn = self.start(user_input, images=images)
+        turn = self.start(user_input)
         try:
             terminal = await turn.wait()
         except asyncio.CancelledError:
@@ -340,14 +242,13 @@ class AgentLoop:
 
     # ---- The turn ----
 
-    async def _drive(
-        self, run_id: str, user_input: str | None, images: list[str] | None
-    ) -> RunFinished | RunFailed:
+    async def _drive(self, run_id: str, user_input: str | None) -> RunFinished | RunFailed:
         """Run one turn and return its terminal event — never raises for it.
 
         Cancellation is a normal ending here, not an exception the caller has to
         catch: the turn belongs to the loop, so whoever stopped it and whoever
-        is watching both get the same terminal event.
+        is watching both get the same terminal event. Every path out of here
+        goes through :meth:`_publish`, which is what folds the terminal state.
         """
         self._run_id = run_id
         self._failure = None
@@ -355,7 +256,7 @@ class AgentLoop:
         try:
             if turn is not None and turn._begin():
                 raise asyncio.CancelledError()
-            terminal = await self._iterate(user_input, images)
+            terminal = await self._iterate(user_input)
         except asyncio.CancelledError:
             self.messages.append({"role": "assistant", "content": self.INTERRUPT_MSG})
             if turn is not None:
@@ -376,19 +277,11 @@ class AgentLoop:
             terminal = await self._publish(
                 RunFailed(error=str(exc), kind=type(exc).__name__)
             )
-        finally:
-            if self.state.status == RUNNING:
-                self.state.status = FAILED if self._failure else CANCELLED
         return terminal
 
-    async def _iterate(
-        self, user_input: str | None, images: list[str] | None
-    ) -> RunFinished:
+    async def _iterate(self, user_input: str | None) -> RunFinished:
         if user_input is not None:
-            content = (
-                self._build_user_content(user_input, images) if images else user_input
-            )
-            self.messages.append({"role": "user", "content": content})
+            self.messages.append({"role": "user", "content": user_input})
 
         ctx = IterationContext(messages=self.messages, emit=self._emit)
         answer = ""
@@ -413,7 +306,6 @@ class AgentLoop:
             acc = StreamAccumulator()
             async for chunk in with_retry_stream(
                 self.provider,
-                self.provider.stream,
                 self.messages,
                 self.system_prompt,
                 self._tools.all_schemas(),
@@ -558,8 +450,9 @@ class AgentLoop:
             await self._execute_tool(tc)
         duration = time.monotonic() - started
 
-        tc.tool_result = self._truncate(tc.tool_result or "")
         await self.hooks.on_tool_complete(tc)
+        # After the hook, so a rewritten result is bounded like any other.
+        tc.tool_result = self._truncate(tc.tool_result or "")
 
         await self._publish(
             ToolCallFinished(
@@ -681,41 +574,6 @@ class AgentLoop:
         if tool_calls:
             msg["tool_calls"] = tool_calls
         return msg
-
-    _IMG_MEDIA = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-        ".bmp": "image/bmp",
-    }
-
-    @staticmethod
-    def _build_user_content(text: str, images: list[str]) -> list[dict] | str:
-        parts: list[dict] = []
-
-        for path_str in images:
-            p = Path(path_str)
-            if not p.exists() or p.suffix.lower() not in AgentLoop._IMG_MEDIA:
-                continue
-            try:
-                b64 = base64.b64encode(p.read_bytes()).decode()
-                media_type = AgentLoop._IMG_MEDIA[p.suffix.lower()]
-                parts.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{media_type};base64,{b64}"},
-                    }
-                )
-            except Exception:
-                continue
-
-        if not parts:
-            return text
-        if text:
-            parts.append({"type": "text", "text": text})
-        return parts
 
     # ---- State ----
 

@@ -8,7 +8,7 @@ git-status/
 ├── plugin.json              the manifest: name, version, description
 ├── skills/commit/SKILL.md   portable skill — any compatible client can read it
 ├── mocode/plugin.py         contributions to the agent: tool, command, prompt section
-└── mocode.cli/plugin.py     contributions to the terminal: a command with a picker
+└── mocode.cli/plugin.py     contributions to the terminal: the /status command
 ```
 
 ## Install
@@ -32,7 +32,7 @@ source changes.
 | `skills/<name>/SKILL.md` | every client | instructions the agent loads on demand |
 | `mcp.json` | every client | MCP servers (standard; MoCode does not serve them yet) |
 | `mocode/plugin.py` | MoCode | contributions to the agent — works in every frontend |
-| `mocode.cli/plugin.py` | the terminal | terminal chrome — a picker, a keybinding, a full-screen view |
+| `mocode.cli/plugin.py` | the terminal | terminal chrome — a command, a picker, a keybinding, a full-screen view |
 | `mocode.web/` | a web frontend, later | its own chrome |
 
 The root of the directory is the standard's; everything client-specific lives

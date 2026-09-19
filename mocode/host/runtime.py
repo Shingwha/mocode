@@ -113,14 +113,13 @@ class MoCode:
             ctx=ctx,
             agent=agent,
             host=host,
-            commands=commands,
             provider_key=key,
             model_name=name,
             session_id=session.id if session else new_session_id(),
             created_at=session.created_at if session else timestamp(),
         )
         if session is not None:
-            conversation._adopt(session.messages)
+            conversation.adopt(session.messages)
         return conversation
 
     def resume(self, session_id: str) -> Conversation | None:

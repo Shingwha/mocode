@@ -24,7 +24,6 @@ from mocode.host.command import (
     CommandResult,
     Kind,
 )
-from mocode.host.config import Config, ModelEntry, ProviderEntry
 from mocode.host.conversation import Conversation
 from mocode.host.events import ConversationChanged
 from mocode.host.plugin.builtin.skills import make_skill_command
@@ -36,21 +35,8 @@ _UNSET = object()
 
 
 @pytest.fixture
-def conversation(tmp_path: Path) -> Conversation:
-    config = Config(
-        active_provider="test",
-        active_model="test-model",
-        providers={
-            "test": ProviderEntry(
-                name="Test",
-                api_key="sk-test",
-                base_url="http://localhost",
-                models={"test-model": ModelEntry()},
-            )
-        },
-    )
-    mc = MoCode(config=config, home=tmp_path / "home", plugin_dirs=[])
-    return mc.new_conversation(cwd=tmp_path)
+def conversation(mc) -> Conversation:
+    return mc.new_conversation(cwd=mc.home.parent)
 
 
 async def _run(
@@ -351,10 +337,18 @@ def _skill(name: str, description: str, content: str) -> MagicMock:
     return skill
 
 
-def test_the_terminal_ships_the_commands_it_claims(monkeypatch):
-    """The plugin's description lists what it actually registers."""
-    from mocode.cli.plugin import PLUGIN
+def test_the_terminal_registers_its_commands_on_a_fresh_registry():
+    """Every command the terminal ships is one build() away for any registry."""
+    from mocode.cli.plugin import BuiltinCommands
 
-    names = {c.name for c in (*misc.commands, *model.commands, *session_cmds.commands)}
-    described = set(PLUGIN.description.replace("Terminal commands: ", "").split())
-    assert described <= names
+    registry = CommandRegistry()
+    BuiltinCommands().build(_FakeCLI(registry))
+    shipped = {c.name for c in (*misc.commands, *model.commands, *session_cmds.commands)}
+    assert shipped <= {c.name for c in registry.all()}
+
+
+class _FakeCLI:
+    """What BuiltinCommands needs from a CLIApp: the command registry."""
+
+    def __init__(self, commands):
+        self.commands = commands

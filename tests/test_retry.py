@@ -14,7 +14,10 @@ _auth = type("AuthenticationError", (Exception,), {})
 
 
 class _MockProvider:
-    """Mimics OpenAI's error classification."""
+    """Mimics OpenAI's error classification and replays one stream per call."""
+
+    def __init__(self, attempts: list):
+        self._remaining = list(attempts)
 
     @property
     def model(self) -> str:
@@ -23,85 +26,80 @@ class _MockProvider:
     def is_retriable(self, exc: Exception) -> bool:
         return isinstance(exc, _rate)
 
+    async def stream(self, *args, **kwargs):
+        outcome = self._remaining.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        for text in outcome:
+            yield Chunk(text=text)
+
 
 @pytest.fixture(autouse=True)
 def _patch_sleep(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
 
 
-def _streams(attempts: list):
-    """A stream factory that replays *attempts*, one per call."""
-    remaining = list(attempts)
-
-    async def factory(*args, **kwargs):
-        outcome = remaining.pop(0)
-        if isinstance(outcome, BaseException):
-            raise outcome
-        for text in outcome:
-            yield Chunk(text=text)
-
-    return factory
-
-
-async def _collect(provider, factory, *args, **kwargs) -> list[str]:
-    return [c.text async for c in with_retry_stream(provider, factory, *args, **kwargs)]
+async def _collect(provider, *args, **kwargs) -> list[str]:
+    return [c.text async for c in with_retry_stream(provider, *args, **kwargs)]
 
 
 class TestWithRetryStream:
     @pytest.mark.asyncio
     async def test_chunks_pass_through(self):
-        factory = _streams([["a", "b"]])
-        assert await _collect(_MockProvider(), factory) == ["a", "b"]
+        provider = _MockProvider([["a", "b"]])
+        assert await _collect(provider) == ["a", "b"]
 
     @pytest.mark.asyncio
     async def test_retries_before_the_first_chunk(self):
-        factory = _streams([_rate("429"), _rate("429"), ["ok"]])
-        assert await _collect(_MockProvider(), factory, max_retries=3) == ["ok"]
+        provider = _MockProvider([_rate("429"), _rate("429"), ["ok"]])
+        assert await _collect(provider, max_retries=3) == ["ok"]
 
     @pytest.mark.asyncio
     async def test_error_after_the_first_chunk_is_not_replayed(self):
         """A stream cannot be replayed — a caller has already seen the chunks."""
 
-        async def factory(*args, **kwargs):
-            yield Chunk(text="partial")
-            raise _rate("429")
+        class Halfway(_MockProvider):
+            async def stream(self, *args, **kwargs):
+                yield Chunk(text="partial")
+                raise _rate("429")
 
         with pytest.raises(_rate):
-            await _collect(_MockProvider(), factory, max_retries=3)
+            await _collect(Halfway([]), max_retries=3)
 
     @pytest.mark.asyncio
     async def test_non_retriable_error_propagates_immediately(self):
-        factory = _streams([_auth("bad key")])
+        provider = _MockProvider([_auth("bad key")])
         with pytest.raises(_auth):
-            await _collect(_MockProvider(), factory, max_retries=3)
+            await _collect(provider, max_retries=3)
 
     @pytest.mark.asyncio
     async def test_retries_are_exhausted(self):
-        factory = _streams([_rate("429")] * 3)
+        provider = _MockProvider([_rate("429")] * 3)
         with pytest.raises(_rate):
-            await _collect(_MockProvider(), factory, max_retries=2)
+            await _collect(provider, max_retries=2)
 
     @pytest.mark.asyncio
     async def test_cancellation_is_never_retried(self):
-        factory = _streams([asyncio.CancelledError()])
+        provider = _MockProvider([asyncio.CancelledError()])
         with pytest.raises(asyncio.CancelledError):
-            await _collect(_MockProvider(), factory, max_retries=3)
+            await _collect(provider, max_retries=3)
 
     @pytest.mark.asyncio
     async def test_arguments_are_forwarded(self):
         seen = []
 
-        async def factory(*args, **kwargs):
-            seen.append((args, kwargs))
-            yield Chunk(text="ok")
+        class Recorder(_MockProvider):
+            async def stream(self, *args, **kwargs):
+                seen.append(args)
+                yield Chunk(text="ok")
 
-        await _collect(_MockProvider(), factory, "a", "b", key="val")
-        assert seen == [(("a", "b"), {"key": "val"})]
+        await _collect(Recorder([]), "a", "b")
+        assert seen == [("a", "b")]
 
     @pytest.mark.asyncio
     async def test_an_empty_stream_is_not_an_error(self):
-        factory = _streams([[]])
-        assert await _collect(_MockProvider(), factory) == []
+        provider = _MockProvider([[]])
+        assert await _collect(provider) == []
 
 
 class TestComputeDelay:

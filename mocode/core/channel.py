@@ -62,7 +62,6 @@ class Subscription:
     def __init__(
         self,
         *,
-        since: int | None = None,
         backlog: int = BACKLOG,
         keep: Callable[["Event"], bool] | None = None,
         ends: Callable[["Event"], bool] | None = None,
@@ -74,7 +73,6 @@ class Subscription:
         self._done = False
         #: True once a gap has been cut into this reader's stream.
         self.dropped = 0
-        self._since = since
 
     # ── Reading ────────────────────────────────────────────
 
@@ -215,8 +213,11 @@ class EventChannel:
         Buffered readers get it first (nobody waits for them), then inline
         readers are awaited in registration order. That order keeps a nested
         publish — a hook emitting its own event — from being seen before the
-        event that caused it.
+        event that caused it. On a closed channel the event is dropped and the
+        current ``seq`` returned.
         """
+        if self._closed:
+            return self._seq
         self._seq += 1
         event.seq = self._seq
         self._replay.append(event)
@@ -244,14 +245,10 @@ class EventChannel:
         than the buffer holds gets a gap in ``seq`` rather than a silent
         partial history — see :attr:`Subscription.dropped`.
         """
+        sub = Subscription(backlog=self._backlog, keep=keep, ends=ends)
         if self._closed:
-            sub = Subscription(
-                since=since, backlog=self._backlog, keep=keep, ends=ends
-            )
             sub._end()
             return sub
-
-        sub = Subscription(since=since, backlog=self._backlog, keep=keep, ends=ends)
         if since is not None and since < self._seq:
             backlog = self.history(since=since)
             missing = self._replay[0].seq - 1 - since if self._replay else 0

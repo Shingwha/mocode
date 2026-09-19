@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from mocode.host.config import Config, ModelEntry, ProviderEntry
+from .conftest import make_config
 
 HOST_CODE = """
     from mocode.plugins import Plugin, Tool
@@ -52,17 +52,6 @@ CLI_CODE = """
 """
 
 
-def _config(tmp_path: Path) -> Config:
-    return Config(
-        active_provider="test",
-        active_model="m",
-        providers={
-            "test": ProviderEntry(
-                name="Test", api_key="k", base_url="http://x",
-                models={"m": ModelEntry()},
-            )
-        },
-    )
 
 
 def _install(root: Path, name: str = "acme", *, host: str = "", cli: str = "") -> Path:
@@ -84,7 +73,7 @@ def _app(tmp_path: Path, plugins: Path):
     from mocode.cli import CLIApp
 
     return CLIApp(
-        config=_config(tmp_path),
+        config=make_config(),
         home=tmp_path / "home",
         interactive=True,
         plugin_dirs=[plugins],
@@ -188,11 +177,13 @@ class TestLoadingRules:
 class TestTheTerminalsOwnCommands:
     def test_they_are_contributed_by_the_terminal_plugin(self, tmp_path: Path):
         """One way to contribute to the terminal — MoCode is not an exception."""
-        from mocode.cli.plugin import PLUGIN, NAMESPACE
+        from mocode.cli.plugin import BuiltinCommands, NAMESPACE
 
         plugins = tmp_path / "plugins"
         app = _app(tmp_path, plugins)
 
         assert NAMESPACE == "mocode.cli"
-        assert app.plugins[0] is PLUGIN
+        # A fresh instance per app: two terminals never share one plugin object.
+        assert isinstance(app.plugins[0], BuiltinCommands)
+        assert app.plugins[0] is not app.plugins[0].__class__()
         assert "/model" in {c.name for c in app.commands.all()}

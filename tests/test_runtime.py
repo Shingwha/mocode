@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,33 +9,31 @@ import pytest
 
 from mocode.core.events import RunFinished, TextDelta
 from mocode.core.provider import Response, Usage
-from mocode.host.config import Config, ModelEntry, ProviderEntry
 from mocode.host.runtime import MoCode
 
+from .conftest import make_config, strip_ansi
 from .providers import MockProvider
 
-#: Every escape a terminal draw can emit.
-ESCAPES = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+class TestThePackage:
+    def test_importing_mocode_stays_lazy(self):
+        """``import mocode`` must not drag the host layer in with it.
 
+        PEP 562 is the contract (AGENTS.md: under a millisecond); a subprocess
+        checks it on a pristine interpreter, because the first access caches
+        the name and in-process order would be lies.
+        """
+        import subprocess
+        import sys
 
-def _config(tmp_path: Path) -> Config:
-    return Config(
-        active_provider="test",
-        active_model="test-model",
-        providers={
-            "test": ProviderEntry(
-                name="Test",
-                api_key="sk-test",
-                base_url="http://localhost",
-                models={"test-model": ModelEntry()},
-            )
-        },
-    )
-
-
-@pytest.fixture
-def mc(tmp_path: Path) -> MoCode:
-    return MoCode(config=_config(tmp_path), home=tmp_path / "home", plugin_dirs=[])
+        code = (
+            "import mocode\n"
+            "assert 'MoCode' not in vars(mocode), 'eagerly imported'\n"
+            "assert mocode.MoCode is not None  # …yet resolves on demand\n"
+        )
+        done = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True
+        )
+        assert done.returncode == 0, done.stderr
 
 
 class TestTheRuntime:
@@ -47,7 +44,7 @@ class TestTheRuntime:
 
     def test_everything_it_owns_lives_under_home(self, tmp_path: Path):
         """Nothing the runtime writes escapes its home — not even sessions."""
-        mc = MoCode(config=_config(tmp_path), home=tmp_path / "home", plugin_dirs=[])
+        mc = MoCode(config=make_config(), home=tmp_path / "home", plugin_dirs=[])
         mc.config.save = lambda *a, **k: None
 
         assert mc.home == tmp_path / "home"
@@ -94,18 +91,23 @@ class TestTheTerminal:
     def app(self, tmp_path: Path):
         from mocode.cli import CLIApp
 
-        return CLIApp(config=_config(tmp_path), home=tmp_path / "home", interactive=True)
+        return CLIApp(
+            config=make_config(), home=tmp_path / "home",
+            interactive=True, plugin_dirs=[],
+        )
 
     def test_its_commands_come_from_its_plugin(self, app):
         assert "/help" in {c.name for c in app.commands.all()}
         assert "cli" in [p.name for p in app.plugins]
 
-    def test_the_renderer_is_installed_not_contributed(self, app):
+    def test_the_renderer_is_installed_not_contributed(self, app, tmp_path: Path):
         """Drawing a terminal is what this frontend does with the event stream."""
         from mocode.cli.render import CLIRenderer
 
         assert isinstance(app.renderer, CLIRenderer)
-        assert "cli" not in [p.name for p in app.runtime.plugins_for(Path.cwd())]
+        # The renderer is the app's own doing — the host's plugin set (the
+        # built-ins, here) contains nothing that installed it.
+        assert "cli" not in [p.name for p in app.runtime.plugins_for(tmp_path)]
 
     def test_it_writes_sessions_under_its_own_home(self, app, tmp_path: Path):
         app.conversation.messages.append({"role": "user", "content": "hi"})
@@ -124,7 +126,6 @@ class TestTheTerminal:
         app.conversation.agent.provider = MockProvider(
             [Response(content="pong", usage=Usage(1, 1), finish_reason="stop")]
         )
-        app.display.clear_screen = lambda: None
         typed = iter(["ping", "/quit"])
 
         async def scripted_prompt() -> str:
@@ -133,7 +134,7 @@ class TestTheTerminal:
         app.display.prompt = scripted_prompt
         await app._repl()
 
-        out = ESCAPES.sub("", capsys.readouterr().out.replace("\r", "\n"))
+        out = strip_ansi(capsys.readouterr().out.replace("\r", "\n"))
         rendered = [line.rstrip() for line in out.splitlines() if line.strip()]
         assert rendered[:2] == ["❯ ping", "pong"]
         assert rendered[2] == "↑1 ↓1 tokens"   # what the turn cost
@@ -151,7 +152,7 @@ class TestTheTerminal:
         app.display.prompt = scripted_prompt
         await app._repl()
 
-        out = ESCAPES.sub("", capsys.readouterr().out)
+        out = strip_ansi(capsys.readouterr().out)
         assert "/help" in out and "Show available commands" in out
 
     def test_a_one_shot_can_render_without_a_repl(self, tmp_path: Path):
@@ -159,7 +160,7 @@ class TestTheTerminal:
         from mocode.cli import CLIApp
 
         app = CLIApp(
-            config=_config(tmp_path), home=tmp_path / "home",
+            config=make_config(), home=tmp_path / "home",
             interactive=False, render=True,
         )
 
@@ -170,7 +171,7 @@ class TestTheTerminal:
         from mocode.cli import CLIApp
 
         app = CLIApp(
-            config=_config(tmp_path), home=tmp_path / "home",
+            config=make_config(), home=tmp_path / "home",
             interactive=True, render=False,
         )
 
@@ -180,7 +181,7 @@ class TestTheTerminal:
         """The default for a non-interactive run — that is what keeps `-p` a pipe."""
         from mocode.cli import CLIApp
 
-        app = CLIApp(config=_config(tmp_path), home=tmp_path / "home", interactive=False)
+        app = CLIApp(config=make_config(), home=tmp_path / "home", interactive=False)
 
         assert app.display is None
         assert app.renderer is None
@@ -188,7 +189,7 @@ class TestTheTerminal:
     def test_a_headless_cli_still_has_commands(self, tmp_path: Path):
         from mocode.cli import CLIApp
 
-        app = CLIApp(config=_config(tmp_path), home=tmp_path / "home", interactive=False)
+        app = CLIApp(config=make_config(), home=tmp_path / "home", interactive=False)
 
         assert "/help" in {c.name for c in app.commands.all()}
 
@@ -196,7 +197,7 @@ class TestTheTerminal:
         """A one-shot is not a session."""
         from mocode.cli import CLIApp
 
-        app = CLIApp(config=_config(tmp_path), home=tmp_path / "home", interactive=False)
+        app = CLIApp(config=make_config(), home=tmp_path / "home", interactive=False)
         app.conversation.agent.provider = MockProvider(
             [Response(content="answer", usage=Usage(1, 1), finish_reason="stop")]
         )
@@ -210,7 +211,7 @@ class TestTheTerminal:
         from mocode.cli import CLIApp
 
         app = CLIApp(
-            config=_config(tmp_path), home=tmp_path / "home",
+            config=make_config(), home=tmp_path / "home",
             interactive=False, render=True,
         )
         app.display.clear_screen = lambda: None
@@ -220,5 +221,5 @@ class TestTheTerminal:
 
         app.run_oneshot("hello")
 
-        out = ESCAPES.sub("", capsys.readouterr().out)
+        out = strip_ansi(capsys.readouterr().out)
         assert out.count("drawn") == 1

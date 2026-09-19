@@ -287,14 +287,14 @@ hand it back elsewhere.
 
 ```python
 conv.save(title="optional")     # persist to ~/.mocode/sessions/<hash>/<id>.json
-await conv.start()              # save, then begin a fresh session in this project
-await conv.start(messages)      # begin fresh, seeded from an export file
-await conv.resume(session)      # continue a stored session: history, id, and model
+await conv.new_session()        # save, then begin a fresh session in this project
+await conv.new_session(messages)  # begin fresh, seeded from an export file
+await conv.load_session(session)  # continue a stored session: history, id, and model
 conv.rebuild_prompt()           # re-read AGENTS.md after a change on disk
 conv.close(save=True)           # stop the turn, save, release plugins, end the stream
 
 conv.list_sessions()            # [Session, ...] for this project, newest first
-conv.delete_session(session_id)
+mc.store.delete(workdir, id)    # remove one; the store is the manager here
 mc.store.list_all()             # every session in the store, across projects
 mc.resume(session_id)           # open a stored session wherever it lives
 ```
@@ -502,20 +502,18 @@ both and read whatever keys it wants.
 ## Building a bare agent
 
 `MoCode` is the batteries-included path. If you want the kernel alone — your own
-provider, your own tools, no config file — use the builder:
+provider, your own tools, no config file — construct the loop directly:
 
 ```python
-from mocode.core import Agent, AgentConfig, ModelSpec
+from mocode.core import AgentConfig, AgentLoop, HookRunner, ModelSpec, ToolRegistry
 
-agent = (
-    Agent()
-    .provider(my_provider)
-    .prompt("You are a helpful assistant.")
-    .tools([tool_a, tool_b])
-    .hooks([my_hook])
-    .config(AgentConfig(tool_timeout=60, max_iterations=20))
-    .model(ModelSpec(name="my-model", context_window=128_000))
-    .build()
+agent = AgentLoop(
+    provider=my_provider,
+    system_prompt="You are a helpful assistant.",
+    tools=ToolRegistry().register(tool_a).register(tool_b),
+    hooks=HookRunner([my_hook]),
+    config=AgentConfig(tool_timeout=60, max_iterations=20),
+    model=ModelSpec(name="my-model", context_window=128_000),
 )
 
 turn = agent.start("hello")               # or: async for event in agent.stream("hello")

@@ -103,8 +103,8 @@ def _list_directory(p: Path) -> str:
             files.append(f"{entry.name}  ({size_str})")
     header = f"[{p}/ — {len(dirs)} directories, {len(files)} files]"
     hint = (
-        "\nThis is a directory, not a file. "
-        "Use bash (e.g. `ls -la` or `find`) to explore it, or read a specific file."
+        "\nThis is a directory, not a file. The listing above shows its "
+        "entries — read a specific file, or use a shell tool to explore further."
     )
     return header + "\n" + "\n".join(dirs + files) + hint
 
@@ -142,7 +142,7 @@ class ReadTool(Tool):
     def _execute(self, args: dict) -> ToolResult:
         given = args["path"]
         offset = max(1, int(args.get("offset", 1)))
-        limit = int(args.get("limit", 0)) or 999999
+        limit = int(args.get("limit", 0))  # 0 = all lines
         p = resolve_path(given, self.base)
         if p.is_dir():
             return ToolResult(_list_directory(p))

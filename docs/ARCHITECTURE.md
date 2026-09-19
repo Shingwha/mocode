@@ -14,7 +14,6 @@ mocode/
 │   ├── channel.py       EventChannel, Subscription — the run's event stream
 │   ├── events.py        Event + the eleven events a run emits
 │   ├── state.py         RunState — the events folded into a live snapshot
-│   ├── builder.py       Agent — fluent builder, the bare-metal entry point
 │   ├── hook.py          AgentHook, HookRunner, contexts — the interception channel
 │   ├── prompt.py        Prompt, Section — section-based XML assembly
 │   ├── provider.py      Provider protocol, Chunk/Response DTOs, with_retry_stream
@@ -54,7 +53,7 @@ import nothing above them; `host` never imports `cli`.
 | `core/` contains no tool names, no feature names, no config keys beyond `AgentConfig` | anything feature-specific is a plugin's business |
 | `host/` contains no terminal vocabulary — no ANSI, no prompt, no screen | an application can embed it without inheriting a terminal |
 | There is exactly one way to execute a turn — `AgentLoop.start()`; `stream()` and `chat()` are views over it | every consumer sees the same event stream, so no feature needs its own hook into the loop |
-| There is exactly one way to construct an agent — the `Agent` builder or `AgentLoop.derive()` | three hand-rolled construction sites was how the old code drifted |
+| There is exactly one way to construct an agent — the `AgentLoop` constructor or `AgentLoop.derive()` | two construction sites that disagree was how the old code drifted |
 | Tools, hooks, prompt sections and shared commands are contributed only through `Plugin.build(ctx)` | the host hard-codes none of them |
 | A component that prints is a subscriber to the event stream, never a special case in the loop | the terminal is one reader among several |
 

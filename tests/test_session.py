@@ -2,11 +2,10 @@
 
 import pytest
 
+from mocode.host.export import export_session, export_session_md
 from mocode.host.session import (
     Session,
     SessionStore,
-    export_session,
-    export_session_md,
     load_session_file,
     new_session_id,
 )

@@ -40,6 +40,20 @@ STREAMS: dict[str, str] = {"answer": "answer", "reasoning": "reasoning"}
 _ANSI_SPLIT = re.compile(r"(\033\[[0-9;]*m)")
 
 
+def fix_console() -> None:
+    """Enable ANSI escape codes on Windows — the one platform quirk this has."""
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    try:
+        ctypes.windll.kernel32.SetConsoleMode(
+            ctypes.windll.kernel32.GetStdHandle(-11), 7
+        )
+    except Exception:
+        pass
+
+
 def clamp_visible(text: str, max_width: int) -> str:
     """Cut *text* down to *max_width* columns, keeping its escape codes.
 
@@ -104,6 +118,7 @@ class Display:
         self._live = sys.stdout.isatty() if live is None else live
         #: Rows of the open block, top to bottom, still available for rewriting.
         self._block: list[int] = []
+        fix_console()
 
     # ── Messages ───────────────────────────────────────────
 
@@ -283,7 +298,7 @@ class Display:
     # ── Screen ─────────────────────────────────────────────
 
     def clear_screen(self) -> None:
-        import os
-
+        """Wipe the screen and home the cursor — an escape, not a subprocess."""
         self._invalidate()
-        os.system("cls" if os.name == "nt" else "clear")
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()

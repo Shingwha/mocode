@@ -26,7 +26,6 @@ from ..core.agent import AgentLoop
 from ..core.channel import Subscription
 from ..core.events import Event, Notice
 from ..core.tool import ToolRegistry
-from .command import CommandRegistry
 from .events import ConversationChanged
 from .plugin.context import HostContext
 from .plugin.host import PluginHost
@@ -38,9 +37,10 @@ from .session import (
 )
 
 if TYPE_CHECKING:
+    from ..core.agent import Turn
     from ..core.provider import ModelSpec, Provider
     from ..core.state import RunState
-    from ..core.agent import Turn
+    from .command import CommandRegistry
     from .runtime import MoCode
 
 
@@ -61,7 +61,6 @@ class Conversation:
         ctx: HostContext,
         agent: AgentLoop,
         host: PluginHost,
-        commands: CommandRegistry,
         provider_key: str,
         model_name: str,
         session_id: str,
@@ -72,7 +71,6 @@ class Conversation:
         self.ctx = ctx
         self.agent = agent
         self.host = host
-        self.commands = commands
         self.provider_key = provider_key
         self.model_name = model_name
         #: Identity of the session this conversation will be saved as. Assigned
@@ -83,29 +81,25 @@ class Conversation:
 
     # ── Running ────────────────────────────────────────────
 
-    def run(
-        self, prompt: str | None = None, *, images: list[str] | None = None
-    ) -> "Turn":
+    def run(self, prompt: str | None = None) -> "Turn":
         """Begin a turn. Raises if one is already running in this conversation.
 
         The turn belongs to the conversation: a reader that disconnects does not
         stop it, and another reader can join with :meth:`subscribe`.
         """
-        return self.agent.start(prompt, images=images)
+        return self.agent.start(prompt)
 
-    def stream(
-        self, prompt: str | None = None, *, images: list[str] | None = None
-    ) -> AsyncIterator[Event]:
+    def stream(self, prompt: str | None = None) -> AsyncIterator[Event]:
         """Run one turn and yield its events, scoped to this caller.
 
         Stop reading and the turn stops with you. Use :meth:`run` when the run
         should outlive whoever asked for it.
         """
-        return self.agent.stream(prompt, images=images)
+        return self.agent.stream(prompt)
 
-    async def chat(self, prompt: str | None = None, images: list[str] | None = None) -> str:
+    async def chat(self, prompt: str | None = None) -> str:
         """Run one turn and return the final answer."""
-        return await self.agent.chat(prompt, images=images)
+        return await self.agent.chat(prompt)
 
     def subscribe(self, *, since: int | None = None) -> Subscription:
         """Read this conversation's stream — every turn, every notification.
@@ -144,6 +138,10 @@ class Conversation:
         return self.ctx.tools
 
     @property
+    def commands(self) -> "CommandRegistry":
+        return self.ctx.commands
+
+    @property
     def model(self) -> "ModelSpec | None":
         return self.ctx.model
 
@@ -176,15 +174,9 @@ class Conversation:
         """
         if not self.agent.messages:
             return None
-        session = Session(
-            id=self.id,
-            created_at=self.created_at,
+        session = self._as_session(
             updated_at=timestamp(),
-            workdir=str(self.cwd),
-            messages=list(self.agent.messages),
             title=title if title is not None else extract_title(self.agent.messages),
-            model=self.model_name,
-            provider=self.provider_key,
         )
         self.runtime.store.save(str(self.cwd), session)
         self._saved_at = session.updated_at
@@ -192,27 +184,21 @@ class Conversation:
 
     def session(self) -> Session:
         """This conversation as a session record, without writing it."""
-        return Session(
-            id=self.id,
-            created_at=self.created_at,
+        return self._as_session(
             updated_at=self._saved_at or self.created_at,
-            workdir=str(self.cwd),
-            messages=list(self.agent.messages),
             title=extract_title(self.agent.messages),
-            model=self.model_name,
-            provider=self.provider_key,
         )
 
-    async def start(self, messages: list[dict] | None = None) -> str:
+    async def new_session(self, messages: list[dict] | None = None) -> str:
         """Begin a new session in the same project, optionally seeded."""
         self.save()
         self.id = new_session_id()
         self.created_at = timestamp()
-        self._adopt(messages or [])
+        self.adopt(messages or [])
         await self.changed()
         return self.id
 
-    async def resume(self, session: Session) -> None:
+    async def load_session(self, session: Session) -> None:
         """Continue a stored session: its identity, its history, its model.
 
         The model comes back with the conversation when the config still knows
@@ -227,21 +213,16 @@ class Conversation:
         if session.provider and session.model:
             if self.runtime.config.providers.get(session.provider) is not None:
                 self.set_model(session.provider, session.model)
-        self._adopt(session.messages)
+        self.adopt(session.messages)
         await self.changed()
 
     def rebuild_prompt(self) -> None:
         """Re-read AGENTS.md; tools, skills and sections are live references."""
-        from .prompt import build_system_prompt
-
-        self.agent.system_prompt = build_system_prompt(self.ctx)
+        self.host.rebuild_prompt()
 
     def list_sessions(self) -> list[Session]:
         """Sessions recorded for this project, newest first."""
         return self.runtime.store.list(str(self.cwd))
-
-    def delete_session(self, session_id: str) -> bool:
-        return self.runtime.store.delete(str(self.cwd), session_id)
 
     def close(self, *, save: bool = True) -> None:
         """End the conversation: stop the turn, persist, release, close the stream.
@@ -272,7 +253,20 @@ class Conversation:
 
     # ── Internals ──────────────────────────────────────────
 
-    def _adopt(self, messages: list[dict]) -> None:
+    def _as_session(self, *, updated_at: str, title: str) -> Session:
+        """The same eight fields both ``save()`` and ``session()`` report."""
+        return Session(
+            id=self.id,
+            created_at=self.created_at,
+            updated_at=updated_at,
+            workdir=str(self.cwd),
+            messages=list(self.agent.messages),
+            title=title,
+            model=self.model_name,
+            provider=self.provider_key,
+        )
+
+    def adopt(self, messages: list[dict]) -> None:
         """Replace the history in place, with no stale turn state behind it."""
         self.agent.reset()
         self.agent.messages.extend(messages)

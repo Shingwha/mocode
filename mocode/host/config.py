@@ -38,7 +38,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ..core.provider import ModelSpec
 from .io import read_json, write_json
@@ -56,13 +56,17 @@ def env_var_for(provider_key: str) -> str:
     return f"{slug}_API_KEY"
 
 
-def _opt_int(value: Any) -> int | None:
+def _opt_int(value: Any, default: int | None = None) -> int | None:
+    """*value* as an int, or *default* when it is absent or unparseable.
+
+    An explicit ``None`` check, not ``or``: a configured 0 must survive.
+    """
     if value is None or isinstance(value, bool):
-        return None
+        return default
     try:
         return int(value)
     except (TypeError, ValueError):
-        return None
+        return default
 
 
 @dataclass
@@ -128,12 +132,14 @@ class ProviderEntry:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "api_key": self.api_key,
-            "base_url": self.base_url,
-            "models": {name: model.to_dict() for name, model in self.models.items()},
-        }
+        out: dict[str, Any] = {"models": {n: m.to_dict() for n, m in self.models.items()}}
+        if self.name:
+            out["name"] = self.name
+        if self.api_key:
+            out["api_key"] = self.api_key
+        if self.base_url is not None:
+            out["base_url"] = self.base_url
+        return out
 
 
 @dataclass
@@ -156,27 +162,19 @@ class Config:
     #: Where this config was loaded from — saving goes back there.
     path: Path = field(default=DEFAULT_CONFIG_PATH, repr=False, compare=False)
 
-    _OWNED_KEYS = ("active_provider", "active_model", "agent", "providers", "plugins")
+    _OWNED_KEYS: ClassVar[tuple[str, ...]] = (
+        "active_provider",
+        "active_model",
+        "agent",
+        "providers",
+        "plugins",
+    )
 
     # ── Queries ────────────────────────────────────────────
 
     @property
     def current(self) -> ProviderEntry | None:
         return self.providers.get(self.active_provider)
-
-    @property
-    def api_key(self) -> str:
-        """API key for the active provider (config first, environment second)."""
-        return self.current.api_key_for(self.active_provider) if self.current else ""
-
-    @property
-    def extra_body(self) -> dict[str, Any] | None:
-        model = self._active_model_entry()
-        return model.extra_body if model else None
-
-    def is_configured(self, model_name: str | None = None) -> bool:
-        """Whether *model_name* is listed in the active provider's catalog."""
-        return (model_name or self.active_model) in (self.current.models if self.current else {})
 
     def model_spec(
         self, provider_key: str | None = None, model_name: str | None = None
@@ -196,10 +194,6 @@ class Config:
             context_window=model.context_window,
             max_output=model.max_output,
         )
-
-    def _active_model_entry(self) -> ModelEntry | None:
-        entry = self.current
-        return entry.models.get(self.active_model) if entry else None
 
     # ── Serialization ──────────────────────────────────────
 
@@ -226,8 +220,10 @@ class Config:
             active_provider=str(data.get("active_provider") or ""),
             active_model=str(data.get("active_model") or ""),
             agent=AgentSettings(
-                tool_timeout=_opt_int(agent_raw.get("tool_timeout")) or defaults.tool_timeout,
-                max_iterations=_opt_int(agent_raw.get("max_iterations")) or 0,
+                tool_timeout=_opt_int(
+                    agent_raw.get("tool_timeout"), defaults.tool_timeout
+                ),
+                max_iterations=_opt_int(agent_raw.get("max_iterations"), 0),
             ),
             providers={
                 str(key): ProviderEntry.from_dict(raw or {})
@@ -247,7 +243,7 @@ class Config:
             return None
         try:
             config = cls.from_dict(data)
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, AttributeError):
             return None
         config.path = Path(path)
         return config
@@ -255,8 +251,3 @@ class Config:
     def save(self, path: Path | str | None = None) -> None:
         """Write the config back to where it was loaded from (or *path*)."""
         write_json(path or self.path, self.to_dict())
-
-    def copy(self) -> Config:
-        duplicate = Config.from_dict(self.to_dict())
-        duplicate.path = self.path
-        return duplicate

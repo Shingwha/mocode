@@ -5,16 +5,27 @@ Depends on the `openai` package. Install with: uv pip install "mocode[openai]"
 
 from __future__ import annotations
 
+from functools import cache
 from typing import Any, AsyncIterator
 
 from ..core.provider import Chunk, ToolCallDelta, Usage
 
 
+@cache
+def _retriable_exceptions() -> tuple[type[Exception], ...]:
+    """The SDK's transient failures, imported once and never at startup."""
+    from openai import (
+        APIConnectionError,
+        APITimeoutError,
+        InternalServerError,
+        RateLimitError,
+    )
+
+    return (RateLimitError, InternalServerError, APIConnectionError, APITimeoutError)
+
+
 class OpenAIProvider:
     """OpenAI-compatible API provider — implements Provider Protocol."""
-
-    # Lazy-loaded exception classes — first call triggers openai import
-    _exc_classes: tuple[type[Exception], ...] | None = None
 
     def __init__(
         self,
@@ -28,15 +39,13 @@ class OpenAIProvider:
         self._client = None  # lazy — created on first call
         self._model = model
 
-        # `stream_options` is accepted as a key inside extra_body, because
-        # token accounting is configured per endpoint and MoCode's config
-        # already has a free-form escape hatch for that. Lift it out so it is
-        # not sent twice.
-        body = dict(extra_body) if extra_body else {}
-        self._stream_options: dict[str, Any] = {"include_usage": True}
+        # `stream_options` rides inside extra_body — token accounting is
+        # configured per endpoint — and is lifted out so it is not sent twice.
+        body = dict(extra_body or {})
         configured = body.pop("stream_options", None)
-        if isinstance(configured, dict):
-            self._stream_options = configured
+        self._stream_options = (
+            configured if isinstance(configured, dict) else {"include_usage": True}
+        )
         self._extra_body = body or None
 
     def _ensure_client(self):
@@ -50,26 +59,8 @@ class OpenAIProvider:
     def model(self) -> str:
         return self._model
 
-    @classmethod
-    def _load_exc_classes(cls) -> tuple[type[Exception], ...]:
-        """Lazy-load openai exception classes (avoids SDK import at startup)."""
-        if cls._exc_classes is None:
-            from openai import (
-                RateLimitError,
-                InternalServerError,
-                APIConnectionError,
-                APITimeoutError,
-            )
-            cls._exc_classes = (
-                RateLimitError,
-                InternalServerError,
-                APIConnectionError,
-                APITimeoutError,
-            )
-        return cls._exc_classes
-
     def is_retriable(self, exc: Exception) -> bool:
-        return isinstance(exc, self._load_exc_classes())
+        return isinstance(exc, _retriable_exceptions())
 
     async def stream(
         self,
@@ -144,48 +135,33 @@ class OpenAIProvider:
 
     @staticmethod
     def _normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Strip empty/orphaned tool_calls from assistant messages."""
-        # Quick check: if no assistant messages have tool_calls, nothing to do
-        has_assistant_tool_calls = any(
-            m.get("role") == "assistant" and "tool_calls" in m
-            for m in messages
-        )
-        if not has_assistant_tool_calls:
-            return messages
+        """Drop tool calls the history has no answer for.
 
-        # Build set of valid tool_call_ids from tool messages
-        result_ids = {
+        A reloaded or hand-edited history can pair assistant ``tool_calls``
+        with tool messages that are gone; endpoints reject such a list. Calls
+        whose id has no matching tool message are dropped, and an assistant
+        left with no calls at all loses the field.
+        """
+        answered = {
             m["tool_call_id"]
             for m in messages
             if m.get("role") == "tool" and m.get("tool_call_id")
         }
-
-        # If no valid tool_call_ids, strip all tool_calls from assistant messages
-        if not result_ids:
-            result = []
-            for msg in messages:
-                if msg.get("role") == "assistant" and "tool_calls" in msg:
-                    result.append({k: v for k, v in msg.items() if k != "tool_calls"})
-                else:
-                    result.append(msg)
-            return result
-
-        # Normal case: filter tool_calls
         result = []
         for msg in messages:
-            if msg.get("role") == "assistant" and "tool_calls" in msg:
-                valid = [tc for tc in msg["tool_calls"] if tc.get("id") in result_ids]
-                if not valid:
-                    result.append({k: v for k, v in msg.items() if k != "tool_calls"})
-                elif len(valid) == len(msg["tool_calls"]):
-                    # All tool_calls are valid, no copy needed
-                    result.append(msg)
-                else:
-                    cleaned = dict(msg)
-                    cleaned["tool_calls"] = valid
-                    result.append(cleaned)
-            else:
+            calls = msg.get("tool_calls") if msg.get("role") == "assistant" else None
+            if calls is None:
                 result.append(msg)
+                continue
+            valid = [tc for tc in calls if tc.get("id") in answered]
+            if len(valid) == len(calls):
+                result.append(msg)
+            elif valid:
+                cleaned = dict(msg)
+                cleaned["tool_calls"] = valid
+                result.append(cleaned)
+            else:
+                result.append({k: v for k, v in msg.items() if k != "tool_calls"})
         return result
 
 

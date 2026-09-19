@@ -10,7 +10,8 @@ from datetime import datetime
 from pathlib import Path
 
 from ...host.command import CONTINUE, Command, CommandContext, CommandResult
-from ...host.session import export_session, export_session_md, load_session_file
+from ...host.export import export_session, export_session_md
+from ...host.session import load_session_file
 from .. import dialogs
 
 
@@ -54,7 +55,7 @@ async def _resume_from_file(ctx: CommandContext, arg: str) -> None:
         return
 
     messages, _title = result
-    await ctx.conversation.start(messages)
+    await ctx.conversation.new_session(messages)
     user_count = sum(1 for m in messages if m.get("role") == "user")
     await ctx.conversation.notify(
         f"Resumed {len(messages)} msgs ({user_count} user turns) from {path.name}"
@@ -102,7 +103,7 @@ async def _resume_interactive(ctx: CommandContext) -> None:
         await conversation.notify(f"Session not found: {chosen}", level="error")
         return
 
-    await conversation.resume(session)
+    await conversation.load_session(session)
     user_count = sum(1 for m in session.messages if m.get("role") == "user")
     await conversation.notify(
         f"Resumed {session.id} ({len(session.messages)} msgs, {user_count} user turns)"

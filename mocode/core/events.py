@@ -108,7 +108,6 @@ class RunFinished(Event):
     usage: Usage | None = None
     iterations: int = 0
     tool_calls_made: int = 0
-    had_error: bool = False
     cancelled: bool = False
     type: ClassVar[str] = "run_finished"
 

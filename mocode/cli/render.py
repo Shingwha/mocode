@@ -17,11 +17,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..core.events import (
-    Event,
+    IterationFinished,
+    IterationStarted,
     Notice,
     ReasoningDelta,
     RunFailed,
     RunFinished,
+    RunStarted,
     TextDelta,
     ToolCallFinished,
     ToolCallStarted,
@@ -31,6 +33,8 @@ from ..host.events import ConversationChanged
 from . import lines as L
 
 if TYPE_CHECKING:
+    from ..core.events import Event
+    from ..core.provider import Usage
     from ..host.conversation import Conversation
     from .display import Display
 
@@ -46,7 +50,7 @@ class CLIRenderer:
         #: call_id -> the row its placeholder owns, when the terminal can redraw
         self._rows: dict[str, int | None] = {}
 
-    def draw(self, event: Event) -> None:
+    def draw(self, event: "Event") -> None:
         match event:
             case TextDelta():
                 self._d.stream(event.text, kind="answer")
@@ -66,16 +70,10 @@ class CLIRenderer:
                 pass
 
             case RunFinished():
-                self._d.end_stream()
-                self._usage(event)
-                self._d.render(L.divider())
-                self._clear()
+                self._end_turn(usage=event.usage)
 
             case RunFailed():
-                self._d.end_stream()
-                self._d.error(f"{event.kind}: {event.error}")
-                self._d.render(L.divider())
-                self._clear()
+                self._end_turn(error=f"{event.kind}: {event.error}")
 
             case ConversationChanged():
                 # The history was replaced — resumed, cleared or imported — so
@@ -88,15 +86,16 @@ class CLIRenderer:
                 self._clear()
 
             case Notice():
-                {"warn": self._d.warn, "error": self._d.error}.get(
-                    event.level, self._d.info
-                )(event.message)
+                self._d.render(L.notice(event.message, event.level))
 
-            case Event():
+            case RunStarted() | IterationStarted() | IterationFinished():
                 pass  # a core event with nothing to draw
 
             case _:
-                self._d.render_event(event)  # a plugin-defined event
+                # Anything the renderer was not written for — including an
+                # event type a plugin defined — describes itself through
+                # ``summary()``, so it draws without any registration.
+                self._d.render_event(event)
 
     # ── Tool calls ─────────────────────────────────────────
 
@@ -117,11 +116,15 @@ class CLIRenderer:
         row = self._rows.pop(event.call_id, None)
         self._d.rewrite(row, L.tool_close(event, args, self._conversation.tools))
 
-    def _usage(self, event: RunFinished) -> None:
-        """What the turn cost — skipped when the provider reported nothing."""
-        usage = event.usage
-        if usage and (usage.prompt_tokens or usage.completion_tokens):
+    def _end_turn(self, *, usage: "Usage | None" = None, error: str = "") -> None:
+        """Close the turn: what it cost (or why it died), then the rule."""
+        self._d.end_stream()
+        if error:
+            self._d.error(error)
+        elif usage and (usage.prompt_tokens or usage.completion_tokens):
             self._d.render(L.tokens(usage))
+        self._d.render(L.divider())
+        self._clear()
 
     def _clear(self) -> None:
         """Forget the batch. A turn that ended cleanly has nothing left in it."""

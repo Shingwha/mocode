@@ -28,7 +28,7 @@ _BASH_TAG = frozenset({"shell"})
 _BASH_PARAMS = {
     "command": {"type": "string", "description": "The bash command to execute (Unix-style syntax)"},
     "restart": {"type": "boolean", "optional": True, "description": "Reset session state (working directory and environment variables)"},
-    "timeout": {"type": "number", "optional": True, "description": "Max execution time in seconds (default: 240)"},
+    "timeout": {"type": "number", "optional": True, "description": "Max execution time in seconds (default: the host's tool_timeout policy)"},
 }
 _BASH_DESC = (
     "Run a shell command in a persistent bash session (Unix-style, e.g. ls, grep, find). "
@@ -103,7 +103,7 @@ class BashSession:
     async def execute(
         self,
         command: str,
-        timeout: int = 240,
+        timeout: int,
         on_output: OutputSink | None = None,
     ) -> ToolResult:
         stripped = command.strip()
@@ -210,6 +210,9 @@ class BashTool(Tool):
 
     def __init__(self, cwd: Path, timeout: int = 240) -> None:
         self._session = BashSession(cwd)
+        # The number is the host's tool_timeout policy, passed in by build();
+        # the loop enforces the same policy around the whole call, this one
+        # exists to actually kill the child process at the deadline.
         self._default_timeout = timeout
         super().__init__(
             name="bash",
@@ -240,7 +243,9 @@ class ShellPlugin(Plugin):
     def build(self, ctx: HostContext) -> None:
         # The session's working directory is the conversation's project: build()
         # runs once per conversation, so two projects never share one shell.
-        ctx.tools.register(BashTool(cwd=ctx.cwd))
+        ctx.tools.register(
+            BashTool(cwd=ctx.cwd, timeout=ctx.config.agent.tool_timeout)
+        )
 
 
 PLUGIN = ShellPlugin()

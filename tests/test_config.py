@@ -134,11 +134,6 @@ class TestConfigModelSpec:
         assert spec.name == "big"
         assert spec.context_window is None
 
-    def test_is_configured(self):
-        config = self._config()
-        assert config.is_configured()
-        assert config.is_configured("bare")
-        assert not config.is_configured("who-knows")
 
 
 class TestConfigSerialization:
@@ -185,30 +180,14 @@ class TestConfigSerialization:
         config.foreign["active_model"] = "stale"
         assert config.to_dict()["active_model"] == "real"
 
-    def test_copy_is_independent(self):
-        config = Config(active_model="a", providers={"p": ProviderEntry(api_key="k")})
-        clone = config.copy()
-        clone.providers["p"].api_key = "changed"
-        assert config.providers["p"].api_key == "k"
-
-    def test_api_key_and_extra_body_of_active_model(self):
-        config = Config(
-            active_provider="demo",
-            active_model="m",
-            providers={
-                "demo": ProviderEntry(
-                    api_key="sk-1", models={"m": ModelEntry(extra_body={"x": 1})}
-                )
-            },
-        )
-        assert config.api_key == "sk-1"
-        assert config.extra_body == {"x": 1}
+    def test_a_provider_entry_omits_what_is_unset(self):
+        """Empty keys never reach the file — config.json is shared territory."""
+        entry = ProviderEntry(models={"m": ModelEntry()})
+        assert ProviderEntry.to_dict(entry) == {"models": {"m": {}}}
 
     def test_missing_active_provider_is_survivable(self):
         config = Config.from_dict({"active_provider": "ghost", "providers": {}})
         assert config.current is None
-        assert config.api_key == ""
-        assert config.extra_body is None
 
 
 class TestConfigPersistence:

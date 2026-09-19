@@ -5,15 +5,12 @@ from __future__ import annotations
 from ...host.command import CONTINUE, EXIT, Command, CommandContext, CommandResult
 
 
-async def _quit(ctx: CommandContext) -> CommandResult:
+async def _quit(_ctx: CommandContext) -> CommandResult:
     return EXIT
 
 
 async def _help(ctx: CommandContext) -> CommandResult:
     """List every registered command — including plugin-contributed ones."""
-    if ctx.commands is None:
-        return CONTINUE
-
     commands = ctx.commands.all()
     if not commands:
         return CONTINUE
@@ -29,12 +26,14 @@ async def _help(ctx: CommandContext) -> CommandResult:
 
 
 async def _clear(ctx: CommandContext) -> CommandResult:
-    await ctx.conversation.start()
+    await ctx.conversation.new_session()
     return CONTINUE
 
 
 async def _copy(ctx: CommandContext) -> CommandResult:
     """Copy the last plain assistant response to the clipboard."""
+    import pyperclip
+
     conversation = ctx.conversation
     for msg in reversed(conversation.messages):
         if msg.get("role") != "assistant":
@@ -43,8 +42,6 @@ async def _copy(ctx: CommandContext) -> CommandResult:
         if not content or msg.get("tool_calls"):
             continue
         try:
-            import pyperclip
-
             pyperclip.copy(content)
             preview = content[:60].replace("\n", " ").strip()
             suffix = "…" if len(content) > 60 else ""

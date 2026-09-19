@@ -1,8 +1,7 @@
 """Text decoding — turning bytes a shell or a file handed us into a string.
 
-The width/ellipsize helpers that used to live here are the terminal's business
-and now live in ``mocode.cli.text``: the host renders nothing, so it has no
-opinion about how wide anything is.
+The host renders nothing, so width and ellipsizing are not its business; the
+terminal's own text helpers live in ``mocode.cli.text``.
 """
 
 from __future__ import annotations

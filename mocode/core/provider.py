@@ -15,7 +15,7 @@ import asyncio
 import logging
 import random
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
 
 @dataclass
@@ -43,6 +43,12 @@ class Usage:
 
     prompt_tokens: int
     completion_tokens: int
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+        }
 
 
 @dataclass
@@ -108,8 +114,11 @@ class StreamAccumulator:
         self._tool_slots: dict[int, ToolCallDelta] = {}
         self.usage: Usage | None = None
         self.finish_reason: str | None = None
+        self._built = False
 
     def feed(self, chunk: Chunk) -> None:
+        if self._built:
+            raise RuntimeError("this accumulator has already built its response")
         if chunk.text:
             self._text.append(chunk.text)
         if chunk.reasoning:
@@ -146,6 +155,7 @@ class StreamAccumulator:
 
     def build(self) -> Response:
         """Finish accumulation. Call once, after the stream is exhausted."""
+        self._built = True
         tool_calls = self.tool_calls
         return Response(
             content=self.text or None,
@@ -196,12 +206,10 @@ def _compute_delay(attempt: int) -> float:
 
 async def with_retry_stream(
     provider: Provider,
-    stream_fn: Callable[..., AsyncIterator[Chunk]],
     *args: Any,
     max_retries: int = _MAX_RETRIES,
-    **kwargs: Any,
 ) -> AsyncIterator[Chunk]:
-    """Stream chunks, retrying only until the first one arrives.
+    """Stream chunks from ``provider.stream(*args)``, retrying until the first.
 
     A stream cannot be replayed: once a chunk has reached the caller, retrying
     would duplicate output. So the retry window closes at the first chunk —
@@ -212,7 +220,7 @@ async def with_retry_stream(
     Cancellation is never retried.
     """
     for attempt in range(max_retries + 1):
-        stream = stream_fn(*args, **kwargs)
+        stream = provider.stream(*args)
         try:
             first = await anext(stream)
         except StopAsyncIteration:

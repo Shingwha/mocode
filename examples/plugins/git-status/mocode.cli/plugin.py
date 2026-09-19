@@ -12,7 +12,7 @@ through the conversation, which is the only thing they share.
 from __future__ import annotations
 
 from mocode.cli import CLIPlugin
-from mocode.host.command import CONTINUE, Command, CommandContext, CommandResult
+from mocode.plugins import CONTINUE, Command, CommandContext, CommandResult
 
 
 async def _status(ctx: CommandContext) -> CommandResult:

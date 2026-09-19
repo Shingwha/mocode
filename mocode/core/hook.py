@@ -24,8 +24,11 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 if TYPE_CHECKING:
     from .events import Event
 
+#: Signature of ``ctx.emit`` — the sink a context uses to publish an event.
+EmitFn = Callable[["Event"], Awaitable[None]]
 
-async def _noop_emit(event: object) -> None:
+
+async def _noop_emit(event: "Event") -> None:
     """Default event sink for contexts built outside a running loop."""
 
 
@@ -43,7 +46,7 @@ class IterationContext:
     messages: list[dict] = field(default_factory=list)
     iteration: int = 0
     system_prompt: str = ""
-    emit: Callable[[object], Awaitable[None]] = _noop_emit
+    emit: EmitFn = _noop_emit
 
 
 @dataclass
@@ -75,7 +78,7 @@ class ToolCallContext:
     tool_result: str | None = None
     tool_details: dict = field(default_factory=dict)
     tool_timeout: int | None = None
-    emit: Callable[[object], Awaitable[None]] = _noop_emit
+    emit: EmitFn = _noop_emit
 
 
 class AgentHook:

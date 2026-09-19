@@ -175,20 +175,6 @@ class SessionStore:
 # ── Portability ─────────────────────────────────────────────
 
 
-def export_session(path: Path, session: Session, system_prompt: str = "") -> None:
-    """Write a session as a portable JSON file (re-importable anywhere)."""
-    write_json(path, {"system_prompt": system_prompt, **session.to_dict()})
-
-
-def export_session_md(session: Session, path: Path, system_prompt: str = "") -> None:
-    """Write a session as a human-readable Markdown file."""
-    from .export import render_session_md  # lazy — only a UI asks for this
-
-    md = render_session_md(session, system_prompt)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(md, encoding="utf-8")
-
-
 def load_session_file(path: Path) -> tuple[list[dict], str] | None:
     """Read messages and title back out of of an exported file, or ``None``."""
     if not path.exists() or path.suffix != ".json":
@@ -204,8 +190,6 @@ def load_session_file(path: Path) -> tuple[list[dict], str] | None:
 __all__ = [
     "Session",
     "SessionStore",
-    "export_session",
-    "export_session_md",
     "extract_title",
     "load_session_file",
     "new_session_id",

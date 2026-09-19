@@ -17,17 +17,20 @@ on ``self`` leaks it into the next conversation, and nothing here can stop it.
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 from ...core.agent import AgentConfig, AgentLoop
 from ...core.hook import HookRunner
 from ...core.provider import Provider
+from ..prompt import build_system_prompt
 from .base import Plugin
 from .context import HostContext
-from .loader import discover, load_plugin
+from .loader import discover, load_plugin, report
+
+if TYPE_CHECKING:
+    from ..config import Config
 
 
 @dataclass
@@ -57,7 +60,7 @@ def default_plugin_dirs(cwd: Path, home: Path) -> list[Path]:
 
 
 def load_plugins(
-    *, plugin_dirs: Sequence[Path], config, reserved: Sequence[str] = ()
+    *, plugin_dirs: Sequence[Path], config: "Config", reserved: Sequence[str] = ()
 ) -> LoadedPlugins:
     """Discover, import and filter the plugins belonging to *plugin_dirs*.
 
@@ -86,7 +89,7 @@ def load_plugins(
     return loaded
 
 
-def _enabled(config, name: str, default: bool) -> bool:
+def _enabled(config: "Config", name: str, default: bool) -> bool:
     configured = (config.plugins.get(name) or {}).get("enabled") if config else None
     return default if configured is None else bool(configured)
 
@@ -97,7 +100,7 @@ class PluginHost:
     def __init__(self, ctx: HostContext, plugins: Sequence[Plugin]):
         self.ctx = ctx
         self.plugins = list(plugins)
-        #: Names of plugins whose build() failed — the rest still worked.
+        #: Names of plugins whose build() or close() failed — the rest still worked.
         self.failures: list[str] = []
 
     def build_all(self) -> None:
@@ -107,15 +110,10 @@ class PluginHost:
                 plugin.build(self.ctx)
             except Exception as e:
                 self.failures.append(plugin.name)
-                print(
-                    f"[plugin] {plugin.name}: build() failed: {e}",
-                    file=sys.stderr,
-                )
+                report(f"{plugin.name}: build() failed: {e}")
 
     def assemble(self, *, provider: Provider, config: AgentConfig) -> AgentLoop:
         """Build the system prompt from current contributions and wire the agent."""
-        from ..prompt import build_system_prompt
-
         agent = AgentLoop(
             provider=provider,
             system_prompt=build_system_prompt(self.ctx),
@@ -126,6 +124,11 @@ class PluginHost:
         )
         self.ctx.agent = agent
         return agent
+
+    def rebuild_prompt(self) -> None:
+        """Re-render the system prompt from the contributions as they stand now."""
+        if self.ctx.agent is not None:
+            self.ctx.agent.system_prompt = build_system_prompt(self.ctx)
 
     def run(self, *, provider: Provider, config: AgentConfig) -> AgentLoop:
         """Build every contribution, then assemble the agent."""
@@ -138,10 +141,8 @@ class PluginHost:
             try:
                 plugin.close(self.ctx)
             except Exception as e:
-                print(
-                    f"[plugin] {plugin.name}: close() failed: {e}",
-                    file=sys.stderr,
-                )
+                self.failures.append(plugin.name)
+                report(f"{plugin.name}: close() failed: {e}")
 
 
 __all__ = [
