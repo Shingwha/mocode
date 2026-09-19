@@ -11,7 +11,7 @@ async def _quit(ctx: CommandContext) -> CommandResult:
 
 async def _help(ctx: CommandContext) -> CommandResult:
     """List every registered command — including plugin-contributed ones."""
-    if ctx.commands is None or ctx.frontend is None:
+    if ctx.commands is None:
         return CONTINUE
 
     commands = ctx.commands.all()
@@ -24,25 +24,19 @@ async def _help(ctx: CommandContext) -> CommandResult:
         readable = ", ".join(a for a in cmd.aliases if not a.startswith("/"))
         alias = f"  (also: {readable})" if readable else ""
         lines.append(f"  {cmd.name:<{width}}  {cmd.description}{alias}")
-    ctx.frontend.info("Commands:\n" + "\n".join(lines))
+    await ctx.conversation.notify("Commands:\n" + "\n".join(lines))
     return CONTINUE
 
 
 async def _clear(ctx: CommandContext) -> CommandResult:
-    ctx.app.start_session()
-    ctx.redraw()
-    if ctx.frontend:
-        ctx.frontend.info("Session saved and cleared.")
+    await ctx.conversation.start()
     return CONTINUE
 
 
 async def _copy(ctx: CommandContext) -> CommandResult:
     """Copy the last plain assistant response to the clipboard."""
-    frontend = ctx.frontend
-    if frontend is None:
-        return CONTINUE
-
-    for msg in reversed(ctx.app.messages):
+    conversation = ctx.conversation
+    for msg in reversed(conversation.messages):
         if msg.get("role") != "assistant":
             continue
         content = msg.get("content", "")
@@ -54,12 +48,12 @@ async def _copy(ctx: CommandContext) -> CommandResult:
             pyperclip.copy(content)
             preview = content[:60].replace("\n", " ").strip()
             suffix = "…" if len(content) > 60 else ""
-            frontend.info(f"Copied: {preview}{suffix}")
+            await conversation.notify(f"Copied: {preview}{suffix}")
         except Exception as e:
-            frontend.error(f"Clipboard error: {e}")
+            await conversation.notify(f"Clipboard error: {e}", level="error")
         return CONTINUE
 
-    frontend.warn("No assistant response to copy.")
+    await conversation.notify("No assistant response to copy.", level="warn")
     return CONTINUE
 
 

@@ -1,14 +1,11 @@
-"""Display — terminal output primitives, and the Frontend a plugin sees.
+"""Display — terminal output primitives.
 
 Deliberately thin. It knows how to put characters on a screen — styled lines,
 incremental writes, the input prompt — and nothing about what a turn looks
 like. That vocabulary lives in :mod:`mocode.cli.lines` as data, so the live
 renderer and history replay cannot drift apart, and neither needs a terminal to
-be tested.
-
-It is also the terminal's implementation of
-:class:`~mocode.host.frontend.Frontend` — the four methods a plugin may call
-without knowing a terminal exists.
+be tested. What turns a conversation's event stream into those lines is
+:class:`~mocode.cli.render.CLIRenderer`.
 
 Output is append-only except for one region: the rows a tool batch occupies
 while it runs. Those are printed as dim placeholders and rewritten in place as
@@ -28,8 +25,8 @@ from typing import TYPE_CHECKING
 from wcwidth import wcswidth
 
 from ..core.events import Event
-from ..host.text import terminal_height, terminal_width, visible_width
 from . import lines as L
+from .text import terminal_height, terminal_width, visible_width
 from .theme import DEFAULT_THEME, RESET, Theme
 
 if TYPE_CHECKING:
@@ -108,7 +105,7 @@ class Display:
         #: Rows of the open block, top to bottom, still available for rewriting.
         self._block: list[int] = []
 
-    # ── Frontend ───────────────────────────────────────────
+    # ── Messages ───────────────────────────────────────────
 
     def info(self, text: str) -> None:
         self.render(L.notice(text, "info"))

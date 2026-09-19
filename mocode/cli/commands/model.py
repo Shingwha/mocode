@@ -1,4 +1,10 @@
-"""Model/provider switcher — /model."""
+"""Model/provider switcher — /model.
+
+Two decisions, deliberately kept apart: which model *this conversation* runs on,
+and which model new conversations start from. The terminal applies both, because
+that is what a user typing ``/model`` means; the host keeps them separate so an
+application can do only the first.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +13,8 @@ from ...host.command import CONTINUE, Command, CommandContext, CommandResult
 
 
 async def _model(ctx: CommandContext) -> CommandResult:
-    config = ctx.app.config
-    frontend = ctx.frontend
+    conversation = ctx.conversation
+    config = conversation.runtime.config
 
     provider_choices = [
         dialogs.Choice(
@@ -19,12 +25,11 @@ async def _model(ctx: CommandContext) -> CommandResult:
         for key, entry in config.providers.items()
     ]
     if not provider_choices:
-        if frontend:
-            frontend.warn(f"No providers defined in {config.path}.")
+        await conversation.notify(f"No providers defined in {config.path}.", level="warn")
         return CONTINUE
 
     chosen_key = await dialogs.select(
-        "Select a provider:", provider_choices, default=config.active_provider
+        "Select a provider:", provider_choices, default=conversation.provider_key
     )
     if chosen_key is None:
         return CONTINUE
@@ -32,8 +37,10 @@ async def _model(ctx: CommandContext) -> CommandResult:
     entry = config.providers[chosen_key]
     models = entry.model_names()
     if not models:
-        if frontend:
-            frontend.warn(f"Provider '{chosen_key}' has no models defined in {config.path}.")
+        await conversation.notify(
+            f"Provider '{chosen_key}' has no models defined in {config.path}.",
+            level="warn",
+        )
         return CONTINUE
 
     chosen_model = models[0]
@@ -44,19 +51,27 @@ async def _model(ctx: CommandContext) -> CommandResult:
                 dialogs.Choice(
                     title=name,
                     value=name,
-                    description="current" if name == config.active_model else None,
+                    description="current" if name == conversation.model_name else None,
                 )
                 for name in models
             ],
-            default=config.active_model if config.active_model in models else models[0],
+            default=(
+                conversation.model_name
+                if conversation.model_name in models
+                else models[0]
+            ),
         )
         if picked is None:
             return CONTINUE
         chosen_model = picked
 
-    ctx.app.switch_provider(chosen_key, chosen_model)
-    if frontend:
-        frontend.info(f"Switched to {entry.label(chosen_key)} / {chosen_model}")
+    conversation.set_model(chosen_key, chosen_model)
+    # …and remember it as the default, which is the only thing here that writes
+    # config.json. A terminal user switching models means "use this from now on".
+    conversation.runtime.set_default_model(chosen_key, chosen_model)
+    await conversation.notify(
+        f"Switched to {entry.label(chosen_key)} / {chosen_model}"
+    )
     return CONTINUE
 
 

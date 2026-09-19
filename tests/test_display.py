@@ -1,7 +1,8 @@
-"""Display — putting lines on a terminal, and the turn as it streams.
+"""Display — putting lines on a terminal, and a turn as it is drawn.
 
 What a turn *looks like* is asserted in `test_lines.py`; anything that needs a
-terminal is here.
+terminal is here. The renderer is driven the way the CLI drives it: a
+conversation's event stream in, lines out.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import pytest
 
 from mocode.cli import lines
 from mocode.cli.display import Display, clamp_visible
-from mocode.cli.hook import CLIDisplayHook
+from mocode.cli.render import CLIRenderer
 from mocode.cli.theme import Theme
 from mocode.core import Agent, Event, Notice, Tool, ToolOutput, ToolRegistry, ToolResult
 from mocode.core.provider import Response, ToolCall, Usage
@@ -33,6 +34,18 @@ def _make_display(live: bool = False) -> Display:
     display = Display(input_=MagicMock(), theme=Theme(), live=live)
     display.clear_screen = lambda: None  # never shell out from a test
     return display
+
+
+class _StubConversation:
+    """What the renderer reads off a conversation: its tools, and its history."""
+
+    def __init__(self, tools: ToolRegistry):
+        self.tools = tools
+        self.messages: list[dict] = []
+
+
+def _renderer(display: Display, registry: ToolRegistry) -> CLIRenderer:
+    return CLIRenderer(display, _StubConversation(registry))
 
 
 def _plain(text: str) -> str:
@@ -58,7 +71,7 @@ class TestFormatting:
         assert _plain(got) == "✓ lines=3"
 
     def test_an_unknown_style_is_left_uncoloured(self):
-        assert _make_display().format(lines.Line(text="x", style="nope")) == "x"
+        assert _plain(_make_display().format(lines.Line(text="x", style="nope"))) == "x"
 
 
 class TestClamping:
@@ -132,7 +145,7 @@ class TestStreaming:
         assert _plain(capsys.readouterr().out) == "compacted 12 → 3\n"
 
 
-class TestFrontend:
+class TestMessages:
     def test_messages_carry_a_level(self, capsys):
         display = _make_display()
         display.info("plain")
@@ -153,24 +166,18 @@ class TestFrontend:
         assert set(out.splitlines()[-1]) == {"─"}   # the replayed turn is closed
 
 
-class TestDisplayHook:
-    """A whole turn, asserted through the hook a CLI actually installs."""
+class TestRenderer:
+    """A whole turn, asserted through the renderer a CLI actually runs."""
 
     async def _run(self, provider, *tools: Tool, display=None):
         display = display or _make_display()
         registry = ToolRegistry()
         for tool in tools:
             registry.register(tool)
-        agent = (
-            Agent()
-            .provider(provider)
-            .prompt("t")
-            .tools(registry)
-            .hooks([CLIDisplayHook(display, registry)])
-            .build()
-        )
-        async for _ in agent.stream("hi"):
-            pass
+        agent = Agent().provider(provider).prompt("t").tools(registry).build()
+        renderer = _renderer(display, registry)
+        async for event in agent.stream("hi"):
+            renderer.draw(event)
         return display
 
     @pytest.mark.asyncio
@@ -260,11 +267,12 @@ class TestDisplayHook:
             ]))
             .prompt("t")
             .tools(registry)
-            .hooks([Denier(), CLIDisplayHook(display, registry)])
+            .hooks([Denier()])
             .build()
         )
-        async for _ in agent.stream("hi"):
-            pass
+        renderer = _renderer(display, registry)
+        async for event in agent.stream("hi"):
+            renderer.draw(event)
 
         out = _plain(capsys.readouterr().out)
         assert "✗ risky · denied (not allowed)" in out
@@ -292,12 +300,10 @@ async def _run_parallel(display: Display, delays: dict[str, float]):
         ),
         Response(content="done", usage=Usage(1, 1), finish_reason="stop"),
     ])
-    agent = (
-        Agent().provider(provider).prompt("t").tools(registry)
-        .hooks([CLIDisplayHook(display, registry)]).build()
-    )
-    async for _ in agent.stream("hi"):
-        pass
+    agent = Agent().provider(provider).prompt("t").tools(registry).build()
+    renderer = _renderer(display, registry)
+    async for event in agent.stream("hi"):
+        renderer.draw(event)
 
 
 #: One in-place rewrite: move up n rows, clear the row, write the line, come
@@ -351,11 +357,11 @@ class TestLiveBlock:
                 tool_call_response("noisy"),
                 Response(content="done", usage=Usage(1, 1), finish_reason="stop"),
             ]))
-            .prompt("t").tools(registry)
-            .hooks([CLIDisplayHook(display, registry)]).build()
+            .prompt("t").tools(registry).build()
         )
-        async for _ in agent.stream("hi"):
-            pass
+        renderer = _renderer(display, registry)
+        async for event in agent.stream("hi"):
+            renderer.draw(event)
 
         out = capsys.readouterr().out
         assert "· noisy…" in _plain(out)          # the row it claimed
@@ -384,5 +390,5 @@ class TestLiveBlock:
         await _run_parallel(_make_display(live=True), {"a": 0.01, "b": 0.02, "c": 0.03})
 
         out = capsys.readouterr().out
-        assert len([l for l in _plain(out).splitlines() if l.startswith("· ")]) == 2
+        assert len([l for l in _plain(out).splitlines() if l.startswith("· ")]) == 3 - 1
         assert "✓ c  c" in _plain(out)   # the third call is appended when it ends

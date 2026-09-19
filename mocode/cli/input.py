@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING
 
-from ..host.text import count_visual_lines
+from .text import count_visual_lines
 
 if TYPE_CHECKING:
     from ..host.command import CommandRegistry

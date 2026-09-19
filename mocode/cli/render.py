@@ -1,9 +1,9 @@
-"""CLIDisplayHook — turns the run's event stream into terminal lines.
+"""CLIRenderer — draws a conversation's event stream on a terminal.
 
-A pure event consumer: it implements no interception hooks at all, and every
-shape it draws comes from :mod:`mocode.cli.lines`. What it owns is the state of
-the run *as it is being drawn* — which tool calls are in flight, and which row
-on screen each of them owns.
+A pure consumer. It subscribes to the conversation's channel and turns events
+into lines from :mod:`mocode.cli.lines`; it implements no hooks and intercepts
+nothing. What it owns is the state of a turn *as it is being drawn* — which tool
+calls are in flight, and which row on screen each of them owns.
 
 A tool call owns a row from the moment it starts: a dim placeholder that is
 rewritten in place with its verdict when it ends. That gives a slow, quiet tool
@@ -13,6 +13,8 @@ they happen to finish.
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from ..core.events import (
     Event,
@@ -25,23 +27,26 @@ from ..core.events import (
     ToolCallStarted,
     ToolOutput,
 )
-from ..core.hook import AgentHook
-from ..core.tool import ToolRegistry
+from ..host.events import ConversationChanged
 from . import lines as L
 
+if TYPE_CHECKING:
+    from ..host.conversation import Conversation
+    from .display import Display
 
-class CLIDisplayHook(AgentHook):
-    """Draws the run: streamed text, the row of each tool call, the closing rule."""
 
-    def __init__(self, display, tools: ToolRegistry):
+class CLIRenderer:
+    """Draws a conversation: streamed text, the row of each tool call, the rule."""
+
+    def __init__(self, display: "Display", conversation: "Conversation"):
         self._d = display
-        self._tools = tools
+        self._conversation = conversation
         #: call_id -> args, for calls still in flight (their verdict needs them)
         self._running: dict[str, dict] = {}
         #: call_id -> the row its placeholder owns, when the terminal can redraw
         self._rows: dict[str, int | None] = {}
 
-    async def on_event(self, event: Event) -> None:
+    def draw(self, event: Event) -> None:
         match event:
             case TextDelta():
                 self._d.stream(event.text, kind="answer")
@@ -72,6 +77,16 @@ class CLIDisplayHook(AgentHook):
                 self._d.render(L.divider())
                 self._clear()
 
+            case ConversationChanged():
+                # The history was replaced — resumed, cleared or imported — so
+                # what is on screen is stale. The conversation is the source of
+                # truth; this event is the instruction to re-read it.
+                self._d.end_stream()
+                self._d.conversation_changed(
+                    self._conversation.messages, self._conversation.tools
+                )
+                self._clear()
+
             case Notice():
                 {"warn": self._d.warn, "error": self._d.error}.get(
                     event.level, self._d.info
@@ -94,13 +109,13 @@ class CLIDisplayHook(AgentHook):
         """
         self._running[event.call_id] = event.args
         self._rows[event.call_id] = self._d.place(
-            L.tool_pending(event.name, event.args, self._tools)
+            L.tool_pending(event.name, event.args, self._conversation.tools)
         )
 
     def _tool_done(self, event: ToolCallFinished) -> None:
         args = self._running.pop(event.call_id, {})
         row = self._rows.pop(event.call_id, None)
-        self._d.rewrite(row, L.tool_close(event, args, self._tools))
+        self._d.rewrite(row, L.tool_close(event, args, self._conversation.tools))
 
     def _usage(self, event: RunFinished) -> None:
         """What the turn cost — skipped when the provider reported nothing."""

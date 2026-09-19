@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 
 from ..core.events import ToolCallFinished
 from ..core.tool import DENIED_PREFIX, ERROR_PREFIX, TIMEOUT_PREFIX, ToolRegistry
-from ..host.text import ellipsize_middle, ellipsize_tail, terminal_width
+from .text import ellipsize_middle, ellipsize_tail, terminal_width
 from .theme import FAIL, OK, PENDING, RULE, USER
 
 if TYPE_CHECKING:
