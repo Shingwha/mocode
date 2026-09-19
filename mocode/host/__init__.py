@@ -11,7 +11,7 @@ Embedding looks like this::
 
     mc = MoCode()
     conv = mc.new_conversation(cwd="/srv/proj-a")
-    async for event in conv.chat("..."):
+    async for event in conv.stream("..."):
         ...
 
 Going one level down — writing a plugin, or a frontend of your own — means
