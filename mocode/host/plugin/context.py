@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from ...core.tool import ToolRegistry
 from ..command import Command, CommandRegistry
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ...core.hook import AgentHook
     from ...core.prompt import Section
     from ...core.provider import ModelSpec
+    from ..runtime import ProviderFactory
 
 
 @dataclass
@@ -50,6 +51,14 @@ class HostContext:
     #: location for portable skills, and a frontend finds ``<source>/<its
     #: namespace>/`` the same way. The host never looks inside one.
     plugin_sources: list[Path] = field(default_factory=list)
+    #: Provider registration, wired by the runtime to its own
+    #: ``register_provider_type``. A plugin that ships a provider
+    #: implementation calls this in ``build()`` and config entries with
+    #: ``"type": <name>`` start resolving — for this conversation, because
+    #: ``build()`` runs before the provider is built, and every later one on
+    #: the same runtime. ``None`` when the context was built outside a
+    #: runtime: there is nothing to register with.
+    register_provider_type: Callable[[str, "ProviderFactory"], None] | None = None
 
     # ── Contribution targets ──
     tools: ToolRegistry = None  # type: ignore[assignment]

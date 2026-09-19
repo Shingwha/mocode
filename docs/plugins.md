@@ -149,6 +149,31 @@ the agent's prompt from then on, across turns. Write it once to give an
 application a persona, or recompute it every iteration to inject something
 that changes. One hook raising never breaks the loop or the other hooks.
 
+## Changing the harness after assembly
+
+`build()` is the one *contribution* pass, but it is not the only moment the
+harness can change: the registries are live for the conversation's whole life,
+and the loop reads them back on every iteration. A host application — or a
+harness that reshapes itself between task batches — never restarts anything:
+
+- **`ctx.tools`** — `register` / `unregister` / `enable` / `disable` at any
+  moment. Each provider request is built from the registry as it stands
+  (`all_schemas()` is read per call), so a change takes effect on the **next
+  iteration**, mid-run included.
+- **Prompt sections** — `ctx.prompt_sections` feeds the prompt when it is
+  rendered. Changes apply at the next render: a new conversation, or
+  `conversation.rebuild_prompt()`. Inside a running conversation, a hook
+  writing `ctx.system_prompt` in `before_iteration` is how the prompt changes.
+- **Hooks** — `agent.hooks.add(hook)` takes effect at the next interception
+  point. Hooks run in the order they were added and share one context object,
+  so a change an earlier hook made is what a later one sees.
+
+The split of labour is the contract: *inside* a running turn the only writes
+are the hook points (`before_iteration`, `on_tool_start`, `on_tool_complete`);
+*between* turns, anything the public API allows. An application that evolves
+its own harness — swapping tool sets, tuning sections, adding hooks — works
+entirely on the second side of that line.
+
 ## Three worked examples
 
 ### Tool scoping — a restricted tool set

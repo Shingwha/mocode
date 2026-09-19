@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -115,6 +116,85 @@ class TestProviderTypes:
         # The default stays implicit: a file without "type" means openai.
         assert loaded.providers["test"].type == "openai"
         assert "type" not in config.providers["test"].to_dict()
+
+
+PLUGGED_CODE = """
+from mocode.plugins import Plugin
+
+
+class PluggedProvider:
+    \"\"\"A structural Provider — never streamed in these tests.\"\"\"
+
+    def __init__(self, model):
+        self._model = model
+
+    @property
+    def model(self):
+        return self._model
+
+    def is_retriable(self, exc):
+        return False
+
+    async def stream(self, messages, system, tools, max_tokens):
+        yield  # pragma: no cover
+
+
+def factory(entry, key, model):
+    return PluggedProvider(model)
+
+
+class PluggedPlugin(Plugin):
+    name = "plugged"
+    description = "ships a provider type"
+
+    def build(self, ctx):
+        ctx.register_provider_type("plugged", factory)
+"""
+
+
+class TestPluginProviderTypes:
+    """A plugin may ship the provider implementation its own conversation runs on."""
+
+    @staticmethod
+    def _plugged_runtime(make_mc, tmp_path: Path) -> MoCode:
+        plugins_dir = tmp_path / "plugins"
+        plugin_dir = plugins_dir / "plugged" / "mocode"
+        plugin_dir.mkdir(parents=True)
+        (plugins_dir / "plugged" / "plugin.json").write_text(
+            json.dumps({"name": "plugged"}), encoding="utf-8"
+        )
+        (plugin_dir / "plugin.py").write_text(PLUGGED_CODE, encoding="utf-8")
+
+        config = make_config()
+        config.providers["local"] = ProviderEntry(
+            type="plugged", models={"llama": ModelEntry()}
+        )
+        return make_mc(config, plugin_dirs=[plugins_dir])
+
+    def test_the_registering_conversation_runs_on_it(self, make_mc, tmp_path: Path):
+        """build() runs before the provider is resolved, so the conversation
+        that shipped the type uses it — no second conversation needed."""
+        mc = self._plugged_runtime(make_mc, tmp_path)
+
+        conversation = mc.new_conversation(
+            cwd=tmp_path, provider="local", model="llama"
+        )
+
+        from mocode_plugin_plugged import PluggedProvider
+
+        assert isinstance(conversation.agent.provider, PluggedProvider)
+        assert conversation.agent.provider.model == "llama"
+
+    def test_a_later_registration_replaces_a_plugins(self, make_mc, tmp_path: Path):
+        """Same rule as the runtime's own registry: last registration wins."""
+        mc = self._plugged_runtime(make_mc, tmp_path)
+        mc.new_conversation(cwd=tmp_path, provider="local", model="llama")
+
+        mc.register_provider_type(
+            "plugged", lambda entry, key, model: SimpleNamespace(model=model)
+        )
+
+        assert isinstance(mc.provider_for("local", "llama"), SimpleNamespace)
 
 
 class TestAConversation:

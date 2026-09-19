@@ -178,6 +178,20 @@ mc.register_provider_type("llama", lambda entry, key, model: LlamaProvider(
 ))
 ```
 
+A plugin registers through the context instead. `build()` runs before the
+provider is resolved, so the type is available to the very conversation that
+shipped it:
+
+```python
+class LlamaPlugin(Plugin):
+    name = "llama"
+
+    def build(self, ctx):
+        ctx.register_provider_type("llama", lambda entry, key, model: LlamaProvider(
+            base_url=entry.base_url, model=model,
+        ))
+```
+
 A factory receives `(entry, key, model)` and reads what it needs —
 `entry.api_key_for(key)` resolves `api_key` → `$<PROVIDER_KEY>_API_KEY`,
 `entry.base_url`, the model entry's `extra_body`. Registering a name again

@@ -123,11 +123,20 @@ class MoCode:
             tools=ToolRegistry(),
             commands=commands,
             plugin_sources=list(loaded.sources),
+            register_provider_type=self.register_provider_type,
         )
         host = PluginHost(ctx, loaded.plugins)
-        agent = host.run(
-            provider=self.provider_for(key, name), config=self._agent_config()
-        )
+        # Contributions come before the provider: a plugin may ship a provider
+        # implementation and register its type in build(), and the conversation
+        # that shipped it runs on it — not just the next one.
+        host.build_all()
+        try:
+            agent = host.assemble(
+                provider=self.provider_for(key, name), config=self._agent_config()
+            )
+        except Exception:
+            host.close()  # plugins built for a conversation that never became one
+            raise
         conversation = Conversation(
             runtime=self,
             cwd=project,
