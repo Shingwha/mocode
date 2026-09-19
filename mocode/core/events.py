@@ -17,7 +17,7 @@ Two rules keep the contract usable:
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields, is_dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from .provider import Usage
 
@@ -163,6 +163,20 @@ class ReasoningDelta(Event):
 
 # ---- Tool calls ----
 
+#: What a tool call came to. These five strings are the whole vocabulary —
+#: ``ToolCallFinished.status`` puts them on the wire, and the loop
+#: (``ToolCallContext.status``) and the fold (``ToolCallState.status``) reuse
+#: it — so they are defined once, here, beside the event that carries them
+#: across a process boundary.
+TOOL_OK = "ok"
+TOOL_ERROR = "error"
+TOOL_TIMEOUT = "timeout"
+TOOL_DENIED = "denied"
+TOOL_NOT_FOUND = "not_found"
+
+#: The five, as one type for annotations.
+ToolStatus = Literal["ok", "error", "timeout", "denied", "not_found"]
+
 
 @dataclass
 class ToolCallStarted(Event):
@@ -197,8 +211,8 @@ class ToolOutput(Event):
 class ToolCallFinished(Event):
     """A tool finished, was denied, timed out or failed.
 
-    ``status`` is one of ``ok`` / ``error`` / ``timeout`` / ``denied`` /
-    ``not_found``; ``result`` is what the model will receive.
+    ``status`` is one of the ``TOOL_*`` constants of this module —
+    :data:`ToolStatus` for the list; ``result`` is what the model will receive.
 
     ``details`` is whatever structured data the tool attached to its result —
     the model never sees it, a frontend or an application can.
@@ -206,7 +220,7 @@ class ToolCallFinished(Event):
 
     call_id: str = ""
     name: str = ""
-    status: str = "ok"
+    status: ToolStatus = TOOL_OK
     result: str = ""
     error_code: str | None = None
     duration: float = 0.0
@@ -239,7 +253,13 @@ __all__ = [
     "RunFinished",
     "RunStarted",
     "TextDelta",
+    "TOOL_DENIED",
+    "TOOL_ERROR",
+    "TOOL_NOT_FOUND",
+    "TOOL_OK",
+    "TOOL_TIMEOUT",
     "ToolCallFinished",
     "ToolCallStarted",
     "ToolOutput",
+    "ToolStatus",
 ]

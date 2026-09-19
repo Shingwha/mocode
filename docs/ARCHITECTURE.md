@@ -107,9 +107,11 @@ Four primitives make features-as-plugins possible:
   into the parent's timeline.
 - **Interceptable hooks** — `on_tool_start` may rewrite `ctx.tool_args` or set
   `ctx.deny` to veto a call; `on_tool_complete` may rewrite `ctx.tool_result`;
-  `before_iteration` may rewrite `ctx.messages` and `ctx.system_prompt`.
-  `ctx.status` records the outcome (`ok` / `error` / `timeout` / `denied` /
-  `not_found`) so no one parses result strings.
+  `before_iteration` may rewrite `ctx.messages` and `ctx.system_prompt` (the
+  prompt rewrite is scoped to the run — restored when the turn ends).
+  `ctx.status` records the outcome as one of the `TOOL_*` constants in
+  `core/events.py` (`ok` / `error` / `timeout` / `denied` / `not_found`) so no
+  one parses result strings.
 - **Tool metadata** — `Tool(tags=...)` plus `ToolRegistry.select(...)`:
   capability scoping by tag, never by a hard-coded list of tool names.
 
@@ -139,7 +141,7 @@ start(prompt) → Turn
   └─ the run, published into the conversation's channel
       ├─ RunStarted                     model + visible tools
       ├─ per iteration:
-      │   ├─ before_iteration(ctx)      intercept: ctx.messages is writable
+      │   ├─ before_iteration(ctx)      intercept: messages / system_prompt writable
       │   ├─ IterationStarted
       │   ├─ provider.stream(...)       retried by with_retry_stream
       │   │   └─ TextDelta / ReasoningDelta as chunks arrive

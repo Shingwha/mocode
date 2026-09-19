@@ -20,6 +20,7 @@ from .events import (
     RunFinished,
     RunStarted,
     TextDelta,
+    TOOL_OK,
     ToolCallFinished,
     ToolCallStarted,
     ToolOutput,
@@ -33,18 +34,19 @@ DONE = "done"
 FAILED = "failed"
 CANCELLED = "cancelled"
 
-#: ``ToolCallState.status`` values: ``running`` while executing, then one of
-#: ``ok`` / ``error`` / ``timeout`` / ``denied`` / ``not_found``.
+#: Fold-only tool status: a call that has started and not finished. Never an
+#: event status — the wire carries only the five terminal ``TOOL_*`` values
+#: defined in :mod:`mocode.core.events`.
 TOOL_RUNNING = "running"
-TOOL_OK = "ok"
 
 
 @dataclass
 class ToolCallState:
     """One tool call as observed so far.
 
-    ``status`` is ``running`` until the call finishes, then one of ``ok`` /
-    ``error`` / ``timeout`` / ``denied`` / ``not_found``.
+    ``status`` is :data:`TOOL_RUNNING <mocode.core.state.TOOL_RUNNING>` until
+    the call finishes, then one of the terminal ``TOOL_*`` values from
+    :mod:`mocode.core.events`.
     """
 
     call_id: str = ""

@@ -55,9 +55,15 @@ from ..core.events import (
     RunFinished,
     RunStarted,
     TextDelta,
+    TOOL_DENIED,
+    TOOL_ERROR,
+    TOOL_NOT_FOUND,
+    TOOL_OK,
+    TOOL_TIMEOUT,
     ToolCallFinished,
     ToolCallStarted,
     ToolOutput,
+    ToolStatus,
 )
 from ..core.hook import AgentHook, HookRunner, IterationContext, ToolCallContext
 from ..core.prompt import Prompt, Section
@@ -119,6 +125,11 @@ __all__ = [
     "StreamAccumulator",
     "Subscription",
     "TextDelta",
+    "TOOL_DENIED",
+    "TOOL_ERROR",
+    "TOOL_NOT_FOUND",
+    "TOOL_OK",
+    "TOOL_TIMEOUT",
     "Tool",
     "ToolCall",
     "ToolCallContext",
@@ -129,6 +140,7 @@ __all__ = [
     "ToolOutput",
     "ToolRegistry",
     "ToolResult",
+    "ToolStatus",
     "Turn",
     "Usage",
 ]

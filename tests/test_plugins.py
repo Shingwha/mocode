@@ -475,3 +475,27 @@ class TestHostContext:
 
         with pytest.raises(RuntimeError, match="assembled"):
             await _ctx(tmp_path).emit(Notice(message="too early"))
+
+    def test_subscribe_needs_an_assembled_agent(self, tmp_path: Path):
+        with pytest.raises(RuntimeError, match="assembled"):
+            _ctx(tmp_path).subscribe()
+
+    @pytest.mark.asyncio
+    async def test_subscribe_reads_a_turn_out_of_band(self, tmp_path: Path):
+        """The plugin-facing observation path: everything a turn published."""
+        ctx = _ctx(tmp_path)
+        _run_host(ctx, [])
+        assert ctx.agent is not None
+
+        reader = ctx.subscribe()
+        try:
+            await ctx.agent.chat("hi")
+            seen = []
+            while (event := reader.take()) is not None:
+                seen.append(event.type)
+        finally:
+            reader.close()
+
+        assert seen[0] == "run_started"
+        assert "text_delta" in seen
+        assert seen[-1] == "run_finished"

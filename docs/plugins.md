@@ -24,7 +24,7 @@ versa.
 |---|---|---|
 | interface | `Plugin.build(ctx)` | `CLIPlugin.build(cli)` |
 | contributes | tools, prompt sections, hooks, shared commands | chrome: picker commands, keybindings |
-| reaches | `ctx` — home, cwd, config, model, tools, commands, hooks, `plugin_sources`, the agent | the terminal — `commands`, `display`, `input`, `conversation` |
+| reaches | `ctx` — home, cwd, config, model, tools, commands, hooks, `plugin_sources`, the agent and its event stream | the terminal — `commands`, `display`, `input`, `conversation` |
 | works in | every MoCode frontend | this one |
 
 A plugin is built once per **conversation**, against a context that describes
@@ -108,11 +108,12 @@ instance wins, then the first `Plugin` subclass the module defines itself.
 | Own settings | `ctx.plugin_config("name")` — the `plugins.<name>` object from config.json |
 | Model facts | `ctx.model` — name / `context_window` / `max_output`, readable in `build()` |
 | Files it ships | `ctx.plugin_sources` — the directories the project's plugins were loaded from |
-| Messages to the user | `await ctx.emit(Notice(...))`, or `ctx.conversation.notify(...)` at call time |
+| Messages to the user | `await ctx.emit(Notice(...))` — a `Notice` carries its own text and level |
+| Watching the conversation | `ctx.subscribe()` — the event stream, out-of-band |
 
 `ctx.agent` is `None` during `build()` — the agent does not exist yet. Anything
-that needs it holds `ctx` and reads `ctx.agent` at call time; `ctx.emit` works
-at call time too, during a run or between runs.
+that needs it holds `ctx` and reads `ctx.agent` at call time; `ctx.emit` and
+`ctx.subscribe` work at call time too, during a run or between runs.
 
 ### One plugin instance, many builds
 
@@ -140,14 +141,15 @@ answer.
 | `on_event(event)` | every event the run publishes | observe, accumulate, ignore |
 
 `on_event` runs *inline*: the loop waits for it, so it sees every event before
-the run moves on. A hook that only watches for its own purposes may also
-subscribe (`ctx.agent.channel.subscribe()`), which nobody waits for — see
-[embedding.md](embedding.md).
+the run moves on — and so it can slow the run down. Keep it for code that must
+answer; a plugin that only watches calls `ctx.subscribe()` instead, which
+nobody waits for — see [embedding.md](embedding.md).
 
-A `system_prompt` a hook writes is permanent for the conversation — it becomes
-the agent's prompt from then on, across turns. Write it once to give an
-application a persona, or recompute it every iteration to inject something
-that changes. One hook raising never breaks the loop or the other hooks.
+A `system_prompt` a hook writes lasts **for the rest of the run**: the loop
+restores the prompt as it stood when the turn ends, so one turn's rewrite never
+leaks into the next. A persona that should hold for the whole conversation is a
+prompt section, not a hook. One hook raising never breaks the loop or the other
+hooks — the failure is logged and the run continues.
 
 ## Changing the harness after assembly
 
@@ -162,11 +164,15 @@ harness that reshapes itself between task batches — never restarts anything:
   iteration**, mid-run included.
 - **Prompt sections** — `ctx.prompt_sections` feeds the prompt when it is
   rendered. Changes apply at the next render: a new conversation, or
-  `conversation.rebuild_prompt()`. Inside a running conversation, a hook
-  writing `ctx.system_prompt` in `before_iteration` is how the prompt changes.
+  `conversation.rebuild_prompt()`. Inside a running turn, a hook writing
+  `ctx.system_prompt` in `before_iteration` is how the prompt changes — for
+  that run.
 - **Hooks** — `agent.hooks.add(hook)` takes effect at the next interception
-  point. Hooks run in the order they were added and share one context object,
-  so a change an earlier hook made is what a later one sees.
+  point. Hooks run in the order they were added — plugin load order: built-ins
+  first, then each plugin directory in priority order, alphabetical inside
+  one, and within a plugin the order `build()` appended them — and they share
+  one context object, so a change an earlier hook made is what a later one
+  sees.
 
 The split of labour is the contract: *inside* a running turn the only writes
 are the hook points (`before_iteration`, `on_tool_start`, `on_tool_complete`);
@@ -338,8 +344,10 @@ conversation. A hook may enrich it in `on_tool_complete` by writing to
 - **Failures are contained.** Import errors and exceptions from `build()` are
   reported on stderr, the plugin is skipped, and the host starts normally. A
   broken terminal plugin costs its own contributions, never the screen.
-- **Order is not guaranteed.** Built-ins load in a fixed order, third-party
-  plugins sorted by name. Never depend on another plugin having run first.
+- **Order is deterministic, but it is not a dependency graph.** Built-ins load
+  first, then third-party plugins: project-local before user-global, sorted by
+  name inside each directory. Hooks and contributions follow that same order —
+  never depend on another plugin having run first.
 
 ## Disabling plugins
 

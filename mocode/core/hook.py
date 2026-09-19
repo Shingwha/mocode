@@ -22,6 +22,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable
 
+from .events import TOOL_OK, ToolStatus
+
 if TYPE_CHECKING:
     from .events import Event
 
@@ -38,7 +40,9 @@ class IterationContext:
     """before_iteration — where a hook may rewrite what the next call sends.
 
     Both fields are read back by the loop after the hook returns, so a change
-    sticks: ``system_prompt`` for the rest of the run, ``messages`` for good.
+    sticks: ``system_prompt`` for the rest of the run (restored when the turn
+    ends — a conversation does not inherit one turn's prompt), ``messages`` for
+    good.
 
     ``messages`` is the live list — a hook may replace its contents in place
     (``ctx.messages[:] = ...``) or rebind it (``ctx.messages = ...``).
@@ -64,7 +68,9 @@ class ToolCallContext:
       - ``on_tool_complete`` may rewrite ``tool_result`` before it reaches the
         model, or enrich ``tool_details`` for whoever is watching.
 
-    ``status`` is one of ``ok`` / ``error`` / ``timeout`` / ``denied`` / ``not_found``.
+    ``status`` is one of the ``TOOL_*`` constants from
+    :mod:`mocode.core.events` (:data:`ToolStatus`) — ``ok`` while it runs its
+    course, then whichever outcome the loop recorded.
 
     ``tool_result`` is what the model reads; ``tool_details`` is structured data
     for everything else and never enters the conversation.
@@ -74,7 +80,7 @@ class ToolCallContext:
     tool_args: dict = field(default_factory=dict)
     tool_call_id: str = ""
     deny: str | None = None
-    status: str = "ok"
+    status: ToolStatus = TOOL_OK
     error_code: str | None = None
     tool_result: str | None = None
     tool_details: dict = field(default_factory=dict)
@@ -104,7 +110,7 @@ class AgentHook:
     """
 
     async def before_iteration(self, ctx: IterationContext) -> None:
-        """Before each LLM call. ctx.messages is modifiable."""
+        """Before each LLM call. May rewrite ctx.messages or ctx.system_prompt."""
 
     async def on_tool_start(self, ctx: ToolCallContext) -> None:
         """Before a single tool executes. May rewrite ctx.tool_args or set ctx.deny."""
@@ -117,7 +123,17 @@ class AgentHook:
 
 
 class HookRunner:
-    """Fan-out dispatcher for a list of AgentHooks with error isolation."""
+    """Fan-out dispatcher for a list of AgentHooks with error isolation.
+
+    Hooks run in the order they were added — at the host that is plugin load
+    order (built-ins first, then each plugin directory, alphabetical inside
+    one), and within one plugin, the order ``build()`` added them. That order
+    is deterministic but it is not a dependency graph: a hook that must not be
+    undone by a later one should not rely on position alone.
+
+    A raising hook never breaks the loop — each call is isolated and logged at
+    WARNING, so a faulty hook is visible without taking the run down.
+    """
 
     _log = logging.getLogger(__name__)
 
@@ -135,7 +151,7 @@ class HookRunner:
             try:
                 await getattr(h, method)(**kwargs)
             except Exception:
-                self._log.debug(
+                self._log.warning(
                     "Hook %s.%s failed", type(h).__name__, method, exc_info=True
                 )
 

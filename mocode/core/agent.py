@@ -33,6 +33,10 @@ from .events import (
     RunFinished,
     RunStarted,
     TextDelta,
+    TOOL_DENIED,
+    TOOL_ERROR,
+    TOOL_NOT_FOUND,
+    TOOL_TIMEOUT,
     ToolCallFinished,
     ToolCallStarted,
 )
@@ -274,6 +278,7 @@ class AgentLoop:
         self._run_id = run_id
         self._failure = None
         turn = self._turn
+        prompt_at_start = self.system_prompt
         try:
             if turn is not None and turn._begin():
                 raise asyncio.CancelledError()
@@ -311,6 +316,11 @@ class AgentLoop:
             terminal = await self._publish(
                 RunFailed(error=str(exc) or type(exc).__name__, kind=type(exc).__name__)
             )
+        finally:
+            # A hook's before_iteration rewrite of the system prompt is a
+            # decision about this run, not about the conversation: the next
+            # turn starts from the prompt as it stood before this one.
+            self.system_prompt = prompt_at_start
         return terminal
 
     async def _iterate(self, user_input: str | None) -> RunFinished:
@@ -475,10 +485,10 @@ class AgentLoop:
 
         started = time.monotonic()
         if parse_error is not None:
-            tc.status = "error"
+            tc.status = TOOL_ERROR
             tc.tool_result = parse_error
         elif tc.deny:
-            tc.status = "denied"
+            tc.status = TOOL_DENIED
             tc.tool_result = f"{DENIED_PREFIX} {tc.deny}"
         else:
             await self._execute_tool(tc)
@@ -505,7 +515,7 @@ class AgentLoop:
         """Execute tc's tool, recording status/result on the context."""
         tool = self._tools.get(tc.tool_name)
         if tool is None:
-            tc.status = "not_found"
+            tc.status = TOOL_NOT_FOUND
             tc.tool_result = f"{ERROR_PREFIX} unknown tool '{tc.tool_name}'"
             return
 
@@ -524,7 +534,7 @@ class AgentLoop:
             # The await is cancelled, not the worker: a sync tool keeps
             # running until it notices the signal. The event tells it to.
             tc.cancel_event.set()
-            tc.status = "timeout"
+            tc.status = TOOL_TIMEOUT
             tc.tool_timeout = self.config.tool_timeout
             tc.tool_result = f"{TIMEOUT_PREFIX} {self.config.tool_timeout}s"
         except asyncio.CancelledError:
@@ -532,11 +542,11 @@ class AgentLoop:
             tc.cancel_event.set()
             raise
         except ToolError as e:
-            tc.status = "error"
+            tc.status = TOOL_ERROR
             tc.error_code = e.code
             tc.tool_result = f"{ERROR_PREFIX} {e.code}: {e.message}"
         except Exception as e:
-            tc.status = "error"
+            tc.status = TOOL_ERROR
             tc.tool_result = f"{ERROR_PREFIX} {e}"
         else:
             tc.tool_result, tc.tool_details = split_result(result)

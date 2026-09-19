@@ -287,7 +287,9 @@ the same with a terminal, a browser or nothing at all watching.
 **Observation goes through the stream.** Subscribe, or implement `on_event` on
 a hook to be in-band — the loop waits for an in-band reader, so use it for
 what must not be missed (a commit log, a gate); a subscription never holds the
-loop up.
+loop up. The application-facing subscription is `conv.subscribe()`; a plugin
+holds its `ctx` and calls `ctx.subscribe()` at call time, which is the same
+stream.
 
 Publish your own event with `await ctx.emit(...)`, from a hook, a tool, or
 between runs through `await conv.notify("...")`. Give it a `Notice`, or
@@ -316,8 +318,10 @@ class PermissionGate(AgentHook):
 `ctx.deny` vetoes the call — the string becomes the tool result, and the
 stream reports `ToolCallFinished(status="denied")`. `ctx.tool_args`,
 `ctx.tool_result` and `ctx.tool_details` are writable, as are `ctx.messages`
-and `ctx.system_prompt` in `before_iteration`; a `system_prompt` rewrite is
-permanent for the conversation, not just the current run. Because a hook can
+and `ctx.system_prompt` in `before_iteration`; a `system_prompt` rewrite lasts
+for the rest of the run — the loop restores the prompt as it stood when the
+turn ends, so readers between turns (an export, the next turn) see the
+conversation's own prompt. Because a hook can
 await, a gate that needs a *human* answer is just a hook that waits for one:
 
 ```python

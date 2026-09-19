@@ -12,6 +12,7 @@ from ..config import Config
 
 if TYPE_CHECKING:
     from ...core.agent import AgentLoop
+    from ...core.channel import Subscription
     from ...core.events import Event
     from ...core.hook import AgentHook
     from ...core.prompt import Section
@@ -98,3 +99,23 @@ class HostContext:
                 "plugin has contributed — emit at call time instead"
             )
         await self.agent.channel.publish(event)
+
+    def subscribe(self, *, since: int | None = None) -> "Subscription":
+        """Read this conversation's event stream, out-of-band.
+
+        The division of labour with hooks: ``on_event`` is in-band — the loop
+        waits for it, so it belongs to code that must *answer*; this is for
+        code that only *watches*. A subscription never slows a run: it has a
+        bounded backlog and says what it dropped. Close it in
+        :meth:`Plugin.close <mocode.host.plugin.base.Plugin.close` when it
+        should not outlive the conversation.
+
+        Like :meth:`emit`, this works at call time — during ``build()`` there
+        is no agent to subscribe to yet.
+        """
+        if self.agent is None:
+            raise RuntimeError(
+                "ctx.subscribe() during build(): the agent is assembled after "
+                "every plugin has contributed — subscribe at call time instead"
+            )
+        return self.agent.channel.subscribe(since=since)

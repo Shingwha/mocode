@@ -29,7 +29,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterator
 
-from ..core.events import ToolCallFinished
+from ..core.events import (
+    TOOL_DENIED,
+    TOOL_ERROR,
+    TOOL_OK,
+    TOOL_TIMEOUT,
+    ToolCallFinished,
+)
 from ..core.tool import DENIED_PREFIX, ERROR_PREFIX, TIMEOUT_PREFIX, ToolRegistry
 from .text import ellipsize_middle, ellipsize_tail, terminal_width
 from .theme import FAIL, OK, PENDING, RULE, USER
@@ -162,7 +168,7 @@ def tool_close(
     Always the whole line, because it replaces a placeholder: whatever the row
     says afterwards has to stand on its own.
     """
-    ok = event.status == "ok"
+    ok = event.status == TOOL_OK
     return Line(
         text=_identity(event.name, args, tools),
         icon=OK if ok else FAIL,
@@ -175,7 +181,7 @@ def tool_close(
 def _verdict(event: ToolCallFinished, tools: ToolRegistry | None) -> str:
     """The aside on a tool line: why it failed, what came back, how long it took."""
     parts: list[str] = []
-    if event.status == "ok":
+    if event.status == TOOL_OK:
         detail = _declared_detail(event, tools)
         if detail:
             parts.append(detail)
@@ -183,7 +189,7 @@ def _verdict(event: ToolCallFinished, tools: ToolRegistry | None) -> str:
         parts.append(_failure_text(event))
 
     # A timeout already says how long it waited.
-    if event.duration >= 0.1 and event.status != "timeout":
+    if event.duration >= 0.1 and event.status != TOOL_TIMEOUT:
         parts.append(f"{event.duration:.1f}s")
     return " · ".join(parts)
 
@@ -203,10 +209,10 @@ def _declared_detail(event: ToolCallFinished, tools: ToolRegistry | None) -> str
 
 def _failure_text(event: ToolCallFinished) -> str:
     """One phrase explaining why a tool call did not succeed."""
-    if event.status == "timeout":
+    if event.status == TOOL_TIMEOUT:
         return f"timed out after {event.duration:.0f}s"
-    if event.status == "denied":
-        reason = event.result.removeprefix("denied: ").strip()
+    if event.status == TOOL_DENIED:
+        reason = event.result.removeprefix(f"{DENIED_PREFIX} ").strip()
         return f"denied ({reason})" if reason else "denied"
     text = (event.result or event.status).strip()
     if not text:
@@ -219,9 +225,9 @@ def _failure_text(event: ToolCallFinished) -> str:
 #: A stored tool result records its outcome as a prefix, because a message list
 #: has nowhere else to put it. See ``core/tool.py``.
 _STATUS_BY_PREFIX = {
-    ERROR_PREFIX: "error",
-    TIMEOUT_PREFIX: "timeout",
-    DENIED_PREFIX: "denied",
+    ERROR_PREFIX: TOOL_ERROR,
+    TIMEOUT_PREFIX: TOOL_TIMEOUT,
+    DENIED_PREFIX: TOOL_DENIED,
 }
 
 
@@ -291,7 +297,7 @@ def _replay_calls(
                 ToolCallFinished(
                     call_id=call.get("id", ""),
                     name=name,
-                    status=_STATUS_BY_PREFIX.get(result.split(":")[0] + ":", "ok"),
+                    status=_STATUS_BY_PREFIX.get(result.split(":")[0] + ":", TOOL_OK),
                     result=result,
                     duration=-1.0,  # history does not carry timings
                 ),

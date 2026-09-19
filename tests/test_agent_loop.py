@@ -471,7 +471,37 @@ class TestInterception:
         await _events(agent)
 
         assert [c["system"] for c in agent.provider.calls] == ["persona", "persona"]
-        assert agent.system_prompt == "persona"
+        # The rewrite is scoped to the run: the conversation keeps its prompt.
+        assert agent.system_prompt == "sys"
+
+    @pytest.mark.asyncio
+    async def test_a_system_prompt_rewrite_does_not_leak_into_the_next_turn(self):
+        """What before_iteration changed lasts the run, not the conversation."""
+
+        class Injects(AgentHook):
+            def __init__(self) -> None:
+                self.done = False
+
+            async def before_iteration(self, ctx: IterationContext) -> None:
+                if not self.done:
+                    ctx.system_prompt += " +injected"
+                    self.done = True
+
+        agent = _make_agent(_echo_tool(), hooks=[Injects()])
+        agent.provider.responses = [
+            tool_call_response("echo", '{"value": "x"}'),
+            _plain_answer(),
+            _plain_answer(),
+        ]
+
+        await _events(agent)
+        await _events(agent, prompt="again")
+
+        assert [c["system"] for c in agent.provider.calls] == [
+            "sys +injected",
+            "sys +injected",
+            "sys",  # the second turn starts from the prompt as it stood
+        ]
 
     @pytest.mark.asyncio
     async def test_a_system_prompt_rewrite_sticks_for_the_rest_of_the_run(self):
