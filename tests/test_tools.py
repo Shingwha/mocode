@@ -14,46 +14,46 @@ from mocode.host.plugin.builtin.skills import (
     SkillMetadata,
     SkillTool,
 )
-from mocode.host.plugin.loader import parse_frontmatter
+from mocode.host.plugin.builtin.skills import parse_frontmatter
 from mocode.core import ToolError
 
 
 class TestBashSession:
     @pytest.mark.asyncio
-    async def test_runs_a_command(self):
-        result = await BashSession().execute("echo hello")
+    async def test_runs_a_command(self, tmp_path: Path):
+        result = await BashSession(tmp_path).execute("echo hello")
         assert result.content == "hello"
 
     @pytest.mark.asyncio
-    async def test_the_exit_code_travels_as_a_detail(self):
-        session = BashSession()
+    async def test_the_exit_code_travels_as_a_detail(self, tmp_path: Path):
+        session = BashSession(tmp_path)
         assert (await session.execute("true")).details == {"exit_code": 0}
         assert (await session.execute("exit 3")).details == {"exit_code": 3}
 
     @pytest.mark.asyncio
     async def test_cd_persists(self, tmp_path: Path):
-        session = BashSession()
+        session = BashSession(tmp_path)
         result = await session.execute(f"cd {tmp_path}")
         assert str(tmp_path) in result.content
         assert session.cwd == str(tmp_path)
 
     @pytest.mark.asyncio
-    async def test_env_vars_persist_across_commands(self):
-        session = BashSession()
+    async def test_env_vars_persist_across_commands(self, tmp_path: Path):
+        session = BashSession(tmp_path)
         await session.execute("export MY_TEST_VAR=world")
         assert (await session.execute("echo $MY_TEST_VAR")).content == "world"
 
     @pytest.mark.asyncio
-    async def test_restart_clears_state(self):
-        session = BashSession()
+    async def test_restart_clears_state(self, tmp_path: Path):
+        session = BashSession(tmp_path)
         await session.execute("export MY_TEST_VAR=hello")
         session.restart()
         assert (await session.execute("echo $MY_TEST_VAR")).content == "(empty)"
 
     @pytest.mark.asyncio
-    async def test_env_values_are_never_executed_as_shell_code(self):
+    async def test_env_values_are_never_executed_as_shell_code(self, tmp_path: Path):
         """Env vars are passed through ``env=``, never interpolated into a script."""
-        session = BashSession()
+        session = BashSession(tmp_path)
         await session.execute("export EVIL='$(echo INJECTED)'")
         await session.execute("export TICK='`echo INJECTED`'")
 
@@ -61,13 +61,13 @@ class TestBashSession:
         assert (await session.execute("echo $TICK")).content == "`echo INJECTED`"
 
     @pytest.mark.asyncio
-    async def test_output_is_reported_line_by_line_as_it_arrives(self):
+    async def test_output_is_reported_line_by_line_as_it_arrives(self, tmp_path: Path):
         seen: list[tuple[str, str]] = []
 
         async def on_output(text: str, stream: str) -> None:
             seen.append((stream, text))
 
-        result = await BashSession().execute(
+        result = await BashSession(tmp_path).execute(
             "echo one; echo two; echo oops >&2", on_output=on_output
         )
 
@@ -79,22 +79,22 @@ class TestBashSession:
         assert "one" in result.content and "oops" in result.content
 
     @pytest.mark.asyncio
-    async def test_timeout_kills_the_command(self):
-        result = await BashSession().execute("sleep 5", timeout=1)
+    async def test_timeout_kills_the_command(self, tmp_path: Path):
+        result = await BashSession(tmp_path).execute("sleep 5", timeout=1)
         assert result.content == "(timed out after 1s)"
         assert "exit_code" not in result.details
 
 
 class TestBashTool:
-    def test_the_tool_asks_for_its_context_so_it_can_stream(self):
-        tool = BashTool()
+    def test_the_tool_asks_for_its_context_so_it_can_stream(self, tmp_path: Path):
+        tool = BashTool(tmp_path)
         assert tool.wants_context is True
         assert tool.is_async is True
         assert tool.result_key == "exit_code"
 
     @pytest.mark.asyncio
-    async def test_restart_resets_the_session(self):
-        tool = BashTool()
+    async def test_restart_resets_the_session(self, tmp_path: Path):
+        tool = BashTool(tmp_path)
         await tool.run_async({"command": "export V=1"}, None)
         assert (await tool.run_async({"command": "echo $V"}, None)).content == "1"
         assert (await tool.run_async({"command": "x", "restart": True}, None)).content == (
@@ -108,7 +108,7 @@ class TestReadTool:
         (tmp_path / "subdir").mkdir()
         (tmp_path / "hello.py").write_text("print('hi')", encoding="utf-8")
 
-        result = ReadTool().run({"path": str(tmp_path)}).content
+        result = ReadTool(tmp_path).run({"path": str(tmp_path)}).content
 
         assert result.startswith("[")
         assert "subdir/" in result
@@ -119,7 +119,7 @@ class TestReadTool:
         path = tmp_path / "a.py"
         path.write_text("one\ntwo\nthree\n", encoding="utf-8")
 
-        result = ReadTool().run({"path": str(path)})
+        result = ReadTool(tmp_path).run({"path": str(path)})
 
         assert result.details == {"lines": 3, "total_lines": 3}
         assert "one" in result.content
@@ -128,7 +128,7 @@ class TestReadTool:
         path = tmp_path / "big.py"
         path.write_text("\n".join(str(i) for i in range(50)), encoding="utf-8")
 
-        result = ReadTool().run({"path": str(path), "offset": 1, "limit": 10})
+        result = ReadTool(tmp_path).run({"path": str(path), "offset": 1, "limit": 10})
 
         assert result.details == {"lines": 10, "total_lines": 50}
 
@@ -136,23 +136,23 @@ class TestReadTool:
         (tmp_path / "__pycache__").mkdir()
         (tmp_path / "real.py").write_text("x", encoding="utf-8")
 
-        result = ReadTool().run({"path": str(tmp_path)}).content
+        result = ReadTool(tmp_path).run({"path": str(tmp_path)}).content
 
         assert "__pycache__" not in result
         assert "real.py" in result
 
     def test_an_empty_directory_is_reported(self, tmp_path: Path):
-        result = ReadTool().run({"path": str(tmp_path)}).content
+        result = ReadTool(tmp_path).run({"path": str(tmp_path)}).content
         assert "0 directories" in result and "0 files" in result
 
     def test_the_result_explains_the_path_is_a_directory(self, tmp_path: Path):
-        result = ReadTool().run({"path": str(tmp_path)}).content.lower()
+        result = ReadTool(tmp_path).run({"path": str(tmp_path)}).content.lower()
         assert "directory" in result
         assert "bash" in result
 
     def test_a_directory_reports_no_line_count(self, tmp_path: Path):
         """``result_key`` is lines, and a listing has none — nothing is shown."""
-        assert ReadTool().run({"path": str(tmp_path)}).details == {}
+        assert ReadTool(tmp_path).run({"path": str(tmp_path)}).details == {}
 
 
 def _make_skill_dir(base: Path, name: str, description: str, body: str = "") -> Path:
@@ -211,7 +211,7 @@ class TestSkills:
             SkillTool(SkillManager([tmp_path])).run({"name": "nope"})
         assert exc.value.code == "not_found"
 
-    def test_frontmatter_parsing_is_shared_with_plugins(self):
+    def test_skill_md_frontmatter_is_parsed(self):
         fm, body = parse_frontmatter("---\nname: test\ndescription: desc\n---\n\nBody here")
         assert fm == {"name": "test", "description": "desc"}
         assert body == "Body here"

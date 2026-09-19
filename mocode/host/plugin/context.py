@@ -9,10 +9,10 @@ from typing import TYPE_CHECKING
 from ...core.tool import ToolRegistry
 from ..command import Command, CommandRegistry
 from ..config import Config
-from ..frontend import Frontend
 
 if TYPE_CHECKING:
     from ...core.agent import AgentLoop
+    from ...core.events import Event
     from ...core.hook import AgentHook
     from ...core.prompt import Section
     from ...core.provider import ModelSpec
@@ -22,6 +22,10 @@ if TYPE_CHECKING:
 class HostContext:
     """Everything a plugin may read, and everything it may contribute to.
 
+    One context belongs to one conversation: ``cwd`` is the project that
+    conversation works in, ``tools``/``commands``/``hooks``/``prompt_sections``
+    are its contributions, and ``agent`` is its loop once assembled.
+
     Fields fall into three groups:
 
     - **Ready at construction**: paths, config, and the shared registries.
@@ -29,22 +33,23 @@ class HostContext:
       ``prompt_sections`` — plugins write into these during ``build()``.
     - **Assigned later**: ``agent``, set by the host once the loop is built.
 
-    ``display`` is the frontend showing this run, or ``None`` when headless. It
-    is typed as the :class:`~mocode.host.frontend.Frontend` protocol, not as any
-    particular one, so a plugin written against it works in any application.
-    There is deliberately no separate ``interactive`` flag: commands and prompt
-    sections are worth having without a terminal, so a plugin decides what to
-    contribute from ``display`` alone.
+    There is no display here on purpose. A plugin that has something to say
+    publishes an event (:meth:`emit`); whatever is watching reads the stream,
+    and the host never learns what shape it has.
     """
 
     # ── Host state ──
     home: Path
     cwd: Path
     config: Config
-    display: Frontend | None = None
     #: Facts about the model in use (name, context window, output cap). Known
     #: before assembly, so plugins may read it during build().
     model: ModelSpec | None = None
+    #: Directories of the plugins loaded for this project. A plugin finds the
+    #: files it ships through them — ``<source>/skills/`` is the standard's
+    #: location for portable skills, and a frontend finds ``<source>/<its
+    #: namespace>/`` the same way. The host never looks inside one.
+    plugin_sources: list[Path] = field(default_factory=list)
 
     # ── Contribution targets ──
     tools: ToolRegistry = None  # type: ignore[assignment]
@@ -69,3 +74,18 @@ class HostContext:
         """Register slash commands contributed by a plugin."""
         for command in commands:
             self.commands.register(command)
+
+    async def emit(self, event: "Event") -> None:
+        """Publish an event on this conversation's stream.
+
+        Works between turns as well as during one: a plugin with something to
+        say does not need a run in flight and does not need to know who is
+        watching. Available at call time — during ``build()`` there is no agent
+        to publish through yet.
+        """
+        if self.agent is None:
+            raise RuntimeError(
+                "ctx.emit() during build(): the agent is assembled after every "
+                "plugin has contributed — emit at call time instead"
+            )
+        await self.agent.channel.publish(event)

@@ -2,16 +2,36 @@
 
 from .base import Plugin
 from .context import HostContext
-from .host import PluginHost, builtin_plugins
-from .loader import PluginSpec, discover, load_plugin, parse_frontmatter
+from .host import (
+    LoadedPlugins,
+    PluginHost,
+    builtin_plugins,
+    default_plugin_dirs,
+    load_plugins,
+)
+from .loader import (
+    HOST_NAMESPACE,
+    MANIFEST,
+    PluginSpec,
+    discover,
+    load_plugin,
+    namespace_dir,
+    read_manifest,
+)
 
 __all__ = [
+    "HOST_NAMESPACE",
+    "MANIFEST",
     "HostContext",
+    "LoadedPlugins",
     "Plugin",
     "PluginHost",
     "PluginSpec",
     "builtin_plugins",
+    "default_plugin_dirs",
     "discover",
     "load_plugin",
-    "parse_frontmatter",
+    "load_plugins",
+    "namespace_dir",
+    "read_manifest",
 ]

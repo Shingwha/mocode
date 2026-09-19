@@ -24,6 +24,17 @@ def require_file(p: Path) -> Path:
     return p
 
 
+def resolve_path(path: str, base: Path) -> Path:
+    """Resolve *path* against the conversation's project directory.
+
+    Relative paths belong to the project the conversation works in, not to the
+    process: two conversations in one process run in different projects, so the
+    process working directory is never the right answer.
+    """
+    p = Path(path).expanduser()
+    return p if p.is_absolute() else base / p
+
+
 IGNORE_DIRS = frozenset(
     {
         ".git", ".svn", ".hg",
@@ -66,11 +77,11 @@ def _format_lines(content: str, label: str, offset: int, limit: int) -> ToolResu
     )
 
 
-def _read_text(p: Path, offset: int, limit: int) -> ToolResult:
+def _read_text(p: Path, offset: int, limit: int, label: str = "") -> ToolResult:
     raw = p.read_bytes()
     if b"\x00" in raw[:8192]:
         raise ToolError(f"File appears to be binary: {p}", "binary_file")
-    return _format_lines(decode_bytes(raw), str(p), offset, limit)
+    return _format_lines(decode_bytes(raw), label or str(p), offset, limit)
 
 
 def _list_directory(p: Path) -> str:
@@ -116,7 +127,8 @@ _READ_DESC = (
 class ReadTool(Tool):
     """Read a file and return its contents with line numbers."""
 
-    def __init__(self) -> None:
+    def __init__(self, base: Path) -> None:
+        self.base = base
         super().__init__(
             name="read",
             description=_READ_DESC,
@@ -128,13 +140,13 @@ class ReadTool(Tool):
         )
 
     def _execute(self, args: dict) -> ToolResult:
-        path = args["path"]
+        given = args["path"]
         offset = max(1, int(args.get("offset", 1)))
         limit = int(args.get("limit", 0)) or 999999
-        p = Path(path)
+        p = resolve_path(given, self.base)
         if p.is_dir():
             return ToolResult(_list_directory(p))
-        return _read_text(require_file(p), offset, limit)
+        return _read_text(require_file(p), offset, limit, label=given)
 
 
 # ── write ───────────────────────────────────────────────────
@@ -153,7 +165,8 @@ _WRITE_DESC = (
 class WriteTool(Tool):
     """Write content to a file."""
 
-    def __init__(self) -> None:
+    def __init__(self, base: Path) -> None:
+        self.base = base
         super().__init__(
             name="write",
             description=_WRITE_DESC,
@@ -164,7 +177,7 @@ class WriteTool(Tool):
         )
 
     def _execute(self, args: dict) -> str:
-        p = Path(args["path"])
+        p = resolve_path(args["path"], self.base)
         if p.is_dir():
             raise ToolError(f"Path is a directory: {p}", "invalid_path")
         content = args["content"]
@@ -202,7 +215,8 @@ _EDIT_DESC = (
 class EditTool(Tool):
     """Find and replace text in a file."""
 
-    def __init__(self) -> None:
+    def __init__(self, base: Path) -> None:
+        self.base = base
         super().__init__(
             name="edit",
             description=_EDIT_DESC,
@@ -213,7 +227,7 @@ class EditTool(Tool):
         )
 
     def _execute(self, args: dict) -> str:
-        p = require_file(Path(args["path"]))
+        p = require_file(resolve_path(args["path"], self.base))
         text = p.read_text(encoding="utf-8")
         old, new = args["old_string"], args["new_string"]
         if old not in text:
@@ -238,7 +252,9 @@ class FilesystemPlugin(Plugin):
     description = "Read, write and edit files"
 
     def build(self, ctx: HostContext) -> None:
-        for tool in (ReadTool(), WriteTool(), EditTool()):
+        # Relative paths resolve against the conversation's project: build()
+        # runs once per conversation, so each one edits its own tree.
+        for tool in (ReadTool(ctx.cwd), WriteTool(ctx.cwd), EditTool(ctx.cwd)):
             ctx.tools.register(tool)
 
 

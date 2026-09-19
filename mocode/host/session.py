@@ -1,4 +1,19 @@
-"""Session — data, store protocol, file implementation, and manager."""
+"""Session — the persisted record of a conversation, and the store that holds it.
+
+A :class:`Session` is data: what was said, where, with which model. Nothing here
+knows about a live conversation — :class:`~mocode.host.conversation.Conversation`
+owns one of these identities while it runs and writes it out on demand.
+
+Sessions are partitioned on disk by working directory, so two projects never mix
+in a listing::
+
+    ~/.mocode/sessions/<sha256(workdir)[:16]>/<session_id>.json
+
+``SessionStore.list(workdir)`` serves one project; ``list_all()`` spans all of
+them (each record carries its own ``workdir``, which is what lets a UI group by
+project), and ``find(session_id)`` answers a deep link without knowing the
+project first.
+"""
 
 from __future__ import annotations
 
@@ -58,6 +73,24 @@ def _hash_workdir(workdir: str) -> str:
     return hashlib.sha256(workdir.encode()).hexdigest()[:16]
 
 
+def new_session_id() -> str:
+    """An identity for a conversation, before anything is written to disk."""
+    return f"session_{uuid4().hex[:12]}"
+
+
+def timestamp() -> str:
+    return datetime.now().isoformat()
+
+
+def extract_title(messages: list[dict[str, Any]]) -> str:
+    for msg in messages:
+        if msg.get("role") == "user":
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                return content[:80].replace("\n", " ").strip()
+    return ""
+
+
 class SessionStore:
     """File-based session storage. base_dir is parameterized, no paths.py dependency."""
 
@@ -70,19 +103,33 @@ class SessionStore:
         return d
 
     def list(self, workdir: str) -> list[Session]:
-        d = self._base_dir / _hash_workdir(workdir)
-        if not d.exists():
+        """Every session recorded for one working directory, newest first."""
+        return self._load_dir(self._base_dir / _hash_workdir(workdir))
+
+    def list_all(self) -> list[Session]:
+        """Every session in the store, across projects, newest first."""
+        if not self._base_dir.exists():
             return []
-        sessions = []
-        for f in d.glob("*.json"):
-            data = read_json(f)
-            if data is not None:
-                try:
-                    sessions.append(Session.from_dict(data))
-                except KeyError:
-                    continue
+        sessions: list[Session] = []
+        for directory in self._base_dir.iterdir():
+            if directory.is_dir():
+                sessions.extend(self._load_dir(directory))
         sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return sessions
+
+    def find(self, session_id: str) -> Session | None:
+        """Look a session up by id alone — a link does not carry a project."""
+        if not self._base_dir.exists():
+            return None
+        for path in self._base_dir.glob(f"*/{session_id}.json"):
+            data = read_json(path)
+            if data is None:
+                continue
+            try:
+                return Session.from_dict(data)
+            except KeyError:
+                continue
+        return None
 
     def save(self, workdir: str, session: Session) -> None:
         d = self._sessions_dir(_hash_workdir(workdir))
@@ -109,143 +156,58 @@ class SessionStore:
         except OSError:
             return False
 
+    def _load_dir(self, directory: Path) -> list[Session]:
+        if not directory.exists():
+            return []
+        sessions = []
+        for f in directory.glob("*.json"):
+            data = read_json(f)
+            if data is None:
+                continue
+            try:
+                sessions.append(Session.from_dict(data))
+            except KeyError:
+                continue
+        sessions.sort(key=lambda s: s.updated_at, reverse=True)
+        return sessions
 
-def extract_title(messages: list[dict[str, Any]]) -> str:
-    for msg in messages:
-        if msg.get("role") == "user":
-            content = msg.get("content", "")
-            if isinstance(content, str):
-                return content[:80].replace("\n", " ").strip()
-    return ""
+
+# ── Portability ─────────────────────────────────────────────
 
 
-class SessionManager:
-    """Orchestrates session lifecycle — create, resume, save, import, export."""
+def export_session(path: Path, session: Session, system_prompt: str = "") -> None:
+    """Write a session as a portable JSON file (re-importable anywhere)."""
+    write_json(path, {"system_prompt": system_prompt, **session.to_dict()})
 
-    def __init__(self, workdir: str, store: SessionStore):
-        self._workdir = workdir
-        self._store = store
-        self._active_id: str | None = None
 
-    @property
-    def workdir(self) -> str:
-        return self._workdir
+def export_session_md(session: Session, path: Path, system_prompt: str = "") -> None:
+    """Write a session as a human-readable Markdown file."""
+    from .export import render_session_md  # lazy — only a UI asks for this
 
-    @property
-    def active_id(self) -> str | None:
-        return self._active_id
+    md = render_session_md(session, system_prompt)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(md, encoding="utf-8")
 
-    def create(self, metadata: dict[str, Any] | None = None) -> str:
-        session_id = f"session_{uuid4().hex[:12]}"
-        now = datetime.now().isoformat()
-        session = Session(
-            id=session_id,
-            created_at=now,
-            updated_at=now,
-            workdir=self._workdir,
-            messages=[],
-            metadata=metadata or {},
-        )
-        self._store.save(self._workdir, session)
-        self._active_id = session_id
-        return session_id
 
-    def resume(self, session_id: str) -> Session | None:
-        session = self._store.load(self._workdir, session_id)
-        if session is None:
-            return None
-        self._active_id = session_id
-        return session
-
-    def switch_to(self, session: Session) -> None:
-        """Set an already-loaded session as active (used by resume)."""
-        self._active_id = session.id
-
-    def get_active(self) -> Session | None:
-        """Return the currently active session, or None."""
-        if self._active_id is None:
-            return None
-        return self._store.load(self._workdir, self._active_id)
-
-    def save(
-        self,
-        messages: list[dict[str, Any]],
-        model: str = "",
-        provider: str = "",
-        title: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> Session:
-        now = datetime.now().isoformat()
-        if title is None:
-            title = extract_title(messages)
-
-        if self._active_id:
-            session = self._store.load(self._workdir, self._active_id)
-            if session:
-                session.messages = messages.copy()
-                session.updated_at = now
-                session.model = model or session.model
-                session.provider = provider or session.provider
-                if title:
-                    session.title = title
-                if metadata:
-                    session.metadata.update(metadata)
-                self._store.save(self._workdir, session)
-                return session
-
-        session_id = f"session_{uuid4().hex[:12]}"
-        session = Session(
-            id=session_id,
-            created_at=now,
-            updated_at=now,
-            workdir=self._workdir,
-            messages=messages.copy(),
-            title=title,
-            model=model,
-            provider=provider,
-            metadata=metadata or {},
-        )
-        self._store.save(self._workdir, session)
-        self._active_id = session_id
-        return session
-
-    def export_to_file(
-        self, session: Session, path: Path, system_prompt: str = ""
-    ) -> None:
-        """Export session to a portable JSON file."""
-        data = {"system_prompt": system_prompt, **session.to_dict()}
-        write_json(path, data)
-
-    def export_to_md(
-        self, session: Session, path: Path, system_prompt: str = ""
-    ) -> None:
-        """Export session to a human-readable Markdown file."""
-        from .export import render_session_md  # lazy import
-
-        md = render_session_md(session, system_prompt)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(md, encoding="utf-8")
-
-    @staticmethod
-    def import_from_file(path: Path) -> tuple[list[dict], str] | None:
-        """Import messages from a portable JSON file. Returns (messages, title) or None."""
-        if not path.exists() or path.suffix != ".json":
-            return None
-        data = read_json(path)
-        if isinstance(data, dict) and "messages" in data:
-            messages = data["messages"]
-            title = extract_title(messages) or path.stem
-            return messages, title
+def load_session_file(path: Path) -> tuple[list[dict], str] | None:
+    """Read messages and title back out of of an exported file, or ``None``."""
+    if not path.exists() or path.suffix != ".json":
         return None
+    data = read_json(path)
+    if isinstance(data, dict) and "messages" in data:
+        messages = data["messages"]
+        title = extract_title(messages) or path.stem
+        return messages, title
+    return None
 
-    def list(self) -> list[Session]:
-        return self._store.list(self._workdir)
 
-    def delete(self, session_id: str) -> bool:
-        result = self._store.delete(self._workdir, session_id)
-        if result and self._active_id == session_id:
-            self._active_id = None
-        return result
-
-    def clear(self) -> None:
-        self._active_id = None
+__all__ = [
+    "Session",
+    "SessionStore",
+    "export_session",
+    "export_session_md",
+    "extract_title",
+    "load_session_file",
+    "new_session_id",
+    "timestamp",
+]

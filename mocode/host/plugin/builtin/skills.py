@@ -4,7 +4,14 @@ A skill is a directory holding ``SKILL.md`` with YAML frontmatter (``name``,
 ``description``) and a body of instructions. Any files next to it are reference
 material the agent can read through the normal filesystem tools.
 
-Skills are discovered from ``~/.mocode/skills/`` and ``./.mocode/skills/``.
+Skills are discovered from three places:
+
+  - ``~/.mocode/skills/``          user-level, every project
+  - ``./.mocode/skills/``          project-level
+  - ``<plugin>/skills/``           shipped inside a plugin, for anything installed
+
+The last one is the Agent Plugins standard's portable component, which is why a
+plugin directory's own skills travel with it wherever it is installed.
 """
 
 from __future__ import annotations
@@ -17,9 +24,27 @@ from ....core.tool import Tool, ToolError
 from ...command import CONTINUE, Command, CommandContext, CommandResult
 from ..base import Plugin
 from ..context import HostContext
-from ..loader import parse_frontmatter
 
 SKILL_MD = "SKILL.md"
+
+
+def parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Split ``---`` YAML frontmatter from *text*.
+
+    Returns ``(frontmatter_dict, body_text)``; no frontmatter → ``({}, text)``.
+    """
+    if not text.startswith("---"):
+        return {}, text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}, text
+    try:
+        import yaml
+
+        fm = yaml.safe_load(parts[1]) or {}
+    except Exception:
+        return {}, text
+    return (fm if isinstance(fm, dict) else {}), parts[2].strip()
 
 
 # ── Skill model ─────────────────────────────────────────────
@@ -165,8 +190,9 @@ def make_skill_command(skill: Skill) -> Command:
     async def _handle(ctx: CommandContext) -> CommandResult:
         content = skill.load_content()
         if not content:
-            if ctx.display:
-                ctx.display.warn(f"Skill '{skill_name}' has no content.")
+            await ctx.conversation.notify(
+                f"Skill '{skill_name}' has no content.", level="warn"
+            )
             return CONTINUE
         prompt = (
             f"[Skill:{skill_name} — instructions below, do NOT call the skill tool]"
@@ -205,7 +231,15 @@ class SkillsPlugin(Plugin):
     description = "Reusable instructions discovered from skill directories"
 
     def build(self, ctx: HostContext) -> None:
-        manager = SkillManager([ctx.home / "skills", ctx.cwd / ".mocode" / "skills"])
+        manager = SkillManager(
+            [
+                # Portable skills a plugin ships. First, so that a user's own
+                # copy of a skill shadows the one a plugin brought.
+                *[source / "skills" for source in ctx.plugin_sources],
+                ctx.home / "skills",
+                ctx.cwd / ".mocode" / "skills",
+            ]
+        )
         ctx.tools.register(SkillTool(manager))
         ctx.prompt_sections.append(
             Section("skills", _render_skills(manager), priority=50)

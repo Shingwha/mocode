@@ -1,49 +1,65 @@
-"""Plugin discovery — directory scanning and module import.
+"""Plugin discovery — the Agent Plugins layout, and the module import.
 
-Third-party plugins live in::
+A plugin is a directory::
 
-    ./.mocode/plugins/       project-local (wins on name conflicts)
-    ~/.mocode/plugins/       user-global
+    acme/
+    ├── plugin.json            the manifest: name, version, description (standard)
+    ├── skills/<name>/SKILL.md portable skills, readable by any client (standard)
+    ├── mcp.json               portable MCP servers (standard; recognised, not served yet)
+    ├── mocode/plugin.py       MoCode contributions — build(ctx) (our namespace)
+    └── mocode.cli/plugin.py   the terminal's own contributions (the terminal's namespace)
 
-Each entry is either a directory ``<name>/`` holding ``PLUGIN.md`` (metadata and
-docs) plus an optional ``plugin.py``, or a single ``<name>.py`` file.
+Or a single ``<name>.py`` file: the shortcut for a MoCode-only plugin with no
+portable parts.
 
-Discovery never imports anything — code is only executed for plugins that are
-enabled and about to be built. Plugins are trusted code: importing ``plugin.py``
-runs it.
+The split is the standard's, and it is the whole point of the layout: the root
+of a plugin directory holds what any compatible client understands, and
+everything client-specific lives under a directory named for the namespace that
+defines it. Another client reading ``acme/`` picks up ``skills/``, ignores
+``mocode/`` and ``mocode.cli/`` without validating them, and vice versa. The
+host only ever hands namespace directories over; it never looks inside one.
+
+Discovery imports nothing. Code is executed only for plugins that are enabled
+and about to be built — plugins are trusted code, so importing one runs it.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import json
+import re
 import sys
 import types
 from dataclasses import dataclass
 from pathlib import Path
 
 from .base import Plugin
+MANIFEST = "plugin.json"
+CODE_MODULE = "plugin.py"
 
-PLUGIN_MD = "PLUGIN.md"
-PLUGIN_PY = "plugin.py"
+#: The namespace MoCode's own plugin code lives in. Contributions here use the
+#: host API only, so every MoCode frontend gets them.
+HOST_NAMESPACE = "mocode"
 
+#: Top-level manifest fields the standard defines. Anything else is reported
+#: and ignored — the manifest schema is closed, and MoCode's own extras belong
+#: under ``extensions``.
+MANIFEST_FIELDS = frozenset(
+    {
+        "$schema",
+        "name",
+        "version",
+        "description",
+        "author",
+        "homepage",
+        "repository",
+        "license",
+        "keywords",
+        "extensions",
+    }
+)
 
-def parse_frontmatter(text: str) -> tuple[dict, str]:
-    """Split ``---`` YAML frontmatter from *text*.
-
-    Returns ``(frontmatter_dict, body_text)``; no frontmatter → ``({}, text)``.
-    """
-    if not text.startswith("---"):
-        return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}, text
-    try:
-        import yaml
-
-        fm = yaml.safe_load(parts[1]) or {}
-    except Exception:
-        return {}, text
-    return (fm if isinstance(fm, dict) else {}), parts[2].strip()
+_NAME_ALLOWED = re.compile(r"^[a-z0-9.-]+$")
 
 
 @dataclass
@@ -52,13 +68,28 @@ class PluginSpec:
 
     name: str
     description: str = ""
-    enabled: bool = True
-    entrypoint: str = ""
-    path: Path | None = None  # module to import (plugin.py or <name>.py)
+    version: str = ""
+    #: The plugin's directory — where its portable parts and its namespaces live.
+    directory: Path | None = None
+    #: The MoCode entry module to import, if the plugin ships code.
+    module: Path | None = None
     source: str = ""  # origin, for log messages
 
 
-def discover(search_dirs: list[Path], *, reserved: set[str] | None = None) -> list[PluginSpec]:
+def valid_name(name: str) -> bool:
+    """Whether *name* satisfies the standard's plugin-name rule."""
+    if not 1 <= len(name) <= 64:
+        return False
+    if not (name[0].isalnum() and name[-1].isalnum()):
+        return False
+    if "--" in name or ".." in name:
+        return False
+    return bool(_NAME_ALLOWED.match(name)) and name == name.lower()
+
+
+def discover(
+    search_dirs: list[Path], *, reserved: set[str] | None = None
+) -> list[PluginSpec]:
     """Scan *search_dirs* in priority order and return deduplicated specs.
 
     Names in *reserved* (the built-ins) and repeats of an already-seen name are
@@ -83,13 +114,17 @@ def discover(search_dirs: list[Path], *, reserved: set[str] | None = None) -> li
 
 
 def load_plugin(spec: PluginSpec) -> Plugin | None:
-    """Import *spec* and return its plugin instance. ``None`` if it cannot load."""
-    if spec.path is None or not spec.path.is_file():
+    """Import *spec*'s MoCode code and return its plugin instance.
+
+    ``None`` when the plugin ships no code (skills-only plugins are ordinary) or
+    when it cannot be imported — a broken plugin must not take the host down.
+    """
+    if spec.module is None or not spec.module.is_file():
         return None
-    module = _import(spec.path, spec.name)
+    module = import_module_file(spec.module, f"mocode_plugin_{_slug(spec.name)}")
     if module is None:
         return None
-    plugin = _resolve_plugin(module, spec.entrypoint, spec.name)
+    plugin = resolve_plugin(module, Plugin, fallback_name=spec.name)
     if plugin is None:
         return None
     if not plugin.name:
@@ -99,43 +134,89 @@ def load_plugin(spec: PluginSpec) -> Plugin | None:
     return plugin
 
 
+def namespace_dir(spec: PluginSpec, namespace: str) -> Path | None:
+    """The directory *spec* ships for *namespace*, if it ships one.
+
+    The host never looks inside: a namespace belongs to whoever declared it.
+    """
+    if spec.directory is None:
+        return None
+    candidate = spec.directory / namespace
+    return candidate if candidate.is_dir() else None
+
+
 # ── Discovery helpers ───────────────────────────────────────
+
+
+def read_manifest(path: Path) -> dict | None:
+    """Read a ``plugin.json``, or ``None`` if it is not usable.
+
+    The standard's rules: the schema is closed (unknown top-level fields are
+    reported and ignored), and a manifest that violates it rejects the plugin
+    rather than half-loading it.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        print(f"[plugin] {path}: unreadable manifest: {e}", file=sys.stderr)
+        return None
+
+    if not isinstance(data, dict):
+        print(f"[plugin] {path}: manifest must be an object", file=sys.stderr)
+        return None
+
+    name = str(data.get("name") or "")
+    if not valid_name(name):
+        print(
+            f"[plugin] {path}: invalid name {name!r} — lowercase alphanumerics, "
+            "'-', '.', 1-64 characters, no '--' or '..'",
+            file=sys.stderr,
+        )
+        return None
+
+    unknown = sorted(set(data) - MANIFEST_FIELDS)
+    if unknown:
+        print(
+            f"[plugin] {name}: unknown manifest field(s) "
+            f"{', '.join(unknown)} (ignored)",
+            file=sys.stderr,
+        )
+    return data
 
 
 def _spec_from_entry(entry: Path) -> PluginSpec | None:
     if entry.is_dir():
-        meta_path = entry / PLUGIN_MD
-        if not meta_path.is_file():
+        manifest_path = entry / MANIFEST
+        if not manifest_path.is_file():
             return None
-        fm, _body = parse_frontmatter(_read(meta_path))
-        code_path = entry / PLUGIN_PY
+        data = read_manifest(manifest_path)
+        if data is None:
+            return None
+        code = entry / HOST_NAMESPACE / CODE_MODULE
         return PluginSpec(
-            name=str(fm.get("name") or entry.name),
-            description=str(fm.get("description") or ""),
-            enabled=bool(fm.get("enabled", True)),
-            entrypoint=str(fm.get("entrypoint") or ""),
-            path=code_path if code_path.is_file() else None,
+            name=str(data["name"]),
+            description=str(data.get("description") or ""),
+            version=str(data.get("version") or ""),
+            directory=entry,
+            module=code if code.is_file() else None,
             source=str(entry),
         )
 
     if entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
-        return PluginSpec(name=entry.stem, path=entry, source=str(entry))
+        return PluginSpec(name=entry.stem, module=entry, source=str(entry))
 
     return None
 
 
-def _read(path: Path) -> str:
-    try:
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return ""
+def _slug(name: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in name)
 
 
 # ── Import helpers ──────────────────────────────────────────
 
 
-def _import(path: Path, name: str) -> types.ModuleType | None:
-    module_name = "mocode_plugin_" + "".join(c if c.isalnum() else "_" for c in name)
+def import_module_file(path: Path, module_name: str) -> types.ModuleType | None:
+    """Import *path* as *module_name*. ``None`` if it cannot be imported."""
     try:
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
@@ -150,37 +231,29 @@ def _import(path: Path, name: str) -> types.ModuleType | None:
         return None
 
 
-def _resolve_plugin(
-    module: types.ModuleType, entrypoint: str, fallback_name: str
-) -> Plugin | None:
-    """Resolve the plugin: explicit ``entrypoint`` (class or instance), then a
-    module-level ``plugin`` instance, then the first Plugin subclass the module
-    defines itself."""
-    if entrypoint:
-        return _instantiate(getattr(module, entrypoint, None), fallback_name)
+def resolve_plugin(
+    module: types.ModuleType, base: type, *, fallback_name: str
+) -> object | None:
+    """Resolve a plugin from an imported module, for any extension surface.
 
+    A module-level ``plugin`` instance wins, then the first subclass of *base*
+    the module defines itself. One rule for host plugins and frontend plugins
+    alike: an author never has to say which of their classes is the plugin.
+    """
     instance = getattr(module, "plugin", None)
-    if isinstance(instance, Plugin):
+    if isinstance(instance, base):
         return instance
 
     for obj in vars(module).values():
         if (
             isinstance(obj, type)
-            and issubclass(obj, Plugin)
-            and obj is not Plugin
+            and issubclass(obj, base)
+            and obj is not base
             and getattr(obj, "__module__", "") == module.__name__
         ):
-            return _instantiate(obj, fallback_name)
-    return None
-
-
-def _instantiate(obj: object, fallback_name: str) -> Plugin | None:
-    if isinstance(obj, Plugin):
-        return obj
-    if isinstance(obj, type) and issubclass(obj, Plugin):
-        return obj()
+            return obj()
     print(
-        f"[plugin] {fallback_name}: entrypoint does not resolve to a Plugin",
+        f"[plugin] {fallback_name}: no {base.__name__} found in the module",
         file=sys.stderr,
     )
     return None

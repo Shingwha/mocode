@@ -1,7 +1,15 @@
 """MoCode plugin SDK — the surface a plugin author imports.
 
-A plugin lives in ``./.mocode/plugins/<name>/`` (or ``~/.mocode/plugins/``) as a
-``PLUGIN.md`` plus a ``plugin.py``::
+A plugin is a directory following the Agent Plugins layout, installed in
+``./.mocode/plugins/`` (project) or ``~/.mocode/plugins/`` (user)::
+
+    greet/
+    ├── plugin.json          name, version, description
+    ├── skills/<n>/SKILL.md  portable skills (optional)
+    └── mocode/plugin.py     MoCode's namespace: the code below
+
+Portable parts are data any compatible client can read; MoCode's code lives in
+its own namespace, which other clients ignore::
 
     from mocode.plugins import Plugin, Tool
 
@@ -25,11 +33,18 @@ A plugin lives in ``./.mocode/plugins/<name>/`` (or ``~/.mocode/plugins/``) as a
         def build(self, ctx):
             ctx.tools.register(GreetTool())
 
+A single ``greet.py`` file next to the plugin directories works too, for a
+plugin with no portable parts. Contribution to a *frontend* rather than to the
+agent has its own namespace (``mocode.cli/plugin.py``) and its own interface —
+see :class:`mocode.cli.CLIPlugin`.
+
 Plugins are trusted code — installing one means running it.
 """
 
 from __future__ import annotations
 
+from ..core.agent import AgentConfig, Turn
+from ..core.channel import EventChannel, Subscription
 from ..core.events import (
     Event,
     IterationFinished,
@@ -46,34 +61,41 @@ from ..core.events import (
 )
 from ..core.hook import AgentHook, HookRunner, IterationContext, ToolCallContext
 from ..core.prompt import Prompt, Section
+from ..core.provider import ModelSpec
+from ..core.state import RunState
 from ..core.tool import Tool, ToolError, ToolRegistry, ToolResult
 from ..host.command import (
     CONTINUE,
     EXIT,
     Command,
     CommandContext,
+    CommandRegistry,
     CommandResult,
     Kind,
 )
-from ..host.frontend import Frontend
+from ..host.conversation import Conversation
 from ..host.plugin.base import Plugin
 from ..host.plugin.context import HostContext
 
 __all__ = [
+    "AgentConfig",
     "AgentHook",
     "CONTINUE",
     "Command",
     "CommandContext",
+    "CommandRegistry",
     "CommandResult",
+    "Conversation",
     "EXIT",
     "Event",
-    "Frontend",
+    "EventChannel",
     "HookRunner",
     "HostContext",
     "IterationContext",
     "IterationFinished",
     "IterationStarted",
     "Kind",
+    "ModelSpec",
     "Notice",
     "Plugin",
     "Prompt",
@@ -81,7 +103,9 @@ __all__ = [
     "RunFailed",
     "RunFinished",
     "RunStarted",
+    "RunState",
     "Section",
+    "Subscription",
     "TextDelta",
     "Tool",
     "ToolCallContext",
@@ -91,4 +115,5 @@ __all__ = [
     "ToolOutput",
     "ToolRegistry",
     "ToolResult",
+    "Turn",
 ]

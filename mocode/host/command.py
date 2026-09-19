@@ -5,8 +5,8 @@ A command is what a plugin contributes when it wants to be *called* rather than
 
 The contract here is frontend-agnostic. ``PROMPT`` ("send this text to the
 agent") and ``EXIT`` ("end this interaction") mean the same thing to a web
-backend as to a terminal, so an embedding application can dispatch the very same
-commands the CLI does — including the ones a plugin contributed.
+backend as to a terminal, so every frontend can share one resolver instead of
+each inventing its own idea of what a typed line means.
 """
 
 from __future__ import annotations
@@ -16,8 +16,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
-    from .frontend import Frontend
-    from .runtime import MoCode
+    from .conversation import Conversation
 
 
 class Kind(Enum):
@@ -49,24 +48,18 @@ EXIT = CommandResult(Kind.EXIT)
 class CommandContext:
     """What a handler is given.
 
-    ``app`` is the runtime — agent, config, sessions, provider switching. It is
-    deliberately not the frontend: a handler written against it works anywhere.
+    ``conversation`` is the unit it acts on: its history, its project, its
+    model, its session. A handler that has something to say does it by
+    publishing an event — ``await ctx.conversation.notify("...")`` — so it works
+    the same whether a terminal, a browser or nothing at all is watching.
 
-    ``frontend`` is whatever is showing the run, or ``None`` when headless. Use
-    it for messages the user should see; a handler that needs more than the
-    protocol offers (an interactive picker, say) belongs to that frontend rather
-    than to the host.
+    A handler that needs more than that (an interactive picker, the clipboard)
+    belongs to the frontend that offers it, not to the host.
     """
 
-    app: MoCode
+    conversation: "Conversation"
     args: str = ""
-    frontend: Frontend | None = None
-    commands: CommandRegistry | None = None
-
-    def redraw(self) -> None:
-        """Re-render after replacing the conversation. A no-op when headless."""
-        if self.frontend is not None:
-            self.frontend.conversation_changed(self.app.messages, self.app.tools)
+    commands: "CommandRegistry | None" = None
 
 
 @dataclass
@@ -80,7 +73,7 @@ class Command:
 
 
 class CommandRegistry:
-    """Single source of truth for commands."""
+    """Single source of truth for the commands one frontend offers."""
 
     def __init__(self) -> None:
         self._by_name: dict[str, Command] = {}
@@ -101,6 +94,28 @@ class CommandRegistry:
         return sorted(self._by_name.values(), key=lambda c: c.name)
 
 
+async def dispatch(
+    text: str, *, conversation: "Conversation", commands: CommandRegistry
+) -> CommandResult:
+    """Resolve one line of user input: a command if it names one, else a prompt.
+
+    Shared by every frontend so ``/skill:release`` means the same thing in a
+    terminal and in a browser. A line that merely starts with ``/`` and matches
+    nothing is not a command — it comes back as ``PROMPT``, and the frontend
+    decides what to say about it (the terminal suggests a spelling).
+    """
+    parts = text.split(None, 1)
+    command = commands.get(parts[0].lower())
+    if command is None:
+        return CommandResult(Kind.PROMPT, text)
+    ctx = CommandContext(
+        conversation=conversation,
+        args=parts[1] if len(parts) > 1 else "",
+        commands=commands,
+    )
+    return await command.handler(ctx)
+
+
 __all__ = [
     "CONTINUE",
     "EXIT",
@@ -109,4 +124,5 @@ __all__ = [
     "CommandRegistry",
     "CommandResult",
     "Kind",
+    "dispatch",
 ]

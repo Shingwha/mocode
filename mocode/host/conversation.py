@@ -1,0 +1,282 @@
+"""Conversation — one conversation in progress.
+
+This is the unit an application works with: one project, one model, one history,
+one stream of events. A web backend holds a dictionary of them; a terminal holds
+exactly one; an editor holds whatever the user has open. The host keeps no
+registry of its own, because the identity a conversation has in an application
+(a route, a tab, a socket) is the application's business.
+
+It owns four things and delegates the rest:
+
+* its **agent** (:class:`~mocode.core.agent.AgentLoop`) — the engine, and the
+  channel every event travels on;
+* its **context** (:class:`~mocode.host.plugin.context.HostContext`) — the tools,
+  commands, hooks and prompt sections built for this conversation from the
+  plugins loaded for its project;
+* its **identity** — the session id, its project, and the provider/model it uses;
+* its **lifecycle** — run a turn, watch it, save, resume, close.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import TYPE_CHECKING, AsyncIterator
+
+from ..core.agent import AgentLoop
+from ..core.channel import Subscription
+from ..core.events import Event, Notice
+from ..core.tool import ToolRegistry
+from .command import CommandRegistry
+from .events import ConversationChanged
+from .plugin.context import HostContext
+from .plugin.host import PluginHost
+from .session import (
+    Session,
+    extract_title,
+    new_session_id,
+    timestamp,
+)
+
+if TYPE_CHECKING:
+    from ..core.provider import ModelSpec, Provider
+    from ..core.state import RunState
+    from ..core.agent import Turn
+    from .runtime import MoCode
+
+
+class Conversation:
+    """One live conversation: project, model, history, stream.
+
+    Everything that differs between two conversations in the same process lives
+    here rather than on the runtime: which directory the tools work in, which
+    provider the model calls go to, which plugins were built (and therefore which
+    shell session, skill index and tool instances exist), and what has been said.
+    """
+
+    def __init__(
+        self,
+        *,
+        runtime: "MoCode",
+        cwd: Path,
+        ctx: HostContext,
+        agent: AgentLoop,
+        host: PluginHost,
+        commands: CommandRegistry,
+        provider_key: str,
+        model_name: str,
+        session_id: str,
+        created_at: str,
+    ):
+        self.runtime = runtime
+        self.cwd = cwd
+        self.ctx = ctx
+        self.agent = agent
+        self.host = host
+        self.commands = commands
+        self.provider_key = provider_key
+        self.model_name = model_name
+        #: Identity of the session this conversation will be saved as. Assigned
+        #: when it is created and written to disk on the first save.
+        self.id = session_id
+        self.created_at = created_at
+        self._saved_at = ""
+
+    # ── Running ────────────────────────────────────────────
+
+    def run(
+        self, prompt: str | None = None, *, images: list[str] | None = None
+    ) -> "Turn":
+        """Begin a turn. Raises if one is already running in this conversation.
+
+        The turn belongs to the conversation: a reader that disconnects does not
+        stop it, and another reader can join with :meth:`subscribe`.
+        """
+        return self.agent.start(prompt, images=images)
+
+    def stream(
+        self, prompt: str | None = None, *, images: list[str] | None = None
+    ) -> AsyncIterator[Event]:
+        """Run one turn and yield its events, scoped to this caller.
+
+        Stop reading and the turn stops with you. Use :meth:`run` when the run
+        should outlive whoever asked for it.
+        """
+        return self.agent.stream(prompt, images=images)
+
+    async def chat(self, prompt: str | None = None, images: list[str] | None = None) -> str:
+        """Run one turn and return the final answer."""
+        return await self.agent.chat(prompt, images=images)
+
+    def subscribe(self, *, since: int | None = None) -> Subscription:
+        """Read this conversation's stream — every turn, every notification.
+
+        ``since`` replays what the channel still remembers after that ``seq``,
+        which is how a reader that was away catches up; ``Subscription.dropped``
+        and a gap in ``seq`` say when it could not.
+        """
+        return self.agent.channel.subscribe(since=since)
+
+    @property
+    def busy(self) -> bool:
+        """Whether a turn is running right now."""
+        return self.agent.busy
+
+    def cancel(self) -> None:
+        """Stop the running turn, if any."""
+        turn = self.agent.turn
+        if turn is not None:
+            turn.cancel()
+
+    # ── What it is ─────────────────────────────────────────
+
+    @property
+    def messages(self) -> list[dict]:
+        """The conversation in OpenAI message format."""
+        return self.agent.messages
+
+    @property
+    def state(self) -> "RunState":
+        """Live snapshot of the current or last turn."""
+        return self.agent.state
+
+    @property
+    def tools(self) -> ToolRegistry:
+        return self.ctx.tools
+
+    @property
+    def model(self) -> "ModelSpec | None":
+        return self.ctx.model
+
+    @property
+    def provider(self) -> "Provider":
+        return self.agent.provider
+
+    def set_model(self, key: str, model: str) -> None:
+        """Point this conversation at another provider/model.
+
+        This conversation only — no other conversation changes, and nothing is
+        written to config.json. Persisting a default is a deliberate act
+        (``runtime.set_default_model``), not a side effect of switching.
+        """
+        provider = self.runtime.provider_for(key, model)
+        spec = self.runtime.config.model_spec(key, model)
+        self.agent.provider = provider
+        self.agent.model = spec
+        self.ctx.model = spec
+        self.provider_key = key
+        self.model_name = model
+
+    # ── Lifecycle ──────────────────────────────────────────
+
+    def save(self, title: str | None = None) -> Session | None:
+        """Write this conversation to the session store.
+
+        Nothing to save (an empty history) means nothing written: opening a
+        conversation does not litter the store.
+        """
+        if not self.agent.messages:
+            return None
+        session = Session(
+            id=self.id,
+            created_at=self.created_at,
+            updated_at=timestamp(),
+            workdir=str(self.cwd),
+            messages=list(self.agent.messages),
+            title=title if title is not None else extract_title(self.agent.messages),
+            model=self.model_name,
+            provider=self.provider_key,
+        )
+        self.runtime.store.save(str(self.cwd), session)
+        self._saved_at = session.updated_at
+        return session
+
+    def session(self) -> Session:
+        """This conversation as a session record, without writing it."""
+        return Session(
+            id=self.id,
+            created_at=self.created_at,
+            updated_at=self._saved_at or self.created_at,
+            workdir=str(self.cwd),
+            messages=list(self.agent.messages),
+            title=extract_title(self.agent.messages),
+            model=self.model_name,
+            provider=self.provider_key,
+        )
+
+    async def start(self, messages: list[dict] | None = None) -> str:
+        """Begin a new session in the same project, optionally seeded."""
+        self.save()
+        self.id = new_session_id()
+        self.created_at = timestamp()
+        self._adopt(messages or [])
+        await self.changed()
+        return self.id
+
+    async def resume(self, session: Session) -> None:
+        """Continue a stored session: its identity, its history, its model.
+
+        The model comes back with the conversation when the config still knows
+        the provider it was using; otherwise the current one stays, and a caller
+        that cares can compare ``session.provider`` with ``provider_key``.
+        """
+        if self.busy:
+            raise RuntimeError("cannot resume while a turn is running — cancel it first")
+        self.save()
+        self.id = session.id
+        self.created_at = session.created_at
+        if session.provider and session.model:
+            if self.runtime.config.providers.get(session.provider) is not None:
+                self.set_model(session.provider, session.model)
+        self._adopt(session.messages)
+        await self.changed()
+
+    def rebuild_prompt(self) -> None:
+        """Re-read AGENTS.md; tools, skills and sections are live references."""
+        from .prompt import build_system_prompt
+
+        self.agent.system_prompt = build_system_prompt(self.ctx)
+
+    def list_sessions(self) -> list[Session]:
+        """Sessions recorded for this project, newest first."""
+        return self.runtime.store.list(str(self.cwd))
+
+    def delete_session(self, session_id: str) -> bool:
+        return self.runtime.store.delete(str(self.cwd), session_id)
+
+    def close(self, *, save: bool = True) -> None:
+        """End the conversation: stop the turn, persist, release, close the stream.
+
+        A running turn is *asked* to stop, not waited for — this stays callable
+        from a `finally` — so the ending it reports arrives after this returns.
+        """
+        self.cancel()
+        if save:
+            self.save()
+        self.host.close()
+        self.agent.channel.close(reason=f"conversation {self.id} closed")
+
+    # ── Talking to whoever is watching ─────────────────────
+
+    async def notify(self, text: str, *, level: str = "info") -> None:
+        """Say something on this conversation's stream.
+
+        ``level`` is ``info`` / ``warn`` / ``error``; a frontend decides how to
+        show it, and one written later still can, because a ``Notice`` carries
+        its own text.
+        """
+        await self.agent.channel.publish(Notice(message=text, level=level))
+
+    async def changed(self) -> None:
+        """Announce that the history was replaced — readers should redraw."""
+        await self.agent.channel.publish(ConversationChanged())
+
+    # ── Internals ──────────────────────────────────────────
+
+    def _adopt(self, messages: list[dict]) -> None:
+        """Replace the history in place, with no stale turn state behind it."""
+        self.agent.reset()
+        self.agent.messages.extend(messages)
+        self.rebuild_prompt()
+
+    def __repr__(self) -> str:
+        return f"<Conversation {self.id} {self.cwd}>"

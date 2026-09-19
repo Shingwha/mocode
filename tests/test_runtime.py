@@ -1,18 +1,17 @@
-"""The headless runtime — assembly, session lifecycle, provider switching."""
+"""The runtime, and the terminal that is one runtime plus a REPL."""
 
 from __future__ import annotations
 
 import re
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from mocode.host.config import Config, ModelEntry, ProviderEntry
-from mocode.host.plugin.host import builtin_plugins
-from mocode.host.runtime import MoCode
-from mocode.host.session import Session, SessionStore
 from mocode.core.events import RunFinished, TextDelta
 from mocode.core.provider import Response, Usage
+from mocode.host.config import Config, ModelEntry, ProviderEntry
+from mocode.host.runtime import MoCode
 
 from .providers import MockProvider
 
@@ -20,7 +19,7 @@ from .providers import MockProvider
 ESCAPES = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
-def _config(tmp_path) -> Config:
+def _config(tmp_path: Path) -> Config:
     return Config(
         active_provider="test",
         active_model="test-model",
@@ -36,77 +35,84 @@ def _config(tmp_path) -> Config:
 
 
 @pytest.fixture
-def mc(tmp_path, monkeypatch) -> MoCode:
-    # Keep the session store inside tmp_path — never the real ~/.mocode.
-    monkeypatch.setattr(
-        "mocode.host.runtime.SessionStore",
-        lambda: SessionStore(base_dir=tmp_path / "sessions"),
-    )
-    runtime = MoCode(
-        config=_config(tmp_path),
-        home=tmp_path / "home",
-        cwd=tmp_path,
-        plugin_dirs=[],
-    )
-    runtime.config.save = MagicMock()
-    return runtime
+def mc(tmp_path: Path) -> MoCode:
+    return MoCode(config=_config(tmp_path), home=tmp_path / "home", plugin_dirs=[])
 
 
-def _session(messages: list[dict], session_id: str = "session_abc") -> Session:
-    return Session(
-        id=session_id,
-        created_at="2025-01-01T00:00:00",
-        updated_at="2025-01-01T00:00:00",
-        workdir="/tmp",
-        messages=messages,
-    )
-
-
-class TestAssembly:
-    def test_builtin_tools_are_available(self, mc: MoCode):
-        assert sorted(mc.tools.names()) == ["bash", "edit", "read", "skill", "write"]
-
-    def test_the_host_contributes_no_commands_of_its_own(self, mc: MoCode):
-        """`/help` and friends are the terminal's; the host only relays whatever
-        plugins contribute, so a headless app starts with an empty registry."""
-        assert mc.commands.all() == []
-
-    def test_a_missing_config_is_reported_clearly(self, tmp_path):
+class TestTheRuntime:
+    def test_a_missing_config_is_reported_clearly(self, tmp_path: Path):
         with patch("mocode.host.runtime.Config.load", return_value=None):
             with pytest.raises(ValueError, match="config.json"):
-                MoCode(cwd=tmp_path, plugin_dirs=[])
+                MoCode(home=tmp_path / "home", plugin_dirs=[])
 
-    def test_a_headless_run_has_no_display(self, mc: MoCode):
-        assert mc.display is None
-        assert mc.ctx.display is None
+    def test_everything_it_owns_lives_under_home(self, tmp_path: Path):
+        """Nothing the runtime writes escapes its home — not even sessions."""
+        mc = MoCode(config=_config(tmp_path), home=tmp_path / "home", plugin_dirs=[])
+        mc.config.save = lambda *a, **k: None
+
+        assert mc.home == tmp_path / "home"
+        assert mc.store._base_dir == tmp_path / "home" / "sessions"
+
+    def test_it_holds_no_conversation(self, mc: MoCode):
+        """Opening is the runtime's job; being one is not."""
+        assert not hasattr(mc, "chat")
+        assert not hasattr(mc, "messages")
+        assert not hasattr(mc, "agent")
+
+    def test_opening_a_conversation_does_not_write_anything(self, mc: MoCode, tmp_path: Path):
+        conversation = mc.new_conversation(cwd=tmp_path)
+        assert conversation.id.startswith("session_")
+        assert mc.store.list_all() == []
+
+
+class TestAConversation:
+    @pytest.mark.asyncio
+    async def test_streams_events_and_answers(self, mc: MoCode, tmp_path: Path):
+        conversation = mc.new_conversation(cwd=tmp_path)
+        conversation.agent.provider = MockProvider(
+            [Response(content="hi there", usage=Usage(2, 3), finish_reason="stop")],
+            chunk_size=2,
+        )
+
+        events = [event async for event in conversation.stream("hello")]
+
+        assert "".join(e.text for e in events if isinstance(e, TextDelta)) == "hi there"
+        final = events[-1]
+        assert isinstance(final, RunFinished) and final.content == "hi there"
+        assert conversation.state.answer == "hi there"
+        assert conversation.messages[0] == {"role": "user", "content": "hello"}
+
+    def test_no_display_is_needed_for_any_of_it(self, mc: MoCode, tmp_path: Path):
+        conversation = mc.new_conversation(cwd=tmp_path)
+        assert conversation.host.ctx.agent is conversation.agent
 
 
 class TestTheTerminal:
-    """The CLI is a MoCode runtime plus its own plugin — nothing more."""
+    """`CLIApp` is a runtime, one conversation, and a terminal in front of it."""
 
     @pytest.fixture
-    def app(self, tmp_path, monkeypatch):
+    def app(self, tmp_path: Path):
         from mocode.cli import CLIApp
 
-        monkeypatch.setattr(
-            "mocode.host.runtime.SessionStore",
-            lambda: SessionStore(base_dir=tmp_path / "sessions"),
-        )
         return CLIApp(config=_config(tmp_path), home=tmp_path / "home", interactive=True)
 
-    def test_the_terminal_commands_come_from_its_plugin(self, app):
+    def test_its_commands_come_from_its_plugin(self, app):
         assert "/help" in {c.name for c in app.commands.all()}
-        # …which the terminal passed in, not something the host knows about
-        assert "cli" in [p.name for p in app.runtime.host.plugins]
-        assert "cli" not in [p.name for p in builtin_plugins()]
+        assert "cli" in [p.name for p in app.plugins]
 
-    def test_the_terminal_installs_its_own_renderer(self, app):
-        """The frontend draws itself — no plugin, and not the host, supplies it."""
-        from mocode.cli.hook import CLIDisplayHook
+    def test_the_renderer_is_installed_not_contributed(self, app):
+        """Drawing a terminal is what this frontend does with the event stream."""
+        from mocode.cli.render import CLIRenderer
 
-        assert any(
-            isinstance(h, CLIDisplayHook) for h in app.runtime.agent.hooks.all()
-        )
+        assert isinstance(app.renderer, CLIRenderer)
+        assert "cli" not in [p.name for p in app.runtime.plugins_for(Path.cwd())]
+
+    def test_it_writes_sessions_under_its_own_home(self, app, tmp_path: Path):
+        app.conversation.messages.append({"role": "user", "content": "hi"})
+        app.conversation.save()
+
+        assert (tmp_path / "home" / "sessions").is_dir()
+        assert app.runtime.store.list_all() != []
 
     @pytest.mark.asyncio
     async def test_a_turn_is_echoed_and_answered(self, app, capsys):
@@ -115,7 +121,7 @@ class TestTheTerminal:
         Everything here is reached only by running the REPL, which is exactly
         why a renamed display primitive can otherwise break the app silently.
         """
-        app.runtime.agent.provider = MockProvider(
+        app.conversation.agent.provider = MockProvider(
             [Response(content="pong", usage=Usage(1, 1), finish_reason="stop")]
         )
         app.display.clear_screen = lambda: None
@@ -133,33 +139,36 @@ class TestTheTerminal:
         assert rendered[2] == "↑1 ↓1 tokens"   # what the turn cost
         assert set(rendered[3]) == {"─"}       # the rule closes it before the next prompt
 
-    def test_a_one_shot_can_render_without_a_repl(self, tmp_path, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_a_command_speaks_through_the_same_stream(self, app, capsys):
+        """`/help` publishes a notice; the renderer draws it like anything else."""
+        app.display.clear_screen = lambda: None
+        typed = iter(["/help", "/quit"])
+
+        async def scripted_prompt() -> str:
+            return next(typed)
+
+        app.display.prompt = scripted_prompt
+        await app._repl()
+
+        out = ESCAPES.sub("", capsys.readouterr().out)
+        assert "/help" in out and "Show available commands" in out
+
+    def test_a_one_shot_can_render_without_a_repl(self, tmp_path: Path):
         """`-p` on a terminal draws the turn; `render` asks for that."""
         from mocode.cli import CLIApp
-        from mocode.cli.hook import CLIDisplayHook
 
-        monkeypatch.setattr(
-            "mocode.host.runtime.SessionStore",
-            lambda: SessionStore(base_dir=tmp_path / "sessions"),
-        )
         app = CLIApp(
             config=_config(tmp_path), home=tmp_path / "home",
             interactive=False, render=True,
         )
 
-        assert app.display is not None
-        assert any(
-            isinstance(h, CLIDisplayHook) for h in app.runtime.agent.hooks.all()
-        )
+        assert app.display is not None and app.renderer is not None
 
-    def test_interactive_implies_rendering(self, tmp_path, monkeypatch):
+    def test_interactive_implies_rendering(self, tmp_path: Path):
         """`render` can only ask for a frontend, never take one away."""
         from mocode.cli import CLIApp
 
-        monkeypatch.setattr(
-            "mocode.host.runtime.SessionStore",
-            lambda: SessionStore(base_dir=tmp_path / "sessions"),
-        )
         app = CLIApp(
             config=_config(tmp_path), home=tmp_path / "home",
             interactive=True, render=False,
@@ -167,122 +176,49 @@ class TestTheTerminal:
 
         assert app.display is not None
 
-    def test_a_piped_one_shot_attaches_nothing(self, tmp_path, monkeypatch):
+    def test_a_piped_one_shot_attaches_nothing(self, tmp_path: Path):
         """The default for a non-interactive run — that is what keeps `-p` a pipe."""
         from mocode.cli import CLIApp
 
-        monkeypatch.setattr(
-            "mocode.host.runtime.SessionStore",
-            lambda: SessionStore(base_dir=tmp_path / "sessions"),
-        )
         app = CLIApp(config=_config(tmp_path), home=tmp_path / "home", interactive=False)
 
         assert app.display is None
+        assert app.renderer is None
 
-    def test_a_display_less_cli_gets_commands_but_no_renderer(self, tmp_path, monkeypatch):
+    def test_a_headless_cli_still_has_commands(self, tmp_path: Path):
         from mocode.cli import CLIApp
-        from mocode.cli.hook import CLIDisplayHook
 
-        monkeypatch.setattr(
-            "mocode.host.runtime.SessionStore",
-            lambda: SessionStore(base_dir=tmp_path / "sessions"),
-        )
         app = CLIApp(config=_config(tmp_path), home=tmp_path / "home", interactive=False)
 
         assert "/help" in {c.name for c in app.commands.all()}
-        assert not any(
-            isinstance(h, CLIDisplayHook) for h in app.runtime.agent.hooks.all()
-        )
 
-    def test_disabling_the_cli_plugin_costs_commands_but_not_the_renderer(
-        self, tmp_path, monkeypatch
-    ):
-        """A plugin the user can switch off must not be what draws the screen."""
+    def test_a_piped_run_saves_nothing(self, tmp_path: Path, capsys):
+        """A one-shot is not a session."""
         from mocode.cli import CLIApp
-        from mocode.cli.hook import CLIDisplayHook
 
-        monkeypatch.setattr(
-            "mocode.host.runtime.SessionStore",
-            lambda: SessionStore(base_dir=tmp_path / "sessions"),
-        )
-        config = _config(tmp_path)
-        config.plugins = {"cli": {"enabled": False}}
-        app = CLIApp(config=config, home=tmp_path / "home", interactive=True)
-
-        assert "/help" not in {c.name for c in app.commands.all()}
-        assert any(
-            isinstance(h, CLIDisplayHook) for h in app.runtime.agent.hooks.all()
+        app = CLIApp(config=_config(tmp_path), home=tmp_path / "home", interactive=False)
+        app.conversation.agent.provider = MockProvider(
+            [Response(content="answer", usage=Usage(1, 1), finish_reason="stop")]
         )
 
+        app.run_oneshot("hello")
 
-class TestChat:
-    @pytest.mark.asyncio
-    async def test_streams_events_and_answers(self, mc: MoCode):
-        mc.agent.provider = MockProvider(
-            [Response(content="hi there", usage=Usage(2, 3), finish_reason="stop")],
-            chunk_size=2,
+        assert capsys.readouterr().out.strip() == "answer"
+        assert app.runtime.store.list_all() == []
+
+    def test_a_rendered_one_shot_prints_nothing_twice(self, tmp_path: Path, capsys):
+        from mocode.cli import CLIApp
+
+        app = CLIApp(
+            config=_config(tmp_path), home=tmp_path / "home",
+            interactive=False, render=True,
+        )
+        app.display.clear_screen = lambda: None
+        app.conversation.agent.provider = MockProvider(
+            [Response(content="drawn", usage=Usage(1, 1), finish_reason="stop")]
         )
 
-        events = [event async for event in mc.chat("hello")]
+        app.run_oneshot("hello")
 
-        assert "".join(e.text for e in events if isinstance(e, TextDelta)) == "hi there"
-        final = events[-1]
-        assert isinstance(final, RunFinished) and final.content == "hi there"
-        assert mc.state.answer == "hi there"
-        assert mc.messages[0] == {"role": "user", "content": "hello"}
-
-
-class TestSessionLifecycle:
-    def test_save_is_a_noop_without_messages(self, mc: MoCode):
-        mc.save_session()
-        assert mc.sessions.list() == []
-
-    def test_save_persists_the_conversation(self, mc: MoCode):
-        mc.messages.append({"role": "user", "content": "hello"})
-        mc.save_session()
-        assert mc.sessions.get_active().messages == mc.messages
-
-    def test_using_a_session_saves_the_current_one_first(self, mc: MoCode):
-        mc.messages.append({"role": "user", "content": "old"})
-
-        mc.use_session(_session([{"role": "user", "content": "resumed"}]))
-
-        assert [s.messages for s in mc.sessions.list()] == [
-            [{"role": "user", "content": "old"}]
-        ]
-        assert mc.messages == [{"role": "user", "content": "resumed"}]
-        assert mc.sessions.active_id == "session_abc"
-
-    def test_starting_a_session_clears_the_conversation(self, mc: MoCode):
-        mc.messages.append({"role": "user", "content": "old"})
-        mc.start_session()
-        assert mc.messages == []
-        assert mc.sessions.active_id is not None
-
-    def test_starting_a_session_can_seed_messages(self, mc: MoCode):
-        mc.start_session([{"role": "user", "content": "imported"}])
-        assert mc.messages == [{"role": "user", "content": "imported"}]
-
-    def test_replacing_messages_rebuilds_the_system_prompt(self, mc: MoCode):
-        mc.agent.system_prompt = "stale"
-        mc.replace_messages([{"role": "user", "content": "hi"}])
-        assert mc.agent.system_prompt != "stale"
-        assert "<system-prompt>" in mc.agent.system_prompt
-
-
-class TestProviderSwitch:
-    def test_switch_updates_config_agent_and_model_spec(self, mc: MoCode):
-        before = mc.agent.provider
-
-        mc.switch_provider("test", "test-model")
-
-        assert mc.config.active_provider == "test"
-        assert mc.config.active_model == "test-model"
-        assert mc.agent.provider is not before
-        assert mc.ctx.model.name == "test-model"
-        assert mc.agent.model is mc.ctx.model
-        mc.config.save.assert_called_once()
-
-    def test_unknown_provider_is_reported(self, mc: MoCode):
-        with pytest.raises(ValueError, match="not defined"):
-            mc.switch_provider("nope", "m")
+        out = ESCAPES.sub("", capsys.readouterr().out)
+        assert out.count("drawn") == 1

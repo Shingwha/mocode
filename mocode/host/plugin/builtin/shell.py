@@ -73,11 +73,18 @@ def find_bash() -> Path | None:
 
 
 class BashSession:
-    """Persistent bash session — cwd and env vars survive across commands."""
+    """Persistent bash session — cwd and env vars survive across commands.
 
-    def __init__(self):
+    The session starts in the conversation's project directory and ``restart``
+    puts it back there. It deliberately does not use the process working
+    directory: several conversations share one process, and a shell that leaked
+    its ``cd`` into the next project would be a bug, not a convenience.
+    """
+
+    def __init__(self, cwd: Path):
         self.bash_path: Path | None = None  # resolved lazily on first use
-        self._cwd = Path(os.getcwd()).resolve()
+        self._home = Path(cwd).resolve()
+        self._cwd = self._home
         self._env_vars: dict[str, str] = {}
 
     def _ensure_bash(self) -> Path:
@@ -165,7 +172,8 @@ class BashSession:
         return ""
 
     def restart(self) -> None:
-        self._cwd = Path(os.getcwd()).resolve()
+        """Back to where the conversation's project starts."""
+        self._cwd = self._home
         self._env_vars.clear()
 
 
@@ -200,8 +208,8 @@ async def _pump(
 class BashTool(Tool):
     """Run shell commands in a persistent bash session."""
 
-    def __init__(self, timeout: int = 240) -> None:
-        self._session = BashSession()
+    def __init__(self, cwd: Path, timeout: int = 240) -> None:
+        self._session = BashSession(cwd)
         self._default_timeout = timeout
         super().__init__(
             name="bash",
@@ -230,7 +238,9 @@ class ShellPlugin(Plugin):
     description = "Run shell commands in a persistent bash session"
 
     def build(self, ctx: HostContext) -> None:
-        ctx.tools.register(BashTool())
+        # The session's working directory is the conversation's project: build()
+        # runs once per conversation, so two projects never share one shell.
+        ctx.tools.register(BashTool(cwd=ctx.cwd))
 
 
 PLUGIN = ShellPlugin()

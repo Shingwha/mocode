@@ -1,16 +1,20 @@
-"""CommandRegistry, CommandResult, and the terminal's built-in commands.
+"""CommandRegistry, CommandResult, and the terminal's own commands.
 
 The command *contract* lives in the host; the commands tested here are the
-terminal's own, so they are exercised through a ``MoCode``-shaped app (mocked)
-and a ``Frontend``.
+terminal's, so they run against a real conversation and assert what the user
+would have been shown — the notices the command published.
 """
 
+from __future__ import annotations
+
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from mocode.cli.commands import misc, model, session as session_cmds
+from mocode.cli.commands import COMMANDS, misc, model, session as session_cmds
+from mocode.core.events import Notice
 from mocode.host.command import (
     CONTINUE,
     EXIT,
@@ -20,22 +24,55 @@ from mocode.host.command import (
     CommandResult,
     Kind,
 )
+from mocode.host.config import Config, ModelEntry, ProviderEntry
+from mocode.host.conversation import Conversation
+from mocode.host.events import ConversationChanged
 from mocode.host.plugin.builtin.skills import make_skill_command
-from mocode.host.session import Session
+from mocode.host.runtime import MoCode
 
-BUILTIN_COMMANDS = (*misc.commands, *model.commands, *session_cmds.commands)
+BUILTIN_COMMANDS = COMMANDS
 
 _UNSET = object()
 
 
-def _make_ctx(app=None, frontend=_UNSET, args="", commands=None) -> CommandContext:
-    """Build a CommandContext. ``frontend=None`` means headless."""
-    return CommandContext(
-        app=app or MagicMock(),
-        args=args,
-        frontend=MagicMock() if frontend is _UNSET else frontend,
-        commands=commands,
+@pytest.fixture
+def conversation(tmp_path: Path) -> Conversation:
+    config = Config(
+        active_provider="test",
+        active_model="test-model",
+        providers={
+            "test": ProviderEntry(
+                name="Test",
+                api_key="sk-test",
+                base_url="http://localhost",
+                models={"test-model": ModelEntry()},
+            )
+        },
     )
+    mc = MoCode(config=config, home=tmp_path / "home", plugin_dirs=[])
+    return mc.new_conversation(cwd=tmp_path)
+
+
+async def _run(
+    command: Command,
+    conversation: Conversation,
+    *,
+    args: str = "",
+    commands: CommandRegistry | None = None,
+) -> tuple[CommandResult, list]:
+    """Run a command and collect what it published — what the user saw."""
+    reader = conversation.subscribe()
+    result = await command.handler(
+        CommandContext(conversation=conversation, args=args, commands=commands)
+    )
+    seen = []
+    while (event := reader.take()) is not None:
+        seen.append(event)
+    return result, seen
+
+
+def _notices(events: list) -> list[Notice]:
+    return [e for e in events if isinstance(e, Notice)]
 
 
 def _get_builtin_cmd(name: str) -> Command:
@@ -82,113 +119,132 @@ class TestCommandResults:
         assert CONTINUE.prompt is None
 
 
-class TestCommandContext:
-    def test_redraw_hands_the_conversation_to_the_frontend(self):
-        app = MagicMock()
-        frontend = MagicMock()
-        _make_ctx(app=app, frontend=frontend).redraw()
-        frontend.conversation_changed.assert_called_once_with(app.messages, app.tools)
+class TestDispatch:
+    @pytest.mark.asyncio
+    async def test_a_named_command_runs(self, conversation: Conversation):
+        from mocode.host.command import dispatch
 
-    def test_redraw_is_a_no_op_when_headless(self):
-        _make_ctx(frontend=None).redraw()  # must not raise
+        registry = CommandRegistry()
+        registry.register(_get_builtin_cmd("/quit"))
+
+        assert (await dispatch("/quit", conversation=conversation, commands=registry)) is EXIT
+
+    @pytest.mark.asyncio
+    async def test_a_command_gets_its_arguments(self, conversation: Conversation):
+        from mocode.host.command import dispatch
+
+        seen: list[str] = []
+
+        async def handler(ctx):
+            seen.append(ctx.args)
+            return CONTINUE
+
+        registry = CommandRegistry()
+        registry.register(Command("/say", "say it", handler=handler))
+
+        await dispatch("/say hello  world", conversation=conversation, commands=registry)
+        assert seen == ["hello  world"]
+
+    @pytest.mark.asyncio
+    async def test_anything_else_is_a_prompt(self, conversation: Conversation):
+        from mocode.host.command import dispatch
+
+        result = await dispatch(
+            "what is in this project?",
+            conversation=conversation,
+            commands=CommandRegistry(),
+        )
+
+        assert result.kind is Kind.PROMPT
+        assert result.prompt == "what is in this project?"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_slash_word_is_a_prompt_too(self, conversation: Conversation):
+        """The frontend decides what to say about it; the host does not guess."""
+        from mocode.host.command import dispatch
+
+        result = await dispatch(
+            "/nope", conversation=conversation, commands=CommandRegistry()
+        )
+
+        assert result.kind is Kind.PROMPT
 
 
 class TestQuitCommand:
     @pytest.mark.asyncio
-    async def test_returns_exit(self):
-        result = await _get_builtin_cmd("/quit").handler(_make_ctx())
+    async def test_returns_exit(self, conversation: Conversation):
+        result, _events = await _run(_get_builtin_cmd("/quit"), conversation)
         assert result is EXIT
 
 
 class TestClearCommand:
     @pytest.mark.asyncio
-    async def test_starts_a_new_session_and_redraws(self):
-        app = MagicMock()
-        frontend = MagicMock()
+    async def test_starts_a_new_session_and_says_so(self, conversation: Conversation):
+        conversation.messages.append({"role": "user", "content": "hello"})
+        previous = conversation.id
 
-        result = await _get_builtin_cmd("/clear").handler(
-            _make_ctx(app=app, frontend=frontend)
-        )
+        result, events = await _run(_get_builtin_cmd("/clear"), conversation)
 
         assert result is CONTINUE
-        app.start_session.assert_called_once()
-        frontend.conversation_changed.assert_called_once()
+        assert conversation.id != previous
+        assert conversation.messages == []
+        assert any(isinstance(e, ConversationChanged) for e in events)
+
+    @pytest.mark.asyncio
+    async def test_the_previous_session_survives_on_disk(self, conversation: Conversation):
+        conversation.messages.append({"role": "user", "content": "hello"})
+        previous = conversation.id
+
+        await _run(_get_builtin_cmd("/clear"), conversation)
+
+        assert [s.id for s in conversation.list_sessions()] == [previous]
 
 
 class TestHelpCommand:
     @pytest.mark.asyncio
-    async def test_lists_registered_commands(self):
+    async def test_lists_registered_commands(self, conversation: Conversation):
         registry = CommandRegistry()
         registry.register(_get_builtin_cmd("/quit"), _get_builtin_cmd("/help"))
-        frontend = MagicMock()
 
-        await _get_builtin_cmd("/help").handler(
-            _make_ctx(frontend=frontend, commands=registry)
+        _result, events = await _run(
+            _get_builtin_cmd("/help"), conversation, commands=registry
         )
 
-        listed = frontend.info.call_args[0][0]
+        listed = _notices(events)[0].message
         assert "/quit" in listed and "/help" in listed
-
-    @pytest.mark.asyncio
-    async def test_headless_is_a_noop(self):
-        registry = CommandRegistry()
-        registry.register(_get_builtin_cmd("/quit"))
-
-        result = await _get_builtin_cmd("/help").handler(
-            _make_ctx(frontend=None, commands=registry)
-        )
-
-        assert result is CONTINUE
 
 
 class TestExportCommand:
     @pytest.mark.asyncio
-    async def test_exports_json_by_default(self, tmp_path, monkeypatch):
-        session = _session()
-        app = MagicMock()
-        app.sessions.get_active.return_value = session
-        app.agent.system_prompt = "You are helpful."
-        frontend = MagicMock()
+    async def test_exports_json_into_the_project(self, conversation: Conversation):
+        conversation.messages.append({"role": "user", "content": "hi"})
 
-        monkeypatch.chdir(tmp_path)
-        result = await _get_builtin_cmd("/export").handler(
-            _make_ctx(app=app, frontend=frontend)
-        )
+        result, events = await _run(_get_builtin_cmd("/export"), conversation)
 
         assert result is CONTINUE
-        app.sessions.export_to_file.assert_called_once()
-        assert "Exported 1 msgs" in frontend.info.call_args[0][0]
+        written = list(Path(conversation.cwd).glob("session_*.json"))
+        assert len(written) == 1
+        assert "Exported 1 msgs" in _notices(events)[0].message
 
     @pytest.mark.asyncio
-    async def test_export_md_format(self, tmp_path, monkeypatch):
-        app = MagicMock()
-        app.sessions.get_active.return_value = _session()
-        app.agent.system_prompt = "You are helpful."
+    async def test_export_md_format(self, conversation: Conversation):
+        conversation.messages.append({"role": "user", "content": "hi"})
 
-        monkeypatch.chdir(tmp_path)
-        await _get_builtin_cmd("/export").handler(_make_ctx(app=app, args="md"))
+        await _run(_get_builtin_cmd("/export"), conversation, args="md")
 
-        app.sessions.export_to_md.assert_called_once()
-        assert app.sessions.export_to_md.call_args[0][1].suffix == ".md"
+        assert len(list(Path(conversation.cwd).glob("session_*.md"))) == 1
 
     @pytest.mark.asyncio
-    async def test_nothing_to_export(self):
-        app = MagicMock()
-        app.sessions.get_active.return_value = None
-        frontend = MagicMock()
+    async def test_nothing_to_export(self, conversation: Conversation):
+        _result, events = await _run(_get_builtin_cmd("/export"), conversation)
 
-        result = await _get_builtin_cmd("/export").handler(
-            _make_ctx(app=app, frontend=frontend)
-        )
-
-        assert result is CONTINUE
-        frontend.warn.assert_called_once()
-        app.sessions.export_to_file.assert_not_called()
+        assert [n.level for n in _notices(events)] == ["warn"]
+        assert list(Path(conversation.cwd).glob("session_*")) == []
 
 
 class TestResumeCommand:
     @pytest.mark.asyncio
-    async def test_resume_from_an_exported_file(self, tmp_path):
+    async def test_resume_from_an_exported_file(self, conversation: Conversation):
         export_data = {
             "system_prompt": "You are a coder.",
             "messages": [
@@ -196,53 +252,74 @@ class TestResumeCommand:
                 {"role": "assistant", "content": "hi there"},
             ],
         }
-        path = tmp_path / "session_test.json"
-        path.write_text(json.dumps(export_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        path = Path(conversation.cwd) / "session_test.json"
+        path.write_text(json.dumps(export_data), encoding="utf-8")
 
-        app = MagicMock()
-        frontend = MagicMock()
-        result = await _get_builtin_cmd("/resume").handler(
-            _make_ctx(app=app, frontend=frontend, args=str(path))
-        )
+        result, events = await _run(_get_builtin_cmd("/resume"), conversation, args=str(path))
 
         assert result is CONTINUE
-        app.start_session.assert_called_once_with(export_data["messages"])
-        frontend.conversation_changed.assert_called_once()
+        assert conversation.messages == export_data["messages"]
+        assert any(isinstance(e, ConversationChanged) for e in events)
 
     @pytest.mark.asyncio
-    async def test_resume_rejects_an_invalid_file(self, tmp_path):
-        path = tmp_path / "old.json"
+    async def test_resume_rejects_an_invalid_file(self, conversation: Conversation):
+        path = Path(conversation.cwd) / "old.json"
         path.write_text(json.dumps([{"role": "user", "content": "hi"}]), encoding="utf-8")
 
-        app = MagicMock()
-        frontend = MagicMock()
-        await _get_builtin_cmd("/resume").handler(
-            _make_ctx(app=app, frontend=frontend, args=str(path))
-        )
+        _result, events = await _run(_get_builtin_cmd("/resume"), conversation, args=str(path))
 
-        app.start_session.assert_not_called()
-        frontend.warn.assert_called_once()
+        assert conversation.messages == []
+        assert [n.level for n in _notices(events)] == ["warn"]
 
     @pytest.mark.asyncio
-    async def test_resume_without_a_frontend_does_nothing(self):
-        app = MagicMock()
-        result = await _get_builtin_cmd("/resume").handler(
-            _make_ctx(app=app, frontend=None)
-        )
+    async def test_a_bare_resume_says_so_when_there_is_nothing_to_resume(
+        self, conversation: Conversation
+    ):
+        _result, events = await _run(_get_builtin_cmd("/resume"), conversation)
+
+        assert [n.message for n in _notices(events)] == ["No sessions found."]
+
+    @pytest.mark.asyncio
+    async def test_a_bare_resume_without_a_terminal_does_nothing(
+        self, conversation: Conversation
+    ):
+        """No picker, no pipe to draw it into — and no traceback either."""
+        other = conversation.runtime.new_conversation(cwd=conversation.cwd)
+        other.messages.append({"role": "user", "content": "an older session"})
+        other.save()
+
+        conversation.messages.append({"role": "user", "content": "current"})
+        before = conversation.id
+
+        result, events = await _run(_get_builtin_cmd("/resume"), conversation)
+
         assert result is CONTINUE
-        app.start_session.assert_not_called()
+        assert conversation.id == before
+        assert conversation.messages == [{"role": "user", "content": "current"}]
+        assert events == []
+
+
+class TestModelCommand:
+    @pytest.mark.asyncio
+    async def test_without_a_terminal_it_leaves_the_model_alone(
+        self, conversation: Conversation
+    ):
+        _result, events = await _run(_get_builtin_cmd("/model"), conversation)
+
+        assert conversation.model_name == "test-model"
+        assert events == []
 
 
 class TestSkillCommand:
     """`/skill:<name>` is contributed by a *host* plugin, so it works headless."""
 
     @pytest.mark.asyncio
-    async def test_basic_load(self):
+    async def test_basic_load(self, conversation: Conversation):
         cmd = make_skill_command(_skill("workflow", "DAG orchestration", "instructions here"))
         assert cmd.name == "/skill:workflow"
         assert cmd.description == "DAG orchestration"
 
-        result = await cmd.handler(_make_ctx(frontend=None))
+        result, _events = await _run(cmd, conversation)
 
         assert result.kind is Kind.PROMPT
         assert "[Skill:workflow" in result.prompt
@@ -251,21 +328,19 @@ class TestSkillCommand:
         assert "User request:" not in result.prompt
 
     @pytest.mark.asyncio
-    async def test_with_user_request(self):
+    async def test_with_user_request(self, conversation: Conversation):
         cmd = make_skill_command(_skill("kami", "PDF typesetting", "typeset instructions"))
-        result = await cmd.handler(_make_ctx(frontend=None, args="帮我做一份简历"))
+
+        result, _events = await _run(cmd, conversation, args="帮我做一份简历")
+
         assert "User request: 帮我做一份简历" in result.prompt
         assert "typeset instructions" in result.prompt
 
+    @pytest.mark.asyncio
+    async def test_an_empty_skill_says_so(self, conversation: Conversation):
+        _result, events = await _run(make_skill_command(_skill("empty", "d", "")), conversation)
 
-def _session() -> Session:
-    return Session(
-        id="session_test",
-        created_at="2025-01-01T00:00:00",
-        updated_at="2025-01-01T00:00:00",
-        workdir="/tmp",
-        messages=[{"role": "user", "content": "hi"}],
-    )
+        assert [n.level for n in _notices(events)] == ["warn"]
 
 
 def _skill(name: str, description: str, content: str) -> MagicMock:
@@ -274,3 +349,12 @@ def _skill(name: str, description: str, content: str) -> MagicMock:
     skill.metadata.description = description
     skill.load_content.return_value = content
     return skill
+
+
+def test_the_terminal_ships_the_commands_it_claims(monkeypatch):
+    """The plugin's description lists what it actually registers."""
+    from mocode.cli.plugin import PLUGIN
+
+    names = {c.name for c in (*misc.commands, *model.commands, *session_cmds.commands)}
+    described = set(PLUGIN.description.replace("Terminal commands: ", "").split())
+    assert described <= names
