@@ -49,9 +49,16 @@ class LoadedPlugins:
 
 def builtin_plugins() -> list[Plugin]:
     """The plugins MoCode ships, in a fixed (prompt-stable) order."""
-    from .builtin import filesystem, shell, skills
+    from .builtin import default_prompts, filesystem, help, session, shell, skills
 
-    return [filesystem.PLUGIN, shell.PLUGIN, skills.PLUGIN]
+    return [
+        filesystem.PLUGIN,
+        shell.PLUGIN,
+        skills.PLUGIN,
+        default_prompts.PLUGIN,
+        session.PLUGIN,
+        help.PLUGIN,
+    ]
 
 
 def default_plugin_dirs(cwd: Path, home: Path) -> list[Path]:

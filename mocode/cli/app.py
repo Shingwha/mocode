@@ -93,9 +93,11 @@ class CLIApp:
 
             self.renderer = CLIRenderer(self.display, self.conversation)
 
-        # The terminal's own contributions — its built-in commands, plus
-        # whatever the project's plugins ship under `mocode.cli`. Built last,
-        # so a plugin can reach the conversation it landed in.
+        # The terminal's own contributions — the commands that need a terminal,
+        # plus whatever the project's plugins ship under `mocode.cli`. Built
+        # last, so a plugin can reach the conversation it landed in; the
+        # commands a conversation offers itself (/export, /clear, /help) were
+        # registered before it existed, by the host's built-in plugins.
         from .plugin import build_cli_plugins
 
         self.plugins = build_cli_plugins(

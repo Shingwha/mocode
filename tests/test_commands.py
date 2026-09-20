@@ -1,8 +1,9 @@
 """CommandRegistry, CommandResult, and the terminal's own commands.
 
 The command *contract* lives in the host; the commands tested here are the
-terminal's, so they run against a real conversation and assert what the user
-would have been shown — the notices the command published.
+terminal's — the ones that need a picker or a clipboard. What a conversation
+offers itself (/export, /clear, /help) arrives from the host's built-in
+plugins and is tested in test_builtin_plugins.py.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mocode.cli.commands import COMMANDS, misc, model, session as session_cmds
+from mocode.cli.commands import COMMANDS
 from mocode.core.events import Notice
 from mocode.host.command import (
     CONTINUE,
@@ -30,8 +31,6 @@ from mocode.host.plugin.builtin.skills import make_skill_command
 from mocode.host.runtime import MoCode
 
 BUILTIN_COMMANDS = COMMANDS
-
-_UNSET = object()
 
 
 @pytest.fixture
@@ -90,7 +89,7 @@ class TestCommandRegistry:
         reg.register(*BUILTIN_COMMANDS)
         names = [c.name for c in reg.all()]
         assert names == sorted(names)
-        assert "/help" in names
+        assert "/quit" in names
 
 
 class TestCommandResults:
@@ -161,71 +160,6 @@ class TestQuitCommand:
     async def test_returns_exit(self, conversation: Conversation):
         result, _events = await _run(_get_builtin_cmd("/quit"), conversation)
         assert result is EXIT
-
-
-class TestClearCommand:
-    @pytest.mark.asyncio
-    async def test_starts_a_new_session_and_says_so(self, conversation: Conversation):
-        conversation.messages.append({"role": "user", "content": "hello"})
-        previous = conversation.id
-
-        result, events = await _run(_get_builtin_cmd("/clear"), conversation)
-
-        assert result is CONTINUE
-        assert conversation.id != previous
-        assert conversation.messages == []
-        assert any(isinstance(e, ConversationChanged) for e in events)
-
-    @pytest.mark.asyncio
-    async def test_the_previous_session_survives_on_disk(self, conversation: Conversation):
-        conversation.messages.append({"role": "user", "content": "hello"})
-        previous = conversation.id
-
-        await _run(_get_builtin_cmd("/clear"), conversation)
-
-        assert [s.id for s in conversation.list_sessions()] == [previous]
-
-
-class TestHelpCommand:
-    @pytest.mark.asyncio
-    async def test_lists_registered_commands(self, conversation: Conversation):
-        registry = CommandRegistry()
-        registry.register(_get_builtin_cmd("/quit"), _get_builtin_cmd("/help"))
-
-        _result, events = await _run(
-            _get_builtin_cmd("/help"), conversation, commands=registry
-        )
-
-        listed = _notices(events)[0].message
-        assert "/quit" in listed and "/help" in listed
-
-
-class TestExportCommand:
-    @pytest.mark.asyncio
-    async def test_exports_json_into_the_project(self, conversation: Conversation):
-        conversation.messages.append({"role": "user", "content": "hi"})
-
-        result, events = await _run(_get_builtin_cmd("/export"), conversation)
-
-        assert result is CONTINUE
-        written = list(Path(conversation.cwd).glob("session_*.json"))
-        assert len(written) == 1
-        assert "Exported 1 msgs" in _notices(events)[0].message
-
-    @pytest.mark.asyncio
-    async def test_export_md_format(self, conversation: Conversation):
-        conversation.messages.append({"role": "user", "content": "hi"})
-
-        await _run(_get_builtin_cmd("/export"), conversation, args="md")
-
-        assert len(list(Path(conversation.cwd).glob("session_*.md"))) == 1
-
-    @pytest.mark.asyncio
-    async def test_nothing_to_export(self, conversation: Conversation):
-        _result, events = await _run(_get_builtin_cmd("/export"), conversation)
-
-        assert [n.level for n in _notices(events)] == ["warn"]
-        assert list(Path(conversation.cwd).glob("session_*")) == []
 
 
 class TestResumeCommand:
@@ -343,7 +277,7 @@ def test_the_terminal_registers_its_commands_on_a_fresh_registry():
 
     registry = CommandRegistry()
     BuiltinCommands().build(_FakeCLI(registry))
-    shipped = {c.name for c in (*misc.commands, *model.commands, *session_cmds.commands)}
+    shipped = {c.name for c in COMMANDS}
     assert shipped <= {c.name for c in registry.all()}
 
 

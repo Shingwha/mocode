@@ -396,7 +396,14 @@ class TestPluginHost:
 
 class TestPluginSet:
     def test_builtin_registry_is_stable(self):
-        assert [p.name for p in builtin_plugins()] == ["filesystem", "shell", "skills"]
+        assert [p.name for p in builtin_plugins()] == [
+            "filesystem",
+            "shell",
+            "skills",
+            "default-prompts",
+            "session",
+            "help",
+        ]
 
     def test_loaded_once_and_built_per_conversation(self, tmp_path: Path):
         """Loading is per project; building is per conversation.

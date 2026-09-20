@@ -231,6 +231,11 @@ Two files are merged into the system prompt, global first:
 - `~/.mocode/AGENTS.md` — instructions for all your projects
 - `./AGENTS.md` — instructions for this project
 
+The prompt sections, `/export`, `/clear` and `/help` are contributions from
+MoCode's built-in plugins (`default-prompts`, `session`, `help`) — ordinary
+plugins you can disable with `"plugins": { "default-prompts": { "enabled":
+false } }`, the same way as any other.
+
 ---
 
 ## Project Layout

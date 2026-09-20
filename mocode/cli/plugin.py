@@ -48,10 +48,10 @@ class CLIPlugin:
 
 
 class BuiltinCommands(CLIPlugin):
-    """The terminal's own slash commands."""
+    """The terminal's own commands — the ones that need a terminal."""
 
     name = "cli"
-    description = "Terminal commands: /help /clear /copy /model /export /resume"
+    description = "Terminal commands: /quit /copy /model /resume"
 
     def build(self, cli: "CLIApp") -> None:
         # Imported here so a headless run never pays for questionary.

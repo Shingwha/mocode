@@ -180,7 +180,7 @@ the declaration, the README — lives in
 | Tools | `ctx.tools.register(tool)` — relative paths should resolve against `ctx.cwd` |
 | Commands | `ctx.register(Command(...))` — a *shared* command, dispatchable from any frontend |
 | Hooks | `ctx.hooks.append(hook)` |
-| Prompt sections | `ctx.prompt_sections.append(Section(...))` — framework sections win a name collision |
+| Prompt sections | `ctx.prompt_sections.append(Section(...))` — a name collision is won by the last section registered |
 | Own settings | `ctx.plugin_config("name")` — the `plugins.<name>` object from config.json |
 | Model facts | `ctx.model` — name / `context_window` / `max_output`, readable in `build()` |
 | Files it ships | `ctx.plugin_sources` — the directories the project's plugins were loaded from |
@@ -415,10 +415,10 @@ conversation. A hook may enrich it in `on_tool_complete` by writing to
   same trust model as a pytest plugin.
 - **Name your tools and commands distinctively.** A later registration with
   the same name replaces an earlier one.
-- **Built-in names are reserved** (`filesystem`, `shell`, `skills`): a
-  third-party plugin cannot shadow them. Overriding built-in behaviour means
-  disabling the built-in and contributing your own tool under a different
-  name.
+- **Built-in names are reserved** (`filesystem`, `shell`, `skills`,
+  `default-prompts`, `session`, `help`): a third-party plugin cannot shadow
+  them. Overriding built-in behaviour means disabling the built-in and
+  contributing your own under a different name.
 - **One plugin, one name.** Project-local beats user-global; the loser is
   skipped rather than loaded twice.
 - **Failures are contained.** Import errors and exceptions from `build()` are

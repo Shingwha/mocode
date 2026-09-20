@@ -29,17 +29,18 @@ mocode/
 │   ├── config.py        Config, ProviderEntry, ModelEntry
 │   ├── session.py       Session, SessionStore
 │   ├── export.py        Session → Markdown
-│   ├── prompt.py        build_system_prompt(ctx)
+│   ├── prompt.py        build_system_prompt(ctx) — render sections, diff drift
 │   └── plugin/          Plugin, HostContext, loader, PluginHost, env (a plugin's
 │                        own uv environment), install (plugin install/sync/list/remove)
-│       └── builtin/     the plugins MoCode ships: filesystem, shell, skills
+│       └── builtin/     the plugins MoCode ships: filesystem, shell, skills,
+│                         default-prompts, session, help
 ├── cli/                 the terminal front-end — a consumer of host/
 │   ├── app.py           CLIApp — the REPL, dispatch and Ctrl-C
 │   ├── plugin.py        CLIPlugin — the terminal's own extension surface
 │   ├── render.py        CLIRenderer — the event stream, as terminal lines
 │   ├── lines.py         Line + builders — what a turn looks like, as data
 │   ├── display.py       Display — terminal primitives; theme, text, input, dialogs
-│   └── commands/        /quit /help /clear /copy /model /export /resume
+│   └── commands.py      the commands that need a terminal: /quit /copy /model /resume
 ├── providers/openai.py  OpenAI-compatible streaming provider
 ├── plugins/__init__.py  the public SDK third-party plugins import
 └── cli_args.py main.py  argument parsing and process entry
@@ -193,18 +194,23 @@ conversation has in an application — a route, a tab, a socket — is that
 application's business. `mc.store` is the session store, and
 `mc.resume(session_id)` opens a stored one wherever its project was.
 
-**The host contributes no commands of its own.** `conversation.commands`
-starts empty and fills with whatever plugins register — `/skill:<name>` from
-the skills plugin, anything a third-party plugin adds. `/help`, `/model`,
-`/resume` and the rest need a picker or a clipboard, so they belong to the
-terminal, which registers them through its own plugin interface
-(`cli/plugin.py`).
+**Every command is a plugin contribution.** `conversation.commands` starts
+empty and fills with whatever plugins register. The host's built-in plugins
+supply the ones any frontend can honour — `/export`, `/clear` (`session`),
+`/help` (`help`), `/skill:<name>` (`skills`) — and each is disabled with
+`plugins.<name>.enabled = false` like any other. The commands that need an
+interactive picker or the clipboard (`/model`, `/resume`, `/copy`, `/quit`)
+belong to the terminal, which registers them through its own plugin interface
+(`cli/plugin.py`, `cli/commands.py`).
 
-The system prompt is assembled from framework sections (`guidelines`,
-`agents`, `environment`, `tools`) plus `ctx.prompt_sections` contributed by
-plugins, rendered in `(priority, insertion order)` order so stable content
-stays in front of volatile content for prefix caching. Framework sections win
-a name collision.
+**The prompt is assembled from plugin sections alone.** `host/prompt.py`
+renders `ctx.prompt_sections` as XML in `(priority, insertion order)` order —
+stable content first, volatile last, for prefix caching — and diffs snapshots
+to notice drift; it contributes no content of its own. The default sections
+(`guidelines`, `agents`, `environment`, `time`) come from the `default-prompts`
+builtin plugin, and a name collision is won by the last section registered,
+the same rule every other contribution follows. Tool schemas travel with every
+request, so the prompt never repeats them.
 
 ## Plugins
 
@@ -306,5 +312,6 @@ An embedding application is the same path minus the terminal:
   isolation; `tests/test_cli_plugin.py` — the terminal's surface.
 - `tests/test_commands.py` — the terminal's commands against a real
   conversation, asserting the notices they published;
+  `tests/test_builtin_plugins.py` — the host's built-in plugins the same way;
   `tests/test_display.py` — a whole turn through `CLIRenderer`, no TTY.
 - `tests/providers.py` — `MockProvider` and the chunk-replay helpers.
