@@ -23,9 +23,9 @@ byte-identical, so the provider's prefix cache for the old turns survives.
 What changed since the model was last told is not written into the prompt —
 it is appended to the history as a context-update notice, section by section
 (:func:`diff_sections`), and the session remembers the last announced state
-(``prompt_seen``) as the baseline for the next diff. A change that was
-reverted back is not a change. ``Conversation.rebuild_prompt`` re-freezes
-outright, accepting the cache loss that follows.
+(``prompt_seen``) as the baseline for the next diff: what the model was last
+told is what new drift is measured against. ``Conversation.rebuild_prompt``
+re-freezes outright, accepting the cache loss that follows.
 """
 
 from __future__ import annotations
@@ -87,9 +87,11 @@ def diff_sections(
 ) -> list[str]:
     """What changed between two :func:`rendered_sections` snapshots.
 
-    One entry per section — added, removed, or now reading differently. The
-    baseline is what the model was last told, so a change that was reverted
-    back is not a change.
+    One entry per section — added, removed, or now reading differently —
+    carrying the new content only: the prompt the model still runs with is
+    already in its context, so a notice states the current truth and nothing
+    else. The baseline is what the model was last told; a change reverted
+    before it was ever announced is not a change.
     """
     old = {record["name"]: record["xml"] for record in seen}
     new = {record["name"]: record["xml"] for record in fresh}
@@ -99,10 +101,7 @@ def diff_sections(
         if name not in old:
             lines.append(f'- section "{name}" was added:\n{_clip(xml)}')
         elif old[name] != xml:
-            if len(old[name]) <= 120 and len(xml) <= 120:
-                lines.append(f'- section "{name}": {old[name]} → {xml}')
-            else:
-                lines.append(f'- section "{name}" now reads:\n{_clip(xml)}')
+            lines.append(f'- section "{name}" now reads:\n{_clip(xml)}')
     for name in old:
         if name not in new:
             lines.append(f'- section "{name}" was removed')
