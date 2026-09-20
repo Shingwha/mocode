@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from mocode.cli_args import parse_args
+from mocode.host.plugin.install import Source
 from mocode.host.plugin import install as plugins
 from mocode.host.plugin.env import PluginVenvError
 
@@ -103,19 +104,20 @@ class TestSubdirectorySources:
     """A git URL may name a subdirectory — the multi-plugin repository shape."""
 
     def test_the_source_shapes(self):
-        tree = "https://github.com/o/mocode-plugins/tree/main/kimi-search"
-        assert plugins._split_source(tree) == (
-            "https://github.com/o/mocode-plugins", "main", "kimi-search",
+        tree = Source.parse("https://github.com/o/mocode-plugins/tree/main/kimi-search")
+        assert (tree.url, tree.ref, tree.subdir, tree.local) == (
+            "https://github.com/o/mocode-plugins", "main", "kimi-search", False,
         )
-        gitlab = "https://gitlab.com/o/r/-/tree/v1/plugins/acme"
-        assert plugins._split_source(gitlab) == (
+        gitlab = Source.parse("https://gitlab.com/o/r/-/tree/v1/plugins/acme")
+        assert (gitlab.url, gitlab.ref, gitlab.subdir) == (
             "https://gitlab.com/o/r", "v1", "plugins/acme",
         )
-        fragment = "https://example.com/x.git#plugins/acme"
-        assert plugins._split_source(fragment) == (
+        fragment = Source.parse("https://example.com/x.git#plugins/acme")
+        assert (fragment.url, fragment.ref, fragment.subdir) == (
             "https://example.com/x.git", None, "plugins/acme",
         )
-        assert plugins._split_source("/local/acme") == ("/local/acme", None, None)
+        local = Source.parse("/local/acme")
+        assert (local.url, local.local) == ("/local/acme", True)
 
     def test_a_subdirectory_installs_from_the_clone(self, tmp_path, monkeypatch):
         argv_seen = []

@@ -73,7 +73,11 @@ def load_cli_plugins(sources: Iterable[Path]) -> list[CLIPlugin]:
         entry = Path(source) / NAMESPACE / ENTRY
         if not entry.is_file():
             continue
-        module = import_module_file(entry, f"mocode_cli_plugin_{slugify(source.name)}")
+        module = import_module_file(
+            entry,
+            f"mocode_cli_plugin_{slugify(source.name)}",
+            fix=f"mocode plugin sync {source.name}",
+        )
         if module is None:
             continue
         plugin = resolve_plugin(module, CLIPlugin, fallback_name=source.name)

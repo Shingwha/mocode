@@ -115,8 +115,7 @@ class TestTheBridge:
         load_plugins(plugin_dirs=[tmp_path], config=Config())
 
         err = capsys.readouterr().err
-        assert "mocode plugin sync" in err
-        assert "docs/plugins.md" in err
+        assert "fix: mocode plugin sync needful" in err
 
 
 class TestSync:

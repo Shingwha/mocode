@@ -134,7 +134,11 @@ def load_plugin(spec: PluginSpec) -> Plugin | None:
         # loads — and it stays for the process, so its lazy imports do too.
         # See env.py for what attaching does and does not promise.
         PluginVenv(spec.directory).attach()
-    module = import_module_file(spec.module, f"mocode_plugin_{slugify(spec.name)}")
+    module = import_module_file(
+        spec.module,
+        f"mocode_plugin_{slugify(spec.name)}",
+        fix=f"mocode plugin sync {spec.name}",
+    )
     if module is None:
         return None
     plugin = resolve_plugin(module, Plugin, fallback_name=spec.name)
@@ -228,8 +232,14 @@ def slugify(name: str) -> str:
 # ── Import helpers ──────────────────────────────────────────
 
 
-def import_module_file(path: Path, module_name: str) -> types.ModuleType | None:
-    """Import *path* as *module_name*. ``None`` if it cannot be imported."""
+def import_module_file(
+    path: Path, module_name: str, fix: str = ""
+) -> types.ModuleType | None:
+    """Import *path* as *module_name*. ``None`` if it cannot be imported.
+
+    *fix* is the remedy reported when the module imports a package nobody
+    has — the exact command for this plugin, ready to copy.
+    """
     try:
         spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
@@ -241,13 +251,8 @@ def import_module_file(path: Path, module_name: str) -> types.ModuleType | None:
     except Exception as e:  # a broken plugin must not take the host down
         sys.modules.pop(module_name, None)
         report(f"failed to import {path}: {e}")
-        if isinstance(e, ModuleNotFoundError):
-            report(
-                f"  {path}: needs a package mocode's environment does not "
-                "have — install it there (uv pip install <package>), or give "
-                "the plugin one of its own (mocode plugin sync — "
-                "docs/plugins.md#dependencies)"
-            )
+        if isinstance(e, ModuleNotFoundError) and fix:
+            report(f"  fix: {fix}")
         return None
 
 
