@@ -113,7 +113,21 @@ mocode plugin remove <name>                    # delete it, environment included
 ```
 
 The manifest decides the directory name, so what `install` places is what
-`list` shows and `sync`/`remove` address. Installing is an act of trust — a
+`list` shows and `sync`/`remove` address.
+
+A git URL may name a **subdirectory** of a repository — how a collection of
+plugins shares one repository:
+
+```bash
+mocode plugin install https://github.com/<you>/mocode-plugins/tree/main/kimi-search
+mocode plugin install https://github.com/<you>/mocode-plugins.git#kimi-search
+```
+
+The first form checks out the ref the URL names; the `#` form takes the path
+on the default branch. Both place the subdirectory's plugin under its
+manifest name, like any other source.
+
+Installing is an act of trust — a
 plugin is code MoCode imports and runs; nothing executes during the install
 itself, but the next start will. A plugin installed or synced here is loaded
 by the *next* start; a running process does not retry loads.

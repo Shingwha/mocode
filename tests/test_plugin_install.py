@@ -99,6 +99,59 @@ class TestInstall:
             plugins.install_plugin(str(tmp_path / "missing"), root=tmp_path)
 
 
+class TestSubdirectorySources:
+    """A git URL may name a subdirectory — the multi-plugin repository shape."""
+
+    def test_the_source_shapes(self):
+        tree = "https://github.com/o/mocode-plugins/tree/main/kimi-search"
+        assert plugins._split_source(tree) == (
+            "https://github.com/o/mocode-plugins", "main", "kimi-search",
+        )
+        gitlab = "https://gitlab.com/o/r/-/tree/v1/plugins/acme"
+        assert plugins._split_source(gitlab) == (
+            "https://gitlab.com/o/r", "v1", "plugins/acme",
+        )
+        fragment = "https://example.com/x.git#plugins/acme"
+        assert plugins._split_source(fragment) == (
+            "https://example.com/x.git", None, "plugins/acme",
+        )
+        assert plugins._split_source("/local/acme") == ("/local/acme", None, None)
+
+    def test_a_subdirectory_installs_from_the_clone(self, tmp_path, monkeypatch):
+        argv_seen = []
+
+        def fake_run(argv, **kwargs):
+            argv_seen.append(argv)
+            # With -b <ref> the target shifts one argument later.
+            plugin = Path(argv[7]) / "plugins" / "acme"
+            plugin.mkdir(parents=True)
+            (plugin / "plugin.json").write_text(
+                json.dumps({"name": "acme", "description": ""}), encoding="utf-8"
+            )
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        monkeypatch.setattr(plugins.subprocess, "run", fake_run)
+
+        installed = plugins.install_plugin(
+            "https://github.com/o/mocode-plugins/tree/main/plugins/acme",
+            root=tmp_path,
+        )
+
+        assert argv_seen[0][4:6] == ["-b", "main"]
+        assert installed.name == "acme"
+        assert _installed_flag(tmp_path, "acme").is_file()
+
+    def test_a_subdirectory_may_not_escape_the_clone(self, tmp_path, monkeypatch):
+        def fake_run(argv, **kwargs):
+            Path(argv[5]).mkdir(parents=True)
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        monkeypatch.setattr(plugins.subprocess, "run", fake_run)
+
+        with pytest.raises(plugins.PluginInstallError, match="may not contain"):
+            plugins.install_plugin("https://example.com/x.git#../acme", root=tmp_path)
+
+
 class TestInstallSyncsTheEnvironment:
     def test_a_declared_plugin_syncs_in_the_same_breath(self, tmp_path, monkeypatch):
         source = _source_plugin(tmp_path / "src", "acme", with_pyproject=True)

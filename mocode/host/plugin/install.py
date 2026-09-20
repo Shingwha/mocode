@@ -1,10 +1,12 @@
 """Installing plugins — fetch, place, and give the plugin its environment.
 
 ``mocode plugin install <source>`` is the one command: fetch the plugin (a
-git URL or a local directory), place it under a plugins root named by its
-manifest, and — when it declares dependencies — materialise its environment
-in the same breath. ``list`` and ``remove`` manage what install produced;
-``sync`` re-runs the environment half alone, after dependencies were edited.
+git URL or a local directory — the URL may name a subdirectory of a
+repository, the shape a plugin collection takes), place it under a plugins
+root named by its manifest, and — when it declares dependencies —
+materialise its environment in the same breath. ``list`` and ``remove``
+manage what install produced; ``sync`` re-runs the environment half alone,
+after dependencies were edited.
 
 Installation is an act of trust: a plugin is code mocode imports and runs on
 its next start. Nothing here executes plugin code — fetching and placing are
@@ -15,6 +17,7 @@ caller.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -149,22 +152,66 @@ def _rmtree(directory: Path) -> None:
         shutil.rmtree(directory, onerror=_clear_readonly)
 
 
+#: A tree URL — what a browser shows for a directory on GitHub or GitLab —
+#: names a repository, a ref, and a path inside it.
+_TREE_URL = re.compile(
+    r"^(?P<repo>https?://[^/]+/[^/]+/[^/]+?)(?:\.git)?/(?:-/)?tree/(?P<ref>[^/]+)(?P<path>/.+)$"
+)
+
+
+def _split_source(source: str) -> tuple[str, str | None, str | None]:
+    """Split an install source into ``(repository, ref, subdirectory)``.
+
+    A tree URL carries its own ref: ``https://github.com/o/r/tree/main/sub``
+    installs the ``sub`` directory of that repository at ``main``. Any git
+    URL may instead take a ``#subdir`` fragment — a path on the default
+    branch. Local paths and plain git URLs come back untouched.
+    """
+    match = _TREE_URL.match(source)
+    if match:
+        path = match.group("path").strip("/")
+        return match.group("repo"), match.group("ref"), path or None
+    if _is_git(source) and "#" in source:
+        url, _, fragment = source.partition("#")
+        return url, None, fragment.strip("/") or None
+    return source, None, None
+
+
+def _subdirectory(root: Path, subdir: str, source: str) -> Path:
+    """The directory *subdir* names inside a freshly cloned *root*.
+
+    The source chose the path, so it is checked like one: ``..`` never
+    escapes the clone, and a name that is no directory names nothing
+    installable.
+    """
+    if ".." in subdir.split("/"):
+        raise PluginInstallError(f"{source}: '{subdir}' may not contain '..'")
+    directory = (root / subdir).resolve()
+    if not directory.is_relative_to(root.resolve()):
+        raise PluginInstallError(f"{source}: '{subdir}' escapes the repository")
+    if not directory.is_dir():
+        raise PluginInstallError(
+            f"{source}: no directory '{subdir}' in the repository"
+        )
+    return directory
+
+
 def _fetch(source: str, tmp: Path) -> Path:
     """A local directory holding the plugin-to-be: cloned, or the source itself."""
-    if _is_git(source):
+    url, ref, subdir = _split_source(source)
+    if _is_git(url):
         target = tmp / "repo"
-        result = subprocess.run(
-            ["git", "clone", "--depth", "1", source, str(target)],
-            capture_output=True,
-            text=True,
-        )
+        argv = ["git", "clone", "--depth", "1"]
+        if ref:
+            argv += ["-b", ref]
+        result = subprocess.run([*argv, url, str(target)], capture_output=True, text=True)
         if result.returncode != 0 or not target.is_dir():
             detail = (result.stderr or "").strip().splitlines()
             raise PluginInstallError(
                 f"git clone failed: {detail[-1] if detail else source}"
             )
-        return target
-    directory = Path(source).expanduser()
+        return _subdirectory(target, subdir, source) if subdir else target
+    directory = Path(url).expanduser()
     if directory.is_dir():
         return directory
     raise PluginInstallError(

@@ -3,7 +3,10 @@
 Usage:
     mocode                                              Launch interactive CLI
     mocode -p "prompt"                                  Non-interactive oneshot
-    mocode plugin install <git-url|path> [--project]    Install a plugin
+    mocode plugin install <git-url|path> [--project]    Install a plugin; a git URL
+                                                        may name a subdirectory of a
+                                                        repository: .../tree/<ref>/<dir>
+                                                        or <url>#<dir>
     mocode plugin sync <name>                           Materialise its environment
     mocode plugin list                                  Show this project's plugins
     mocode plugin remove <name>                         Remove an installed plugin

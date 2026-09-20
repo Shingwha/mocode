@@ -25,7 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     install = plugin_commands.add_parser(
         "install", help="Install a plugin from a git URL or a local directory"
     )
-    install.add_argument("source", help="git URL or path to a plugin directory")
+    install.add_argument(
+        "source",
+        help="git URL or local path; a git URL may name a subdirectory "
+        "of a repository (.../tree/<ref>/<dir> or <url>#<dir>)",
+    )
     install.add_argument(
         "--project",
         action="store_true",
