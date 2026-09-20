@@ -206,3 +206,25 @@ class TestPortability:
         assert md.startswith("---")
         assert "## System Prompt" in md
         assert "## Turn" not in md
+
+
+class TestFrozenPromptFields:
+    def test_round_trip_and_optional_for_legacy_files(self):
+        session = _session(
+            system_prompt="<system-prompt>frozen</system-prompt>",
+            prompt_seen=[{"name": "time", "attrs": {}, "xml": "<time>today</time>"}],
+        )
+
+        assert Session.from_dict(session.to_dict()) == session
+
+        legacy = Session.from_dict(
+            {
+                "id": "session_old",
+                "created_at": "t",
+                "updated_at": "t",
+                "workdir": "/project",
+                "messages": [],
+            }
+        )
+        assert legacy.system_prompt == ""
+        assert legacy.prompt_seen == []

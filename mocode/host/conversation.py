@@ -29,6 +29,7 @@ from ..core.tool import ToolRegistry
 from .events import ConversationChanged
 from .plugin.context import HostContext
 from .plugin.host import PluginHost
+from .prompt import drift_notice, diff_sections, rendered_sections
 from .session import (
     Session,
     extract_title,
@@ -78,6 +79,13 @@ class Conversation:
         self.id = session_id
         self.created_at = created_at
         self._saved_at = ""
+        #: The prompt this conversation runs with, frozen at assembly — a
+        #: resume reinstates it byte-identical so the provider's prefix cache
+        #: survives; changes arrive as history notices, not rewrites.
+        self._prompt_frozen = agent.system_prompt
+        #: The prompt sections as last told to the model — the baseline the
+        #: next drift notice is diffed against.
+        self._prompt_seen = rendered_sections(ctx)
 
     # ── Running ────────────────────────────────────────────
 
@@ -205,6 +213,11 @@ class Conversation:
     async def load_session(self, session: Session) -> None:
         """Continue a stored session: its identity, its history, its model.
 
+        The system prompt stays the one the session ran with — the provider's
+        prefix cache for the old turns survives the resume. What has changed
+        since the model was last told arrives as a notice appended to the
+        history, not as a rewritten prompt.
+
         The model comes back with the conversation when the config still knows
         the provider it was using; otherwise the current one stays, and a caller
         that cares can compare ``session.provider`` with ``provider_key``.
@@ -218,11 +231,18 @@ class Conversation:
             if self.runtime.config.providers.get(session.provider) is not None:
                 self.set_model(session.provider, session.model)
         self.adopt(session.messages)
+        self._freeze_prompt(session)
         await self.changed()
 
     def rebuild_prompt(self) -> None:
-        """Re-read AGENTS.md; tools, skills and sections are live references."""
+        """Re-render and re-freeze the system prompt — the explicit escape hatch.
+
+        A resume keeps the frozen prompt and tells the model what changed as a
+        notice; this replaces the prompt outright, accepting the cache loss.
+        """
         self.host.rebuild_prompt()
+        self._prompt_frozen = self.agent.system_prompt
+        self._prompt_seen = rendered_sections(self.ctx)
 
     def list_sessions(self) -> list[Session]:
         """Sessions recorded for this project, newest first."""
@@ -280,7 +300,7 @@ class Conversation:
     # ── Internals ──────────────────────────────────────────
 
     def _as_session(self, *, updated_at: str, title: str) -> Session:
-        """The same eight fields both ``save()`` and ``session()`` report."""
+        """The same fields both ``save()`` and ``session()`` report."""
         return Session(
             id=self.id,
             created_at=self.created_at,
@@ -290,13 +310,38 @@ class Conversation:
             title=title,
             model=self.model_name,
             provider=self.provider_key,
+            system_prompt=self._prompt_frozen,
+            prompt_seen=self._prompt_seen,
         )
 
     def adopt(self, messages: list[dict]) -> None:
-        """Replace the history in place, with no stale turn state behind it."""
+        """Replace the history in place, with no stale turn state behind it.
+
+        The prompt is untouched — freezing it and noticing drift is
+        :meth:`load_session`'s business.
+        """
         self.agent.reset()
         self.agent.messages.extend(messages)
-        self.rebuild_prompt()
+
+    def _freeze_prompt(self, session: Session) -> None:
+        """Reinstate the session's frozen prompt, noticing any drift.
+
+        A session recorded before prompts were frozen carries none — the
+        prompt as assembled becomes the freeze, and since nothing was ever
+        announced, nothing is announced now.
+        """
+        if session.system_prompt:
+            self._prompt_frozen = session.system_prompt
+            self.agent.system_prompt = session.system_prompt
+        else:
+            self._prompt_frozen = self.agent.system_prompt
+        fresh = rendered_sections(self.ctx)
+        changes = diff_sections(session.prompt_seen or fresh, fresh)
+        if changes:
+            self.agent.messages.append(
+                {"role": "user", "content": drift_notice(changes)}
+            )
+        self._prompt_seen = fresh
 
     def __repr__(self) -> str:
         return f"<Conversation {self.id} {self.cwd}>"

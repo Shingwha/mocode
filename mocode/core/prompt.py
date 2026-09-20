@@ -90,6 +90,17 @@ class Prompt:
         self._context.update(kwargs)
         return self
 
+    def render(self, section: Section) -> str | None:
+        """One section rendered as its XML tag, exactly as ``build()`` emits it.
+
+        ``None`` when it renders to nothing — the caller skips it the same
+        way ``build`` does.
+        """
+        content = self._render(section)
+        if not content:
+            return None
+        return _xml_tag(section.name, content, **section.attrs)
+
     def _render(self, section: Section) -> str | None:
         content = section.content
         if callable(content):

@@ -240,9 +240,13 @@ harness that reshapes itself between task batches — never restarts anything:
   iteration**, mid-run included.
 - **Prompt sections** — `ctx.prompt_sections` feeds the prompt when it is
   rendered. Changes apply at the next render: a new conversation, or
-  `conversation.rebuild_prompt()`. Inside a running turn, a hook writing
-  `ctx.system_prompt` in `before_iteration` is how the prompt changes — for
-  that run.
+  `conversation.rebuild_prompt()` — which re-freezes outright and accepts the
+  cache loss. A resumed session keeps the prompt it ran with, byte-identical,
+  so the provider's prefix cache survives; what changed since the model was
+  last told is appended to the history as a `[context update]` notice, and a
+  change reverted back is not announced at all. Inside a running turn, a hook
+  writing `ctx.system_prompt` in `before_iteration` is how the prompt changes
+  — for that run.
 - **Hooks** — `agent.hooks.add(hook)` takes effect at the next interception
   point. Hooks run in the order they were added — plugin load order: built-ins
   first, then each plugin directory in priority order, alphabetical inside

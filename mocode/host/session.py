@@ -39,6 +39,13 @@ class Session:
     title: str = ""
     model: str = ""
     provider: str = ""
+    #: The system prompt the session ran with. A resume reinstates it
+    #: byte-identical so the provider's prefix cache survives; empty for
+    #: sessions recorded before prompts were frozen.
+    system_prompt: str = ""
+    #: The prompt sections as of the last drift notice — the baseline for the
+    #: next one. A change reverted back to this state is not announced.
+    prompt_seen: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -52,6 +59,8 @@ class Session:
             title=data.get("title", ""),
             model=data.get("model", ""),
             provider=data.get("provider", ""),
+            system_prompt=data.get("system_prompt", ""),
+            prompt_seen=data.get("prompt_seen", []),
             metadata=data.get("metadata", {}),
         )
 
@@ -65,6 +74,8 @@ class Session:
             "title": self.title,
             "model": self.model,
             "provider": self.provider,
+            "system_prompt": self.system_prompt,
+            "prompt_seen": self.prompt_seen,
             "metadata": self.metadata,
         }
 

@@ -232,8 +232,9 @@ persist messages, not events — the message list is what the provider needs:
 conv.save(title="optional")       # persist to ~/.mocode/sessions/<hash>/<id>.json
 await conv.new_session()          # save, then begin fresh in this project
 await conv.new_session(messages)  # begin fresh, seeded from an export file
-await conv.load_session(session)  # continue a stored one: history, id, model
-conv.rebuild_prompt()             # re-read AGENTS.md after a change on disk
+await conv.load_session(session)  # continue a stored one: history, id, model — and the
+                                  # prompt it ran with; drift arrives as a history notice
+conv.rebuild_prompt()             # re-render and re-freeze after AGENTS.md changed on disk
 await conv.aclose()               # the full close: drain the turn, save, release, end
 conv.close()                      # the sync emergency path — same, but does not wait
 

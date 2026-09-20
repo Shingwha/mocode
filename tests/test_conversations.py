@@ -493,3 +493,121 @@ class TestGracefulClose:
         assert events[-1].cancelled is True
         assert turn.done and turn.cancelled
         assert conversation.agent.channel.closed
+
+
+class TestThePromptFreezesAcrossAResume:
+    """A resume keeps the session's prompt byte-identical — the provider's
+    prefix cache survives — and tells the model what changed instead."""
+
+    def test_the_prompt_carries_time_and_os(self, mc: MoCode, tmp_path: Path):
+        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+
+        assert "today:" in conversation.agent.system_prompt
+        assert "os:" in conversation.agent.system_prompt
+
+    @pytest.mark.asyncio
+    async def test_a_resume_keeps_the_prompt_and_notices_drift(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        project = _project(tmp_path, "a")
+        (project / "AGENTS.md").write_text("version one", encoding="utf-8")
+        first = _conversation(mc, project)
+        first.messages.append({"role": "user", "content": "hi"})
+        session = first.save()
+
+        (project / "AGENTS.md").write_text("version two", encoding="utf-8")
+        second = _conversation(mc, project)
+
+        await second.load_session(session)
+
+        # Frozen, not re-rendered: the old turns' prefix cache survives.
+        assert second.agent.system_prompt == session.system_prompt
+        notice = second.messages[-1]
+        assert notice["role"] == "user"
+        assert "[context update" in notice["content"]
+        assert "version two" in notice["content"]
+        resumed = second.session()
+        assert resumed.system_prompt == session.system_prompt
+        assert any("version two" in r["xml"] for r in resumed.prompt_seen)
+
+    @pytest.mark.asyncio
+    async def test_no_drift_means_no_notice(self, mc: MoCode, tmp_path: Path):
+        project = _project(tmp_path, "a")
+        first = _conversation(mc, project)
+        first.messages.append({"role": "user", "content": "hi"})
+        session = first.save()
+        second = _conversation(mc, project)
+
+        await second.load_session(session)
+
+        assert second.messages == session.messages
+
+    @pytest.mark.asyncio
+    async def test_a_change_reverted_between_resumes_is_never_news(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        project = _project(tmp_path, "a")
+        (project / "AGENTS.md").write_text("version one", encoding="utf-8")
+        first = _conversation(mc, project)
+        first.messages.append({"role": "user", "content": "hi"})
+        first.save()
+
+        # Changed and reverted before any resume saw it: never announced.
+        (project / "AGENTS.md").write_text("version two", encoding="utf-8")
+        (project / "AGENTS.md").write_text("version one", encoding="utf-8")
+        second = _conversation(mc, project)
+        await second.load_session(second.list_sessions()[0])
+
+        notices = [m for m in second.messages if "[context update" in str(m.get("content"))]
+        assert notices == []
+
+    @pytest.mark.asyncio
+    async def test_a_revert_after_a_notice_is_news_again(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        project = _project(tmp_path, "a")
+        (project / "AGENTS.md").write_text("version one", encoding="utf-8")
+        first = _conversation(mc, project)
+        first.messages.append({"role": "user", "content": "hi"})
+        first.save()
+
+        (project / "AGENTS.md").write_text("version two", encoding="utf-8")
+        second = _conversation(mc, project)
+        await second.load_session(second.list_sessions()[0])
+        resumed = second.save()
+
+        (project / "AGENTS.md").write_text("version one", encoding="utf-8")
+        third = _conversation(mc, project)
+        await third.load_session(resumed)
+
+        # The baseline is what the model was last told (version two), so the
+        # revert back to version one is news it must hear.
+        still = [m for m in third.messages if "[context update" in str(m.get("content"))]
+        assert len(still) == 2
+        assert "version one" in still[-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_a_legacy_session_gets_the_current_prompt(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        project = _project(tmp_path, "a")
+        conversation = _conversation(mc, project)
+        conversation.messages.append({"role": "user", "content": "hi"})
+        stored = conversation.save()
+        legacy = Session(
+            id=stored.id,
+            created_at=stored.created_at,
+            updated_at=stored.updated_at,
+            workdir=stored.workdir,
+            messages=stored.messages,
+            title=stored.title,
+            model=stored.model,
+            provider=stored.provider,
+        )
+        fresh = _conversation(mc, project)
+        before = fresh.agent.system_prompt
+
+        await fresh.load_session(legacy)
+
+        assert fresh.agent.system_prompt == before
+        assert fresh.messages == legacy.messages

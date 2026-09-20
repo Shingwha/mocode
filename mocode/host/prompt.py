@@ -15,12 +15,25 @@ Two locations are read and merged (global first, then project):
   - ``./AGENTS.md``           project-level instructions
 
 Both are optional. If neither exists, a short hint is rendered instead.
+
+Freezing and drift
+------------------
+The prompt a session runs with is *frozen*: a resume reinstates it
+byte-identical, so the provider's prefix cache for the old turns survives.
+What changed since the model was last told is not written into the prompt —
+it is appended to the history as a context-update notice, section by section
+(:func:`diff_sections`), and the session remembers the last announced state
+(``prompt_seen``) as the baseline for the next diff. A change that was
+reverted back is not a change. ``Conversation.rebuild_prompt`` re-freezes
+outright, accepting the cache loss that follows.
 """
 
 from __future__ import annotations
 
+import platform
+from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from ..core.prompt import Prompt, Section
 
@@ -31,12 +44,82 @@ if TYPE_CHECKING:
 def build_system_prompt(ctx: HostContext) -> str:
     """Render the main agent system prompt as an XML string."""
     prompt = Prompt()
-    for section in _framework_sections(ctx):
+    for section in current_sections(ctx):
         prompt.register(section)
-    for section in ctx.prompt_sections:
-        if prompt.get(section.name) is None:  # framework sections win
-            prompt.register(section)
     return prompt.build()
+
+
+def current_sections(ctx: HostContext) -> list[Section]:
+    """The sections a prompt would render now: framework first, plugin
+    contributions where they do not collide, ordered stable → volatile."""
+    sections = _framework_sections(ctx)
+    known = {section.name for section in sections}
+    for section in ctx.prompt_sections:
+        if section.name not in known:  # framework sections win
+            sections.append(section)
+            known.add(section.name)
+    return sorted(sections, key=lambda section: section.priority)
+
+
+def rendered_sections(ctx: HostContext) -> list[dict[str, Any]]:
+    """What ``build_system_prompt`` would render, one record per section.
+
+    ``{"name", "attrs", "xml"}`` — comparable across time and serializable
+    into a session, which is how drift is noticed on resume.
+    """
+    prompt = Prompt()
+    records = []
+    for section in current_sections(ctx):
+        prompt.register(section)
+        xml = prompt.render(section)
+        if xml is not None:
+            records.append({"name": section.name, "attrs": section.attrs, "xml": xml})
+    return records
+
+
+#: How much of a changed section a notice carries — an AGENTS.md-sized edit
+#: must not swamp the history.
+_DIFF_LIMIT = 2000
+
+
+def diff_sections(
+    seen: list[dict[str, Any]], fresh: list[dict[str, Any]]
+) -> list[str]:
+    """What changed between two :func:`rendered_sections` snapshots.
+
+    One entry per section — added, removed, or now reading differently. The
+    baseline is what the model was last told, so a change that was reverted
+    back is not a change.
+    """
+    old = {record["name"]: record["xml"] for record in seen}
+    new = {record["name"]: record["xml"] for record in fresh}
+    lines = []
+    for record in fresh:
+        name, xml = record["name"], record["xml"]
+        if name not in old:
+            lines.append(f'- section "{name}" was added:\n{_clip(xml)}')
+        elif old[name] != xml:
+            if len(old[name]) <= 120 and len(xml) <= 120:
+                lines.append(f'- section "{name}": {old[name]} → {xml}')
+            else:
+                lines.append(f'- section "{name}" now reads:\n{_clip(xml)}')
+    for name in old:
+        if name not in new:
+            lines.append(f'- section "{name}" was removed')
+    return lines
+
+
+def drift_notice(changes: list[str]) -> str:
+    """The message appended to the history: the context moved, here is how."""
+    return "[context update — the environment changed since the system prompt was written]\n" + "\n".join(
+        changes
+    )
+
+
+def _clip(text: str) -> str:
+    if len(text) <= _DIFF_LIMIT:
+        return text
+    return text[:_DIFF_LIMIT] + f"\n… ({len(text) - _DIFF_LIMIT} more characters omitted)"
 
 
 def _framework_sections(ctx: HostContext) -> list[Section]:
@@ -46,6 +129,7 @@ def _framework_sections(ctx: HostContext) -> list[Section]:
         Section("agents", _render_agents(ctx.home, ctx.cwd), priority=20),
         Section("environment", _render_environment(ctx), priority=30),
         Section("tools", _render_tools(ctx), priority=40),
+        Section("time", _render_time(), priority=60),
     ]
 
 
@@ -94,8 +178,15 @@ def _render_environment(ctx: HostContext) -> str:
         f"cwd: {ctx.cwd}",
         f"home: {ctx.home}",
         f"config: {ctx.home / 'config.json'}",
+        f"os: {platform.system()} {platform.release()}",
     ]
     return "\n".join(parts)
+
+
+def _render_time() -> str:
+    """The one line that goes stale — which is why it renders last, and why
+    a resume corrects it with a notice instead of a new prompt."""
+    return f"today: {datetime.now():%Y-%m-%d (%A)}"
 
 
 def _render_tools(ctx: HostContext) -> list[Section]:
