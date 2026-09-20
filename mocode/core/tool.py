@@ -187,12 +187,21 @@ class ToolRegistry:
     ``names()`` / ``all_schemas()`` / ``select()`` are the *visible* projection
     — a disabled tool stays registered and ``get()``-able but is not offered to
     the model, exactly like a disabled prompt section is not rendered.
+
+    The visible projection can also be *pinned* (:meth:`freeze`): the schemas
+    offered stop following the registry while every other view stays live.
+    That is the host's cache-protection lever — a request's tool payload held
+    byte-identical turn after turn, while a tool switched off after the freeze
+    is still absent from ``names()`` and still refuses to run. Off by default:
+    an unpinned registry reads live on every call, which is what an embedder
+    that wants the raw flexibility gets.
     """
 
     def __init__(self):
         self._tools: dict[str, Tool] = {}
         self._disabled: set[str] = set()
         self._schema_cache: list[dict] | None = None
+        self._frozen: list[dict] | None = None
 
     def register(self, tool: Tool) -> "ToolRegistry":
         self._tools[tool.name] = tool
@@ -228,14 +237,41 @@ class ToolRegistry:
             self._schema_cache = None
         return self
 
+    @property
+    def pinned(self) -> bool:
+        """Whether the offered interface is being held still."""
+        return self._frozen is not None
+
+    def freeze(self, schemas: list[dict] | None = None) -> "ToolRegistry":
+        """Hold the offered interface still — *schemas*, or the registry as it
+        stands now — until the next freeze.
+
+        The host's cache-protection lever, and the reason it lives here rather
+        than in the loop: what a request offers is this registry's projection,
+        so pinning the projection pins the request. Everything else stays
+        live, which is what makes the pin safe — a tool switched off after the
+        freeze disappears from ``names()`` (and refuses to run) while the
+        payload the model was offered stays byte-identical. Pass a stored
+        interface to reinstate one, the way a resumed session does.
+        """
+        if schemas is None:
+            schemas = self._live_schemas()
+        self._frozen = list(schemas)
+        return self
+
     def all_schemas(self) -> list[dict]:
+        if self._frozen is not None:
+            return self._frozen
         if self._schema_cache is None:
-            self._schema_cache = [
-                self._tools[name].to_schema()
-                for name in self._tools
-                if name not in self._disabled
-            ]
+            self._schema_cache = self._live_schemas()
         return self._schema_cache
+
+    def _live_schemas(self) -> list[dict]:
+        return [
+            self._tools[name].to_schema()
+            for name in self._tools
+            if name not in self._disabled
+        ]
 
     def select(
         self,
@@ -261,9 +297,11 @@ class ToolRegistry:
                 continue
             if include_tags is not None and not (tool.tags & include_tags):
                 continue
-            if exclude_tags and (tool.tags & exclude_tags):
+            if exclude_tags and tool.tags & exclude_tags:
                 continue
             new._tools[name] = tool
+        if self._frozen is not None:
+            new.freeze()  # a child view freezes at spawn, as its parent did
         return new
 
     def __len__(self) -> int:

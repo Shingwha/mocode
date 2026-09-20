@@ -182,6 +182,7 @@ the declaration, the README — lives in
 | Hooks | `ctx.hooks.append(hook)` |
 | Prompt sections | `ctx.prompt_sections.append(Section(...))` — a name collision is won by the last section registered |
 | Own settings | `ctx.plugin_config("name")` — the `plugins.<name>` object from config.json |
+| Own state | `ctx.plugin_state("name")` — a dict that travels with the session |
 | Model facts | `ctx.model` — name / `context_window` / `max_output`, readable in `build()` |
 | Files it ships | `ctx.plugin_sources` — the directories the project's plugins were loaded from |
 | Messages to the user | `await ctx.emit(Notice(...))` — a `Notice` carries its own text and level |
@@ -190,6 +191,18 @@ the declaration, the README — lives in
 `ctx.agent` is `None` during `build()` — the agent does not exist yet. Anything
 that needs it holds `ctx` and reads `ctx.agent` at call time; `ctx.emit` and
 `ctx.subscribe` work at call time too, during a run or between runs.
+
+### Remembering, across a resume
+
+`ctx.plugin_state("name")` returns this plugin's own dict for this
+conversation — created empty, and it *survives*: the host persists it with the
+session and hands it back when the session is resumed (or swapped when the
+conversation loads a different one), and clears it on `rebuild_prompt()`, when
+the model has just been re-told everything. Slots are keyed by plugin name, so
+plugins never see each other's, and nothing in the host knows what any plugin
+keeps in its own. It is the missing piece for anything stateful — a baseline,
+a counter, an index — and `cache-protect` is its first user: the baselines its
+drift notices are diffed against live there.
 
 ### One plugin instance, many builds
 
@@ -235,18 +248,29 @@ and the loop reads them back on every iteration. A host application — or a
 harness that reshapes itself between task batches — never restarts anything:
 
 - **`ctx.tools`** — `register` / `unregister` / `enable` / `disable` at any
-  moment. Each provider request is built from the registry as it stands
-  (`all_schemas()` is read per call), so a change takes effect on the **next
-  iteration**, mid-run included.
+  moment. What the model is *offered* is the registry's projection, and a
+  host may pin it (`ToolRegistry.freeze()`; `MoCode(freeze_interface=False)`
+  opts out) so a request's tool payload stays byte-identical for the session
+  and the provider's prefix cache survives. Either way the switch is live: a
+  tool switched off disappears from `names()`, refuses to run (`denied:`), and
+  the `cache-protect` plugin announces the change at the next turn as a
+  `[context update]` notice — a state line for a switch, a unified diff for a
+  rewritten schema, and the schema itself for a tool registered after the
+  freeze (callable through the registry, and it enters the pinned payload at
+  the next rebuild or session). A plugin that wants a *switchable* tool
+  registers it disabled in `build()` and flips it later: that is a pure flag
+  and costs no cache at all.
 - **Prompt sections** — `ctx.prompt_sections` feeds the prompt when it is
   rendered. Changes apply at the next render: a new conversation, or
-  `conversation.rebuild_prompt()` — which re-freezes outright and accepts the
-  cache loss. A resumed session keeps the prompt it ran with, byte-identical,
-  so the provider's prefix cache survives; what changed since the model was
-  last told is appended to the history as a `[context update]` notice, and a
-  change reverted back is not announced at all. Inside a running turn, a hook
-  writing `ctx.system_prompt` in `before_iteration` is how the prompt changes
-  — for that run.
+  `conversation.rebuild_prompt()` — which re-freezes the prompt, re-pins the
+  tool interface and clears every plugin's session state, accepting the cache
+  loss in one deliberate act. A resumed session keeps the prompt it ran with,
+  byte-identical, so the provider's prefix cache survives; what changed since
+  the model was last told arrives as a `[context update]` notice — one unified
+  diff per moved part — and a change reverted before the turn that would
+  announce it is not announced at all. Inside a running turn, a hook writing
+  `ctx.system_prompt` in `before_iteration` is how the prompt changes — for
+  that run.
 - **Hooks** — `agent.hooks.add(hook)` takes effect at the next interception
   point. Hooks run in the order they were added — plugin load order: built-ins
   first, then each plugin directory in priority order, alphabetical inside
@@ -416,9 +440,9 @@ conversation. A hook may enrich it in `on_tool_complete` by writing to
 - **Name your tools and commands distinctively.** A later registration with
   the same name replaces an earlier one.
 - **Built-in names are reserved** (`filesystem`, `shell`, `skills`,
-  `default-prompts`, `session`, `help`): a third-party plugin cannot shadow
-  them. Overriding built-in behaviour means disabling the built-in and
-  contributing your own under a different name.
+  `default-prompts`, `session`, `help`, `cache-protect`): a third-party plugin
+  cannot shadow them. Overriding built-in behaviour means disabling the
+  built-in and contributing your own under a different name.
 - **One plugin, one name.** Project-local beats user-global; the loser is
   skipped rather than loaded twice.
 - **Failures are contained.** Import errors and exceptions from `build()` are

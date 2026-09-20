@@ -92,6 +92,13 @@ class AgentLoop:
     One instance owns one conversation and runs one turn at a time: a second
     :meth:`start` while one is in flight raises instead of interleaving two
     histories into one.
+
+    What the loop sends is read live from its dependencies on every request —
+    the prompt as it stands, the tools as the registry offers them. Freezing
+    either half of that request is a *host* decision (see
+    :meth:`ToolRegistry.freeze <mocode.core.tool.ToolRegistry.freeze>`): an
+    embedder hands the loop whatever view of its tools it wants, and this loop
+    simply asks for it.
     """
 
     INTERRUPT_MSG = "[Response was interrupted by the user before completion.]"
@@ -517,6 +524,12 @@ class AgentLoop:
         if tool is None:
             tc.status = TOOL_NOT_FOUND
             tc.tool_result = f"{ERROR_PREFIX} unknown tool '{tc.tool_name}'"
+            return
+        if tc.tool_name not in self._tools.names():
+            # Registered but switched off: the frozen interface still offers
+            # it, so the model may try — the refusal is the correction.
+            tc.status = TOOL_DENIED
+            tc.tool_result = f"{DENIED_PREFIX} tool '{tc.tool_name}' is switched off"
             return
 
         try:

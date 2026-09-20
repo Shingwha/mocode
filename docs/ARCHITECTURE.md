@@ -20,7 +20,7 @@ mocode/
 │   ├── hook.py          AgentHook, HookRunner, contexts — the interception channel
 │   ├── prompt.py        Prompt, Section — section-based XML assembly
 │   ├── provider.py      Provider protocol, Chunk/Response DTOs, with_retry_stream
-│   └── tool.py          Tool, ToolError, ToolRegistry
+│   └── tool.py          Tool, ToolError, ToolRegistry (freeze pins the offered interface)
 ├── host/                the layer an application embeds
 │   ├── runtime.py       MoCode — the process runtime: config, plugins, sessions
 │   ├── conversation.py  Conversation — one project, one model, one history
@@ -29,11 +29,11 @@ mocode/
 │   ├── config.py        Config, ProviderEntry, ModelEntry
 │   ├── session.py       Session, SessionStore
 │   ├── export.py        Session → Markdown
-│   ├── prompt.py        build_system_prompt(ctx) — render sections, diff drift
+│   ├── prompt.py        build_system_prompt(ctx) — render sections, nothing else
 │   └── plugin/          Plugin, HostContext, loader, PluginHost, env (a plugin's
 │                        own uv environment), install (plugin install/sync/list/remove)
 │       └── builtin/     the plugins MoCode ships: filesystem, shell, skills,
-│                         default-prompts, session, help
+│                         default-prompts, session, help, cache-protect
 ├── cli/                 the terminal front-end — a consumer of host/
 │   ├── app.py           CLIApp — the REPL, dispatch and Ctrl-C
 │   ├── plugin.py        CLIPlugin — the terminal's own extension surface
@@ -205,12 +205,29 @@ belong to the terminal, which registers them through its own plugin interface
 
 **The prompt is assembled from plugin sections alone.** `host/prompt.py`
 renders `ctx.prompt_sections` as XML in `(priority, insertion order)` order —
-stable content first, volatile last, for prefix caching — and diffs snapshots
-to notice drift; it contributes no content of its own. The default sections
-(`guidelines`, `agents`, `environment`, `time`) come from the `default-prompts`
-builtin plugin, and a name collision is won by the last section registered,
-the same rule every other contribution follows. Tool schemas travel with every
-request, so the prompt never repeats them.
+stable content first, volatile last, for prefix caching — and contributes no
+content of its own. The default sections (`guidelines`, `agents`,
+`environment`, `time`) come from the `default-prompts` builtin plugin, and a
+name collision is won by the last section registered, the same rule every
+other contribution follows. Tool schemas travel with every request, so the
+prompt never repeats them.
+
+**A session's request prefix is pinned; the world's changes are announced.**
+Both halves of what a request carries — the system prompt and the tool
+interface — are held still for a session's lifetime, so the provider's prefix
+cache survives turn after turn. The host owns the pinning (the prompt is a
+plain attribute it freezes and reinstates; `ToolRegistry.freeze()` holds the
+tool projection, opt-in per runtime, off meaning live); the `cache-protect`
+builtin plugin owns the telling: at a resume and at the start of every turn
+it diffs what the model was last told against the world as it stands and
+appends one `[context update]` notice — unified diffs for the prompt and for
+a changed schema, state lines for a tool switched on or off — just before the
+next user message, with the cached prefix above it untouched. A change
+reverted before the turn that would announce it is never announced. The
+plugin's baselines live in `ctx.plugin_state(name)`, the host's generic slot
+for per-conversation plugin state that travels with the session; a
+`rebuild_prompt()` re-freezes both halves and clears them, accepting the
+cache loss in one deliberate act.
 
 ## Plugins
 
@@ -313,5 +330,7 @@ An embedding application is the same path minus the terminal:
 - `tests/test_commands.py` — the terminal's commands against a real
   conversation, asserting the notices they published;
   `tests/test_builtin_plugins.py` — the host's built-in plugins the same way;
-  `tests/test_display.py` — a whole turn through `CLIRenderer`, no TTY.
+  `tests/test_cache_protect.py` — the pinned request prefix and the diff
+  notices that announce its drift; `tests/test_display.py` — a whole turn
+  through `CLIRenderer`, no TTY.
 - `tests/providers.py` — `MockProvider` and the chunk-replay helpers.

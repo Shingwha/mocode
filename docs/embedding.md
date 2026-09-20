@@ -48,8 +48,16 @@ want to check first.
 mc = MoCode(
     config: Config | None = None,             # None loads ~/.mocode/config.json
     home: Path | None = None,                 # plugins, skills, sessions
-    plugin_dirs: Sequence[Path] | None = None # default: <cwd>/.mocode/plugins, <home>/plugins
+    plugin_dirs: Sequence[Path] | None = None, # default: <cwd>/.mocode/plugins, <home>/plugins
+    freeze_interface: bool = True,            # pin each conversation's tool interface
 )
+```
+
+`freeze_interface=False` hands the loop the live registry instead of a pinned
+one: a tool switched off mid-conversation then changes the very next request,
+at the cost of that request's prefix cache. The default pins — and the
+`cache-protect` plugin announces every change as a `[context update]` notice,
+so the model hears about it either way.
 
 mc.config                            # the Config everything shares
 mc.store                             # SessionStore: list(workdir) / list_all() / find(id)
@@ -233,8 +241,10 @@ conv.save(title="optional")       # persist to ~/.mocode/sessions/<hash>/<id>.js
 await conv.new_session()          # save, then begin fresh in this project
 await conv.new_session(messages)  # begin fresh, seeded from an export file
 await conv.load_session(session)  # continue a stored one: history, id, model — and the
-                                  # prompt it ran with; drift arrives as a history notice
-conv.rebuild_prompt()             # re-render and re-freeze after AGENTS.md changed on disk
+                                  # prompt and tool interface it ran with; drift arrives
+                                  # as a history notice
+conv.rebuild_prompt()             # re-render, re-pin the interface and re-freeze after
+                                  # AGENTS.md changed on disk — the one deliberate cache loss
 await conv.aclose()               # the full close: drain the turn, save, release, end
 conv.close()                      # the sync emergency path — same, but does not wait
 

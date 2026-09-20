@@ -403,6 +403,7 @@ class TestPluginSet:
             "default-prompts",
             "session",
             "help",
+            "cache-protect",
         ]
 
     def test_loaded_once_and_built_per_conversation(self, tmp_path: Path):

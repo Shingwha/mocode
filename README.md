@@ -236,6 +236,11 @@ MoCode's built-in plugins (`default-prompts`, `session`, `help`) — ordinary
 plugins you can disable with `"plugins": { "default-prompts": { "enabled":
 false } }`, the same way as any other.
 
+A session's prompt and tool interface stay frozen while it runs, so the
+provider's prefix cache survives turn after turn. An AGENTS.md you edit
+mid-session is not written into that frozen prompt — the model is told what
+moved as a `[context update]` diff, just before your next message.
+
 ---
 
 ## Project Layout

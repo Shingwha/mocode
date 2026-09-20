@@ -43,9 +43,16 @@ class Session:
     #: byte-identical so the provider's prefix cache survives; empty for
     #: sessions recorded before prompts were frozen.
     system_prompt: str = ""
-    #: The prompt sections as of the last drift notice — the baseline for the
-    #: next one. A change reverted back to this state is not announced.
-    prompt_seen: list[dict[str, Any]] = field(default_factory=list)
+    #: The tool interface the session ran with — the other frozen half of the
+    #: request, reinstated on resume for the same reason. Empty for sessions
+    #: recorded before interfaces were frozen.
+    tool_schemas: list[dict[str, Any]] = field(default_factory=list)
+    #: Each plugin's own state for this conversation, keyed by plugin name.
+    #: The host owns the persistence (it travels with the session); the plugin
+    #: owns the contents (``ctx.plugin_state(name)``). This is what lets a
+    #: plugin remember anything across a save/resume — a baseline, a counter,
+    #: an index — without the host knowing any plugin's shape.
+    plugin_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -60,7 +67,8 @@ class Session:
             model=data.get("model", ""),
             provider=data.get("provider", ""),
             system_prompt=data.get("system_prompt", ""),
-            prompt_seen=data.get("prompt_seen", []),
+            tool_schemas=data.get("tool_schemas", []),
+            plugin_state=data.get("plugin_state", {}),
             metadata=data.get("metadata", {}),
         )
 
@@ -75,7 +83,8 @@ class Session:
             "model": self.model,
             "provider": self.provider,
             "system_prompt": self.system_prompt,
-            "prompt_seen": self.prompt_seen,
+            "tool_schemas": self.tool_schemas,
+            "plugin_state": self.plugin_state,
             "metadata": self.metadata,
         }
 

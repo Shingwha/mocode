@@ -29,7 +29,6 @@ from ..core.tool import ToolRegistry
 from .events import ConversationChanged
 from .plugin.context import HostContext
 from .plugin.host import PluginHost
-from .prompt import drift_notice, diff_sections, rendered_sections
 from .session import (
     Session,
     extract_title,
@@ -83,9 +82,6 @@ class Conversation:
         #: resume reinstates it byte-identical so the provider's prefix cache
         #: survives; changes arrive as history notices, not rewrites.
         self._prompt_frozen = agent.system_prompt
-        #: The prompt sections as last told to the model — the baseline the
-        #: next drift notice is diffed against.
-        self._prompt_seen = rendered_sections(ctx)
 
     # ── Running ────────────────────────────────────────────
 
@@ -231,7 +227,11 @@ class Conversation:
             if self.runtime.config.providers.get(session.provider) is not None:
                 self.set_model(session.provider, session.model)
         self.adopt(session.messages)
-        self._freeze_prompt(session)
+        self.reinstate(session)
+        # The plugins' per-conversation state travels with the session: the
+        # baselines they diff against become that session's, before anything
+        # is announced.
+        self.ctx.plugin_states = dict(session.plugin_state)
         await self.changed()
 
     def rebuild_prompt(self) -> None:
@@ -239,10 +239,15 @@ class Conversation:
 
         A resume keeps the frozen prompt and tells the model what changed as a
         notice; this replaces the prompt outright, accepting the cache loss.
+        A pinned tool interface is re-pinned alongside it, and every plugin's
+        per-conversation state is cleared: the model has just been re-told
+        everything, so there is nothing left to announce.
         """
         self.host.rebuild_prompt()
+        if self.ctx.tools.pinned:
+            self.ctx.tools.freeze()
+        self.ctx.plugin_states.clear()
         self._prompt_frozen = self.agent.system_prompt
-        self._prompt_seen = rendered_sections(self.ctx)
 
     def list_sessions(self) -> list[Session]:
         """Sessions recorded for this project, newest first."""
@@ -311,7 +316,8 @@ class Conversation:
             model=self.model_name,
             provider=self.provider_key,
             system_prompt=self._prompt_frozen,
-            prompt_seen=self._prompt_seen,
+            tool_schemas=self.ctx.tools.all_schemas(),
+            plugin_state=self.ctx.plugin_states,
         )
 
     def adopt(self, messages: list[dict]) -> None:
@@ -323,25 +329,23 @@ class Conversation:
         self.agent.reset()
         self.agent.messages.extend(messages)
 
-    def _freeze_prompt(self, session: Session) -> None:
-        """Reinstate the session's frozen prompt, noticing any drift.
+    def reinstate(self, session: Session) -> None:
+        """Put back the session's frozen prompt and tool interface.
 
-        A session recorded before prompts were frozen carries none — the
-        prompt as assembled becomes the freeze, and since nothing was ever
-        announced, nothing is announced now.
+        Both are reinstated byte-identical, so a resume's request prefix is
+        the one the old turns ran on and the provider's cache survives. A
+        session recorded before either was frozen carries none of it, and
+        what was assembled stays; an unpinned (live) registry has no
+        interface to reinstate either. What the two now disagree with the
+        live world is announced — see the cache-protect plugin.
         """
         if session.system_prompt:
             self._prompt_frozen = session.system_prompt
             self.agent.system_prompt = session.system_prompt
         else:
             self._prompt_frozen = self.agent.system_prompt
-        fresh = rendered_sections(self.ctx)
-        changes = diff_sections(session.prompt_seen or fresh, fresh)
-        if changes:
-            self.agent.messages.append(
-                {"role": "user", "content": drift_notice(changes)}
-            )
-        self._prompt_seen = fresh
+        if session.tool_schemas and self.ctx.tools.pinned:
+            self.ctx.tools.freeze(session.tool_schemas)
 
     def __repr__(self) -> str:
         return f"<Conversation {self.id} {self.cwd}>"

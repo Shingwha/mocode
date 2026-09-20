@@ -208,11 +208,14 @@ class TestPortability:
         assert "## Turn" not in md
 
 
-class TestFrozenPromptFields:
+class TestFrozenRequestFields:
     def test_round_trip_and_optional_for_legacy_files(self):
         session = _session(
             system_prompt="<system-prompt>frozen</system-prompt>",
-            prompt_seen=[{"name": "time", "attrs": {}, "xml": "<time>today</time>"}],
+            tool_schemas=[{"function": {"name": "read"}}],
+            plugin_state={
+                "cache-protect": {"prompt": "<system-prompt>frozen</system-prompt>"}
+            },
         )
 
         assert Session.from_dict(session.to_dict()) == session
@@ -227,4 +230,5 @@ class TestFrozenPromptFields:
             }
         )
         assert legacy.system_prompt == ""
-        assert legacy.prompt_seen == []
+        assert legacy.tool_schemas == []
+        assert legacy.plugin_state == {}

@@ -163,7 +163,12 @@ class TestConcurrency:
 
         assert first_result.content == "first done"
         assert second_result.content == "second done"
-        assert [m["content"] for m in first.messages][0] == "hello from a"
+        # The tool registered after the conversation was created is announced
+        # just before the message that opens the turn — the prefix above it,
+        # which the provider cached, is untouched.
+        assert first.messages[0]["content"].startswith("[context update")
+        assert "tool 'wait' is now available" in first.messages[0]["content"]
+        assert first.messages[1]["content"] == "hello from a"
         assert [m["content"] for m in second.messages][0] == "hello from b"
 
     @pytest.mark.asyncio
@@ -528,7 +533,9 @@ class TestThePromptFreezesAcrossAResume:
         assert "version two" in notice["content"]
         resumed = second.session()
         assert resumed.system_prompt == session.system_prompt
-        assert any("version two" in r["xml"] for r in resumed.prompt_seen)
+        # The baseline the next notice diffs against now lives in the
+        # plugin's own session state — and it says version two.
+        assert "version two" in resumed.plugin_state["cache-protect"]["prompt"]
 
     @pytest.mark.asyncio
     async def test_no_drift_means_no_notice(self, mc: MoCode, tmp_path: Path):
@@ -611,3 +618,53 @@ class TestThePromptFreezesAcrossAResume:
 
         assert fresh.agent.system_prompt == before
         assert fresh.messages == legacy.messages
+
+
+class TestPluginStateTravels:
+    """A plugin's own state is the host's to carry and the plugin's to fill —
+    the one thing a plugin could not do before: remember across a resume."""
+
+    def test_it_is_written_on_save(self, mc: MoCode, tmp_path: Path):
+        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation.messages.append({"role": "user", "content": "hi"})
+        conversation.ctx.plugin_state("demo")["n"] = 1
+
+        session = conversation.save()
+
+        assert session.plugin_state["demo"]["n"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_resume_arrives_with_the_sessions_state(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        first = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        first.messages.append({"role": "user", "content": "hi"})
+        first.ctx.plugin_state("demo")["n"] = 7
+        session = first.save()
+
+        second = mc.resume(session.id)
+
+        assert second.ctx.plugin_state("demo") == {"n": 7}
+
+    @pytest.mark.asyncio
+    async def test_load_session_swaps_the_state(self, mc: MoCode, tmp_path: Path):
+        first = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        first.messages.append({"role": "user", "content": "hi"})
+        first.ctx.plugin_state("demo")["n"] = 7
+        session = first.save()
+
+        second = mc.new_conversation(cwd=_project(tmp_path, "b"))
+        second.ctx.plugin_state("demo")["n"] = 1
+
+        await second.load_session(session)
+
+        assert second.ctx.plugin_state("demo") == {"n": 7}
+
+    def test_a_rebuild_clears_it(self, mc: MoCode, tmp_path: Path):
+        """The model was just re-told everything — no baseline survives it."""
+        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation.ctx.plugin_state("demo")["n"] = 1
+
+        conversation.rebuild_prompt()
+
+        assert conversation.ctx.plugin_states == {}

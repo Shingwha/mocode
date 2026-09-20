@@ -66,6 +66,11 @@ class HostContext:
     commands: CommandRegistry = None  # type: ignore[assignment]
     hooks: list[AgentHook] = field(default_factory=list)
     prompt_sections: list[Section] = field(default_factory=list)
+    #: Every plugin's own state for this conversation, keyed by plugin name.
+    #: Seeded from the session a resume opens, swapped by ``load_session``,
+    #: written back on save — the host owns the persistence, each plugin owns
+    #: its slot's contents (:meth:`plugin_state`).
+    plugin_states: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     # ── Assigned after assembly ──
     agent: AgentLoop | None = None
@@ -79,6 +84,20 @@ class HostContext:
     def plugin_config(self, name: str) -> dict:
         """Settings for plugin *name* from the ``plugins`` section of config.json."""
         return self.config.plugins.get(name, {})
+
+    def plugin_state(self, name: str) -> dict[str, Any]:
+        """This plugin's own state for this conversation — created empty, and
+        it survives: the host persists it with the session and hands it back
+        on resume.
+
+        Keyed by plugin name, so plugins never see each other's slots, and
+        generic, so nothing here knows what any plugin keeps. It is available
+        at ``build()`` (a resumed conversation arrives with the session's
+        state) and at call time; the host swaps the whole mapping when a
+        conversation loads a different session, and clears it on
+        ``rebuild_prompt``, when the model is re-told everything.
+        """
+        return self.plugin_states.setdefault(name, {})
 
     def register(self, *commands: Command) -> None:
         """Register slash commands contributed by a plugin."""

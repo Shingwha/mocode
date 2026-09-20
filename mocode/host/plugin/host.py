@@ -49,7 +49,15 @@ class LoadedPlugins:
 
 def builtin_plugins() -> list[Plugin]:
     """The plugins MoCode ships, in a fixed (prompt-stable) order."""
-    from .builtin import default_prompts, filesystem, help, session, shell, skills
+    from .builtin import (
+        cache_protect,
+        default_prompts,
+        filesystem,
+        help,
+        session,
+        shell,
+        skills,
+    )
 
     return [
         filesystem.PLUGIN,
@@ -58,6 +66,7 @@ def builtin_plugins() -> list[Plugin]:
         default_prompts.PLUGIN,
         session.PLUGIN,
         help.PLUGIN,
+        cache_protect.PLUGIN,
     ]
 
 

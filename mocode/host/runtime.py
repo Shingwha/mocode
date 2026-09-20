@@ -75,6 +75,7 @@ class MoCode:
         config: Config | None = None,
         home: Path | None = None,
         plugin_dirs: Sequence[Path] | None = None,
+        freeze_interface: bool = True,
     ):
         self.home = Path(home) if home is not None else Path.home() / ".mocode"
         self.config = config if config is not None else Config.load()
@@ -84,6 +85,13 @@ class MoCode:
             )
         self.store = SessionStore(base_dir=self.home / "sessions")
         self._plugin_dirs = list(plugin_dirs) if plugin_dirs is not None else None
+        #: Whether a conversation's offered tool interface is held still for
+        #: its lifetime (``ToolRegistry.freeze``) or read live on every
+        #: request. A host decision: MoCode's own applications freeze, so a
+        #: tool switched off mid-session is announced instead of rewriting
+        #: the request and breaking the provider's prefix cache; an embedder
+        #: that wants the raw flexibility passes ``False``.
+        self._freeze_interface = freeze_interface
         #: Loaded plugin sets, keyed by project. Loading is per working
         #: directory; building is per conversation.
         self._plugins: dict[str, LoadedPlugins] = {}
@@ -115,6 +123,9 @@ class MoCode:
 
         commands = commands if commands is not None else CommandRegistry()
         loaded = self._loaded_for(project)
+        # A conversation opened from a stored session arrives carrying that
+        # session's plugin state — the baselines its plugins last announced.
+        plugin_states = dict(session.plugin_state) if session is not None else {}
         ctx = HostContext(
             home=self.home,
             cwd=project,
@@ -124,12 +135,18 @@ class MoCode:
             commands=commands,
             plugin_sources=list(loaded.sources),
             register_provider_type=self.register_provider_type,
+            plugin_states=plugin_states,
         )
         host = PluginHost(ctx, loaded.plugins)
         # Contributions come before the provider: a plugin may ship a provider
         # implementation and register its type in build(), and the conversation
         # that shipped it runs on it — not just the next one.
         host.build_all()
+        if self._freeze_interface:
+            # The host's decision, not the kernel's: hold the offered interface
+            # still, so a tool switched off afterwards is announced by the
+            # cache-protect plugin instead of rewriting the request.
+            ctx.tools.freeze()
         try:
             agent = host.assemble(
                 provider=self.provider_for(key, name), config=self._agent_config()
@@ -150,6 +167,10 @@ class MoCode:
         )
         if session is not None:
             conversation.adopt(session.messages)
+            # The session's frozen prompt and tool interface come back with
+            # it — the resume's request prefix is the one the old turns ran
+            # on, byte for byte.
+            conversation.reinstate(session)
         return conversation
 
     def resume(self, session_id: str) -> Conversation | None:
