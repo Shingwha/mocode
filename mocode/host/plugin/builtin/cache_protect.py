@@ -2,12 +2,12 @@
 changes is announced, not applied.
 
 Two halves of every request are frozen for a session's lifetime: the system
-prompt (the host freezes it at assembly and reinstates a stored one on
-resume) and the tool interface (``ToolRegistry.freeze``). Holding both still
-is what makes a provider's prefix cache survive turn after turn — and it
-leaves the world free to move: an edited AGENTS.md, a tool switched off, a
-tool's description rewritten, a tool registered mid-session. This plugin is
-how the model hears about any of it.
+prompt (the host materializes it before the first request and reinstates a
+stored one on resume) and the tool interface (``ToolRegistry.freeze``).
+Holding both still is what makes a provider's prefix cache survive turn after
+turn — and it leaves the world free to move: an edited AGENTS.md, a tool
+switched off, a tool's description rewritten, a tool registered mid-session.
+This plugin is how the model hears about any of it.
 
 Two triggers, one notice:
 

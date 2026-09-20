@@ -5,10 +5,11 @@ What a prompt *says* is a capability and arrives from plugins through
 sections in ``(priority, insertion order)`` order, so stable content stays in
 front of volatile content and the provider's prefix cache stays warm.
 
-What happens to a prompt after it is built — freezing it for a session,
-noticing when the world moved on — lives one layer out: the freeze and its
-reinstatement in :class:`~mocode.host.conversation.Conversation`, and the
-notices in the cache-protect plugin.
+What happens to a prompt after it is rendered — materializing it once per
+conversation, reinstating a stored one on resume, noticing when the world
+moved on — lives one layer out: :meth:`PluginHost.materialize
+<.plugin.host.PluginHost.materialize>` and the notices in the cache-protect
+plugin.
 """
 
 from __future__ import annotations

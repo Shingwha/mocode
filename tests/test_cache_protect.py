@@ -154,12 +154,15 @@ class TestTheWorldIsAnnounced:
     ):
         from mocode.core.tool import Tool
 
-        conversation = _conversation(mc, _project(tmp_path, "a"), _answer())
+        conversation = _conversation(mc, _project(tmp_path, "a"), _answer("one"), _answer("two"))
+        await conversation.chat("hello")
+        # Late means after the surface materialized — a tool registered
+        # before the first turn is simply part of the initial interface.
         conversation.tools.register(
             Tool("grep", "Search file contents", {"pattern": {"type": "string"}}, lambda a: "")
         )
 
-        await conversation.chat("hello")
+        await conversation.chat("again")
 
         notice = _notices(conversation)[0]["content"]
         assert "tool 'grep' is now available:" in notice

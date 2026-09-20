@@ -256,10 +256,12 @@ class TestLoading:
 
 
 class TestPluginHost:
-    def test_builtins_are_loaded_and_contributing(self, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_builtins_are_loaded_and_contributing(self, tmp_path: Path):
         ctx = _ctx(tmp_path)
         host = _load(ctx, [])
         agent = host.run(provider=MockProvider(), config=AgentConfig())
+        await host.materialize()
 
         assert sorted(ctx.tools.names()) == ["bash", "edit", "read", "skill", "write"]
         assert ctx.agent is agent

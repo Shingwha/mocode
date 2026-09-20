@@ -33,7 +33,22 @@ class Plugin:
     description: str = ""
 
     def build(self, ctx: HostContext) -> None:
-        """Contribute to the host. Default: contribute nothing."""
+        """Contribute to the host. Default: contribute nothing.
+
+        Cheap and synchronous: registrations only — tools, commands, hooks,
+        prompt sections, provider types. Anything that needs I/O (discovery,
+        connections) belongs in :meth:`prepare`.
+        """
+
+    async def prepare(self, ctx: HostContext) -> None:
+        """Async finish after build(): discovery, connections, any I/O.
+
+        Runs once per conversation, inside the host's materialization of the
+        request surface — after every plugin has built, before the system
+        prompt renders and the tool interface freezes. May still register
+        tools and prompt sections; they make it into the first request.
+        Default: nothing to finish.
+        """
 
     def close(self, ctx: HostContext) -> None:
         """This conversation is over — release whatever was built for it."""

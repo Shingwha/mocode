@@ -137,16 +137,11 @@ class MoCode:
             register_provider_type=self.register_provider_type,
             plugin_states=plugin_states,
         )
-        host = PluginHost(ctx, loaded.plugins)
+        host = PluginHost(ctx, loaded.plugins, freeze=self._freeze_interface)
         # Contributions come before the provider: a plugin may ship a provider
         # implementation and register its type in build(), and the conversation
         # that shipped it runs on it — not just the next one.
         host.build_all()
-        if self._freeze_interface:
-            # The host's decision, not the kernel's: hold the offered interface
-            # still, so a tool switched off afterwards is announced by the
-            # cache-protect plugin instead of rewriting the request.
-            ctx.tools.freeze()
         try:
             agent = host.assemble(
                 provider=self.provider_for(key, name), config=self._agent_config()
@@ -166,11 +161,12 @@ class MoCode:
             created_at=session.created_at if session else timestamp(),
         )
         if session is not None:
+            # History is data and comes back now; the surface the session ran
+            # on is carried by the host and materializes byte-identically at
+            # the first request — the resume's request prefix is the one the
+            # old turns ran on.
             conversation.adopt(session.messages)
-            # The session's frozen prompt and tool interface come back with
-            # it — the resume's request prefix is the one the old turns ran
-            # on, byte for byte.
-            conversation.reinstate(session)
+            host.adopt_session(session)
         return conversation
 
     def resume(self, session_id: str) -> Conversation | None:

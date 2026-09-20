@@ -62,9 +62,11 @@ class TestAConversationIsItsOwn:
 
         assert second.messages == []
 
-    def test_the_system_prompt_names_the_project(self, mc: MoCode, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_the_system_prompt_names_the_project(self, mc: MoCode, tmp_path: Path):
         project = _project(tmp_path, "a")
         conversation = mc.new_conversation(cwd=project)
+        await conversation.prepare()
 
         assert f"cwd: {project}" in conversation.agent.system_prompt
 
@@ -163,12 +165,10 @@ class TestConcurrency:
 
         assert first_result.content == "first done"
         assert second_result.content == "second done"
-        # The tool registered after the conversation was created is announced
-        # just before the message that opens the turn — the prefix above it,
-        # which the provider cached, is untouched.
-        assert first.messages[0]["content"].startswith("[context update")
-        assert "tool 'wait' is now available" in first.messages[0]["content"]
-        assert first.messages[1]["content"] == "hello from a"
+        # A tool registered before the first turn is part of the surface the
+        # interface freezes from — not news. (Late registration — after the
+        # surface materialized — is cache-protect's own test.)
+        assert first.messages[0]["content"] == "hello from a"
         assert [m["content"] for m in second.messages][0] == "hello from b"
 
     @pytest.mark.asyncio
@@ -500,12 +500,124 @@ class TestGracefulClose:
         assert conversation.agent.channel.closed
 
 
+class TestTheSurfaceMaterializes:
+    """The request surface — prompt + offered interface — is derived state:
+    written in one place, once, before the first request (or from the session
+    a resume carries). These are the contract's own tests."""
+
+    def test_construction_is_cheap_and_writes_no_surface(self, mc: MoCode, tmp_path: Path):
+        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+
+        assert conversation.agent.system_prompt == ""
+        assert not conversation.tools.pinned
+        assert "read" in conversation.tools.names()  # registrations still happen
+
+    @pytest.mark.asyncio
+    async def test_prepare_runs_each_plugins_prepare_once(self, mc: MoCode, tmp_path: Path):
+        calls: list[str] = []
+        from mocode.host.plugin.base import Plugin
+
+        class Counting(Plugin):
+            name = "counting"
+
+            async def prepare(self, ctx) -> None:
+                calls.append("prepare")
+
+        mc._plugins.clear()
+        original = mc._loaded_for
+
+        def _with_counting(cwd):
+            loaded = original(cwd)
+            loaded.plugins.append(Counting())
+            return loaded
+
+        mc._loaded_for = _with_counting  # type: ignore[method-assign]
+        try:
+            conversation = _conversation(mc, _project(tmp_path, "a"), _answer("1"), _answer("2"))
+            await conversation.prepare()
+            await conversation.prepare()  # idempotent
+            await conversation.chat("hello")
+
+            assert calls == ["prepare"]
+            assert conversation.agent.system_prompt != ""
+            assert conversation.tools.pinned
+        finally:
+            mc._loaded_for = original  # type: ignore[method-assign]
+
+    @pytest.mark.asyncio
+    async def test_the_first_turn_carries_the_surface_with_no_notice(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        conversation = _conversation(mc, _project(tmp_path, "a"), _answer("one"), _answer("two"))
+        await conversation.chat("first")
+
+        provider = conversation.agent.provider
+        # The first request already ran on the materialized prompt and the
+        # frozen interface — and nothing was announced to get it there.
+        assert provider.calls[0]["system"] == conversation.agent.system_prompt
+        assert "read" in {s["function"]["name"] for s in provider.calls[0]["tools"]}
+        assert not [
+            m for m in conversation.messages if "[context update" in str(m.get("content"))
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_resume_is_not_re_materialized(self, mc: MoCode, tmp_path: Path):
+        project = _project(tmp_path, "a")
+        first = _conversation(mc, project, _answer("one"))
+        await first.chat("hi")
+        session = first.save()
+        frozen = first.agent.system_prompt
+
+        second = _conversation(mc, project, _answer("two"))
+        await second.chat("again")
+
+        assert second.agent.system_prompt == frozen
+        assert session.system_prompt == frozen
+
+    @pytest.mark.asyncio
+    async def test_a_never_run_session_materializes_freshly_on_resume(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        project = _project(tmp_path, "a")
+        conversation = _conversation(mc, project)
+        conversation.messages.append({"role": "user", "content": "hi"})
+        stored = conversation.save()
+
+        assert stored.system_prompt == ""  # it never ran; nothing to record
+
+        fresh = _conversation(mc, project)
+        await fresh.load_session(stored)
+        # load_session restores the session's model, which replaces the
+        # provider — the recorder goes back on afterwards.
+        fresh.agent.provider = MockProvider([_answer("two")])
+        await fresh.chat("again")
+
+        assert fresh.agent.system_prompt != ""
+
+    @pytest.mark.asyncio
+    async def test_an_unpinned_runtime_stays_live(self, tmp_path: Path):
+        mc = MoCode(config=make_config(), home=tmp_path / "home", freeze_interface=False,
+                    plugin_dirs=[])
+        conversation = _conversation(
+            mc, _project(tmp_path, "a"), _answer("one"), _answer("two")
+        )
+        await conversation.chat("first")
+        conversation.tools.disable("read")
+        await conversation.chat("second")
+
+        provider = conversation.agent.provider
+        assert "read" not in {s["function"]["name"] for s in provider.calls[1]["tools"]}
+        assert conversation.agent.system_prompt != ""
+
+
 class TestThePromptFreezesAcrossAResume:
     """A resume keeps the session's prompt byte-identical — the provider's
     prefix cache survives — and tells the model what changed instead."""
 
-    def test_the_prompt_carries_time_and_os(self, mc: MoCode, tmp_path: Path):
+    @pytest.mark.asyncio
+    async def test_the_prompt_carries_time_and_os(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        await conversation.prepare()
 
         assert "today:" in conversation.agent.system_prompt
         assert "os:" in conversation.agent.system_prompt
@@ -517,6 +629,7 @@ class TestThePromptFreezesAcrossAResume:
         project = _project(tmp_path, "a")
         (project / "AGENTS.md").write_text("version one", encoding="utf-8")
         first = _conversation(mc, project)
+        await first.prepare()  # the session must record the surface it ran on
         first.messages.append({"role": "user", "content": "hi"})
         session = first.save()
 
@@ -541,6 +654,7 @@ class TestThePromptFreezesAcrossAResume:
     async def test_no_drift_means_no_notice(self, mc: MoCode, tmp_path: Path):
         project = _project(tmp_path, "a")
         first = _conversation(mc, project)
+        await first.prepare()  # the session must record the surface it ran on
         first.messages.append({"role": "user", "content": "hi"})
         session = first.save()
         second = _conversation(mc, project)
@@ -556,6 +670,7 @@ class TestThePromptFreezesAcrossAResume:
         project = _project(tmp_path, "a")
         (project / "AGENTS.md").write_text("version one", encoding="utf-8")
         first = _conversation(mc, project)
+        await first.prepare()  # the session must record the surface it ran on
         first.messages.append({"role": "user", "content": "hi"})
         first.save()
 
@@ -575,6 +690,7 @@ class TestThePromptFreezesAcrossAResume:
         project = _project(tmp_path, "a")
         (project / "AGENTS.md").write_text("version one", encoding="utf-8")
         first = _conversation(mc, project)
+        await first.prepare()  # the session must record the surface it ran on
         first.messages.append({"role": "user", "content": "hi"})
         first.save()
 
@@ -612,6 +728,7 @@ class TestThePromptFreezesAcrossAResume:
             provider=stored.provider,
         )
         fresh = _conversation(mc, project)
+        await fresh.prepare()
         before = fresh.agent.system_prompt
 
         await fresh.load_session(legacy)

@@ -78,12 +78,18 @@ class Conversation:
         self.id = session_id
         self.created_at = created_at
         self._saved_at = ""
-        #: The prompt this conversation runs with, frozen at assembly — a
-        #: resume reinstates it byte-identical so the provider's prefix cache
-        #: survives; changes arrive as history notices, not rewrites.
-        self._prompt_frozen = agent.system_prompt
 
     # ── Running ────────────────────────────────────────────
+
+    async def prepare(self) -> None:
+        """Materialize the request surface — prompt and tool interface — now.
+
+        The first request of the first turn does this on its own, after the
+        plugins' async preparation; this is the explicit entry for an
+        application or a test that wants the surface before any turn. The
+        surface a resumed session ran on comes back byte-identical here.
+        """
+        await self.host.materialize()
 
     def run(self, prompt: str | None = None) -> "Turn":
         """Begin a turn. Raises if one is already running in this conversation.
@@ -243,11 +249,7 @@ class Conversation:
         per-conversation state is cleared: the model has just been re-told
         everything, so there is nothing left to announce.
         """
-        self.host.rebuild_prompt()
-        if self.ctx.tools.pinned:
-            self.ctx.tools.freeze()
-        self.ctx.plugin_states.clear()
-        self._prompt_frozen = self.agent.system_prompt
+        self.host.rebuild()
 
     def list_sessions(self) -> list[Session]:
         """Sessions recorded for this project, newest first."""
@@ -299,7 +301,12 @@ class Conversation:
         await self.agent.channel.publish(Notice(message=text, level=level))
 
     async def changed(self) -> None:
-        """Announce that the history was replaced — readers should redraw."""
+        """Announce that the history was replaced — readers should redraw.
+
+        The surface is materialized first: a notice is diffed against the
+        prompt, and diffing against a placeholder would announce the world.
+        """
+        await self.host.materialize()
         await self.agent.channel.publish(ConversationChanged())
 
     # ── Internals ──────────────────────────────────────────
@@ -315,7 +322,7 @@ class Conversation:
             title=title,
             model=self.model_name,
             provider=self.provider_key,
-            system_prompt=self._prompt_frozen,
+            system_prompt=self.agent.system_prompt,
             tool_schemas=self.ctx.tools.all_schemas(),
             plugin_state=self.ctx.plugin_states,
         )
@@ -334,18 +341,12 @@ class Conversation:
 
         Both are reinstated byte-identical, so a resume's request prefix is
         the one the old turns ran on and the provider's cache survives. A
-        session recorded before either was frozen carries none of it, and
-        what was assembled stays; an unpinned (live) registry has no
-        interface to reinstate either. What the two now disagree with the
-        live world is announced — see the cache-protect plugin.
+        session recorded before either was frozen carries none of it, and the
+        conversation materializes freshly at its first request instead. What
+        the two now disagree with the live world is announced — see the
+        cache-protect plugin.
         """
-        if session.system_prompt:
-            self._prompt_frozen = session.system_prompt
-            self.agent.system_prompt = session.system_prompt
-        else:
-            self._prompt_frozen = self.agent.system_prompt
-        if session.tool_schemas and self.ctx.tools.pinned:
-            self.ctx.tools.freeze(session.tool_schemas)
+        self.host.reinstate(session)
 
     def __repr__(self) -> str:
         return f"<Conversation {self.id} {self.cwd}>"

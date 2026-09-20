@@ -20,7 +20,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field, replace
-from typing import AsyncIterator
+from typing import AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
 from .channel import EventChannel
@@ -115,6 +115,7 @@ class AgentLoop:
         config: AgentConfig | None = None,
         model: ModelSpec | None = None,
         channel: EventChannel | None = None,
+        prepare: "Callable[[], Awaitable[None]] | None" = None,
     ):
         self.provider = provider
         self.model = model if model is not None else ModelSpec(name=provider.model)
@@ -122,6 +123,13 @@ class AgentLoop:
         self._tools = tools
         self.hooks = hooks
         self.config = config or AgentConfig()
+        #: Awaited at the top of every turn, before the loop captures its
+        #: baseline of the prompt: the conversation's chance to make its
+        #: request surface (system prompt, offered interface) real. Idempotent
+        #: by the caller's convention — the first turn pays, the rest no-op.
+        #: Not inherited by ``derive()``: a child runs inside a parent that
+        #: has already prepared.
+        self.prepare = prepare
         self.messages: list[dict] = []
         #: Where this conversation's events go. Pass one to let a derived agent
         #: report into the same stream as its parent.
@@ -285,8 +293,12 @@ class AgentLoop:
         self._run_id = run_id
         self._failure = None
         turn = self._turn
-        prompt_at_start = self.system_prompt
         try:
+            # The surface materializes before the baseline is captured, so a
+            # turn never starts from — and never restores — a placeholder.
+            if self.prepare is not None:
+                await self.prepare()
+            prompt_at_start = self.system_prompt
             if turn is not None and turn._begin():
                 raise asyncio.CancelledError()
             terminal = await self._iterate(user_input)

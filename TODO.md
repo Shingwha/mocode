@@ -88,9 +88,11 @@ longer printed live — the model still reads all of it.
 
 Kept here so the reasoning is not rediscovered:
 
-- **MCP servers.** A plugin's `mcp.json` is recognised and ignored: adding the
-  servers needs a client (stdio and Streamable HTTP), which is a project of its
-  own. The portable *other* half of the standard — `skills/` inside a plugin — is
+- **MCP servers.** A plugin's `mcp.json` is recognised and ignored *by this
+  repository*: the client (stdio and Streamable HTTP) is a capability, so it
+  lives outside — `mocode-plugins/mcp` is that plugin, and the lifecycle now
+  supports it (`Plugin.prepare` is exactly the async discovery pass it needs).
+  The portable *other* half of the standard — `skills/` inside a plugin — is
   already read.
 - **A transport layer** (HTTP/SSE, or a JSON-lines CLI mode). Every event has
   `to_dict()` and a `run_id`/`seq`, `RunState.to_dict()` is the status endpoint,

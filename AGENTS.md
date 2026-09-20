@@ -19,6 +19,14 @@ fetch, the virtual file system — is a capability and has been removed from thi
 codebase for that reason. If you are tempted to add an `if` for a specific
 tool, hook or feature inside `core/`, write a plugin instead.
 
+## The plugin lifecycle (the contract in two lines)
+
+`build(ctx)` registers — cheap, synchronous, no I/O. `prepare(ctx)` (async,
+optional) finishes — discovery, connections, anything slow — before the
+request surface (system prompt + offered tool interface) is materialized once,
+at the top of the first turn or byte-identically from a resumed session.
+`PluginHost.materialize()` is the one place that surface is written.
+
 ## Layering
 
 Dependencies point down only — `core ← host ← cli`.

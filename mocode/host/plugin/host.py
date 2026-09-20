@@ -31,6 +31,7 @@ from .loader import discover, load_plugin, report
 
 if TYPE_CHECKING:
     from ..config import Config
+    from ..session import Session
 
 
 @dataclass
@@ -111,14 +112,30 @@ def _enabled(config: "Config", name: str, default: bool) -> bool:
 
 
 class PluginHost:
-    """Builds one conversation's contributions from already-loaded plugins."""
+    """Builds one conversation's contributions from already-loaded plugins.
 
-    def __init__(self, ctx: HostContext, plugins: Sequence[Plugin]):
+    It is also the single owner of that conversation's **request surface** —
+    the system prompt and the offered tool interface. History is data and is
+    adopted eagerly; the surface is derived state, written in exactly one
+    place (``_install``) and materialized exactly once (:meth:`materialize`):
+    from the session a resume carries, or freshly — async preparation, then
+    render, then freeze — before the first request goes out.
+    """
+
+    def __init__(
+        self, ctx: HostContext, plugins: Sequence[Plugin], *, freeze: bool = True
+    ) -> None:
         self.ctx = ctx
         self.plugins = list(plugins)
-        #: Names of plugins whose build() or close() failed — the rest still worked.
+        #: Names of plugins whose build()/prepare()/close() failed — the rest
+        #: still worked.
         self.failures: list[str] = []
+        #: Whether the offered tool interface is held still once materialized
+        #: (the runtime's ``freeze_interface`` decision, passed down here).
+        self._freeze = freeze
         self._closed = False
+        self._materialized = False
+        self._pending_session: "Session | None" = None
 
     def build_all(self) -> None:
         """Run every plugin's build(). One failure never stops the host."""
@@ -129,23 +146,92 @@ class PluginHost:
                 self.failures.append(plugin.name)
                 report(f"{plugin.name}: build() failed: {e}")
 
+    async def prepare_all(self) -> None:
+        """Run every plugin's prepare(). One failure never stops the host."""
+        for plugin in self.plugins:
+            try:
+                await plugin.prepare(self.ctx)
+            except Exception as e:
+                self.failures.append(plugin.name)
+                report(f"{plugin.name}: prepare() failed: {e}")
+
+    def adopt_session(self, session: "Session") -> None:
+        """Hand over the surface a resumed conversation should run on.
+
+        Consumed by :meth:`materialize`; a session with nothing stored (never
+        ran, or recorded before surfaces were frozen) materializes freshly.
+        """
+        self._pending_session = session
+
+    async def materialize(self) -> None:
+        """Write the request surface, exactly once — the first caller wins.
+
+        A resumed conversation gets its recorded surface back byte-identical,
+        so the provider's prefix cache survives. Anything else runs the
+        plugins' async preparation, then renders the prompt and freezes the
+        interface from the contributions as they now stand — which is why
+        ``build()`` must stay cheap and leave the I/O to ``prepare()``.
+        """
+        if self._materialized:
+            return
+        self._materialized = True
+        session = self._pending_session
+        if session is not None and session.system_prompt:
+            self.reinstate(session)
+            return
+        await self.prepare_all()
+        self._install(build_system_prompt(self.ctx), None)
+
+    def reinstate(self, session: "Session") -> None:
+        """Adopt the surface a stored session ran on, byte-identical.
+
+        A session recorded with no surface is left alone — the conversation
+        materializes freshly at its first request instead.
+        """
+        if not session.system_prompt:
+            return
+        self._install(session.system_prompt, session.tool_schemas or None)
+        self._materialized = True
+
+    def _install(self, prompt: str, schemas: "list[dict] | None") -> None:
+        """The one place the request surface is written."""
+        if self.ctx.agent is not None:
+            self.ctx.agent.system_prompt = prompt
+        if self._freeze:
+            if schemas is not None:
+                self.ctx.tools.freeze(schemas)
+            else:
+                self.ctx.tools.freeze()
+
+    def rebuild(self) -> None:
+        """Deliberately re-materialize: re-render, re-pin, forget baselines.
+
+        The explicit escape hatch — a resume keeps the surface and announces
+        drift as notices instead; this replaces it outright, accepting the
+        cache loss. Runs no preparation: it re-reads what is registered.
+        """
+        if self.ctx.agent is not None:
+            self.ctx.agent.system_prompt = build_system_prompt(self.ctx)
+        if self._freeze:
+            self.ctx.tools.freeze()
+        self.ctx.plugin_states.clear()
+        self._materialized = True
+
     def assemble(self, *, provider: Provider, config: AgentConfig) -> AgentLoop:
-        """Build the system prompt from current contributions and wire the agent."""
+        """Wire the agent. The surface is not written here — the loop awaits
+        :meth:`materialize` at the top of every turn, before it captures its
+        baseline of the prompt."""
         agent = AgentLoop(
             provider=provider,
-            system_prompt=build_system_prompt(self.ctx),
+            system_prompt="",  # materialized before the first request
             tools=self.ctx.tools,
             hooks=HookRunner(self.ctx.hooks),
             config=config,
             model=self.ctx.model,
+            prepare=self.materialize,
         )
         self.ctx.agent = agent
         return agent
-
-    def rebuild_prompt(self) -> None:
-        """Re-render the system prompt from the contributions as they stand now."""
-        if self.ctx.agent is not None:
-            self.ctx.agent.system_prompt = build_system_prompt(self.ctx)
 
     def run(self, *, provider: Provider, config: AgentConfig) -> AgentLoop:
         """Build every contribution, then assemble the agent."""

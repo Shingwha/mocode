@@ -85,6 +85,18 @@ prompt, and the session it will be saved as. Two conversations in one process
 share the config, the plugin loading and the session store — and nothing else.
 `mc.resume(session_id)` is the one-line way back into a stored conversation.
 
+Opening is cheap by design: plugins *register* in `build()` and finish their
+I/O in `prepare()`, and the request surface — system prompt plus offered tool
+interface — is materialized once, at the top of the first turn (or, on a
+resume, byte-identically from the session). The first `chat`/`stream`/`run`
+does that on its own. An application that wants the surface sooner — to read
+`conv.agent.system_prompt`, to inspect `conv.tools` as the model will be
+offered them — awaits it explicitly:
+
+```python
+await conv.prepare()   # materialize now; idempotent, and what a turn does
+```
+
 ## The event stream
 
 A conversation has one stream, and every turn publishes into it. Events are

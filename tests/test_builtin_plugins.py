@@ -14,6 +14,7 @@ import datetime as dt
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from mocode.host.command import CONTINUE
 from mocode.host.conversation import Conversation
@@ -23,11 +24,15 @@ from mocode.host.runtime import MoCode
 from .test_commands import _notices, _run
 
 
-@pytest.fixture
-def conversation(mc) -> Conversation:
+@pytest_asyncio.fixture
+async def conversation(mc) -> Conversation:
     # The builtin plugins load with every conversation; plugin_dirs=[] in the
-    # mc fixture only keeps third-party ones out.
-    return mc.new_conversation(cwd=mc.home.parent)
+    # mc fixture only keeps third-party ones out. The request surface
+    # materializes here rather than at a first request, because these tests
+    # read the prompt.
+    conversation = mc.new_conversation(cwd=mc.home.parent)
+    await conversation.prepare()
+    return conversation
 
 
 def _cmd(conversation: Conversation, name: str):
@@ -37,7 +42,8 @@ def _cmd(conversation: Conversation, name: str):
 
 
 class TestDefaultPrompts:
-    def test_the_four_sections_render(self, conversation: Conversation):
+    @pytest.mark.asyncio
+    async def test_the_four_sections_render(self, conversation: Conversation):
         prompt = conversation.agent.system_prompt
 
         assert "<guidelines>" in prompt
@@ -48,27 +54,33 @@ class TestDefaultPrompts:
         assert "today:" in prompt
         assert "os:" in prompt
 
-    def test_the_prompt_does_not_repeat_the_tools(self, conversation: Conversation):
+    @pytest.mark.asyncio
+    async def test_the_prompt_does_not_repeat_the_tools(self, conversation: Conversation):
         """Tool schemas travel with every request; the prompt must not list them."""
         assert "<tool" not in conversation.agent.system_prompt
 
-    def test_agents_md_merges_global_and_project(self, mc: MoCode):
+    @pytest.mark.asyncio
+    async def test_agents_md_merges_global_and_project(self, mc: MoCode):
         mc.home.mkdir(parents=True, exist_ok=True)
         (mc.home / "AGENTS.md").write_text("user-wide rule", encoding="utf-8")
         project = mc.home.parent
         (project / "AGENTS.md").write_text("project rule", encoding="utf-8")
 
-        prompt = mc.new_conversation(cwd=project).agent.system_prompt
+        conversation = mc.new_conversation(cwd=project)
+        await conversation.prepare()
 
-        assert "user-wide rule" in prompt
-        assert "project rule" in prompt
+        assert "user-wide rule" in conversation.agent.system_prompt
+        assert "project rule" in conversation.agent.system_prompt
 
-    def test_no_agents_md_renders_a_hint(self, conversation: Conversation):
+    @pytest.mark.asyncio
+    async def test_no_agents_md_renders_a_hint(self, conversation: Conversation):
         assert "No AGENTS.md files found yet." in conversation.agent.system_prompt
 
-    def test_a_rebuild_re_reads_agents_md(self, mc: MoCode):
+    @pytest.mark.asyncio
+    async def test_a_rebuild_re_reads_agents_md(self, mc: MoCode):
         project = mc.home.parent
         conversation = mc.new_conversation(cwd=project)
+        await conversation.prepare()
         assert "Always use tabs." not in conversation.agent.system_prompt
 
         (project / "AGENTS.md").write_text("Always use tabs.", encoding="utf-8")
@@ -76,7 +88,8 @@ class TestDefaultPrompts:
 
         assert "Always use tabs." in conversation.agent.system_prompt
 
-    def test_a_rebuild_refreshes_the_date(self, mc: MoCode, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_a_rebuild_refreshes_the_date(self, mc: MoCode, monkeypatch):
         from mocode.host.plugin.builtin import default_prompts
 
         class frozen:
@@ -86,13 +99,18 @@ class TestDefaultPrompts:
 
         monkeypatch.setattr(default_prompts, "datetime", frozen)
         conversation = mc.new_conversation(cwd=mc.home.parent)
+        await conversation.prepare()
 
         assert "today: 2026-09-20 (Sunday)" in conversation.agent.system_prompt
 
-    def test_disabling_the_plugin_removes_its_sections(self, mc: MoCode):
+    @pytest.mark.asyncio
+    async def test_disabling_the_plugin_removes_its_sections(self, mc: MoCode):
         mc.config.plugins["default-prompts"] = {"enabled": False}
 
-        prompt = mc.new_conversation(cwd=mc.home.parent).agent.system_prompt
+        conversation = mc.new_conversation(cwd=mc.home.parent)
+        await conversation.prepare()
+
+        prompt = conversation.agent.system_prompt
 
         assert "<guidelines>" not in prompt
         assert "<agents>" not in prompt

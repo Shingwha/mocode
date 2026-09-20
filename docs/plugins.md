@@ -173,7 +173,7 @@ saying exactly which of the two roads to take. A complete example — the tool,
 the declaration, the README — lives in
 [`examples/plugins/json-validate`](../examples/plugins/json-validate).
 
-## What `build(ctx)` can do
+## What `build(ctx)` — and `prepare(ctx)` — can do
 
 | Contribution | API |
 |---|---|
@@ -188,9 +188,13 @@ the declaration, the README — lives in
 | Messages to the user | `await ctx.emit(Notice(...))` — a `Notice` carries its own text and level |
 | Watching the conversation | `ctx.subscribe()` — the event stream, out-of-band |
 
-`ctx.agent` is `None` during `build()` — the agent does not exist yet. Anything
-that needs it holds `ctx` and reads `ctx.agent` at call time; `ctx.emit` and
-`ctx.subscribe` work at call time too, during a run or between runs.
+`build()` registers; `prepare()` (async, optional) finishes — see
+[`prepare(ctx)`](#preparectx--the-async-half-and-when-the-surface-is-written)
+for the split and for when the request surface is written. Both run once per
+conversation, and `ctx.agent` is `None` during both — the agent does not exist
+yet. Anything that needs it holds `ctx` and reads `ctx.agent` at call time;
+`ctx.emit` and `ctx.subscribe` work at call time too, during a run or between
+runs.
 
 ### Remembering, across a resume
 
@@ -214,6 +218,47 @@ a fresh `BashTool`, and with it a fresh working directory and environment.
 That invariant is what lets one process serve several conversations from a
 single loaded plugin list. `close(ctx)` is where anything you acquired for a
 conversation is released.
+
+### `prepare(ctx)` — the async half, and when the surface is written
+
+`build()` has one rule of its own: **it must be cheap.** Registrations only —
+tools, commands, hooks, prompt sections, provider types. Anything that needs
+I/O (discovery, connections, subprocesses) belongs in the *second* pass:
+
+```python
+class MyPlugin(Plugin):
+    def build(self, ctx):
+        ctx.tools.register(StubTool())            # cheap, synchronous
+
+    async def prepare(self, ctx):
+        catalog = await discover_endpoints()      # I/O lives here
+        ctx.tools.register(CatalogTool(catalog))  # may still contribute
+```
+
+The two passes sit on either side of the **request surface** — the system
+prompt and the offered tool interface, the two things every request carries.
+History is data and comes back eagerly when a conversation is opened; the
+surface is *derived state*, and the host materializes it exactly once:
+
+- **a fresh conversation**, at the top of its first turn, *after* every
+  plugin's `prepare()` has run and *before* the loop sends the first request —
+  so tools and sections contributed in `prepare()` are in the very first
+  request, with nothing announced;
+- **a resumed conversation**, from the session file, byte-identical — the
+  old turns' prefix cache survives. (`prepare()` still runs; anything that
+  moved since arrives as a cache-protect notice, like any other drift.)
+
+`PluginHost` owns the whole thing — `materialize()` is the one place the
+surface is written — and `await conversation.prepare()` is the explicit entry
+for an application or a test that wants the surface before any turn. The
+practical consequences:
+
+- opening a conversation never blocks on I/O, so an embedder inside a running
+  event loop pays nothing;
+- a plugin's `prepare()` should bound itself (`asyncio.wait_for`) — the first
+  turn waits for it, and a hang there hangs the turn;
+- `rebuild_prompt()` remains the deliberate re-materialization: it re-renders,
+  re-pins and clears every plugin's session state, running no preparation.
 
 ## Hooks
 
