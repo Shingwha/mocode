@@ -30,7 +30,8 @@ mocode/
 │   ├── session.py       Session, SessionStore
 │   ├── export.py        Session → Markdown
 │   ├── prompt.py        build_system_prompt(ctx)
-│   └── plugin/          Plugin, HostContext, loader, PluginHost
+│   └── plugin/          Plugin, HostContext, loader, PluginHost, env (a plugin's
+│                        own uv environment), install (plugin install/sync/list/remove)
 │       └── builtin/     the plugins MoCode ships: filesystem, shell, skills
 ├── cli/                 the terminal front-end — a consumer of host/
 │   ├── app.py           CLIApp — the REPL, dispatch and Ctrl-C

@@ -97,6 +97,68 @@ command — lives in [`examples/plugins/git-status`](../examples/plugins/git-sta
 The loader resolves the plugin from the module: a module-level `plugin`
 instance wins, then the first `Plugin` subclass the module defines itself.
 
+## Installing plugins
+
+Drop the directory into `.mocode/plugins/` (project) or `~/.mocode/plugins/`
+(user) and it loads on the next start — or install it without leaving the
+shell:
+
+```bash
+mocode plugin install <git-url | local-path>   # fetch, place by manifest name,
+                                               # and set up its environment
+mocode plugin install <path> --project         # into ./.mocode/plugins instead
+mocode plugin list                             # what this project loads, and how
+mocode plugin sync <name>                      # re-run the environment half alone
+mocode plugin remove <name>                    # delete it, environment included
+```
+
+The manifest decides the directory name, so what `install` places is what
+`list` shows and `sync`/`remove` address. Installing is an act of trust — a
+plugin is code MoCode imports and runs; nothing executes during the install
+itself, but the next start will. A plugin installed or synced here is loaded
+by the *next* start; a running process does not retry loads.
+
+## Dependencies
+
+A plugin runs in MoCode's process, so the packages it imports come from
+MoCode's Python environment by default — install them the way you installed
+MoCode (`uv pip install <package>` into the same venv, or
+`uv tool install mocode --with <package>`).
+
+A plugin that wants an environment of its own ships a `pyproject.toml` at its
+root — the standard declaration; the manifest schema stays closed — and the
+user materialises it:
+
+```toml
+[project]
+name = "git-helper"
+version = "0.1.0"
+dependencies = ["gitpython>=3.1"]
+
+[tool.uv]
+package = false        # the plugin is a directory, not an installable package
+```
+
+```bash
+mocode plugin install <source>   # or: mocode plugin sync git-helper
+```
+
+That runs `uv sync` inside the plugin directory and creates a `.venv`
+belonging to the plugin alone. When the plugin loads, MoCode *appends* that
+environment's `site-packages` to `sys.path` — which means, said plainly:
+
+* the plugin's packages resolve **only when MoCode's own environment does not
+  already have them** — the host always wins;
+* two plugins pinning different versions of one package do not both get their
+  way: the host's version, then whichever imported first;
+* this is **addition, not isolation**. A second interpreter is the only real
+  isolation — that is what `mcp.json` is for when it is served.
+
+A plugin whose import fails on a missing package is skipped with a report
+saying exactly which of the two roads to take. A complete example — the tool,
+the declaration, the README — lives in
+[`examples/plugins/json-validate`](../examples/plugins/json-validate).
+
 ## What `build(ctx)` can do
 
 | Contribution | API |

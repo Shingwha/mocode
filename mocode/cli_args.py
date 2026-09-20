@@ -18,6 +18,30 @@ def build_parser() -> argparse.ArgumentParser:
         "Pipe stdin to provide context.",
     )
 
+    commands = parser.add_subparsers(dest="command")
+    plugin = commands.add_parser("plugin", help="Manage plugins")
+    plugin_commands = plugin.add_subparsers(dest="plugin_command", required=True)
+
+    install = plugin_commands.add_parser(
+        "install", help="Install a plugin from a git URL or a local directory"
+    )
+    install.add_argument("source", help="git URL or path to a plugin directory")
+    install.add_argument(
+        "--project",
+        action="store_true",
+        help="install into ./.mocode/plugins instead of ~/.mocode/plugins",
+    )
+
+    sync = plugin_commands.add_parser(
+        "sync", help="Materialise a plugin's own environment (uv sync)"
+    )
+    sync.add_argument("name", help="plugin name, as `plugin list` shows it")
+
+    plugin_commands.add_parser("list", help="List the plugins of this project")
+
+    remove = plugin_commands.add_parser("remove", help="Remove an installed plugin")
+    remove.add_argument("name", help="plugin name, as `plugin list` shows it")
+
     return parser
 
 

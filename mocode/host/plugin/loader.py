@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .base import Plugin
+from .env import PluginVenv
 
 MANIFEST = "plugin.json"
 CODE_MODULE = "plugin.py"
@@ -128,6 +129,11 @@ def load_plugin(spec: PluginSpec) -> Plugin | None:
     """
     if spec.module is None or not spec.module.is_file():
         return None
+    if spec.directory is not None:
+        # Before the import, so packages the module needs resolve while it
+        # loads — and it stays for the process, so its lazy imports do too.
+        # See env.py for what attaching does and does not promise.
+        PluginVenv(spec.directory).attach()
     module = import_module_file(spec.module, f"mocode_plugin_{slugify(spec.name)}")
     if module is None:
         return None
@@ -235,6 +241,13 @@ def import_module_file(path: Path, module_name: str) -> types.ModuleType | None:
     except Exception as e:  # a broken plugin must not take the host down
         sys.modules.pop(module_name, None)
         report(f"failed to import {path}: {e}")
+        if isinstance(e, ModuleNotFoundError):
+            report(
+                f"  {path}: needs a package mocode's environment does not "
+                "have — install it there (uv pip install <package>), or give "
+                "the plugin one of its own (mocode plugin sync — "
+                "docs/plugins.md#dependencies)"
+            )
         return None
 
 

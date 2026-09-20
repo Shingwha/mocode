@@ -139,3 +139,4 @@ plugin, and [docs/plugins.md](docs/plugins.md) shows the worked version:
 | [docs/providers.md](docs/providers.md) | the Provider protocol, writing a provider |
 | [examples/core/](examples/core) | agents built from `core/` alone, runnable |
 | [examples/plugins/git-status/](examples/plugins/git-status) | a complete plugin, both surfaces |
+| [examples/plugins/json-validate/](examples/plugins/json-validate) | a plugin with its own environment (a dependency via uv) |
