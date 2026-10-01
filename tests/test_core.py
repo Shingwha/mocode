@@ -157,6 +157,56 @@ class TestPrompt:
         assert '<tool name="bash">\nRun bash\n</tool>' in result
         assert '<tool name="read">\nRead files\n</tool>' in result
 
+    def test_a_render_field_produces_the_text(self):
+        section = Section("sdk", render=lambda ctx: f"tools known: {ctx.get('n', 0)}")
+
+        result = Prompt().context(n=3).register(section).build()
+
+        assert "tools known: 3" in result
+
+    def test_render_beats_a_callable_content(self):
+        section = Section(
+            "both",
+            lambda _ctx: "from content",
+            render=lambda _ctx: "from render",
+        )
+
+        assert "from render" in Prompt().register(section).build()
+
+    def test_a_pinned_section_renders_once_and_holds_its_bytes(self):
+        state = {"n": 1}
+        section = Section("sdk", render=lambda _ctx: f"v={state['n']}", pinned=True)
+        prompt = Prompt().register(section)
+
+        first = prompt.build()
+        state["n"] = 2  # the live source moved
+        second = prompt.build()
+
+        assert first == second  # the pin kept the prompt byte-identical
+        assert "v=1" in second
+
+        section.refresh()
+        third = prompt.build()
+
+        assert "v=2" in third
+        assert third != first
+
+    def test_prompt_render_reads_a_section_live_even_when_pinned(self):
+        state = {"n": 1}
+        section = Section("sdk", render=lambda _ctx: f"v={state['n']}", pinned=True)
+        prompt = Prompt().register(section)
+
+        prompt.build()  # the pin caches v=1
+        state["n"] = 2
+
+        assert "v=2" in prompt.render(section)
+
+    def test_derived_from_is_carried_not_interpreted(self):
+        section = Section("sdk", "text", derived_from="tools")
+
+        assert section.derived_from == "tools"
+        assert "text" in Prompt().register(section).build()
+
 
 class TestTool:
     def test_sync_and_async_execution(self):

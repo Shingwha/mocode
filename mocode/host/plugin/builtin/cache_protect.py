@@ -37,6 +37,12 @@ Three shapes for a tool change:
     the registry even though the pinned payload does not offer it, and it
     enters the payload at the next rebuild or session.
 
+And one shape for a prompt section that opted out of moving: a **pinned**
+section with ``derived_from="tools"`` renders once into the prompt, so a
+registry it derives from can change underneath it without the prompt
+noticing — exactly its job, and exactly why its *live* render is diffed
+here, as a fourth entry kind, so the model still hears what moved.
+
 With the interface unpinned (an embedder that opted out) the tool half is a
 silent no-op; the prompt half still runs, because the frozen prompt is part
 of the session model either way.
@@ -49,6 +55,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from ....core.hook import AgentHook
+from ....core.prompt import Prompt
 from ....core.tool import ToolRegistry
 from ...events import ConversationChanged
 from ...prompt import build_system_prompt
@@ -135,10 +142,39 @@ class _Watcher(AgentHook):
         if told_tools is None:
             told_tools = dict(pinned)
 
+        # The derived sections: pinned sections whose text is derived from
+        # the tool registry. Their pin is exactly what keeps the prompt from
+        # carrying the change — so they are diffed by their *live* render
+        # here, and a moved registry still reaches the model. An unpinned
+        # derived section moves the prompt itself, and the prompt diff above
+        # already announces it; diffing it again would say everything twice.
+        live_sections: dict[str, str] = {}
+        renderer = Prompt()
+        for section in host.prompt_sections:
+            if not (section.derived_from == "tools" and section.pinned and section.enabled):
+                continue
+            rendered = renderer.render(section)
+            if rendered:
+                live_sections[section.name] = rendered
+        told_sections: dict[str, str] = state.get("sections")
+        if told_sections is None:
+            # First look: the prompt was just written from these very renders
+            # (materialize and the first announcement are the same moment),
+            # so the baseline is the live text — written now, because the
+            # notice path below only persists when something moved.
+            told_sections = dict(live_sections)
+            state["sections"] = live_sections
+
         entries: list[str] = []
         if told_prompt != fresh_prompt:
             entries.append(unified("the system prompt", told_prompt, fresh_prompt))
         entries += self._tool_entries(tools, pinned, told_tools)
+        for name in sorted(set(live_sections) | set(told_sections)):
+            before, after = told_sections.get(name, ""), live_sections.get(name, "")
+            if before == after:
+                continue
+            label = f"derived section '{name}'"
+            entries.append(f"{label} changed:\n" + unified(label, before, after))
         if not entries:
             return
 
@@ -154,6 +190,7 @@ class _Watcher(AgentHook):
             for name in tools.names()
             if (schema := _fresh_schema(tools, name)) is not None
         }
+        state["sections"] = live_sections
 
     def _tool_entries(
         self,

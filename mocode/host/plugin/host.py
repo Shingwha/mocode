@@ -249,6 +249,10 @@ class PluginHost:
         drift as notices instead; this replaces it outright, accepting the
         cache loss. Runs no preparation: it re-reads what is registered.
         """
+        # A pinned section held its bytes for cache stability; a rebuild is
+        # the one moment fresh content is wanted, so every pin drops.
+        for section in self.ctx.prompt_sections:
+            section.refresh()
         self.ctx.agent.system_prompt = build_system_prompt(self.ctx)
         if self._freeze:
             self.ctx.tools.freeze()
