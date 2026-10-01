@@ -161,6 +161,8 @@ plugin, and [docs/plugins.md](docs/plugins.md) shows the worked version:
 | [docs/embedding.md](docs/embedding.md) | embedding MoCode in an application |
 | [docs/plugins.md](docs/plugins.md) | writing a plugin |
 | [docs/providers.md](docs/providers.md) | the Provider protocol, writing a provider |
+| [docs/testing.md](docs/testing.md) | testing a plugin against a scripted model |
 | [examples/core/](examples/core) | agents built from `core/` alone, runnable |
 | [examples/plugins/git-status/](examples/plugins/git-status) | a complete plugin, both surfaces |
 | [examples/plugins/json-validate/](examples/plugins/json-validate) | a plugin with its own environment (a dependency via uv) |
+| [examples/plugins/multi-file/](examples/plugins/multi-file) | a plugin organized as a package, submodules included |
