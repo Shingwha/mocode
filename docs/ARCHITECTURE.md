@@ -117,6 +117,19 @@ Four primitives make features-as-plugins possible:
 - **Tool metadata** — `Tool(tags=...)` plus `ToolRegistry.select(...)`:
   capability scoping by tag, never by a hard-coded list of tool names.
 
+**Executing a tool is the dispatcher's job** (`core/dispatch.py`). The whole
+policy pipeline around a call — hook interception, the switched-off check,
+timeout with cooperative cancellation, status mapping, failure prefixes,
+truncation, and the Started/Finished events — lives in `ToolDispatcher`, and
+`AgentLoop` is a thin wrapper over it that turns a `DispatchResult` into a tool
+message. Anything that runs tools of its own — a sub-agent tool, a workflow
+node — calls the same dispatcher with `origin="program"` and gets the
+identical pipeline. The **program-origin contract**: those calls' events reach
+the channel stamped with the run they belong to, so every reader can observe
+and audit them, but they never enter `messages` and never fold into the turn's
+`tool_calls_made` count — the conversation stays what the model said and was
+answered, and the live state stays the model's side of the story.
+
 ## Events and hooks are different jobs
 
 They are deliberately not unified, because they run in opposite directions:
