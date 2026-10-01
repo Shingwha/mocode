@@ -271,16 +271,45 @@ def slugify(name: str) -> str:
 # ── Import helpers ──────────────────────────────────────────
 
 
+def _forget_module(module_name: str) -> None:
+    """Drop *module_name* and its submodules from ``sys.modules``.
+
+    A package that died mid-import may have left submodules behind; a
+    half-loaded plugin must leave no trace, or a retried load could meet a
+    module that pretends to work.
+    """
+    prefix = module_name + "."
+    for name in [
+        n for n in sys.modules if n == module_name or n.startswith(prefix)
+    ]:
+        sys.modules.pop(name, None)
+
+
 def import_module_file(
     path: Path, module_name: str, fix: str = ""
 ) -> types.ModuleType | None:
     """Import *path* as *module_name*. ``None`` if it cannot be imported.
 
+    An ``__init__.py`` imports as a package: its directory becomes the
+    search path for submodules, so ``from . import helper`` inside it loads
+    ``<module_name>.helper`` — a name only this plugin owns, whatever other
+    plugins ship. Never add the plugin's directory to ``sys.path`` instead:
+    two plugins' ``helpers.py`` would overwrite each other in ``sys.modules``,
+    a silent cross-plugin pollution the package form cannot produce.
+
     *fix* is the remedy reported when the module imports a package nobody
     has — the exact command for this plugin, ready to copy.
     """
     try:
-        spec = importlib.util.spec_from_file_location(module_name, path)
+        if path.name == "__init__.py":
+            # The directory is the package: relative imports resolve inside
+            # it, against this plugin's own module name. The location is a
+            # str — a Path here leaves the import system's file finder cold.
+            spec = importlib.util.spec_from_file_location(
+                module_name, path, submodule_search_locations=[str(path.parent)]
+            )
+        else:
+            spec = importlib.util.spec_from_file_location(module_name, path)
         if spec is None or spec.loader is None:
             return None
         module = importlib.util.module_from_spec(spec)
@@ -288,7 +317,7 @@ def import_module_file(
         spec.loader.exec_module(module)
         return module
     except Exception as e:  # a broken plugin must not take the host down
-        sys.modules.pop(module_name, None)
+        _forget_module(module_name)
         report(f"failed to import {path}: {e}")
         if isinstance(e, ModuleNotFoundError) and fix:
             report(f"  fix: {fix}")
