@@ -109,83 +109,59 @@ def _list_directory(p: Path) -> str:
     return header + "\n" + "\n".join(dirs + files) + hint
 
 
-# ── read ────────────────────────────────────────────────────
-
-_READ_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "path": {"type": "string", "description": "File path to read"},
-        "offset": {"type": "integer", "description": "Line number to start from (1-based)", "default": 1},
-        "limit": {"type": "integer", "description": "Max lines to read (0 = all lines)", "default": 0},
-    },
-    "required": ["path"],
-}
-_READ_DESC = (
-    "Read a file and return its contents with line numbers. "
-    "Supports text files with UTF-8/GBK encoding. "
-    "Use offset and limit to read specific line ranges. Line numbers are 1-based. "
-    "The output includes file metadata (total lines, size) and truncation info when the file is too long."
-)
+# ── The tools — plain Tool instances, closed over the project ──
 
 
-class ReadTool(Tool):
+def read_tool(base: Path) -> Tool:
     """Read a file and return its contents with line numbers."""
 
-    def __init__(self, base: Path) -> None:
-        self.base = base
-        super().__init__(
-            name="read",
-            description=_READ_DESC,
-            schema=_READ_SCHEMA,
-            func=self._execute,
-            tags=FS,
-            summary_key="path",
-            result_key="lines",
-        )
-
-    def _execute(self, args: dict) -> ToolResult:
+    def execute(args: dict) -> ToolResult:
         given = args["path"]
         offset = max(1, int(args.get("offset", 1)))
         limit = int(args.get("limit", 0))  # 0 = all lines
-        p = resolve_path(given, self.base)
+        p = resolve_path(given, base)
         if p.is_dir():
             return ToolResult(_list_directory(p))
         return _read_text(require_file(p), offset, limit, label=given)
 
+    return Tool(
+        name="read",
+        description=(
+            "Read a file and return its contents with line numbers. "
+            "Supports text files with UTF-8/GBK encoding. "
+            "Use offset and limit to read specific line ranges. Line numbers are 1-based. "
+            "The output includes file metadata (total lines, size) and truncation info "
+            "when the file is too long."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to read"},
+                "offset": {
+                    "type": "integer",
+                    "description": "Line number to start from (1-based)",
+                    "default": 1,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max lines to read (0 = all lines)",
+                    "default": 0,
+                },
+            },
+            "required": ["path"],
+        },
+        func=execute,
+        tags=FS,
+        summary_key="path",
+        result_key="lines",
+    )
 
-# ── write ───────────────────────────────────────────────────
 
-_WRITE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "path": {"type": "string", "description": "File path to write"},
-        "content": {"type": "string", "description": "Content to write (UTF-8)"},
-        "append": {"type": "boolean", "description": "Append to end of file instead of overwriting", "default": False},
-    },
-    "required": ["path", "content"],
-}
-_WRITE_DESC = (
-    "Write content to a file. Creates the file and any parent directories if they don't exist. "
-    "By default, overwrites existing content entirely. Set append=true to append to the end of the file instead."
-)
-
-
-class WriteTool(Tool):
+def write_tool(base: Path) -> Tool:
     """Write content to a file."""
 
-    def __init__(self, base: Path) -> None:
-        self.base = base
-        super().__init__(
-            name="write",
-            description=_WRITE_DESC,
-            schema=_WRITE_SCHEMA,
-            func=self._execute,
-            tags=FS,
-            summary_key="path",
-        )
-
-    def _execute(self, args: dict) -> str:
-        p = resolve_path(args["path"], self.base)
+    def execute(args: dict) -> str:
+        p = resolve_path(args["path"], base)
         if p.is_dir():
             raise ToolError(f"Path is a directory: {p}", "invalid_path")
         content = args["content"]
@@ -204,42 +180,37 @@ class WriteTool(Tool):
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         return f"{action} {line_count} lines to {p.name}"
 
+    return Tool(
+        name="write",
+        description=(
+            "Write content to a file. Creates the file and any parent directories if "
+            "they don't exist. By default, overwrites existing content entirely. Set "
+            "append=true to append to the end of the file instead."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to write"},
+                "content": {"type": "string", "description": "Content to write (UTF-8)"},
+                "append": {
+                    "type": "boolean",
+                    "description": "Append to end of file instead of overwriting",
+                    "default": False,
+                },
+            },
+            "required": ["path", "content"],
+        },
+        func=execute,
+        tags=FS,
+        summary_key="path",
+    )
 
-# ── edit ────────────────────────────────────────────────────
 
-_EDIT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "path": {"type": "string", "description": "File path to edit"},
-        "old_string": {"type": "string", "description": "Exact text to find (must be unique unless all=true)"},
-        "new_string": {"type": "string", "description": "Replacement text"},
-        "all": {"type": "boolean", "description": "Replace all occurrences instead of just the first", "default": False},
-    },
-    "required": ["path", "old_string", "new_string"],
-}
-_EDIT_DESC = (
-    "Find and replace text in a file. The old_string must match exactly (including whitespace and indentation). "
-    "By default, old_string must appear exactly once in the file — the tool will fail if it matches multiple locations. "
-    "Use all=true to replace every occurrence. The file must already exist."
-)
-
-
-class EditTool(Tool):
+def edit_tool(base: Path) -> Tool:
     """Find and replace text in a file."""
 
-    def __init__(self, base: Path) -> None:
-        self.base = base
-        super().__init__(
-            name="edit",
-            description=_EDIT_DESC,
-            schema=_EDIT_SCHEMA,
-            func=self._execute,
-            tags=FS,
-            summary_key="path",
-        )
-
-    def _execute(self, args: dict) -> str:
-        p = require_file(resolve_path(args["path"], self.base))
+    def execute(args: dict) -> str:
+        p = require_file(resolve_path(args["path"], base))
         text = p.read_text(encoding="utf-8")
         old, new = args["old_string"], args["new_string"]
         if old not in text:
@@ -255,6 +226,37 @@ class EditTool(Tool):
         p.write_text(replacement, encoding="utf-8")
         return f"Replaced {count if replace_all else 1} occurrence(s) in {p.name}"
 
+    return Tool(
+        name="edit",
+        description=(
+            "Find and replace text in a file. The old_string must match exactly "
+            "(including whitespace and indentation). By default, old_string must appear "
+            "exactly once in the file — the tool will fail if it matches multiple "
+            "locations. Use all=true to replace every occurrence. The file must "
+            "already exist."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File path to edit"},
+                "old_string": {
+                    "type": "string",
+                    "description": "Exact text to find (must be unique unless all=true)",
+                },
+                "new_string": {"type": "string", "description": "Replacement text"},
+                "all": {
+                    "type": "boolean",
+                    "description": "Replace all occurrences instead of just the first",
+                    "default": False,
+                },
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+        func=execute,
+        tags=FS,
+        summary_key="path",
+    )
+
 
 # ── plugin ──────────────────────────────────────────────────
 
@@ -266,7 +268,7 @@ class FilesystemPlugin(Plugin):
     def build(self, ctx: BuildContext) -> None:
         # Relative paths resolve against the conversation's project: build()
         # runs once per conversation, so each one edits its own tree.
-        for tool in (ReadTool(ctx.cwd), WriteTool(ctx.cwd), EditTool(ctx.cwd)):
+        for tool in (read_tool(ctx.cwd), write_tool(ctx.cwd), edit_tool(ctx.cwd)):
             ctx.tools.register(tool)
 
 

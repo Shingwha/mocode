@@ -14,53 +14,42 @@ from pathlib import Path
 
 import jsonschema
 
-from mocode.plugins import Plugin, Tool, ToolResult
+from mocode.plugins import BuildContext, Plugin, Tool, ToolResult
 
 
-class ValidateJsonTool(Tool):
+def _path_of(error: jsonschema.ValidationError) -> str:
+    where = ".".join(str(p) for p in error.absolute_path)
+    return where or "(root)"
+
+
+def validate_json_tool(cwd: Path) -> Tool:
     """Check a JSON document against a JSON Schema — both project files."""
 
-    def __init__(self, cwd: Path) -> None:
-        super().__init__(
-            name="validate_json",
-            description=(
-                "Validate a JSON document against a JSON Schema file in this "
-                "project. Use it whenever a config, manifest or payload has a "
-                "schema — before trusting it or shipping it."
-            ),
-            schema={
-                "type": "object",
-                "properties": {
-                    "schema_path": {
-                        "type": "string",
-                        "description": "Path to the JSON Schema file, relative to the project",
-                    },
-                    "document_path": {
-                        "type": "string",
-                        "description": "Path to the JSON document to check",
-                    },
-                },
-                "required": ["schema_path", "document_path"],
-            },
-            func=self._run,
-            result_key="error_count",
-        )
-        self._cwd = cwd
+    def _load(relative: str) -> ToolResult | dict:
+        """One file from the project, or the ToolResult that says why not."""
+        path = cwd / relative
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            return ToolResult(
+                content=f"error: cannot read {relative!r}: {e}",
+                details={"valid": False, "error_count": -1, "errors": []},
+            )
 
-    def _run(self, args: dict) -> ToolResult:
+    def run(args: dict) -> ToolResult:
         # A conversation works in its own project; both paths resolve there.
-        schema = self._load(args.get("schema_path", ""))
-        document = self._load(args.get("document_path", ""))
+        schema = _load(args.get("schema_path", ""))
+        document = _load(args.get("document_path", ""))
         if isinstance(schema, ToolResult):
             return schema
         if isinstance(document, ToolResult):
             return document
 
         errors = [
-            {"path": self._path_of(e), "message": e.message}
+            {"path": _path_of(e), "message": e.message}
             for e in sorted(
                 jsonschema.Draft202012Validator(schema).iter_errors(document),
-                key=self._path_of,
+                key=_path_of,
             )
         ]
 
@@ -81,29 +70,38 @@ class ValidateJsonTool(Tool):
             },
         )
 
-    def _load(self, relative: str) -> ToolResult | dict:
-        """One file from the project, or the ToolResult that says why not."""
-        path = self._cwd / relative
-        try:
-            return json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
-            return ToolResult(
-                content=f"error: cannot read {relative!r}: {e}",
-                details={"valid": False, "error_count": -1, "errors": []},
-            )
-
-    @staticmethod
-    def _path_of(error: jsonschema.ValidationError) -> str:
-        where = ".".join(str(p) for p in error.absolute_path)
-        return where or "(root)"
+    return Tool(
+        name="validate_json",
+        description=(
+            "Validate a JSON document against a JSON Schema file in this "
+            "project. Use it whenever a config, manifest or payload has a "
+            "schema — before trusting it or shipping it."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "schema_path": {
+                    "type": "string",
+                    "description": "Path to the JSON Schema file, relative to the project",
+                },
+                "document_path": {
+                    "type": "string",
+                    "description": "Path to the JSON document to check",
+                },
+            },
+            "required": ["schema_path", "document_path"],
+        },
+        func=run,
+        result_key="error_count",
+    )
 
 
 class JsonValidatePlugin(Plugin):
     name = "json-validate"
     description = "A validate_json tool, backed by its own environment"
 
-    def build(self, ctx) -> None:
-        ctx.tools.register(ValidateJsonTool(ctx.cwd))
+    def build(self, ctx: BuildContext) -> None:
+        ctx.tools.register(validate_json_tool(ctx.cwd))
 
 
 plugin = JsonValidatePlugin()

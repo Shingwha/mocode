@@ -13,7 +13,7 @@ class buried in a submodule would stay invisible anyway.
 
 from __future__ import annotations
 
-from mocode.plugins import Plugin
+from mocode.plugins import BuildContext, Plugin
 
 from .commands import motd_command
 from .sections import motd_section
@@ -23,7 +23,7 @@ class MotdPlugin(Plugin):
     name = "multi-file"
     description = "A prompt section and a /motd command, in package form"
 
-    def build(self, ctx) -> None:
+    def build(self, ctx: BuildContext) -> None:
         ctx.commands.register(motd_command())
         ctx.prompt_sections.append(motd_section())
 

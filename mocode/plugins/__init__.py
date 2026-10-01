@@ -90,11 +90,12 @@ from ..host.command import (
 )
 from ..host.conversation import Conversation
 from ..host.plugin.base import Plugin
-from ..host.plugin.context import HostContext
+from ..host.plugin.context import BuildContext, HostContext
 
 __all__ = [
     "AgentConfig",
     "AgentHook",
+    "BuildContext",
     "Chunk",
     "CONTINUE",
     "Command",

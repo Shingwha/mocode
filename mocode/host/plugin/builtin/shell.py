@@ -25,21 +25,6 @@ OutputSink = Callable[[str, str], Awaitable[None]]
 
 _BASH_TAG = frozenset({"shell"})
 
-_BASH_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "command": {"type": "string", "description": "The bash command to execute (Unix-style syntax)"},
-        "restart": {"type": "boolean", "description": "Reset session state (working directory and environment variables)"},
-        "timeout": {"type": "number", "description": "Max execution time in seconds (default: the host's tool_timeout policy)"},
-    },
-    "required": ["command"],
-}
-_BASH_DESC = (
-    "Run a shell command in a persistent bash session (Unix-style, e.g. ls, grep, find). "
-    "Working directory and environment variables persist across commands. "
-    "Use 'restart' to reset session state (cwd, env vars)."
-)
-
 
 def _is_wsl_path(path: Path) -> bool:
     normalized = str(path).lower().replace("\\", "/")
@@ -209,44 +194,66 @@ async def _pump(
             await on_output(text, stream)
 
 
-class BashTool(Tool):
-    """Run shell commands in a persistent bash session."""
+def bash_tool(cwd: Path, default_timeout: int = 240) -> Tool:
+    """Run shell commands in a persistent bash session — one tool per
+    conversation, its session created here and captured by the closure."""
+    session = BashSession(cwd)
 
-    def __init__(self, cwd: Path, default_timeout: int = 240) -> None:
-        self._session = BashSession(cwd)
-        # Only for runs nobody dispatches (bare tool.run): when the dispatcher
-        # is involved it resolves the deadline — the model's ``timeout``
-        # argument via the policy below, else the config — and hands it back
-        # on the context, which drives this tool's foreground wait.
-        self._default_timeout = default_timeout
-        super().__init__(
-            name="bash",
-            description=_BASH_DESC,
-            schema=_BASH_SCHEMA,
-            func=self._execute,
-            tags=_BASH_TAG,
-            summary_key="command",
-            result_key="exit_code",
-            with_context=True,
-            # The model-facing timeout argument is policy, not bookkeeping:
-            # the dispatcher enforces it around the whole call; absent means
-            # None, i.e. fall through to the config default.
-            policy=lambda args: ToolPolicy(timeout=args.get("timeout")),
-        )
+    # Only for runs nobody dispatches (bare tool.run): when the dispatcher
+    # is involved it resolves the deadline — the model's ``timeout``
+    # argument via the policy below, else the config — and hands it back
+    # on the context, which drives this tool's foreground wait.
+    fallback_timeout = default_timeout
 
-    async def _execute(self, args: dict, ctx=None) -> "str | ToolResult":
+    async def execute(args: dict, ctx=None) -> "str | ToolResult":
         if args.get("restart"):
-            self._session.restart()
+            session.restart()
             return ToolResult("Bash session restarted")
 
-        timeout = self._default_timeout
+        timeout = fallback_timeout
         if ctx is not None and ctx.tool_timeout is not None:
             timeout = ctx.tool_timeout
-        return await self._session.execute(
+        return await session.execute(
             args["command"],
             timeout=timeout,
             on_output=_tool_output_sink(ctx) if ctx is not None else None,
         )
+
+    return Tool(
+        name="bash",
+        description=(
+            "Run a shell command in a persistent bash session (Unix-style, e.g. ls, grep, find). "
+            "Working directory and environment variables persist across commands. "
+            "Use 'restart' to reset session state (cwd, env vars)."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The bash command to execute (Unix-style syntax)",
+                },
+                "restart": {
+                    "type": "boolean",
+                    "description": "Reset session state (working directory and environment variables)",
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Max execution time in seconds (default: the host's tool_timeout policy)",
+                },
+            },
+            "required": ["command"],
+        },
+        func=execute,
+        tags=_BASH_TAG,
+        summary_key="command",
+        result_key="exit_code",
+        with_context=True,
+        # The model-facing timeout argument is policy, not bookkeeping:
+        # the dispatcher enforces it around the whole call; absent means
+        # None, i.e. fall through to the config default.
+        policy=lambda args: ToolPolicy(timeout=args.get("timeout")),
+    )
 
 
 class ShellPlugin(Plugin):
@@ -256,9 +263,7 @@ class ShellPlugin(Plugin):
     def build(self, ctx: BuildContext) -> None:
         # The session's working directory is the conversation's project: build()
         # runs once per conversation, so two projects never share one shell.
-        ctx.tools.register(
-            BashTool(cwd=ctx.cwd, default_timeout=ctx.config.agent.tool_timeout)
-        )
+        ctx.tools.register(bash_tool(cwd=ctx.cwd, default_timeout=ctx.config.agent.tool_timeout))
 
 
 PLUGIN = ShellPlugin()

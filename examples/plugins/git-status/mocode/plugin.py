@@ -9,7 +9,16 @@ from __future__ import annotations
 
 import subprocess
 
-from mocode.plugins import CONTINUE, Command, CommandContext, CommandResult, Plugin, Section, Tool
+from mocode.plugins import (
+    CONTINUE,
+    BuildContext,
+    Command,
+    CommandContext,
+    CommandResult,
+    Plugin,
+    Section,
+    Tool,
+)
 
 
 def _git(*args: str) -> str:
@@ -24,23 +33,10 @@ def _git(*args: str) -> str:
     return (result.stdout or result.stderr).strip() or "(no output)"
 
 
-class GitStatusTool(Tool):
-    """A tool the model can call."""
+def git_status_tool(cwd) -> Tool:
+    """A tool the model can call — a plain Tool, closed over the project."""
 
-    def __init__(self, cwd) -> None:
-        super().__init__(
-            name="git_status",
-            description=(
-                "Show the working tree status of the conversation's git repository "
-                "in short format."
-            ),
-            schema={"type": "object", "properties": {}},
-            func=self._run,
-            tags=frozenset({"git"}),
-        )
-        self._cwd = cwd
-
-    def _run(self, args: dict) -> str:
+    def run(args: dict) -> str:
         # A conversation works in its own project; git has to be asked there.
         try:
             result = subprocess.run(
@@ -48,11 +44,22 @@ class GitStatusTool(Tool):
                 capture_output=True,
                 text=True,
                 timeout=10,
-                cwd=self._cwd,
+                cwd=cwd,
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as e:
             return f"error: {e}"
         return (result.stdout or result.stderr).strip() or "(clean)"
+
+    return Tool(
+        name="git_status",
+        description=(
+            "Show the working tree status of the conversation's git repository "
+            "in short format."
+        ),
+        schema={"type": "object", "properties": {}},
+        func=run,
+        tags=frozenset({"git"}),
+    )
 
 
 async def _branch(ctx: CommandContext) -> CommandResult:
@@ -77,9 +84,11 @@ class GitStatusPlugin(Plugin):
     name = "git-status"
     description = "A git status tool, a /branch command and a commit skill"
 
-    def build(self, ctx) -> None:
-        ctx.tools.register(GitStatusTool(ctx.cwd))
-        ctx.commands.register(Command("/branch", "Show the current git branch", handler=_branch))
+    def build(self, ctx: BuildContext) -> None:
+        ctx.tools.register(git_status_tool(ctx.cwd))
+        ctx.commands.register(
+            Command("/branch", "Show the current git branch", handler=_branch)
+        )
         ctx.prompt_sections.append(Section("git", _guidance, priority=45))
 
 

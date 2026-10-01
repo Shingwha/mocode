@@ -146,41 +146,37 @@ class SkillManager:
 
 # ── Tool & command ──────────────────────────────────────────
 
-_SKILL_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "name": {"type": "string", "description": "The skill name to load"},
-    },
-    "required": ["name"],
-}
-_SKILL_DESC = (
-    "Load a skill by name. Use when the user's request matches a skill's description. "
-    "Returns the skill's instructions for you to follow."
-)
 
+def skill_tool(manager: SkillManager, *, name: str = "skill") -> Tool:
+    """Load a skill's instructions by name — closed over the manager that
+    discovered this conversation's skills."""
 
-class SkillTool(Tool):
-    """Load a skill's instructions by name."""
-
-    def __init__(self, manager: SkillManager, *, name: str = "skill") -> None:
-        self._manager = manager
-        super().__init__(
-            name=name,
-            description=_SKILL_DESC,
-            schema=_SKILL_SCHEMA,
-            func=self._execute,
-            tags=frozenset({"skills"}),
-            summary_key="name",
-        )
-
-    def _execute(self, args: dict) -> str:
+    def execute(args: dict) -> str:
         skill_name = args["name"]
-        skill = self._manager.get(skill_name)
+        skill = manager.get(skill_name)
         if not skill:
-            available = self._manager.names()
+            available = manager.names()
             hint = f" Available: {available}" if available else " No skills available."
             raise ToolError(f"Skill '{skill_name}' not found.{hint}", "not_found")
         return f"Base directory: {skill.base_dir}\n\n{skill.load_content()}"
+
+    return Tool(
+        name=name,
+        description=(
+            "Load a skill by name. Use when the user's request matches a skill's description. "
+            "Returns the skill's instructions for you to follow."
+        ),
+        schema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "The skill name to load"},
+            },
+            "required": ["name"],
+        },
+        func=execute,
+        tags=frozenset({"skills"}),
+        summary_key="name",
+    )
 
 
 def _one_line(text: str, limit: int = 100) -> str:
@@ -246,7 +242,7 @@ class SkillsPlugin(Plugin):
                 ctx.cwd / ".mocode" / "skills",
             ]
         )
-        ctx.tools.register(SkillTool(manager))
+        ctx.tools.register(skill_tool(manager))
         ctx.prompt_sections.append(
             Section("skills", _render_skills(manager), priority=50)
         )
