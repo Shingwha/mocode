@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass, field, replace
 from typing import AsyncIterator, Awaitable, Callable
 from uuid import uuid4
@@ -32,9 +33,15 @@ from .events import (
     RunFailed,
     RunFinished,
     RunStarted,
+    StopReason,
     TextDelta,
 )
-from .hook import HookRunner, IterationContext
+from .hook import (
+    HookRunner,
+    IterationContext,
+    RequestContext,
+    ResponseContext,
+)
 from .provider import (
     ModelSpec,
     Provider,
@@ -50,11 +57,19 @@ from .turn import Turn
 
 @dataclass
 class AgentConfig:
-    """Loop execution policy. Facts about the model live in :class:`ModelSpec`."""
+    """Loop execution policy. Facts about the model live in :class:`ModelSpec`.
+
+    The budget fields are per turn and 0 means unlimited. All three are
+    checked before each provider call: a turn a budget cuts ends with the
+    matching ``RunFinished.stop_reason`` and a replayable history — every
+    issued tool call keeps its answer.
+    """
 
     tool_result_limit: int = 50000
     tool_timeout: int = 240
     max_iterations: int = 0  # 0 = unlimited
+    max_tool_calls: int = 0  # 0 = unlimited; model-origin calls, this turn
+    max_turn_seconds: int = 0  # 0 = unlimited; wall clock, this turn
 
     def replace(self, **changes) -> AgentConfig:
         """Return a copy with the given fields changed (e.g. for derived agents)."""
@@ -67,6 +82,21 @@ class LoopResult:
     tool_calls_made: int = 0
     messages: list[dict] = field(default_factory=list)
     had_error: bool = False
+
+
+class IterationLimit(Exception):
+    """The turn hit ``AgentConfig.max_iterations`` before the model answered.
+
+    Raised by :meth:`AgentLoop.chat` — a caller asking for "the reply" must
+    not mistake an empty string for one. Readers of the event stream see the
+    same ending as ``RunFinished(stop_reason="max_iterations")`` instead.
+    """
+
+    def __init__(self, iterations: int):
+        self.iterations = iterations
+        super().__init__(
+            f"stopped after {iterations} iterations (AgentConfig.max_iterations)"
+        )
 
 
 class AgentLoop:
@@ -248,7 +278,10 @@ class AgentLoop:
 
         Convenience wrapper over :meth:`start` for callers that only want the
         reply. Provider failures raise, exactly as they would mid-stream, and
-        cancelling this coroutine stops the turn.
+        so does an iteration cap: hitting ``max_iterations`` raises
+        :class:`IterationLimit` rather than returning an empty string that
+        could be mistaken for the model's answer. Cancelling this coroutine
+        stops the turn.
         """
         turn = self.start(user_input)
         try:
@@ -258,6 +291,8 @@ class AgentLoop:
             raise
         if isinstance(terminal, RunFailed):
             raise turn.failure or RuntimeError(terminal.error)
+        if terminal.stop_reason == "max_iterations":
+            raise IterationLimit(terminal.iterations)
         return terminal.content
 
     async def run_with_messages(self, messages: list[dict]) -> LoopResult:
@@ -307,7 +342,7 @@ class AgentLoop:
             terminal = await self._publish(
                 RunFinished(
                     content="",
-                    cancelled=True,
+                    stop_reason="cancelled",
                     usage=self.state.usage,
                     iterations=self.state.iteration,
                     tool_calls_made=self.state.tool_calls_made,
@@ -347,12 +382,39 @@ class AgentLoop:
         ctx = IterationContext(messages=self.messages, emit=self._emit)
         answer = ""
         iteration = 0
+        stop_reason: StopReason = "completed"
+        started = time.monotonic()
 
         await self._publish(
             RunStarted(model=self.model.name, tools=self._tools.names())
         )
 
         while True:
+            # Budget checkpoints, before the next provider call. A turn a
+            # budget cuts ends like any other: its terminal event says why,
+            # and the history stays replayable — every issued tool call keeps
+            # its answer; the call that would have finished a reply never
+            # happens. The wall clock is not checked inside retry backoff (a
+            # turn mid-backoff may overshoot the budget by one interval).
+            if (
+                self.config.max_iterations > 0
+                and iteration >= self.config.max_iterations
+            ):
+                stop_reason = "max_iterations"
+                break
+            if (
+                self.config.max_tool_calls > 0
+                and self.state.tool_calls_made >= self.config.max_tool_calls
+            ):
+                stop_reason = "max_tool_calls"
+                break
+            if (
+                self.config.max_turn_seconds > 0
+                and time.monotonic() - started >= self.config.max_turn_seconds
+            ):
+                stop_reason = "time_budget"
+                break
+
             iteration += 1
             ctx.messages = self.messages
             ctx.iteration = iteration
@@ -364,12 +426,28 @@ class AgentLoop:
 
             await self._publish(IterationStarted(iteration=iteration))
 
+            # The request as it is about to be sent — the last interception
+            # point. The schema list is a copy: an in-place edit by a hook
+            # reaches this one request, never the registry's cache or a
+            # frozen payload.
+            request_tools = list(self._tools.all_schemas())
+            request = RequestContext(
+                messages=self.messages,
+                system_prompt=self.system_prompt,
+                tools=request_tools,
+                model=self.model,
+                emit=self._emit,
+            )
+            await self.hooks.before_request(request)
+            self.messages = request.messages
+            self.system_prompt = request.system_prompt
+
             acc = StreamAccumulator()
             async for chunk in with_retry_stream(
                 self.provider,
                 self.messages,
                 self.system_prompt,
-                self._tools.all_schemas(),
+                request_tools,
                 self.model.max_output,
             ):
                 acc.feed(chunk)
@@ -384,10 +462,20 @@ class AgentLoop:
                     await self._publish(TextDelta(text=chunk.text))
 
             response = acc.build()
+
+            # The response as accounted for — a usage rewrite here flows into
+            # IterationFinished and the turn's totals.
+            answered = ResponseContext(
+                usage=response.usage,
+                finish_reason=response.finish_reason,
+                iteration=iteration,
+            )
+            await self.hooks.after_response(answered)
+
             await self._publish(
                 IterationFinished(
                     iteration=iteration,
-                    usage=response.usage,
+                    usage=answered.usage,
                     stop_reason=response.finish_reason,
                 )
             )
@@ -408,12 +496,6 @@ class AgentLoop:
 
                 self.messages.append(assistant)
                 self.messages.extend(results)
-
-                if (
-                    self.config.max_iterations > 0
-                    and iteration >= self.config.max_iterations
-                ):
-                    break
             else:
                 self.messages.append(self._assistant_msg(response))
                 answer = response.content or ""
@@ -425,6 +507,7 @@ class AgentLoop:
                 usage=self.state.usage,
                 iterations=iteration,
                 tool_calls_made=self.state.tool_calls_made,
+                stop_reason=stop_reason,
             )
         )
 

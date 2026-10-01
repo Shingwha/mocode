@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
@@ -71,46 +72,207 @@ def split_result(result: "str | ToolResult") -> tuple[str, dict[str, Any]]:
     return str(result), {}
 
 
-def _accepts_context(func: Callable) -> bool:
-    """Whether *func* declares a second parameter for its ToolCallContext."""
+# ── The schema dialect and its checker ──────────────────────
+#
+# Tool arguments are declared as a JSON Schema object node — the dialect every
+# model speaks natively, so what the model is offered and what the arguments
+# are checked against are the same document. The checker below is deliberately
+# small and dependency-free: it enforces the common keywords and *passes*
+# everything else (logged at debug) rather than guessing at semantics it does
+# not implement. A keyword it does not know may therefore accept more than a
+# full validator would — forward compatibility beats false rejections here,
+# because the alternative is a tool nobody can call after their provider
+# grew a new schema feature.
+
+_log = logging.getLogger(__name__)
+
+#: Per-type value checks. ``bool`` is excluded from ``integer`` and ``number``
+#: explicitly: in Python it is an ``int`` subclass, in JSON it is not a number.
+_TYPE_CHECKS: dict[str, Callable[[Any], bool]] = {
+    "string": lambda v: isinstance(v, str),
+    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "boolean": lambda v: isinstance(v, bool),
+    "array": lambda v: isinstance(v, list),
+    "object": lambda v: isinstance(v, dict),
+    "null": lambda v: v is None,
+}
+
+#: Keywords the checker enforces (plus ``description``, an annotation it
+#: reads past silently — it carries no validation semantics to skip).
+_SUPPORTED_KEYWORDS = frozenset(
+    {"type", "required", "properties", "items", "enum", "anyOf", "oneOf", "default", "description"}
+)
+
+
+def _type_name(value: Any) -> str:
+    if value is None:
+        return "null"
+    return {bool: "boolean", int: "integer", float: "number", str: "string",
+            list: "array", dict: "object"}.get(type(value), type(value).__name__)
+
+
+def _check(value: Any, schema: Any, path: str) -> Any:
+    """Validate *value* against one schema node, filling defaults as reached.
+
+    Returns the value (with ``default`` filled into object levels the check
+    actually reached). Raises :class:`ToolError` on the first violation —
+    ``missing_param`` for an absent required property, ``invalid_type`` for
+    everything else (a wrong type, a value outside an ``enum``, a miss against
+    every ``anyOf`` branch, a ``oneOf`` that matches two). Unknown keywords
+    pass, with a debug log; unknown types pass the same way.
+    """
+    if not isinstance(schema, dict):
+        return value  # nothing we can read — treat as unconstrained
+    for keyword in schema:
+        if keyword not in _SUPPORTED_KEYWORDS:
+            _log.debug(
+                "schema keyword %r at %s is not checked by the built-in "
+                "validator; the value passes",
+                keyword,
+                path,
+            )
+
+    # anyOf / oneOf: match against the branches instead of this node's own
+    # type — the union is the whole constraint.
+    branches = schema.get("anyOf")
+    exclusive = False
+    if branches is None:
+        branches = schema.get("oneOf")
+        exclusive = branches is not None
+    if isinstance(branches, list):
+        matches = 0
+        for branch in branches:
+            try:
+                _check(value, branch, path)
+            except ToolError:
+                continue
+            matches += 1
+        if matches == 0:
+            raise ToolError(f"{path}: matches none of the allowed schemas", "invalid_type")
+        if exclusive and matches > 1:
+            raise ToolError(f"{path}: matches more than one schema (oneOf)", "invalid_type")
+        return value
+
+    enum = schema.get("enum")
+    if isinstance(enum, list) and value not in enum:
+        raise ToolError(
+            f"{path}: must be one of {enum!r}, got {value!r}", "invalid_type"
+        )
+
+    declared = schema.get("type")
+    if isinstance(declared, str):
+        check = _TYPE_CHECKS.get(declared)
+        if check is not None and not check(value):
+            raise ToolError(
+                f"{path}: expected {declared}, got {_type_name(value)}",
+                "invalid_type",
+            )
+    elif isinstance(declared, list):
+        checks = [_TYPE_CHECKS.get(t) for t in declared if isinstance(t, str)]
+        if checks and not any(c is not None and c(value) for c in checks):
+            raise ToolError(
+                f"{path}: expected one of {list(declared)!r}, got {_type_name(value)}",
+                "invalid_type",
+            )
+
+    if isinstance(value, dict):
+        required = schema.get("required")
+        if isinstance(required, list):
+            for key in required:
+                if key not in value:
+                    raise ToolError(
+                        f"{path}.{key}: missing required parameter",
+                        "missing_param",
+                    )
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            for key, sub in properties.items():
+                if key in value:
+                    value[key] = _check(value[key], sub, f"{path}.{key}")
+                elif isinstance(sub, dict) and "default" in sub:
+                    value[key] = sub["default"]
+    elif isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, dict):
+            for i, item in enumerate(value):
+                value[i] = _check(item, items, f"{path}[{i}]")
+    return value
+
+
+def _positional_shape(func: Callable) -> tuple[int, int, bool] | None:
+    """(declared positional params, required ones, accepts ``*args``) — or
+    ``None`` when *func* cannot be introspected."""
     try:
-        params = inspect.signature(func).parameters.values()
+        params = list(inspect.signature(func).parameters.values())
     except (TypeError, ValueError):
-        return False
+        return None
     positional = [
         p
         for p in params
         if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
     ]
-    return len(positional) >= 2 or any(p.kind == p.VAR_POSITIONAL for p in params)
+    required = [p for p in positional if p.default is p.empty]
+    star_args = any(p.kind == p.VAR_POSITIONAL for p in params)
+    return len(positional), len(required), star_args
+
+
+@dataclass(frozen=True)
+class ToolPolicy:
+    """Execution-policy overrides for one tool.
+
+    ``None`` means "no opinion": the value falls through to the next level of
+    the resolution order — call-level (``dispatcher.run(..., timeout=...)``)
+    over tool-level (this policy) over config (``AgentConfig``). A policy may
+    also be a callable receiving the call's arguments, so a tool can decide
+    per call — the bash tool maps its ``timeout`` argument this way.
+    """
+
+    timeout: int | None = None
+    result_limit: int | None = None
 
 
 class Tool:
     """Tool — supports sync and async functions.
+
+    Arguments are declared in ``schema`` — a JSON Schema object node
+    (``{"type": "object", "properties": {...}, "required": [...]}``), passed
+    through to the provider as the function's ``parameters`` and used by the
+    built-in checker (see :func:`_check`) to fill defaults and reject bad
+    arguments before the function runs. ``returns`` is optional structured-
+    output metadata for SDKs to render; it never enters the request.
 
     Metadata beyond the schema:
       - ``tags``: semantic capabilities (e.g. ``{"fs"}``, ``{"shell"}``,
         ``{"delegation"}``). Registries are filtered by tag rather than by a
         hard-coded list of tool names.
       - ``summary_key``: which argument to show in one-line activity summaries.
-        Defaults to the first parameter.
+        Defaults to the first required parameter, or the first property when
+        nothing is required.
       - ``result_key``: which entry of :class:`ToolResult` ``details`` to show
         alongside that summary, so the same line can report what came back.
         Empty means "show nothing extra".
       - ``availability``: who may use the tool — the model, program code, or
         both (the default). A tool invisible to an audience is neither offered
         to it nor runnable by it; see :meth:`ToolRegistry.names`.
+      - ``policy``: execution-policy overrides (:class:`ToolPolicy`, or a
+        callable receiving the call's arguments and returning one) — timeout
+        and result limit per tool, before the config defaults.
       - ``source``: who registered the tool — a channel-prefixed name stamped
         by the registration path (``builtin:<name>``, ``plugin:<name>``,
         ``host``); empty means bare core. A self-reported value does not
         survive host registration: the path is the authority, so a tool
         cannot claim an identity its loader cannot back.
 
-    A tool may declare a second parameter to receive its
-    :class:`~mocode.core.hook.ToolCallContext`. That is how a long-running tool
-    reports progress (``await ctx.emit(ToolOutput(...))``) or reads the
-    arguments a hook rewrote. Tools that don't ask for it keep the plain
-    ``(args) -> str`` shape.
+    A tool that wants its :class:`~mocode.core.hook.ToolCallContext` says so
+    explicitly: ``with_context=True`` means the function is called as
+    ``(args, ctx)`` — that is how a long-running tool reports progress
+    (``await ctx.emit(ToolOutput(...))``) or reads the arguments a hook
+    rewrote. The declaration is checked at construction, so both mistakes (a
+    declared context the function cannot receive, and a second required
+    parameter nobody will pass) fail at import/build time instead of
+    mid-turn. Tools that don't ask for it keep the plain ``(args) -> str``
+    shape.
 
     A tool may return a :class:`ToolResult` instead of a string when it has
     structured facts worth passing on.
@@ -123,13 +285,16 @@ class Tool:
         self,
         name: str,
         description: str,
-        params: dict[str, dict],
-        func: Callable[[dict], str],
+        schema: dict,
+        func: Callable[[dict], "str | ToolResult"],
         *,
         tags: frozenset[str] = frozenset(),
         summary_key: str = "",
         result_key: str = "",
+        returns: dict | None = None,
+        with_context: bool = False,
         availability: Literal["model", "program", "both"] = "both",
+        policy: "ToolPolicy | Callable[[dict], ToolPolicy] | None" = None,
         source: str = "",
     ):
         if availability not in ("model", "program", "both"):
@@ -137,28 +302,44 @@ class Tool:
                 f"Tool '{name}': availability must be 'model', 'program' or "
                 f"'both', got {availability!r}"
             )
+        if not isinstance(schema, dict):
+            raise TypeError(
+                f"Tool '{name}': schema must be a JSON Schema object node "
+                f"(a dict), got {type(schema).__name__}"
+            )
         self.name = name
         self.description = description
+        self.schema = schema
+        self.returns = returns
         self.tags = frozenset(tags)
-        self.summary_key = summary_key or (next(iter(params), ""))
+        properties = schema.get("properties") or {}
+        required = list(schema.get("required") or [])
+        self.summary_key = summary_key or (
+            required[0] if required else next(iter(properties), "")
+        )
         self.result_key = result_key
         self.availability = availability
+        self.policy = policy
         self.source = source
-        self._required = []
-        normalized = {}
-        for k, v in params.items():
-            if not isinstance(v, dict):
-                raise TypeError(
-                    f"Tool '{name}': param '{k}' must be a dict with 'type' and 'description', "
-                    f"got {type(v).__name__}: {v!r}"
-                )
-            normalized[k] = v
-            if "default" not in v and not v.get("optional"):
-                self._required.append(k)
-        self.params = normalized
         self.func = func
         self.is_async = inspect.iscoroutinefunction(func)
-        self.wants_context = _accepts_context(func)
+        self.wants_context = with_context
+        shape = _positional_shape(func)
+        if shape is not None:
+            declared, required_positional, star_args = shape
+            if with_context and declared < 2 and not star_args:
+                raise TypeError(
+                    f"Tool '{name}': with_context=True needs a function callable "
+                    f"as (args, ctx) — it declares {declared} positional "
+                    "parameter(s)"
+                )
+            if not with_context and required_positional > 1:
+                raise TypeError(
+                    f"Tool '{name}': the function requires {required_positional} "
+                    "positional parameters but no context is declared — pass "
+                    "with_context=True so the second one receives its "
+                    "ToolCallContext"
+                )
 
     def run(self, args: dict, ctx: "ToolCallContext | None" = None) -> "str | ToolResult":
         """Call the function directly. An async tool returns its coroutine."""
@@ -178,41 +359,27 @@ class Tool:
         return self.func(validated)
 
     def _validate_args(self, args: dict) -> dict:
-        result = dict(args)
-        for param_name, param_spec in self.params.items():
-            if param_name not in result:
-                if "default" in param_spec:
-                    result[param_name] = param_spec["default"]
-                elif param_name in self._required:
-                    raise ToolError(
-                        f"Missing required parameter '{param_name}'",
-                        "missing_param",
-                    )
-        return result
+        """Fill defaults and check the arguments against ``self.schema``.
+
+        A violation is a :class:`ToolError` — ``missing_param`` or
+        ``invalid_type`` — so it flows through the ordinary ``error:`` result
+        pipeline instead of breaking the turn. Defaults are filled at the top
+        level and at every nested level the check reaches.
+        """
+        result = _check(dict(args), self.schema, "$")
+        return result if isinstance(result, dict) else dict(args)
 
     def to_schema(self) -> dict:
-        properties = {}
+        """The tool as a chat-completion function definition.
 
-        for param_name, param_spec in self.params.items():
-            prop = {"type": param_spec.get("type", "string")}
-            if "description" in param_spec:
-                prop["description"] = param_spec["description"]
-            if "enum" in param_spec:
-                prop["enum"] = param_spec["enum"]
-            if "default" in param_spec:
-                prop["default"] = param_spec["default"]
-            properties[param_name] = prop
-
+        ``parameters`` is the declared ``schema``, passed through unchanged.
+        """
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": {
-                    "type": "object",
-                    "properties": properties,
-                    "required": self._required,
-                },
+                "parameters": self.schema,
             },
         }
 

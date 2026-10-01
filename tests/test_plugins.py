@@ -30,7 +30,7 @@ GREET_CODE = """
     class GreetTool(Tool):
         def __init__(self):
             super().__init__(
-                name="greet", description="Greet", params={},
+                name="greet", description="Greet", schema={"type": "object", "properties": {}},
                 func=lambda args: "hi", tags=frozenset({"demo"}),
             )
 

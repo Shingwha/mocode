@@ -18,6 +18,7 @@ from mocode.core.tool import (
     Tool,
     ToolConflictError,
     ToolError,
+    ToolPolicy,
     ToolRegistry,
     ToolResult,
 )
@@ -33,7 +34,11 @@ def _echo_tool(name: str = "echo", **kwargs) -> Tool:
     return Tool(
         name=name,
         description="echo",
-        params={"value": {"type": "string", "description": "v"}},
+        schema={
+            "type": "object",
+            "properties": {"value": {"type": "string", "description": "v"}},
+            "required": ["value"],
+        },
         func=lambda args: f"echo:{args['value']}",
         **kwargs,
     )
@@ -163,6 +168,93 @@ class TestBareCoreDispatcher:
 
         assert result.status == "timeout"
         assert result.content.startswith("timeout:")
+
+
+# ── execution policy: call over tool over config ────────────
+
+
+class TestToolPolicy:
+    @pytest.mark.asyncio
+    async def test_a_tool_policy_overrides_the_config_timeout(self):
+        slow = Tool("slow", "d", {}, lambda a: time.sleep(1), policy=ToolPolicy(timeout=0.05))
+        dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=30))
+
+        result = await dispatcher.run("slow", {})
+
+        assert result.status == "timeout"
+        assert "0.05" in result.content
+
+    @pytest.mark.asyncio
+    async def test_a_call_level_timeout_wins_over_the_tool_policy(self):
+        slow = Tool("slow", "d", {}, lambda a: time.sleep(1), policy=ToolPolicy(timeout=30))
+        dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=30))
+
+        result = await dispatcher.run("slow", {}, timeout=0.05)
+
+        assert result.status == "timeout"
+        assert "0.05" in result.content
+
+    @pytest.mark.asyncio
+    async def test_a_policy_without_an_opinion_falls_through_to_the_config(self):
+        slow = Tool("slow", "d", {}, lambda a: time.sleep(1), policy=ToolPolicy(result_limit=5))
+        dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=0.05))
+
+        result = await dispatcher.run("slow", {})
+
+        assert result.status == "timeout"  # the config's 0.05s applied
+
+    @pytest.mark.asyncio
+    async def test_a_policy_result_limit_overrides_the_config(self):
+        big = Tool("big", "d", {}, lambda a: "x" * 100, policy=ToolPolicy(result_limit=10))
+        dispatcher, _, _ = _bare_dispatcher(big, config=AgentConfig(tool_result_limit=50))
+
+        result = await dispatcher.run("big", {})
+
+        assert result.content == "x" * 10 + "\n... [truncated]"
+
+    @pytest.mark.asyncio
+    async def test_a_callable_policy_reads_the_call_arguments(self):
+        seen: list[dict] = []
+
+        def policy(args: dict) -> ToolPolicy:
+            seen.append(dict(args))
+            return ToolPolicy(timeout=args.get("t"))
+
+        schema = {
+            "type": "object",
+            "properties": {"t": {"type": "number", "description": "deadline"}},
+        }
+        slow = Tool("slow", "d", schema, lambda a: time.sleep(1), policy=policy)
+        dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=30))
+
+        result = await dispatcher.run("slow", {"t": 0.05})
+
+        assert result.status == "timeout"
+        assert seen == [{"t": 0.05}]
+
+    @pytest.mark.asyncio
+    async def test_the_effective_values_land_on_the_context(self):
+        seen: dict = {}
+
+        class Reader(AgentHook):
+            async def on_tool_start(self, ctx: ToolCallContext) -> None:
+                seen["start"] = (ctx.tool_timeout, ctx.tool_result_limit)
+
+            async def on_tool_complete(self, ctx: ToolCallContext) -> None:
+                seen["complete"] = (ctx.tool_timeout, ctx.tool_result_limit)
+
+        tool = Tool("ok", "d", {}, lambda a: "fine", policy=ToolPolicy(result_limit=7))
+        dispatcher, _, _ = _bare_dispatcher(
+            tool, hooks=[Reader()], config=AgentConfig(tool_timeout=30, tool_result_limit=500)
+        )
+
+        await dispatcher.run("ok", {})
+
+        # on_tool_start sees the config-level values (the tool policy resolves
+        # after it, in the execution step); on_tool_complete sees the effective
+        # ones the call actually ran under.
+        assert seen["start"] == (30, 500)
+        assert seen["complete"] == (30, 7)
 
 
 # ── call identity ────────────────────────────────────────────
@@ -632,7 +724,8 @@ class TestSourceStamping:
 
                     def build(self, ctx):
                         ctx.tools.register(Tool(
-                            name="greet", description="g", params={},
+                            name="greet", description="g",
+                            schema={"type": "object", "properties": {}},
                             func=lambda args: "hi",
                             source="builtin:shell",  # a claim the path overrides
                         ))
@@ -675,7 +768,7 @@ class TestProgramOriginInsideALoop:
             )
             return f"{first.content}+{second.content}"
 
-        agent = _make_agent(_echo_tool(), Tool("bridge", "b", {}, bridge))
+        agent = _make_agent(_echo_tool(), Tool("bridge", "b", {}, bridge, with_context=True))
         agent.provider = MockProvider([tool_call_response("bridge"), _plain_answer()])
 
         events = [event async for event in agent.stream("hi")]

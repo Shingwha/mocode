@@ -111,10 +111,14 @@ def _list_directory(p: Path) -> str:
 
 # ── read ────────────────────────────────────────────────────
 
-_READ_PARAMS = {
-    "path": {"type": "string", "description": "File path to read"},
-    "offset": {"type": "integer", "description": "Line number to start from (1-based, default 1)", "default": 1},
-    "limit": {"type": "integer", "description": "Max lines to read (0 = all lines)", "default": 0},
+_READ_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "description": "File path to read"},
+        "offset": {"type": "integer", "description": "Line number to start from (1-based)", "default": 1},
+        "limit": {"type": "integer", "description": "Max lines to read (0 = all lines)", "default": 0},
+    },
+    "required": ["path"],
 }
 _READ_DESC = (
     "Read a file and return its contents with line numbers. "
@@ -132,7 +136,7 @@ class ReadTool(Tool):
         super().__init__(
             name="read",
             description=_READ_DESC,
-            params=_READ_PARAMS,
+            schema=_READ_SCHEMA,
             func=self._execute,
             tags=FS,
             summary_key="path",
@@ -151,10 +155,14 @@ class ReadTool(Tool):
 
 # ── write ───────────────────────────────────────────────────
 
-_WRITE_PARAMS = {
-    "path": {"type": "string", "description": "File path to write"},
-    "content": {"type": "string", "description": "Content to write (UTF-8)"},
-    "append": {"type": "boolean", "description": "Append to end of file instead of overwriting (default: false)", "default": False},
+_WRITE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "description": "File path to write"},
+        "content": {"type": "string", "description": "Content to write (UTF-8)"},
+        "append": {"type": "boolean", "description": "Append to end of file instead of overwriting", "default": False},
+    },
+    "required": ["path", "content"],
 }
 _WRITE_DESC = (
     "Write content to a file. Creates the file and any parent directories if they don't exist. "
@@ -170,7 +178,7 @@ class WriteTool(Tool):
         super().__init__(
             name="write",
             description=_WRITE_DESC,
-            params=_WRITE_PARAMS,
+            schema=_WRITE_SCHEMA,
             func=self._execute,
             tags=FS,
             summary_key="path",
@@ -199,11 +207,15 @@ class WriteTool(Tool):
 
 # ── edit ────────────────────────────────────────────────────
 
-_EDIT_PARAMS = {
-    "path": {"type": "string", "description": "File path to edit"},
-    "old_string": {"type": "string", "description": "Exact text to find (must be unique unless all=true)"},
-    "new_string": {"type": "string", "description": "Replacement text"},
-    "all": {"type": "boolean", "description": "Replace all occurrences instead of just the first", "default": False},
+_EDIT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "description": "File path to edit"},
+        "old_string": {"type": "string", "description": "Exact text to find (must be unique unless all=true)"},
+        "new_string": {"type": "string", "description": "Replacement text"},
+        "all": {"type": "boolean", "description": "Replace all occurrences instead of just the first", "default": False},
+    },
+    "required": ["path", "old_string", "new_string"],
 }
 _EDIT_DESC = (
     "Find and replace text in a file. The old_string must match exactly (including whitespace and indentation). "
@@ -220,7 +232,7 @@ class EditTool(Tool):
         super().__init__(
             name="edit",
             description=_EDIT_DESC,
-            params=_EDIT_PARAMS,
+            schema=_EDIT_SCHEMA,
             func=self._execute,
             tags=FS,
             summary_key="path",

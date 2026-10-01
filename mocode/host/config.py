@@ -6,9 +6,12 @@ The file is organised by who owns each value::
       "active_provider": "intern",
       "active_model": "Atria-Dawn-Preview",
 
-      "agent": {                      # host execution policy, model-independent
-        "tool_timeout": 240,
-        "max_iterations": 0
+      "agent": {                      # loop execution policy — the core AgentConfig
+        "tool_timeout": 240,          # seconds per tool call
+        "max_iterations": 0,          # 0 = unlimited; per-turn budgets
+        "max_tool_calls": 0,
+        "max_turn_seconds": 0,
+        "tool_result_limit": 50000    # chars, per tool result
       },
 
       "providers": {
@@ -36,10 +39,11 @@ MoCode never invents a model's limits.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, ClassVar
 
+from ..core.agent import AgentConfig
 from ..core.provider import ModelSpec
 from .io import read_json, write_json
 
@@ -154,18 +158,14 @@ class ProviderEntry:
 
 
 @dataclass
-class AgentSettings:
-    """Host execution policy — the same whatever model is loaded."""
-
-    tool_timeout: int = 240
-    max_iterations: int = 0  # 0 = unlimited
-
-
-@dataclass
 class Config:
     active_provider: str = ""
     active_model: str = ""
-    agent: AgentSettings = field(default_factory=AgentSettings)
+    #: Loop execution policy — the *only* policy type, owned by core: the
+    #: same AgentConfig the loop runs under, nested-(de)serialized here. One
+    #: type means every field (the budgets, the result limit) is configurable
+    #: the moment it exists, with no hand-maintained mapping to drift.
+    agent: AgentConfig = field(default_factory=AgentConfig)
     providers: dict[str, ProviderEntry] = field(default_factory=dict)
     plugins: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: Top-level keys MoCode does not own, carried through load → save untouched.
@@ -212,10 +212,7 @@ class Config:
         data: dict[str, Any] = {
             "active_provider": self.active_provider,
             "active_model": self.active_model,
-            "agent": {
-                "tool_timeout": self.agent.tool_timeout,
-                "max_iterations": self.agent.max_iterations,
-            },
+            "agent": asdict(self.agent),
             "providers": {key: entry.to_dict() for key, entry in self.providers.items()},
             "plugins": self.plugins,
         }
@@ -225,17 +222,23 @@ class Config:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Config:
-        agent_raw = data.get("agent") or {}
-        defaults = AgentSettings()
+        agent_raw = data.get("agent")
+        if not isinstance(agent_raw, dict):
+            agent_raw = {}
+        defaults = AgentConfig()
+        # Known fields only: an unknown subkey is ignored (not an error), the
+        # same forward-compatibility every other block here practices.
+        agent = AgentConfig(
+            **{
+                f.name: _opt_int(agent_raw[f.name], getattr(defaults, f.name))
+                for f in fields(AgentConfig)
+                if f.name in agent_raw
+            }
+        )
         return cls(
             active_provider=str(data.get("active_provider") or ""),
             active_model=str(data.get("active_model") or ""),
-            agent=AgentSettings(
-                tool_timeout=_opt_int(
-                    agent_raw.get("tool_timeout"), defaults.tool_timeout
-                ),
-                max_iterations=_opt_int(agent_raw.get("max_iterations"), 0),
-            ),
+            agent=agent,
             providers={
                 str(key): ProviderEntry.from_dict(raw or {})
                 for key, raw in (data.get("providers") or {}).items()

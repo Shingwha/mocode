@@ -4,8 +4,8 @@ import json
 
 import pytest
 
+from mocode.core.agent import AgentConfig
 from mocode.host.config import (
-    AgentSettings,
     Config,
     ModelEntry,
     ProviderEntry,
@@ -137,22 +137,47 @@ class TestConfigModelSpec:
 
 
 class TestConfigSerialization:
-    def test_agent_settings_defaults(self):
+    def test_agent_block_defaults(self):
         config = Config.from_dict({})
-        assert config.agent == AgentSettings()
+        assert config.agent == AgentConfig()
         assert config.agent.tool_timeout == 240
         assert config.agent.max_iterations == 0
+        assert config.agent.max_tool_calls == 0
+        assert config.agent.max_turn_seconds == 0
+        assert config.agent.tool_result_limit == 50000
 
-    def test_agent_settings_override(self):
-        config = Config.from_dict({"agent": {"tool_timeout": 30, "max_iterations": 5}})
+    def test_agent_block_is_the_core_policy_type(self):
+        """One policy type: what the loop runs under is what the file stores."""
+        config = Config.from_dict(
+            {"agent": {"tool_timeout": 30, "max_turn_seconds": 120, "tool_result_limit": 9000}}
+        )
+        assert config.agent == AgentConfig(
+            tool_timeout=30, max_turn_seconds=120, tool_result_limit=9000
+        )
+
+    def test_agent_block_roundtrips_every_field(self):
+        original = Config(agent=AgentConfig(tool_timeout=45, max_iterations=7, max_tool_calls=99))
+        assert Config.from_dict(original.to_dict()).agent == original.agent
+
+    def test_unknown_agent_subkeys_are_ignored(self):
+        config = Config.from_dict({"agent": {"tool_timeout": 30, "mystery": True}})
         assert config.agent.tool_timeout == 30
-        assert config.agent.max_iterations == 5
+        assert not hasattr(config.agent, "mystery")
+
+    def test_garbage_agent_values_fall_back_to_defaults(self):
+        config = Config.from_dict({"agent": {"tool_timeout": "soon", "max_iterations": None}})
+        assert config.agent.tool_timeout == AgentConfig().tool_timeout
+        assert config.agent.max_iterations == AgentConfig().max_iterations
+
+    def test_a_non_dict_agent_section_is_survivable(self):
+        config = Config.from_dict({"agent": None, "active_model": "m"})
+        assert config.agent == AgentConfig()
 
     def test_roundtrip(self):
         original = Config(
             active_provider="demo",
             active_model="m",
-            agent=AgentSettings(tool_timeout=45, max_iterations=7),
+            agent=AgentConfig(tool_timeout=45, max_iterations=7),
             providers={"demo": ProviderEntry(api_key="sk-1", models={"m": ModelEntry(max_output=1024)})},
             plugins={"shell": {"enabled": False}},
         )

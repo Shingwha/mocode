@@ -25,7 +25,7 @@ awaits. Everything else watches out-of-band and never slows the run down.
 
 from __future__ import annotations
 
-from .agent import AgentConfig, AgentLoop, LoopResult
+from .agent import AgentConfig, AgentLoop, IterationLimit, LoopResult
 from .channel import EventChannel, Subscription
 from .dispatch import DispatchResult, ToolDispatcher
 from .events import (
@@ -37,6 +37,7 @@ from .events import (
     RunFailed,
     RunFinished,
     RunStarted,
+    StopReason,
     TextDelta,
     TOOL_DENIED,
     TOOL_ERROR,
@@ -48,7 +49,14 @@ from .events import (
     ToolOutput,
     ToolStatus,
 )
-from .hook import AgentHook, HookRunner, IterationContext, ToolCallContext
+from .hook import (
+    AgentHook,
+    HookRunner,
+    IterationContext,
+    RequestContext,
+    ResponseContext,
+    ToolCallContext,
+)
 from .prompt import Prompt, Section
 from .provider import (
     Chunk,
@@ -66,6 +74,7 @@ from .tool import (
     Tool,
     ToolConflictError,
     ToolError,
+    ToolPolicy,
     ToolRegistry,
     ToolResult,
     split_result,
@@ -83,6 +92,7 @@ __all__ = [
     "HookRunner",
     "IterationContext",
     "IterationFinished",
+    "IterationLimit",
     "IterationStarted",
     "LoopResult",
     "ModelSpec",
@@ -90,11 +100,14 @@ __all__ = [
     "Prompt",
     "Provider",
     "ReasoningDelta",
+    "RequestContext",
     "Response",
+    "ResponseContext",
     "RunFailed",
     "RunFinished",
     "RunStarted",
     "RunState",
+    "StopReason",
     "Section",
     "StreamAccumulator",
     "Subscription",
@@ -115,6 +128,7 @@ __all__ = [
     "ToolDispatcher",
     "ToolError",
     "ToolOutput",
+    "ToolPolicy",
     "ToolRegistry",
     "ToolResult",
     "ToolStatus",
