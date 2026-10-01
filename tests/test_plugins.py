@@ -22,8 +22,7 @@ from mocode.host.plugin.loader import (
     read_manifest,
     valid_name,
 )
-
-from .providers import MockProvider
+from mocode.testing import MockProvider
 
 GREET_CODE = """
     from mocode.plugins import Plugin, Tool

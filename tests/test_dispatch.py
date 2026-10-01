@@ -26,8 +26,7 @@ from mocode.host.config import Config
 from mocode.host.plugin.base import Plugin
 from mocode.host.plugin.context import BuildContext, HostContext
 from mocode.host.plugin.host import PluginHost, load_plugins
-
-from .providers import MockProvider, tool_call_response
+from mocode.testing import MockProvider, tool_call_response
 
 
 def _echo_tool(name: str = "echo", **kwargs) -> Tool:

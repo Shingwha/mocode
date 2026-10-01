@@ -18,8 +18,7 @@ from mocode.core import (
     ToolError,
     ToolRegistry,
 )
-
-from .providers import MockProvider
+from mocode.testing import MockProvider
 
 
 def _loop(**kwargs) -> AgentLoop:

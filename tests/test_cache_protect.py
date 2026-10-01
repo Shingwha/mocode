@@ -14,9 +14,9 @@ import pytest
 
 from mocode.core.provider import Response, Usage
 from mocode.host.runtime import MoCode
+from mocode.testing import MockProvider, tool_call_response
 
 from .conftest import make_config
-from .providers import MockProvider, tool_call_response
 from .test_conversations import _answer, _project
 
 

@@ -1,4 +1,4 @@
-"""Shared streaming test doubles.
+"""Scripted provider doubles — the "model" your plugin tests talk to.
 
 ``MockProvider`` replays canned :class:`Response` objects as chunk streams.
 It deliberately splits tool-call arguments across chunks, exactly as a real
@@ -7,6 +7,7 @@ API does, so the accumulator path gets exercised instead of bypassed.
 
 from __future__ import annotations
 
+import json
 from typing import AsyncIterator, Iterable
 
 from mocode.core.provider import Chunk, Response, ToolCallDelta, Usage
@@ -108,6 +109,16 @@ def tool_call_response(name: str, args: str = "{}", call_id: str = "c1") -> Resp
         usage=Usage(1, 1),
         finish_reason="tool_calls",
     )
+
+
+def say(text: str) -> Response:
+    """A response that answers with plain text — how a turn normally ends."""
+    return Response(content=text, usage=Usage(1, 1))
+
+
+def call_tool(name: str, args: dict, *, call_id: str = "c1") -> Response:
+    """:func:`tool_call_response` with *args* serialised from a dict."""
+    return tool_call_response(name, json.dumps(args), call_id=call_id)
 
 
 class SlowProvider(MockProvider):
