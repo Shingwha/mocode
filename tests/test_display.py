@@ -14,7 +14,8 @@ import pytest
 import re
 
 from mocode.cli import lines
-from mocode.cli.display import Display, clamp_visible
+from mocode.cli.display import Display
+from mocode.cli.painter import clamp_visible
 from mocode.cli.render import CLIRenderer
 from mocode.cli.theme import Theme
 from mocode.cli.transcript import Transcript
@@ -409,7 +410,7 @@ class TestLiveBlock:
         self, capsys, monkeypatch
     ):
         """Rows above the fold have scrolled away; their offsets mean nothing."""
-        monkeypatch.setattr("mocode.cli.display.terminal_height", lambda: 3)
+        monkeypatch.setattr("mocode.cli.painter.terminal_height", lambda: 3)
 
         await _run_parallel(_make_display(live=True), {"a": 0.01, "b": 0.02, "c": 0.03})
 
