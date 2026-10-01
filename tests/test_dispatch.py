@@ -261,6 +261,60 @@ class TestOutcomeParity:
             assert "switched off" in result.content
 
 
+# ── provenance: who asked, and nested in what ────────────────
+
+
+class TestProvenance:
+    @pytest.mark.asyncio
+    async def test_events_say_who_asked_and_what_they_are_nested_in(self):
+        dispatcher, events, _ = _bare_dispatcher(_echo_tool())
+        await dispatcher.run(
+            "echo", {"value": "x"}, origin="program", parent_call_id="p1"
+        )
+
+        started, finished = events
+        assert (started.origin, started.parent_call_id) == ("program", "p1")
+        assert (finished.origin, finished.parent_call_id) == ("program", "p1")
+
+    @pytest.mark.asyncio
+    async def test_model_origin_is_the_default_and_carries_no_parent(self):
+        dispatcher, events, _ = _bare_dispatcher(_echo_tool())
+        await dispatcher.run("echo", {"value": "x"}, call_id="c1")
+
+        started, finished = events
+        assert started.origin == "model" and started.parent_call_id is None
+        assert finished.origin == "model" and finished.parent_call_id is None
+
+    @pytest.mark.asyncio
+    async def test_provenance_crosses_a_process_boundary_as_plain_data(self):
+        dispatcher, events, _ = _bare_dispatcher(_echo_tool())
+        await dispatcher.run("echo", {}, origin="program", parent_call_id="p1")
+
+        data = events[0].to_dict()
+        assert data["origin"] == "program"
+        assert data["parent_call_id"] == "p1"
+        # A dict written before the fields existed still reads: the defaults
+        # are what an old event carries.
+        legacy = ToolCallStarted(call_id="c1", name="echo")
+        assert (legacy.origin, legacy.parent_call_id) == ("model", None)
+        legacy = ToolCallFinished(call_id="c1", name="echo")
+        assert (legacy.origin, legacy.parent_call_id) == ("model", None)
+
+    @pytest.mark.asyncio
+    async def test_hooks_see_provenance_on_the_context(self):
+        seen: list[tuple[str, str | None]] = []
+
+        class Recorder(AgentHook):
+            async def on_tool_start(self, ctx: ToolCallContext) -> None:
+                seen.append((ctx.origin, ctx.parent_call_id))
+
+        dispatcher, _, _ = _bare_dispatcher(_echo_tool(), hooks=[Recorder()])
+        await dispatcher.run("echo", {}, call_id="c1")
+        await dispatcher.run("echo", {}, origin="program", parent_call_id="c1")
+
+        assert seen == [("model", None), ("program", "c1")]
+
+
 # ── program origin inside a real loop ────────────────────────
 
 
@@ -292,6 +346,12 @@ class TestProgramOriginInsideALoop:
         assert started == {"c1": "bridge", "c1:1": "echo", "c1:2": "echo"}
         # They belong to the same run — that is why the turn's view carries them.
         assert len({e.run_id for e in events}) == 1
+        # Provenance is structural: the bridge is the model's call, the echoes
+        # are program calls nested in it.
+        nested = [e for e in events if isinstance(e, (ToolCallStarted, ToolCallFinished)) and e.call_id.startswith("c1:")]
+        assert all(e.origin == "program" and e.parent_call_id == "c1" for e in nested)
+        outer = [e for e in events if isinstance(e, (ToolCallStarted, ToolCallFinished)) and e.call_id == "c1"]
+        assert all(e.origin == "model" and e.parent_call_id is None for e in outer)
 
         # The conversation stays the model's story: one tool message, and it is
         # the bridge's own result, not the nested echoes.

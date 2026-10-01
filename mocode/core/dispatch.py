@@ -150,13 +150,21 @@ class ToolDispatcher:
             tool_name=name,
             tool_args=args,
             tool_call_id=cid,
+            origin=origin,
+            parent_call_id=parent_call_id,
             emit=emit,
         )
         if parse_error is None:
             await self.hooks.on_tool_start(tc)
 
         await self._publish(
-            ToolCallStarted(call_id=cid, name=name, args=dict(tc.tool_args)),
+            ToolCallStarted(
+                call_id=cid,
+                name=name,
+                args=dict(tc.tool_args),
+                origin=origin,
+                parent_call_id=parent_call_id,
+            ),
             fold=fold,
         )
 
@@ -184,6 +192,8 @@ class ToolDispatcher:
                 error_code=tc.error_code,
                 duration=duration,
                 details=tc.tool_details,
+                origin=origin,
+                parent_call_id=parent_call_id,
             ),
             fold=fold,
         )

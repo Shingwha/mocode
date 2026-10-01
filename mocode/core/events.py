@@ -185,11 +185,19 @@ class ToolCallStarted(Event):
     Emitted *after* ``on_tool_start`` hooks ran, so ``args`` are final. Fires
     for denied calls too — the denial is reported by the matching
     :class:`ToolCallFinished`.
+
+    ``origin`` says who asked for the call: ``"model"`` inside a turn, or
+    ``"program"`` when code — a plugin, a sub-agent tool — ran it on its own
+    behalf. A program-origin call carries ``parent_call_id``, its structured
+    attribution to the call it is nested inside; see :mod:`mocode.core.dispatch`
+    for what the origin promises.
     """
 
     call_id: str = ""
     name: str = ""
     args: dict[str, Any] = field(default_factory=dict)
+    origin: Literal["model", "program"] = "model"
+    parent_call_id: str | None = None
     type: ClassVar[str] = "tool_call_started"
 
 
@@ -216,6 +224,11 @@ class ToolCallFinished(Event):
 
     ``details`` is whatever structured data the tool attached to its result —
     the model never sees it, a frontend or an application can.
+
+    ``origin`` / ``parent_call_id`` are the same provenance
+    :class:`ToolCallStarted` carries: who asked for the call, and which call it
+    is nested inside — the structured basis for folding nested calls into
+    their parent rather than parsing ``call_id`` strings.
     """
 
     call_id: str = ""
@@ -225,6 +238,8 @@ class ToolCallFinished(Event):
     error_code: str | None = None
     duration: float = 0.0
     details: dict[str, Any] = field(default_factory=dict)
+    origin: Literal["model", "program"] = "model"
+    parent_call_id: str | None = None
     type: ClassVar[str] = "tool_call_finished"
 
     def summary(self) -> str:
