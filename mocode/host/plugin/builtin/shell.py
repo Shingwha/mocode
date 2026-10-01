@@ -59,6 +59,17 @@ JOB_COMPLETED = "completed"
 JOB_KILLED = "killed"
 JOB_TIMED_OUT = "timed_out"
 
+#: How long the completion notifier waits before speaking, so several jobs
+#: that finish together become one announcement instead of a burst.
+_NOTIFY_WINDOW = 0.3
+
+#: How long a killed background job's pipes get to deliver their tail. The
+#: process is gone by then; on Windows its own children may survive holding
+#: the write ends (there are no process groups to take down with it), so the
+#: drain is bounded rather than endless. POSIX never pays this: the group
+#: kill closes every writer at once.
+_DRAIN_GRACE = 1.0
+
 
 def _is_wsl_path(path: Path) -> bool:
     normalized = str(path).lower().replace("\\", "/")
@@ -227,6 +238,10 @@ class BashSession:
         #: Background jobs of this conversation, by id, in start order.
         self.jobs: dict[str, _Job] = {}
         self._job_seq = 0
+        #: Jobs that ended and wait for the idle-time announcement.
+        self._pending_done: list[_Job] = []
+        self._notifier: asyncio.Task | None = None
+        self._notify_seq = 0
         #: How many background jobs may run at once (``plugins.shell.max_background``).
         self.max_background = 16
         #: Hard ceiling on a background job's runtime in seconds
@@ -441,6 +456,9 @@ class BashSession:
         for job in self.jobs.values():
             self._kill_now(job)
         self.jobs.clear()
+        self._pending_done.clear()
+        if self._notifier is not None and not self._notifier.done():
+            self._notifier.cancel()
 
     # ── Background plumbing ────────────────────────────────
 
@@ -493,8 +511,13 @@ class BashSession:
         ]
         try:
             await job.proc.wait()
-            # The process is gone; the pipes still hold whatever it wrote last.
-            await asyncio.gather(*pumps)
+            # The process is gone; the pipes still hold whatever it wrote
+            # last — bounded by the grace, because a killed child's own
+            # children may still hold the write ends (see _DRAIN_GRACE).
+            try:
+                await asyncio.wait_for(asyncio.gather(*pumps), _DRAIN_GRACE)
+            except asyncio.TimeoutError:
+                pass
         finally:
             for task in pumps:
                 task.cancel()
@@ -505,6 +528,61 @@ class BashSession:
             job.done.set()
             if job.watchdog is not None and not job.watchdog.done():
                 job.watchdog.cancel()
+            self._enqueue_done(job)
+
+    # ── Completion notification ────────────────────────────
+
+    def _enqueue_done(self, job: _Job) -> None:
+        """A job ended — queue it for the idle-time announcement.
+
+        A killed job is not announced: somebody asked for that, and the asker
+        knows. A job that ended on its own — completed, or timed out — is news
+        for whoever is watching. Bare sessions (no host) have nobody to tell.
+        """
+        if self._host is None or job.status == JOB_KILLED:
+            return
+        self._pending_done.append(job)
+        if self._notifier is None or self._notifier.done():
+            self._notifier = asyncio.create_task(self._announce_done())
+
+    async def _announce_done(self) -> None:
+        """One announcement for everything that finished together.
+
+        The completion side only queues; this coroutine waits out the
+        coalescing window so a burst of finishers becomes one entry, then
+        holds while a turn is running — the model reads what it started with
+        ``bash_output`` itself — and speaks once the conversation is idle.
+        Each announcement is its own block (``shell-bg-<n>``); the message is
+        a ``PluginMessage``, so it reaches whoever is watching and is not
+        replayed on a resumed session.
+        """
+        while True:
+            await asyncio.sleep(_NOTIFY_WINDOW)
+            agent = getattr(self._host, "agent", None)
+            if agent is not None and agent.busy:
+                continue
+            emit_message = getattr(self._host, "emit_message", None)
+            jobs, self._pending_done = self._pending_done, []
+            if emit_message is None or not jobs:
+                return
+            self._notify_seq += 1
+            await emit_message(
+                "shell/background-done",
+                {
+                    "jobs": [
+                        {
+                            "id": job.id,
+                            "command": job.command,
+                            "exit_code": job.exit_code,
+                            "status": job.status,
+                        }
+                        for job in jobs
+                    ]
+                },
+                block_id=f"shell-bg-{self._notify_seq}",
+            )
+            if not self._pending_done:
+                return
 
     async def _watch(self, job: _Job, deadline: float) -> None:
         """Enforce a background job's deadline: kill the group, mark it timed out."""

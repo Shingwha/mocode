@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from mocode.core.events import ToolCallStarted, ToolOutput
+from mocode.core.events import PluginMessage, ToolCallStarted, ToolOutput
 from mocode.core.tool import ToolError
 from mocode.host.plugin.builtin.shell import (
     _Ring,
@@ -284,8 +284,12 @@ class TestKillAndCleanup:
         conversation.close(save=False)
         assert session.jobs == {}
         assert all(job.status == "killed" for job in jobs)
-        await asyncio.sleep(0.3)  # the collectors mop up after the kills
-        assert all(job.done.is_set() for job in jobs)
+        # The collectors mop up after the kills — a killed child's pipes get
+        # a short grace on Windows, so done arrives within a bound, not at once.
+        deadline = asyncio.get_event_loop().time() + 3.0
+        while not all(job.done.is_set() for job in jobs):
+            assert asyncio.get_event_loop().time() < deadline, "jobs never ended"
+            await asyncio.sleep(0.05)
 
 
 class TestLimits:
@@ -401,6 +405,114 @@ class TestEarlyOutput:
 
         kill_tool = conversation.tools.get("kill_shell")
         await kill_tool.run_async({"shell_id": "shell_1"}, None)
+        conversation.close(save=False)
+
+
+class TestCompletionNotification:
+    """Jobs that end on their own announce it — once, together, when idle."""
+
+    async def _messages(self, conversation, *, count: int, timeout: float = 5.0):
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            found = [
+                e
+                for e in conversation.agent.channel.history()
+                if isinstance(e, PluginMessage)
+            ]
+            if len(found) >= count:
+                return found
+            await asyncio.sleep(0.05)
+        return [
+            e
+            for e in conversation.agent.channel.history()
+            if isinstance(e, PluginMessage)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_jobs_finishing_together_announce_as_one(
+        self, mc, tmp_path: Path
+    ):
+        conversation = mc.new_conversation(cwd=tmp_path)
+        bash = conversation.tools.get("bash")
+
+        await bash.run_async({"command": "sleep 0.4; echo a", **BG}, None)
+        await bash.run_async({"command": "sleep 0.4; echo b", **BG}, None)
+
+        messages = await self._messages(conversation, count=1)
+        assert len(messages) == 1, "two same-moment finishers, one announcement"
+        message = messages[0]
+        assert message.kind == "shell/background-done"
+        assert message.block_id == "shell-bg-1"
+        assert message.run_id == ""  # said between turns, to whoever is watching
+        assert [job["id"] for job in message.data["jobs"]] == ["shell_1", "shell_2"]
+        assert all(job["status"] == "completed" for job in message.data["jobs"])
+        assert all(job["exit_code"] == 0 for job in message.data["jobs"])
+        assert "sleep 0.4; echo a" in message.data["jobs"][0]["command"]
+        conversation.close(save=False)
+
+    @pytest.mark.asyncio
+    async def test_each_burst_is_its_own_block(self, mc, tmp_path: Path):
+        conversation = mc.new_conversation(cwd=tmp_path)
+        bash = conversation.tools.get("bash")
+
+        first = await bash.run_async({"command": "sleep 0.3", **BG}, None)
+        messages = await self._messages(conversation, count=1)
+        assert len(messages) == 1 and messages[0].block_id == "shell-bg-1"
+
+        await bash.run_async({"command": "sleep 0.3", **BG}, None)
+        messages = await self._messages(conversation, count=2)
+        assert [m.block_id for m in messages] == ["shell-bg-1", "shell-bg-2"]
+        conversation.close(save=False)
+
+    @pytest.mark.asyncio
+    async def test_no_announcement_while_a_turn_is_running(self, mc, tmp_path: Path):
+        """The model reads what it started; the announcement waits for idle —
+        its empty run_id proves it was said between turns."""
+        conversation = mc.new_conversation(cwd=tmp_path)
+        conversation.agent.provider = MockProvider(
+            [call_tool("bash", {"command": "sleep 1"}), say("done")]
+        )
+        bash = conversation.tools.get("bash")
+
+        await bash.run_async({"command": "sleep 0.3", **BG}, None)
+        await collect(conversation.stream("go"))
+
+        messages = await self._messages(conversation, count=1)
+        assert len(messages) == 1
+        assert messages[0].run_id == ""
+        conversation.close(save=False)
+
+    @pytest.mark.asyncio
+    async def test_a_killed_job_is_not_announced(self, mc, tmp_path: Path):
+        conversation = mc.new_conversation(cwd=tmp_path)
+        bash = conversation.tools.get("bash")
+        kill = conversation.tools.get("kill_shell")
+
+        shell_id = await _start(bash, "sleep 5")
+        await kill.run_async({"shell_id": shell_id}, None)
+        await asyncio.sleep(3 * 0.3 + 0.2)  # past the coalescing window
+
+        messages = [
+            e
+            for e in conversation.agent.channel.history()
+            if isinstance(e, PluginMessage)
+        ]
+        assert messages == []
+        conversation.close(save=False)
+
+    @pytest.mark.asyncio
+    async def test_a_timed_out_job_is_announced(self, mc, tmp_path: Path):
+        conversation = mc.new_conversation(cwd=tmp_path)
+        bash = conversation.tools.get("bash")
+
+        await bash.run_async(
+            {"command": "sleep 5", "timeout": 1, **BG}, None
+        )
+
+        messages = await self._messages(conversation, count=1, timeout=5.0)
+        assert len(messages) == 1
+        job = messages[0].data["jobs"][0]
+        assert job["status"] == "timed_out"
         conversation.close(save=False)
 
 
