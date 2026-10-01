@@ -26,7 +26,6 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
-from ..core.agent import AgentConfig
 from .command import CommandRegistry
 from .config import DEFAULT_CONFIG_PATH, Config
 from .conversation import Conversation
@@ -147,7 +146,7 @@ class MoCode:
         host.build_all()
         try:
             agent = host.assemble(
-                provider=self.provider_for(key, name), config=self._agent_config()
+                provider=self.provider_for(key, name), config=self.config.agent
             )
         except Exception:
             host.close()  # plugins built for a conversation that never became one
@@ -257,12 +256,3 @@ class MoCode:
         self.config.active_provider = key
         self.config.active_model = model
         self.config.save()
-
-    # ── Internals ──────────────────────────────────────────
-
-    def _agent_config(self) -> AgentConfig:
-        """Loop policy from config; model facts travel separately as a ModelSpec."""
-        return AgentConfig(
-            tool_timeout=self.config.agent.tool_timeout,
-            max_iterations=self.config.agent.max_iterations,
-        )
