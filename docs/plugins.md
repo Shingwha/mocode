@@ -97,6 +97,50 @@ command — lives in [`examples/plugins/git-status`](../examples/plugins/git-sta
 The loader resolves the plugin from the module: a module-level `plugin`
 instance wins, then the first `Plugin` subclass the module defines itself.
 
+## Single file vs package
+
+Up to a few hundred lines, `mocode/plugin.py` (and `mocode.cli/plugin.py`)
+is the right shape — one file, read top to bottom. Past that, split it: the
+entry becomes a **package**.
+
+```
+mocode/
+└── plugin/              the package — the directory is the entry
+    ├── __init__.py      assembles the submodules; the loader imports this
+    ├── sections.py      one contribution per submodule
+    └── commands.py      submodules import each other relatively
+```
+
+The entry judgment is the same for both namespaces, in this order:
+
+1. `<ns>/plugin.py` — the single file. When it is present it wins, and a
+   `plugin/` directory beside it is ignored.
+2. `<ns>/plugin/__init__.py` — the package. `None` of the two means the
+   namespace ships no code, which is ordinary.
+
+Inside the package, submodules load through **relative imports only** —
+`from .commands import motd` — because each plugin's package is imported
+under a name derived from the plugin's own: two plugins can both ship a
+`helpers.py` and neither ever sees the other's. Never add the plugin's
+directory to `sys.path` to make plain `import helpers` work: `sys.modules`
+is process-wide, so same-named modules from two plugins would overwrite
+each other — a cross-plugin pollution nothing would report. For the same
+reason, expose the plugin instance in `__init__.py`: a module-level
+`plugin = MyPlugin()` is what the loader looks for first, and only the
+names `__init__.py` imported are visible on the package — a class left in
+a submodule stays invisible unless you re-export or instantiate it there.
+
+Getting the layout half-right is reported, not ignored: a `plugin/`
+directory without `__init__.py`, or stray `.py` files beside no entry at
+all, each produce a `[plugin]` line naming the fix instead of the plugin
+quietly loading as skills-only.
+
+None of this changes where *dependencies* come from: third-party packages
+still belong in a `pyproject.toml` at the plugin root and a
+[PluginVenv](#dependencies) of their own. The package organises your
+files; it is not an environment. A complete worked example lives in
+[`examples/plugins/multi-file`](../examples/plugins/multi-file).
+
 ## Installing plugins
 
 Drop the directory into `.mocode/plugins/` (project) or `~/.mocode/plugins/`
