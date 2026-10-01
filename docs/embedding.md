@@ -119,7 +119,7 @@ plain data: each has a `type` string, a `run_id`, a monotonic `seq`, and a
 | `ToolCallStarted` | `call_id`, `name`, `args` | a tool is about to run; args are final |
 | `ToolOutput` | `call_id`, `text`, `stream` | a running tool produced output |
 | `ToolCallFinished` | `call_id`, `name`, `status`, `result`, `error_code`, `duration` | a tool finished |
-| `RunFinished` | `content`, `usage`, `iterations`, `tool_calls_made`, `cancelled` | the turn ended |
+| `RunFinished` | `content`, `usage`, `iterations`, `tool_calls_made`, `stop_reason` | the turn ended |
 | `RunFailed` | `error`, `kind` | the turn ended on an unhandled error |
 | `Notice` | `message`, `level` | a plugin or the host wants to say something |
 
@@ -134,7 +134,9 @@ Four rules make the stream safe to build on:
   tool events carry the same `call_id`, which correlates with the tool message
   in `conv.messages` (`tool_call_id`).
 - **A turn ends with exactly one of `RunFinished` or `RunFailed`** — including
-  a cancelled turn, which reports `cancelled=True`. Tool `status` is one of
+  a cancelled turn, which reports `stop_reason="cancelled"`. `stop_reason` is
+  one of `completed` / `max_iterations` / `max_tool_calls` / `time_budget` /
+  `cancelled`. Tool `status` is one of
   `ok` / `error` / `timeout` / `denied` / `not_found`.
 - **`seq` keeps counting across turns.** A reader that remembers a number can
   always ask for what it missed.
@@ -366,9 +368,9 @@ list and the plugin-side view are in [plugins.md](plugins.md).
 
 ## Tools that report as they work, and facts the model doesn't need
 
-A tool keeps the plain `(args) -> str` shape unless it declares a second
-parameter, in which case it receives its `ToolCallContext` and can publish
-output while it runs:
+A tool keeps the plain `(args) -> str` shape unless it declares
+`with_context=True`, in which case it is called as `(args, ctx)`, receives
+its `ToolCallContext`, and can publish output while it runs:
 
 ```python
 async def slow_report(args, ctx):
@@ -376,6 +378,12 @@ async def slow_report(args, ctx):
         await asyncio.sleep(1)
         await ctx.emit(ToolOutput(call_id=ctx.tool_call_id, text=f"step {i}\n"))
     return "done"
+
+tool = Tool("slow_report", "Run a slow, watchable report",
+            {"type": "object",
+             "properties": {"steps": {"type": "integer"}},
+             "required": ["steps"]},
+            slow_report, with_context=True)
 ```
 
 Consumers get `ToolOutput` events live and can accumulate them from
@@ -397,7 +405,9 @@ def lint(args):
     )
 
 tool = Tool("lint", "Lint a file",
-            {"path": {"type": "string", "description": "File to lint"}},
+            {"type": "object",
+             "properties": {"path": {"type": "string", "description": "File to lint"}},
+             "required": ["path"]},
             lint, summary_key="path", result_key="issues")
 ```
 

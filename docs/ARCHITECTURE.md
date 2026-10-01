@@ -26,13 +26,13 @@ mocode/
 │   ├── runtime.py       MoCode — the process runtime: config, plugins, sessions
 │   ├── conversation.py  Conversation — one project, one model, one history
 │   ├── events.py        ConversationChanged — the host's own event
-│   ├── command.py       Command, CommandRegistry, CommandResult, dispatch()
+│   ├── command.py       Command, CommandRegistry (register + dispatch), CommandResult
 │   ├── config.py        Config, ProviderEntry, ModelEntry
 │   ├── session.py       Session, SessionStore
 │   ├── export.py        Session → Markdown
 │   ├── prompt.py        build_system_prompt(ctx) — render sections, nothing else
-│   └── plugin/          Plugin, HostContext, loader, PluginHost, env (a plugin's
-│                        own uv environment), install (plugin install/sync/list/remove)
+│   └── plugin/          Plugin, BuildContext/HostContext, loader, PluginHost,
+│                        env (a plugin's own uv environment), install (install/sync/list/remove)
 │       └── builtin/     the plugins MoCode ships: filesystem, shell, skills,
 │                         default-prompts, session, help, cache-protect
 ├── cli/                 the terminal front-end — a consumer of host/

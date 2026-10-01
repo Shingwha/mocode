@@ -165,21 +165,20 @@ A plugin is a directory laid out the way the [Agent Plugins](https://agent-plugi
 # mocode/plugin.py — works in every frontend
 from mocode.plugins import Plugin, Tool
 
-class GitStatusTool(Tool):
-    def __init__(self, cwd):
-        super().__init__(
-            name="git_status",
-            description="Show the working tree status of the project.",
-            schema={"type": "object", "properties": {}},
-            func=lambda args: "clean",
-        )
-
 class GitHelperPlugin(Plugin):
     name = "git-helper"
 
     def build(self, ctx):
-        ctx.tools.register(GitStatusTool(ctx.cwd))
-        # also: ctx.register(Command(...)), ctx.hooks.append(...),
+        def run(args: dict) -> str:
+            return "clean"  # ask git here, in ctx.cwd
+
+        ctx.tools.register(Tool(
+            name="git_status",
+            description="Show the working tree status of the project.",
+            schema={"type": "object", "properties": {}},
+            func=run,
+        ))
+        # also: ctx.commands.register(Command(...)), ctx.hooks.append(...),
         #       ctx.prompt_sections.append(Section(...))
 ```
 

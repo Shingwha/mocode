@@ -24,7 +24,7 @@ versa.
 |---|---|---|
 | interface | `Plugin.build(ctx)` | `CLIPlugin.build(cli)` |
 | contributes | tools, prompt sections, hooks, shared commands | chrome: picker commands, keybindings |
-| reaches | `ctx` — home, cwd, config, model, tools, commands, hooks, `plugin_sources`, the agent and its event stream | the terminal — `commands`, `display`, `input`, `conversation` |
+| reaches | `ctx` — home, cwd, config, model, tools, commands, hooks, `plugin_sources`, and (after assembly) the agent and its event stream | the terminal — `commands`, `display`, `input`, `conversation` |
 | works in | every MoCode frontend | this one |
 
 A plugin is built once per **conversation**, against a context that describes
@@ -65,23 +65,18 @@ end of this document).
 ### mocode/plugin.py
 
 ```python
-from mocode.plugins import Plugin, Tool
+from mocode.plugins import Command, CommandContext, CommandResult, Plugin, Section, Tool
 
-class GitStatusTool(Tool):
-    def __init__(self, cwd):
-        super().__init__(
-            name="git_status",
-            description="Show the working tree status of the conversation's repo.",
-            params={},
-            func=self._run,
-            tags=frozenset({"git"}),
-        )
-        self._cwd = cwd
 
-    def _run(self, args: dict) -> str:
-        import subprocess
-        return subprocess.run(["git", "status", "--short"], cwd=self._cwd,
-                              capture_output=True, text=True).stdout
+def _git_status(args: dict, cwd) -> str:
+    import subprocess
+    return subprocess.run(["git", "status", "--short"], cwd=cwd,
+                          capture_output=True, text=True).stdout
+
+
+async def _branch(ctx: CommandContext) -> CommandResult:
+    await ctx.conversation.notify("on the main branch")
+    return CommandResult.text("")
 
 
 class GitHelperPlugin(Plugin):
@@ -89,13 +84,31 @@ class GitHelperPlugin(Plugin):
     description = "Git status tool and /branch command"
 
     def build(self, ctx):
-        ctx.tools.register(GitStatusTool(ctx.cwd))
+        cwd = ctx.cwd
+
+        def run(args: dict) -> str:
+            return _git_status(args, cwd)
+
+        ctx.tools.register(Tool(
+            name="git_status",
+            description="Show the working tree status of the conversation's repo.",
+            schema={"type": "object", "properties": {}},
+            func=run,
+            tags=frozenset({"git"}),
+        ))
+        ctx.commands.register(
+            Command("/branch", "Show the current branch", handler=_branch))
+        ctx.prompt_sections.append(Section("git", "Prefer git_status over bash.", priority=45))
 ```
 
-Restart MoCode. A complete version of this — with a skill and a terminal
-command — lives in [`examples/plugins/git-status`](../examples/plugins/git-status).
-The loader resolves the plugin from the module: a module-level `plugin`
-instance wins, then the first `Plugin` subclass the module defines itself.
+A `Tool` is a plain instance — metadata inline in the construction call, the
+function closed over whatever per-conversation state it needs. There is no
+subclass to write: a tool that needs its call context declares
+`with_context=True` and its function becomes `(args, ctx)`. Restart MoCode. A
+complete version of this — with a skill and a terminal command — lives in
+[`examples/plugins/git-status`](../examples/plugins/git-status). The loader
+resolves the plugin from the module: a module-level `plugin` instance wins,
+then the first `Plugin` subclass the module defines itself.
 
 ## Single file vs package
 
@@ -127,12 +140,12 @@ is process-wide, so same-named modules from two plugins would overwrite
 each other — a cross-plugin pollution nothing would report. For the same
 reason, expose the plugin instance in `__init__.py`: a module-level
 `plugin = MyPlugin()` is what the loader looks for first, and only the
-names `__init__.py` imported are visible on the package — a class left in
-a submodule stays invisible unless you re-export or instantiate it there.
+names `__init__.py` imported are visible on the package — a class left in a
+submodule stays invisible unless you re-export or instantiate it there.
 
 Getting the layout half-right is reported, not ignored: a `plugin/`
-directory without `__init__.py`, or stray `.py` files beside no entry at
-all, each produce a `[plugin]` line naming the fix instead of the plugin
+directory without `__init__.py`, or stray `.py` files beside no entry
+at all, each produce a `[plugin]` line naming the fix instead of the plugin
 quietly loading as skills-only.
 
 None of this changes where *dependencies* come from: third-party packages
@@ -217,66 +230,53 @@ saying exactly which of the two roads to take. A complete example — the tool,
 the declaration, the README — lives in
 [`examples/plugins/json-validate`](../examples/plugins/json-validate).
 
-## What `build(ctx)` — and `prepare(ctx)` — can do
+## The two stages: `build(ctx)` and `prepare(ctx)`
+
+The lifecycle is split by **type**, not by runtime error. `build()` receives
+a `BuildContext`; `prepare()` and `close()` receive a `HostContext` — the
+same object once the agent exists.
+
+| | `BuildContext` — `build()` | `HostContext` — `prepare()`, `close()`, call time |
+|---|---|---|
+| has | `home`, `cwd`, `config`, `model`, `plugin_sources`, `register_provider_type`, `tools`, `commands`, `hooks`, `prompt_sections`, `plugin_state()` | everything a `BuildContext` has, **plus** `agent` |
+| can | register contributions, read config and model facts, create per-conversation state | everything on the left, *and* `await ctx.emit(...)`, `ctx.subscribe()`, `ctx.spawn(...)` |
+| when | once per conversation, before assembly | after assembly — before the first request, at conversation end, during runs |
+
+The agent does not exist during `build()` — every plugin contributes first,
+then the loop is wired. A plugin that needs call-time abilities creates its
+own objects in `build()` (a hook holding the context, a tool closing over
+it, a sub-agent spawned per call) and reaches the loop through the context
+it kept, which has grown into a `HostContext` by then. A tool's shorter path
+is `with_context=True`: its `ToolCallContext` carries `emit` and the
+resolved policy for that call.
 
 | Contribution | API |
 |---|---|
-| Tools | `ctx.tools.register(tool)` — relative paths should resolve against `ctx.cwd` |
-| Commands | `ctx.register(Command(...))` — a *shared* command, dispatchable from any frontend |
+| Tools | `ctx.tools.register(Tool(...))` — relative paths should resolve against `ctx.cwd` |
+| Commands | `ctx.commands.register(Command(...))` — a *shared* command, dispatchable from any frontend |
 | Hooks | `ctx.hooks.append(hook)` |
 | Prompt sections | `ctx.prompt_sections.append(Section(...))` — a name collision is won by the last section registered |
 | Own settings | `ctx.plugin_config("name")` — the `plugins.<name>` object from config.json |
 | Own state | `ctx.plugin_state("name")` — a dict that travels with the session |
 | Model facts | `ctx.model` — name / `context_window` / `max_output`, readable in `build()` |
 | Files it ships | `ctx.plugin_sources` — the directories the project's plugins were loaded from |
-| Messages to the user | `await ctx.emit(Notice(...))` — a `Notice` carries its own text and level |
-| Watching the conversation | `ctx.subscribe()` — the event stream, out-of-band |
+| Provider types | `ctx.register_provider_type(name, factory)` — see [providers.md](providers.md) |
+| Messages to the user | `await ctx.emit(Notice(...))` at call time — a `Notice` carries its own text and level |
+| Watching the conversation | `ctx.subscribe()` at call time — the event stream, out-of-band |
+| Sub-agents | `ctx.spawn(system_prompt=..., ...)` at call time — see below |
 
-`build()` registers; `prepare()` (async, optional) finishes — see
-[`prepare(ctx)`](#preparectx--the-async-half-and-when-the-surface-is-written)
-for the split and for when the request surface is written. Both run once per
-conversation, and `ctx.agent` is `None` during both — the agent does not exist
-yet. Anything that needs it holds `ctx` and reads `ctx.agent` at call time;
-`ctx.emit` and `ctx.subscribe` work at call time too, during a run or between
-runs.
-
-### Remembering, across a resume
-
-`ctx.plugin_state("name")` returns this plugin's own dict for this
-conversation — created empty, and it *survives*: the host persists it with the
-session and hands it back when the session is resumed (or swapped when the
-conversation loads a different one), and clears it on `rebuild_prompt()`, when
-the model has just been re-told everything. Slots are keyed by plugin name, so
-plugins never see each other's, and nothing in the host knows what any plugin
-keeps in its own. It is the missing piece for anything stateful — a baseline,
-a counter, an index — and `cache-protect` is its first user: the baselines its
-drift notices are diffed against live there.
-
-### One plugin instance, many builds
-
-A plugin object is created once, and `build()` runs once per conversation.
-**Keep the plugin itself stateless**: anything belonging to a conversation — a
-session handle, a cache, a counter — is created *inside* `build()`, not stored
-on `self`. All three shipped plugins work this way; `ShellPlugin.build` makes
-a fresh `BashTool`, and with it a fresh working directory and environment.
-That invariant is what lets one process serve several conversations from a
-single loaded plugin list. `close(ctx)` is where anything you acquired for a
-conversation is released.
-
-### `prepare(ctx)` — the async half, and when the surface is written
-
-`build()` has one rule of its own: **it must be cheap.** Registrations only —
-tools, commands, hooks, prompt sections, provider types. Anything that needs
-I/O (discovery, connections, subprocesses) belongs in the *second* pass:
+`build()` must stay **cheap and synchronous**: registrations only. Anything
+that needs I/O (discovery, connections, subprocesses) belongs in the second
+pass:
 
 ```python
 class MyPlugin(Plugin):
     def build(self, ctx):
-        ctx.tools.register(StubTool())            # cheap, synchronous
+        ctx.tools.register(stub_tool())              # cheap, synchronous
 
     async def prepare(self, ctx):
-        catalog = await discover_endpoints()      # I/O lives here
-        ctx.tools.register(CatalogTool(catalog))  # may still contribute
+        catalog = await discover_endpoints()         # I/O lives here
+        ctx.tools.register(catalog_tool(catalog))    # may still contribute
 ```
 
 The two passes sit on either side of the **request surface** — the system
@@ -304,6 +304,151 @@ practical consequences:
 - `rebuild_prompt()` remains the deliberate re-materialization: it re-renders,
   re-pins and clears every plugin's session state, running no preparation.
 
+### Remembering, across a resume
+
+`ctx.plugin_state("name")` returns this plugin's own dict for this
+conversation — created empty, and it *survives*: the host persists it with the
+session and hands it back when the session is resumed (or swaps it when the
+conversation loads a different one), and clears it on `rebuild_prompt()`, when
+the model has just been re-told everything. Slots are keyed by plugin name, so
+plugins never see each other's, and nothing in the host knows what any plugin
+keeps in its own. It is the missing piece for anything stateful — a baseline,
+a counter, an index — and `cache-protect` is its first user: the baselines its
+drift notices are diffed against live there.
+
+### One plugin instance, many builds
+
+A plugin object is created once, and `build()` runs once per conversation.
+**Keep the plugin itself stateless**: anything belonging to a conversation — a
+session handle, a cache, a counter — is created *inside* `build()`, not stored
+on `self`. All three shipped plugins work this way; `ShellPlugin.build` makes
+a fresh `bash` tool, and with it a fresh working directory and environment.
+That invariant is what lets one process serve several conversations from a
+single loaded plugin list. `close(ctx)` is where anything you acquired for a
+conversation is released.
+
+## Tools
+
+A tool is declared with a JSON Schema object node — the dialect every model
+speaks natively, so what the model is offered and what the arguments are
+checked against are the same document:
+
+```python
+from mocode.plugins import Tool, ToolPolicy, ToolResult
+
+Tool(
+    name="list_issues",
+    description="List repository issues",
+    schema={
+        "type": "object",
+        "properties": {
+            "state": {"type": "string", "enum": ["open", "closed"]},
+            "limit": {"type": "integer", "default": 50, "description": "Max issues"},
+        },
+        "required": [],
+    },
+    func=run,
+    tags=frozenset({"issues"}),
+    summary_key="state",         # the argument a one-line summary shows
+    result_key="issue_count",    # the detail shown alongside it
+    returns={"type": "object"},  # structured-output metadata for SDKs; never sent
+    policy=ToolPolicy(timeout=60),  # per-tool overrides before config
+)
+```
+
+The built-in checker validates the common keywords (`type`, `required`,
+`properties`, `items`, `enum`, `anyOf`/`oneOf`, `default`) and fills defaults;
+unknown keywords pass — forward compatibility beats false rejections. Nested
+objects and arrays are first-class.
+
+Beyond the schema, a `Tool` carries:
+
+- **`with_context`** — declare it and the function is called as
+  `(args, ctx)`, receiving its `ToolCallContext`: that is how a long-running
+  tool reports progress (`await ctx.emit(ToolOutput(...))`) and reads the
+  policy resolved for the call (`ctx.tool_timeout`). The declaration is
+  checked at construction — a signature that cannot receive the context
+  fails at import/build time, not mid-turn. Tools that don't ask for it keep
+  the plain `(args) -> str` shape.
+- **`availability`** — who may use it: `"model"` (offered to the model only),
+  `"program"` (callable by code only, invisible to the model — the shape a
+  folded deployment uses), or `"both"`, the default. Invisible to an audience
+  means neither offered nor runnable.
+- **`policy`** — a `ToolPolicy` (timeout, result limit), or a callable
+  receiving the call's arguments and returning one; `None` fields fall
+  through to the config. Resolution order: call-level over tool-level over
+  config.
+- **`source`** — who registered it. You do not set it: the host stamps every
+  registration with the plugin's channel-prefixed name (`plugin:<manifest
+  name>`; built-ins get `builtin:<name>`), so attribution is a fact of the
+  path and a tool cannot claim an identity its loader cannot back. What the
+  stamp buys everyone: a same-name registration from a *different* source
+  raises `ToolConflictError` at registration time instead of silently erasing
+  someone's work — name your tools distinctively, and collisions become loud.
+
+A tool may return a `ToolResult` when there are facts *about* the result worth
+showing — `content` is what the model reads, `details` reaches frontends
+through `ToolCallFinished` and never enters the conversation:
+
+```python
+def lint(args):
+    issues = run_linter(args["path"])
+    return ToolResult(
+        content=render(issues),          # the model reads this
+        details={"issues": len(issues)}, # you read this
+    )
+```
+
+### Who a tool is for — and running one yourself
+
+When your code — not the model — needs to run a tool, do not copy the loop's
+plumbing and do not call `tool.run` directly: both drift. Call the dispatcher
+every call already goes through:
+
+```python
+async def _run(self, args, ctx):        # one of your tools, mid-call
+    result = await self._ctx.agent.dispatcher.run(
+        "read", {"path": args["path"]},
+        origin="program",               # this call is yours, not the model's
+        parent_call_id=ctx.tool_call_id,
+    )
+    return result.content               # status / details / error_code alongside
+```
+
+Hooks intercept it, availability is enforced, timeouts and cooperative
+cancellation apply, the result is truncated and reported exactly as the
+model's calls are — and the nested call's events are observable on the channel
+while staying out of the conversation (`ToolDispatcher`'s program-origin
+contract; see [ARCHITECTURE.md](ARCHITECTURE.md)).
+
+## Prompt sections
+
+`Section("name", content, priority=45)` contributes to the system prompt;
+sections render in `(priority, insertion order)` order as XML tags. Content
+may be static text, a list of child sections, or a callable receiving the
+builder's context — and a section that renders itself from live state wants
+the two fields made for it:
+
+```python
+Section(
+    "tools-sdk",
+    render=lambda _ctx: render_sdk(),  # drawn from the live registry
+    pinned=True,                       # rendered once, then byte-identical
+    derived_from="tools",              # lineage: cache-protect diffs it
+    priority=45,
+)
+```
+
+- **`pinned=True`** freezes the section's rendered bytes after the first
+  render. A section that re-renders from a live registry on every build would
+  churn the frozen prompt around it; the pin holds until the next
+  `rebuild_prompt()`.
+- **`derived_from="tools"`** declares that the text is derived from the tool
+  registry — which is exactly what makes its drift visible: the `cache-protect`
+  plugin diffs the *live* render of pinned `derived_from="tools"` sections and
+  announces the change in its `[context update]` notice, because the pinned
+  prompt itself cannot carry it.
+
 ## Hooks
 
 A hook is the **interception** channel: it runs at a fixed point and may
@@ -314,6 +459,8 @@ answer.
 | Method | When | You may |
 |---|---|---|
 | `before_iteration(ctx)` | before each LLM call | rewrite `ctx.messages` or `ctx.system_prompt`, `await ctx.emit(...)` |
+| `before_request(ctx)` | before the request is sent | rewrite `ctx.messages` / `ctx.system_prompt` / `ctx.tools` (this one request), `await ctx.emit(...)` |
+| `after_response(ctx)` | after the response is accounted | rewrite `ctx.usage` (token accounting), read `ctx.finish_reason` |
 | `on_tool_start(ctx)` | before a tool runs | rewrite `ctx.tool_args`, set `ctx.deny` to veto |
 | `on_tool_complete(ctx)` | after a tool runs | rewrite `ctx.tool_result`, enrich `ctx.tool_details`, read `ctx.status` |
 | `on_event(event)` | every event the run publishes | observe, accumulate, ignore |
@@ -324,99 +471,57 @@ answer; a plugin that only watches calls `ctx.subscribe()` instead, which
 nobody waits for — see [embedding.md](embedding.md).
 
 A `system_prompt` a hook writes lasts **for the rest of the run**: the loop
-restores the prompt as it stood when the turn ends, so one turn's rewrite never
-leaks into the next. A persona that should hold for the whole conversation is a
-prompt section, not a hook. One hook raising never breaks the loop or the other
-hooks — the failure is logged and the run continues.
+restores the prompt as it stood when the turn ends, so one turn's rewrite
+never leaks into the next. A persona that should hold for the whole
+conversation is a prompt section, not a hook. One hook raising never breaks
+the loop or the other hooks — the failure is logged and the run continues.
 
-## Changing the harness after assembly
+## Sub-agents
 
-`build()` is the one *contribution* pass, but it is not the only moment the
-harness can change: the registries are live for the conversation's whole life,
-and the loop reads them back on every iteration. A host application — or a
-harness that reshapes itself between task batches — never restarts anything:
-
-- **`ctx.tools`** — `register` / `unregister` / `enable` / `disable` at any
-  moment. What the model is *offered* is the registry's projection, and a
-  host may pin it (`ToolRegistry.freeze()`; `MoCode(freeze_interface=False)`
-  opts out) so a request's tool payload stays byte-identical for the session
-  and the provider's prefix cache survives. Either way the switch is live: a
-  tool switched off disappears from `names()`, refuses to run (`denied:`), and
-  the `cache-protect` plugin announces the change at the next turn as a
-  `[context update]` notice — a state line for a switch, a unified diff for a
-  rewritten schema, and the schema itself for a tool registered after the
-  freeze (callable through the registry, and it enters the pinned payload at
-  the next rebuild or session). A plugin that wants a *switchable* tool
-  registers it disabled in `build()` and flips it later: that is a pure flag
-  and costs no cache at all.
-- **Prompt sections** — `ctx.prompt_sections` feeds the prompt when it is
-  rendered. Changes apply at the next render: a new conversation, or
-  `conversation.rebuild_prompt()` — which re-freezes the prompt, re-pins the
-  tool interface and clears every plugin's session state, accepting the cache
-  loss in one deliberate act. A resumed session keeps the prompt it ran with,
-  byte-identical, so the provider's prefix cache survives; what changed since
-  the model was last told arrives as a `[context update]` notice — one unified
-  diff per moved part — and a change reverted before the turn that would
-  announce it is not announced at all. Inside a running turn, a hook writing
-  `ctx.system_prompt` in `before_iteration` is how the prompt changes — for
-  that run.
-- **Hooks** — `agent.hooks.add(hook)` takes effect at the next interception
-  point. Hooks run in the order they were added — plugin load order: built-ins
-  first, then each plugin directory in priority order, alphabetical inside
-  one, and within a plugin the order `build()` appended them — and they share
-  one context object, so a change an earlier hook made is what a later one
-  sees.
-
-The split of labour is the contract: *inside* a running turn the only writes
-are the hook points (`before_iteration`, `on_tool_start`, `on_tool_complete`);
-*between* turns, anything the public API allows. An application that evolves
-its own harness — swapping tool sets, tuning sections, adding hooks — works
-entirely on the second side of that line.
-
-## Three worked examples
-
-### Tool scoping — a restricted tool set
-
-`Tool.tags` plus `ToolRegistry.select` replace name-based filtering:
+`HostContext.spawn()` is `derive()` with the plugin-facing defaults fixed:
+events **visible** on the conversation's channel, hooks **not** inherited, a
+live copy of the tool set — and the parent's provider unless you pass a
+`model`. It is call-time API (during `build()` there is no agent yet): a tool
+that delegates closes over the context and spawns per call.
 
 ```python
-safe_tools = ctx.tools.select(exclude_tags={"shell", "fs-write"})
+class SubAgentPlugin(Plugin):
+    name = "delegate"
+
+    def build(self, ctx):
+        host_ctx = ctx  # grows into a HostContext at assembly — same object
+
+        async def delegate(args: dict, call_ctx) -> str:
+            child = host_ctx.spawn(
+                system_prompt="You are a focused sub-agent.",
+                tools=host_ctx.tools.select(exclude_tags={"delegation"}),
+            )
+            result = await child.run_with_messages(
+                [{"role": "user", "content": args["task"]}]
+            )
+            if result.had_error:              # run_with_messages never raises
+                return f"error: {result.content}"
+            return result.content
+
+        host_ctx.tools.register(Tool(
+            name="delegate",
+            description="Delegate a task to a sub-agent",
+            schema={"type": "object",
+                    "properties": {"task": {"type": "string"}},
+                    "required": ["task"]},
+            func=delegate,
+            with_context=True,
+            tags=frozenset({"delegation"}),
+        ))
 ```
 
-### A sub-agent tool
+The child's events on the conversation's channel reach channel subscribers
+(the terminal's renderer, a logger), while each agent's `Turn` views and
+`state` stay scoped to its own run — watch a child through the child.
+`visible=False` gives the child a private stream instead. Nothing in `core/`
+knows what a sub-agent is.
 
-The kernel's `derive()` gives you an independent agent: a fresh history, a
-*copy* of the parent's capability set and policy, and by default the parent's
-provider — override any of them per child:
-
-```python
-class SubAgentTool(Tool):
-    def __init__(self, ctx):
-        self._ctx = ctx
-        super().__init__(name="sub_agent", description="Delegate a task to a sub-agent",
-                         params={"task": {"type": "string", "description": "Task"}},
-                         func=self._run, tags=frozenset({"delegation"}))
-
-    async def _run(self, args: dict) -> str:
-        parent = self._ctx.agent
-        child = parent.derive(
-            system_prompt=parent.system_prompt + "\n\nYou are a focused sub-agent.",
-            tools=self._ctx.tools.select(exclude_tags={"delegation"}),  # no recursion
-            config=parent.config.replace(max_iterations=50, tool_result_limit=0),
-            channel=parent.channel,       # let the host's readers see the nested work
-        )
-        result = await child.run_with_messages([{"role": "user", "content": args["task"]}])
-        if result.had_error:              # run_with_messages never raises
-            return f"error: {result.content}"
-        return result.content
-```
-
-The child's events on the parent's channel reach channel subscribers (the
-terminal's renderer, a logger), while the parent's own `Turn` views and
-`state` stay scoped to the parent's run — watch a child through the child.
-Nothing in `core/` knows what a sub-agent is.
-
-### Context compaction
+## Context compaction — a worked example
 
 Usage is *observed* from the event stream; the message list is *rewritten*
 through the hook:
@@ -448,7 +553,7 @@ class CompactHook(AgentHook):
         old = len(ctx.messages)
         ctx.messages[:] = await summarize(self._ctx.agent.provider, ctx.messages)
         self._tokens = 0
-        await ctx.emit(Compacted(old_count=old, new_count=len(ctx.messages)))
+        await self._ctx.emit(Compacted(old_count=old, new_count=len(ctx.messages)))
 
 
 class CompactPlugin(Plugin):
@@ -463,43 +568,49 @@ do: register a renderer. The event describes itself — that is what `summary()`
 is for — so a terminal, a web UI and a log all display it without the plugin
 knowing any of them exist.
 
-## Who a tool is for — and running one yourself
+## Changing the harness after assembly
 
-`Tool` carries two facts about itself beyond its schema:
+`build()` is the one *contribution* pass, but it is not the only moment the
+harness can change: the registries are live for the conversation's whole life,
+and the loop reads them back on every iteration. A host application — or a
+harness that reshapes itself between task batches — never restarts anything:
 
-- **`availability`** — who may use it: `"model"` (offered to the model only),
-  `"program"` (callable by code only, invisible to the model — the shape a
-  folded deployment uses), or `"both"`, the default. Invisible to an audience
-  means neither offered nor runnable: `registry.names(audience="program")` is
-  the projection code sees, and the dispatcher refuses a call from the wrong
-  side exactly like a switched-off tool.
-- **`source`** — who registered it. You do not set it: the host stamps every
-  registration with the plugin's channel-prefixed name (`plugin:<manifest
-  name>`; built-ins get `builtin:<name>`), so attribution is a fact of the
-  path and a tool cannot claim an identity its loader cannot back. What the
-  stamp buys everyone: a same-name registration from a *different* source
-  raises `ToolConflictError` at registration time instead of silently erasing
-  someone's work — name your tools distinctively, and collisions become loud.
+- **`ctx.tools`** — `register` / `unregister` / `enable` / `disable` at any
+  moment. What the model is *offered* is the registry's projection, and a
+  host may pin it (`ToolRegistry.freeze()`; `MoCode(freeze_interface=False)`
+  opts out) so a request's tool payload stays byte-identical for the session
+  and the provider's prefix cache survives. Either way the switch is live: a
+  tool switched off disappears from `names()`, refuses to run (`denied:`), and
+  the `cache-protect` plugin announces the change at the next turn as a
+  `[context update]` notice — a state line for a switch, a unified diff for a
+  rewritten schema, and the schema itself for a tool registered after the
+  freeze (callable through the registry, and it enters the pinned payload at
+  the next rebuild or session). A plugin that wants a *switchable* tool
+  registers it disabled in `build()` and flips it later: that is a pure flag
+  and costs no cache at all.
+- **Prompt sections** — `ctx.prompt_sections` feeds the prompt when it is
+  rendered. Changes apply at the next render: a new conversation, or
+  `conversation.rebuild_prompt()` — which re-freezes the prompt, re-pins the
+  tool interface, drops every pinned section's render cache and clears every
+  plugin's session state, accepting the cache loss in one deliberate act. A
+  resumed session keeps the prompt it ran with, byte-identical, so the
+  provider's prefix cache survives; what changed since the model was last
+  told arrives as a `[context update]` notice — one unified diff per moved
+  part — and a change reverted before the turn that would announce it is not
+  announced at all. Inside a running turn, a hook writing `ctx.system_prompt`
+  in `before_iteration` is how the prompt changes — for that run.
+- **Hooks** — `agent.hooks.add(hook)` takes effect at the next interception
+  point. Hooks run in the order they were added — plugin load order: built-ins
+  first, then each plugin directory in priority order, alphabetical inside
+  one, and within a plugin the order `build()` appended them — and they share
+  one context object, so a change an earlier hook made is what a later one
+  sees.
 
-When your code — not the model — needs to run a tool, do not copy the loop's
-plumbing and do not call `tool.run` directly: both drift. Call the dispatcher
-every call already goes through:
-
-```python
-async def _run(self, args, ctx):        # one of your tools, mid-call
-    result = await self._ctx.agent.dispatcher.run(
-        "read", {"path": args["path"]},
-        origin="program",               # this call is yours, not the model's
-        parent_call_id=ctx.tool_call_id,
-    )
-    return result.content               # status / details / error_code alongside
-```
-
-Hooks intercept it, availability is enforced, timeouts and cooperative
-cancellation apply, the result is truncated and reported exactly as the
-model's calls are — and the nested call's events are observable on the channel
-while staying out of the conversation (`ToolDispatcher`'s program-origin
-contract; see [ARCHITECTURE.md](ARCHITECTURE.md)).
+The split of labour is the contract: *inside* a running turn the only writes
+are the hook points (`before_iteration`, `before_request`, `on_tool_start`,
+`on_tool_complete`); *between* turns, anything the public API allows. An
+application that evolves its own harness — swapping tool sets, tuning
+sections, adding hooks — works entirely on the second side of that line.
 
 ## Contributing to the terminal
 
@@ -528,37 +639,6 @@ The two namespaces never import each other; when they need to cooperate, they
 go through the conversation, which is the only thing they share. The
 terminal's own commands are the first implementation of this interface
 (`cli/plugin.py::BuiltinCommands`), so there is one way to contribute here.
-
-## Reporting a result the model doesn't need
-
-A tool returns a string, and the model reads it. When there is also something
-*about* the result worth showing — an exit code, how many lines came back —
-return a `ToolResult` instead:
-
-```python
-class LintTool(Tool):
-    def __init__(self):
-        super().__init__(
-            name="lint",
-            description="Lint a file",
-            params={"path": {"type": "string", "description": "File to lint"}},
-            func=self._run,
-            summary_key="path",     # from the arguments
-            result_key="issues",    # from the details, on the same line
-        )
-
-    def _run(self, args: dict) -> ToolResult:
-        issues = run_linter(args["path"])
-        return ToolResult(
-            content=render(issues),          # what the model reads
-            details={"issues": len(issues), "clean": not issues},
-        )
-```
-
-The terminal shows `✓ lint  src/a.py · issues=3`; `details` reaches every
-consumer through `ToolCallFinished` and `state`, and never enters the
-conversation. A hook may enrich it in `on_tool_complete` by writing to
-`ctx.tool_details`.
 
 ## Rules of the road
 
