@@ -45,6 +45,7 @@ from __future__ import annotations
 
 from ..core.agent import AgentConfig, LoopResult, Turn
 from ..core.channel import EventChannel, Subscription
+from ..core.dispatch import DispatchResult, ToolDispatcher
 from ..core.events import (
     Event,
     IterationFinished,
@@ -77,7 +78,7 @@ from ..core.provider import (
     Usage,
 )
 from ..core.state import RunState
-from ..core.tool import Tool, ToolError, ToolRegistry, ToolResult
+from ..core.tool import Tool, ToolConflictError, ToolError, ToolRegistry, ToolResult
 from ..host.command import (
     CONTINUE,
     EXIT,
@@ -101,6 +102,7 @@ __all__ = [
     "CommandRegistry",
     "CommandResult",
     "Conversation",
+    "DispatchResult",
     "EXIT",
     "Event",
     "EventChannel",
@@ -136,6 +138,8 @@ __all__ = [
     "ToolCallDelta",
     "ToolCallFinished",
     "ToolCallStarted",
+    "ToolConflictError",
+    "ToolDispatcher",
     "ToolError",
     "ToolOutput",
     "ToolRegistry",

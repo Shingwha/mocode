@@ -14,6 +14,9 @@ The contract types to know:
   reconnecting transport.
 * :class:`RunState` — the same events folded into a live snapshot, for callers
   that want to ask "what is happening now" instead of watching the stream.
+* :class:`ToolDispatcher` — the one execution path for a tool call, shared by
+  the loop (model origin) and by code driving tools of its own (program
+  origin); see :mod:`mocode.core.dispatch` for the contract.
 
 The :class:`AgentHook` methods are the interception channel (rewrite messages,
 veto a tool call); ``on_event`` is the in-band way to watch, which the channel
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 from .agent import AgentConfig, AgentLoop, LoopResult
 from .channel import EventChannel, Subscription
+from .dispatch import DispatchResult, ToolDispatcher
 from .events import (
     Event,
     IterationFinished,
@@ -58,7 +62,14 @@ from .provider import (
     with_retry_stream,
 )
 from .state import RunState, ToolCallState
-from .tool import Tool, ToolError, ToolRegistry, ToolResult, split_result
+from .tool import (
+    Tool,
+    ToolConflictError,
+    ToolError,
+    ToolRegistry,
+    ToolResult,
+    split_result,
+)
 from .turn import Turn
 
 __all__ = [
@@ -66,6 +77,7 @@ __all__ = [
     "AgentHook",
     "AgentLoop",
     "Chunk",
+    "DispatchResult",
     "Event",
     "EventChannel",
     "HookRunner",
@@ -99,6 +111,8 @@ __all__ = [
     "ToolCallFinished",
     "ToolCallStarted",
     "ToolCallState",
+    "ToolConflictError",
+    "ToolDispatcher",
     "ToolError",
     "ToolOutput",
     "ToolRegistry",

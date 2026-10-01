@@ -117,19 +117,6 @@ Four primitives make features-as-plugins possible:
 - **Tool metadata** — `Tool(tags=...)` plus `ToolRegistry.select(...)`:
   capability scoping by tag, never by a hard-coded list of tool names.
 
-**Executing a tool is the dispatcher's job** (`core/dispatch.py`). The whole
-policy pipeline around a call — hook interception, the switched-off check,
-timeout with cooperative cancellation, status mapping, failure prefixes,
-truncation, and the Started/Finished events — lives in `ToolDispatcher`, and
-`AgentLoop` is a thin wrapper over it that turns a `DispatchResult` into a tool
-message. Anything that runs tools of its own — a sub-agent tool, a workflow
-node — calls the same dispatcher with `origin="program"` and gets the
-identical pipeline. The **program-origin contract**: those calls' events reach
-the channel stamped with the run they belong to, so every reader can observe
-and audit them, but they never enter `messages` and never fold into the turn's
-`tool_calls_made` count — the conversation stays what the model said and was
-answered, and the live state stays the model's side of the story.
-
 ## Events and hooks are different jobs
 
 They are deliberately not unified, because they run in opposite directions:
@@ -167,6 +154,45 @@ what plugins said and what program-origin calls did — while `RunState` (and
 `tool_calls_made`, and `messages`) stays the model's side of the story. A
 publisher that needs a different attribution sets `event.run_id` itself before
 emitting; the host never overwrites a claimed id.
+
+## The dispatcher
+
+Executing a tool is policy, not orchestration, and the policy is public:
+`core/dispatch.py`'s `ToolDispatcher` is the whole pipeline around one call —
+hook interception, the visibility check, timeout with cooperative
+cancellation, status mapping, failure prefixes, truncation, and the
+Started/Finished events. `AgentLoop` keeps only orchestration: parse the
+provider's argument JSON, batch the calls, assemble the tool message from the
+`DispatchResult`. The loop's `dispatcher` attribute *is* the component — there
+is no second assembly site — and a bare-core embedder can construct one
+directly over its own registry, hooks and config.
+
+Anything that runs tools of its own — a sub-agent tool, a workflow node, a
+codemode-style orchestrator — calls the same dispatcher with
+`origin="program"` and gets the identical pipeline: same hooks, same
+visibility rules (a tool marked for the other audience is refused exactly like
+a switched-off one), same truncation, same events. The **program-origin
+contract**: those calls' events reach the channel stamped with the run they
+belong to, so every reader can observe and audit them, but they never enter
+`messages` and never fold into the turn's `tool_calls_made` count — the
+conversation stays what the model said and was answered, and the live state
+stays the model's side of the story.
+
+## Two provenance axes
+
+`source` and `origin` answer different questions about a tool, and neither can
+stand in for the other:
+
+| axis | answers | decided | lives |
+|---|---|---|---|
+| `source` | who this tool *belongs to* — static attribution, a channel-prefixed name | once, at registration — the path stamps it, a self-reported value never survives | `Tool.source` |
+| `origin` | who *asked for this call* — the model in a turn, or program code | every call | `ToolCallContext.origin`, `ToolCallStarted/Finished.origin` |
+
+`source` does not enter events: the registry is state, the event stream is a
+flow of facts — a consumer that wants to know who owns a tool reads
+`registry.get(name).source` when it needs to. `origin` never enters the
+registry: the same tool is callable from both sides, and which side did call
+is a fact about the call, not the tool.
 
 ## Run lifecycle
 
