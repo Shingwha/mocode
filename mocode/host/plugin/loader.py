@@ -6,7 +6,8 @@ A plugin is a directory::
     ├── plugin.json            the manifest: name, version, description (standard)
     ├── skills/<name>/SKILL.md portable skills, readable by any client (standard)
     ├── mcp.json               portable MCP servers (standard; recognised, not served yet)
-    ├── mocode/plugin.py       MoCode contributions — build(ctx) (our namespace)
+    ├── mocode/plugin.py       MoCode contributions — build(ctx) (our namespace);
+    │   or mocode/plugin/      a package: __init__.py as the entry, submodules beside it
     └── mocode.cli/plugin.py   the terminal's own contributions (the terminal's namespace)
 
 Or a single ``<name>.py`` file: the shortcut for a MoCode-only plugin with no
@@ -38,6 +39,7 @@ from .env import PluginVenv
 
 MANIFEST = "plugin.json"
 CODE_MODULE = "plugin.py"
+PACKAGE_DIR = "plugin"
 
 #: The namespace MoCode's own plugin code lives in. Contributions here use the
 #: host API only, so every MoCode frontend gets them.
@@ -165,6 +167,44 @@ def namespace_dir(source: "Path | PluginSpec", namespace: str) -> Path | None:
     return candidate if candidate.is_dir() else None
 
 
+def code_entry(namespace_dir: Path) -> Path | None:
+    """The entry module a namespace directory ships, if it ships code.
+
+    ``<ns>/plugin.py`` (a single file) first, then ``<ns>/plugin/__init__.py``
+    (a package — the multi-file form, its submodules imported relatively from
+    the entry). ``None`` means the namespace ships no code, which is ordinary:
+    a ``skills/``-only plugin never has one.
+
+    The two ways reaching for multiple files *misses* are reported rather than
+    silently treated as "no code": a ``plugin/`` directory without
+    ``__init__.py``, and stray ``.py`` files beside no entry at all. Both are
+    what a half-finished package looks like, and the report says what to do.
+    """
+    single = namespace_dir / CODE_MODULE
+    if single.is_file():
+        return single
+
+    package_dir = namespace_dir / PACKAGE_DIR
+    if package_dir.is_dir():
+        init = package_dir / "__init__.py"
+        if init.is_file():
+            return init
+        report(
+            f"{package_dir}: a multi-file plugin needs plugin/__init__.py — "
+            "make the package the entry and keep submodules beside it"
+        )
+        return None
+
+    strays = sorted(p.name for p in namespace_dir.glob("*.py") if p.is_file())
+    if strays:
+        report(
+            f"{namespace_dir}: stray module(s) {', '.join(strays)} with no "
+            f"plugin entry — code belongs in {CODE_MODULE} or a "
+            "plugin/__init__.py package"
+        )
+    return None
+
+
 # ── Discovery helpers ───────────────────────────────────────
 
 
@@ -214,8 +254,7 @@ def _spec_from_entry(entry: Path) -> PluginSpec | None:
         spec = read_manifest(entry / MANIFEST)
         if spec is None:
             return None
-        code = entry / HOST_NAMESPACE / CODE_MODULE
-        spec.module = code if code.is_file() else None
+        spec.module = code_entry(entry / HOST_NAMESPACE)
         return spec
 
     if entry.is_file() and entry.suffix == ".py" and not entry.name.startswith("_"):
