@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
+from ...core.events import PluginMessage
 from ...core.tool import ToolRegistry
 from ..command import CommandRegistry
 from ..config import Config
@@ -181,6 +182,31 @@ class HostContext(BuildContext):
         if turn is not None and not turn.done and not event.run_id:
             event.run_id = turn.id
         await self.agent.channel.publish(event)
+
+    async def emit_message(
+        self, kind: str, data: dict, *, block_id: str = ""
+    ) -> None:
+        """Say something as a :class:`~mocode.core.events.PluginMessage`.
+
+        The convenience over ``emit`` for the common shape — a plugin entry
+        with a kind and a payload, optionally updating one display block:
+        messages that share *block_id* render as one block rather than one
+        each. The payload is copied, so later edits to the caller's dict never
+        rewrite what was published. These messages are **not** persisted with
+        the session: they say something to whoever is watching now, and a
+        resumed conversation does not replay them — a known limitation.
+        """
+        await self.emit(PluginMessage(kind=kind, data=dict(data), block_id=block_id))
+
+    async def seal_message(self, block_id: str) -> None:
+        """Mark a message block as finished.
+
+        After the seal, an update arriving for the same *block_id* is a late
+        arrival: a frontend appends it as a follow-up rather than rewriting
+        the sealed block (there is no path back into a block that was already
+        committed to a terminal's scrollback).
+        """
+        await self.emit(PluginMessage(block_id=block_id, sealed=True))
 
     def subscribe(self, *, since: int | None = None) -> "Subscription":
         """Read this conversation's event stream, out-of-band.

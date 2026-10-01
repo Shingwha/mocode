@@ -129,3 +129,71 @@ class TestRunIdAttribution:
         ]
         assert len(messages) == 1
         assert messages[0].run_id == host.ctx.agent.turn.id
+
+
+class TestEmitMessage:
+    """The two HostContext conveniences — plain PluginMessage publishing."""
+
+    @pytest.mark.asyncio
+    async def test_publishes_a_plugin_message_between_turns(self, tmp_path: Path):
+        host = _host(tmp_path)
+
+        await host.ctx.emit_message(
+            "rag/index", {"done": 12, "total": 40}, block_id="rag-1"
+        )
+
+        message = host.ctx.agent.channel.history()[-1]
+        assert isinstance(message, PluginMessage)
+        assert (message.kind, message.data, message.block_id, message.sealed) == (
+            "rag/index",
+            {"done": 12, "total": 40},
+            "rag-1",
+            False,
+        )
+        # Between turns the entry belongs to the conversation stream alone.
+        assert message.run_id == ""
+
+    @pytest.mark.asyncio
+    async def test_seal_message_publishes_a_sealed_marker(self, tmp_path: Path):
+        host = _host(tmp_path)
+
+        await host.ctx.seal_message("rag-1")
+
+        message = host.ctx.agent.channel.history()[-1]
+        assert isinstance(message, PluginMessage)
+        assert (message.block_id, message.sealed, message.kind) == ("rag-1", True, "")
+
+    @pytest.mark.asyncio
+    async def test_the_payload_is_copied_not_shared(self, tmp_path: Path):
+        host = _host(tmp_path)
+
+        payload = {"done": 1}
+        await host.ctx.emit_message("rag/index", payload)
+        payload["done"] = 99
+
+        message = host.ctx.agent.channel.history()[-1]
+        assert message.data == {"done": 1}
+
+    @pytest.mark.asyncio
+    async def test_during_a_turn_it_is_stamped_like_any_emit(self, tmp_path: Path):
+        class EmitViaConvenience(AgentHook):
+            def __init__(self, ctx):
+                self._ctx = ctx
+
+            async def before_iteration(self, ctx) -> None:
+                await self._ctx.emit_message("shell/background-done", {"jobs": []})
+
+        host = _host(tmp_path, hook=lambda ctx: EmitViaConvenience(ctx))
+
+        await host.ctx.agent.chat("go")
+
+        messages = [
+            e for e in host.ctx.agent.channel.history() if isinstance(e, PluginMessage)
+        ]
+        assert len(messages) == 1
+        assert messages[0].run_id == host.ctx.agent.turn.id
+
+    def test_the_sdk_exports_it(self):
+        import mocode.plugins as sdk
+
+        assert sdk.PluginMessage is PluginMessage

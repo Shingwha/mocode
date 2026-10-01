@@ -39,8 +39,8 @@ its own namespace, which other clients ignore. The whole of a small plugin::
 ``build()`` receives a :class:`BuildContext` — contribution targets, config,
 paths, no agent. ``prepare()`` and ``close()`` receive a :class:`HostContext`:
 the same object once the loop exists, carrying the agent, ``emit`` /
-``subscribe`` and ``spawn``. A tool that wants its call context declares
-``with_context=True`` and receives ``(args, ctx)``.
+``emit_message`` / ``subscribe`` and ``spawn``. A tool that wants its call
+context declares ``with_context=True`` and receives ``(args, ctx)``.
 
 A single ``greet.py`` file next to the plugin directories works too, for a
 plugin with no portable parts; a larger one becomes a package
@@ -61,6 +61,7 @@ from ..core.events import (
     IterationFinished,
     IterationStarted,
     Notice,
+    PluginMessage,
     ReasoningDelta,
     RunFailed,
     RunFinished,
@@ -143,6 +144,7 @@ __all__ = [
     "ModelSpec",
     "Notice",
     "Plugin",
+    "PluginMessage",
     "Prompt",
     "Provider",
     "ReasoningDelta",
