@@ -677,3 +677,5 @@ terminal's own commands are the first implementation of this interface
 
 The config governs every plugin, built-ins included. Any keys other than
 `enabled` are handed to the plugin untouched via `ctx.plugin_config("<name>")`.
+
+To test a plugin against a scripted model — no network, no API key — see [testing.md](testing.md).
