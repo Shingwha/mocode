@@ -14,7 +14,7 @@ from datetime import datetime
 from ...command import CONTINUE, Command, CommandContext, CommandResult
 from ...export import export_session, export_session_md
 from ..base import Plugin
-from ..context import HostContext
+from ..context import BuildContext
 
 
 async def _export(ctx: CommandContext) -> CommandResult:
@@ -48,7 +48,7 @@ class SessionPlugin(Plugin):
     name = "session"
     description = "Session files: /export /clear"
 
-    def build(self, ctx: HostContext) -> None:
+    def build(self, ctx: BuildContext) -> None:
         ctx.register(
             Command("/export", "Export conversation to a file (json|md)", handler=_export),
             Command("/clear", "Clear the current conversation", handler=_clear),

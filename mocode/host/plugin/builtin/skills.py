@@ -23,7 +23,7 @@ from ....core.prompt import Section
 from ....core.tool import Tool, ToolError
 from ...command import CONTINUE, Command, CommandContext, CommandResult
 from ..base import Plugin
-from ..context import HostContext
+from ..context import BuildContext
 
 SKILL_MD = "SKILL.md"
 
@@ -236,7 +236,7 @@ class SkillsPlugin(Plugin):
     name = "skills"
     description = "Reusable instructions discovered from skill directories"
 
-    def build(self, ctx: HostContext) -> None:
+    def build(self, ctx: BuildContext) -> None:
         manager = SkillManager(
             [
                 # Portable skills a plugin ships. First, so that a user's own

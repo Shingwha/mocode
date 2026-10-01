@@ -1,7 +1,7 @@
 """MoCode plugin framework — the extension contract and its host."""
 
 from .base import Plugin
-from .context import HostContext
+from .context import BuildContext, HostContext
 from .host import (
     LoadedPlugins,
     PluginHost,
@@ -20,6 +20,7 @@ from .loader import (
 )
 
 __all__ = [
+    "BuildContext",
     "HOST_NAMESPACE",
     "MANIFEST",
     "HostContext",

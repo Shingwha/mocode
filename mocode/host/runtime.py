@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Callable, Sequence
 from .command import CommandRegistry
 from .config import DEFAULT_CONFIG_PATH, Config
 from .conversation import Conversation
-from .plugin.context import HostContext
+from .plugin.context import BuildContext
 from .plugin.host import (
     LoadedPlugins,
     PluginHost,
@@ -124,7 +124,9 @@ class MoCode:
         # A conversation opened from a stored session arrives carrying that
         # session's plugin state — the baselines its plugins last announced.
         plugin_states = dict(session.plugin_state) if session is not None else {}
-        ctx = HostContext(
+        # A BuildContext: plugins build against contributions and config only.
+        # Assembly grows it into the HostContext the conversation then holds.
+        ctx = BuildContext(
             home=self.home,
             cwd=project,
             config=self.config,

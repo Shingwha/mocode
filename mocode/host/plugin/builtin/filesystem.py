@@ -7,7 +7,7 @@ from pathlib import Path
 from ....core.tool import Tool, ToolError, ToolResult
 from ...text import decode_bytes
 from ..base import Plugin
-from ..context import HostContext
+from ..context import BuildContext
 
 FS = frozenset({"fs"})
 
@@ -263,7 +263,7 @@ class FilesystemPlugin(Plugin):
     name = "filesystem"
     description = "Read, write and edit files"
 
-    def build(self, ctx: HostContext) -> None:
+    def build(self, ctx: BuildContext) -> None:
         # Relative paths resolve against the conversation's project: build()
         # runs once per conversation, so each one edits its own tree.
         for tool in (ReadTool(ctx.cwd), WriteTool(ctx.cwd), EditTool(ctx.cwd)):

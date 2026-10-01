@@ -53,7 +53,7 @@ from ....core.tool import ToolRegistry
 from ...events import ConversationChanged
 from ...prompt import build_system_prompt
 from ..base import Plugin
-from ..context import HostContext
+from ..context import BuildContext
 
 if TYPE_CHECKING:
     from ....core.events import Event
@@ -96,7 +96,10 @@ class _Watcher(AgentHook):
     """One conversation's watcher — its baseline lives in the conversation's
     plugin state, so it survives a save and a resume."""
 
-    def __init__(self, ctx: HostContext):
+    def __init__(self, ctx: BuildContext):
+        # The context a watcher is built with is the one assembly grows into
+        # a HostContext — same object — so ``self._ctx.agent`` exists by the
+        # time any trigger below can fire.
         self._ctx = ctx
 
     # ── the two triggers ────────────────────────────────────
@@ -115,8 +118,6 @@ class _Watcher(AgentHook):
     def _announce(self, messages: list[dict] | None = None) -> None:
         host = self._ctx
         agent = host.agent
-        if agent is None:
-            return
         state = host.plugin_state(NAME)
         tools = host.tools
 
@@ -207,7 +208,7 @@ class CacheProtectPlugin(Plugin):
         "Keeps a session's request prefix pinned; changes arrive as diff notices"
     )
 
-    def build(self, ctx: HostContext) -> None:
+    def build(self, ctx: BuildContext) -> None:
         ctx.hooks.append(_Watcher(ctx))
 
 

@@ -24,7 +24,7 @@ from mocode.core.tool import (
 )
 from mocode.host.config import Config
 from mocode.host.plugin.base import Plugin
-from mocode.host.plugin.context import HostContext
+from mocode.host.plugin.context import BuildContext, HostContext
 from mocode.host.plugin.host import PluginHost, load_plugins
 
 from .providers import MockProvider, tool_call_response
@@ -525,14 +525,13 @@ class TestProvenance:
 # ── attribution: what ctx.emit belongs to ────────────────────
 
 
-def _host_context(tmp_path, agent: AgentLoop | None) -> HostContext:
-    ctx = HostContext(
+def _host_context(tmp_path, agent: AgentLoop) -> HostContext:
+    return HostContext(
         home=tmp_path / "home",
         cwd=tmp_path,
         config=Config(active_provider="p", active_model="m"),
+        agent=agent,
     )
-    ctx.agent = agent
-    return ctx
 
 
 class TestEmitAttribution:
@@ -579,12 +578,56 @@ class TestEmitAttribution:
 
         assert claimed.run_id == "someone-elses"
 
-    @pytest.mark.asyncio
-    async def test_emitting_during_build_is_still_refused(self, tmp_path):
-        host_ctx = _host_context(tmp_path, agent=None)
 
-        with pytest.raises(RuntimeError, match="build"):
-            await host_ctx.emit(Notice(message="too early"))
+class TestSpawn:
+    """HostContext.spawn — derive() with the plugin-facing defaults fixed."""
+
+    def _host(self, tmp_path, *tools) -> HostContext:
+        agent = _make_agent(*tools)
+        return _host_context(tmp_path, agent)
+
+    def test_visible_by_default_and_shares_the_parents_channel(self, tmp_path):
+        host = self._host(tmp_path)
+
+        child = host.spawn(system_prompt="focused")
+
+        assert child.channel is host.agent.channel
+        assert child.system_prompt == "focused"
+        assert child.messages == []  # fresh history
+        assert list(child.tool_registry.names()) == list(
+            host.agent.tool_registry.names()
+        )  # a live copy of the parent's set
+
+    def test_invisible_spawn_gets_a_private_stream(self, tmp_path):
+        host = self._host(tmp_path)
+
+        child = host.spawn(system_prompt="quiet", visible=False)
+
+        assert child.channel is not host.agent.channel
+
+    def test_hooks_are_not_inherited(self, tmp_path):
+        class Marker(AgentHook):
+            pass
+
+        host = self._host(tmp_path)
+        host.agent.hooks.add(Marker())
+
+        child = host.spawn(system_prompt="clean")
+
+        assert not any(isinstance(h, Marker) for h in child.hooks.all())
+
+    def test_a_narrower_tool_set_and_a_model(self, tmp_path):
+        host = self._host(tmp_path, _echo_tool())
+        from mocode.core.provider import ModelSpec
+
+        child = host.spawn(
+            system_prompt="s",
+            tools=ToolRegistry(),
+            model=ModelSpec(name="cheaper"),
+        )
+
+        assert len(child.tool_registry) == 0
+        assert child.model.name == "cheaper"
 
 
 # ── source: who a tool belongs to ────────────────────────────
@@ -605,9 +648,9 @@ class _Registering(Plugin):
         ctx.tools.register(self._tool)
 
 
-def _host_context_for_tools() -> HostContext:
-    """A HostContext whose registry stamps — no agent, no paths that matter."""
-    return HostContext(
+def _host_context_for_tools() -> BuildContext:
+    """A BuildContext whose registry stamps — no agent, no paths that matter."""
+    return BuildContext(
         home=Path(".") / "home",
         cwd=Path("."),
         config=Config(active_provider="p", active_model="m"),
@@ -680,7 +723,7 @@ class TestSourceStamping:
 
     def test_a_registry_passed_in_is_kept_verbatim(self):
         plain = ToolRegistry()
-        ctx = HostContext(
+        ctx = BuildContext(
             home=Path(".") / "home",
             cwd=Path("."),
             config=Config(active_provider="p", active_model="m"),
@@ -693,7 +736,7 @@ class TestSourceStamping:
         assert plain.get("mine").source == ""
 
     def test_builtin_tools_get_their_builtin_identity(self, tmp_path):
-        ctx = HostContext(
+        ctx = BuildContext(
             home=tmp_path / "home",
             cwd=tmp_path,
             config=Config(active_provider="p", active_model="m"),
@@ -733,7 +776,7 @@ class TestSourceStamping:
             ),
             encoding="utf-8",
         )
-        ctx = HostContext(
+        ctx = BuildContext(
             home=tmp_path / "home",
             cwd=tmp_path,
             config=Config(active_provider="p", active_model="m"),

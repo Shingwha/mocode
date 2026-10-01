@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .context import HostContext
+    from .context import BuildContext, HostContext
 
 
 class Plugin:
@@ -20,10 +20,13 @@ class Plugin:
       and it is the only place to create state — a shell session, an index, a
       tool holding a cursor. State kept on ``self`` is shared by every
       conversation in the process, which is not what any of them asked for.
-    * **``ctx.agent`` is ``None`` during ``build()``** (the agent does not exist
-      yet). Anything that needs the assembled agent — a sub-agent tool, a
-      compactor — keeps the context and reads ``ctx.agent`` at call time instead
-      of capturing it here.
+    * **The context has two stages, and they are types.** ``build()`` receives
+      a :class:`BuildContext
+      <mocode.host.plugin.context.BuildContext>` — no agent exists yet.
+      ``prepare()`` and ``close()`` receive a :class:`HostContext
+      <mocode.host.plugin.context.HostContext>`, the same object grown by
+      assembly; anything that needs the agent (an event stream, a sub-agent)
+      is a call-time concern reached through it.
 
     A plugin that acquires a resource for a conversation (a subscription, a
     background task) releases it in :meth:`close`.
@@ -32,7 +35,7 @@ class Plugin:
     name: str = ""
     description: str = ""
 
-    def build(self, ctx: HostContext) -> None:
+    def build(self, ctx: BuildContext) -> None:
         """Contribute to the host. Default: contribute nothing.
 
         Cheap and synchronous: registrations only — tools, commands, hooks,

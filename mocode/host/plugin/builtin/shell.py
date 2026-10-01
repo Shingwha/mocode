@@ -18,7 +18,7 @@ from ....core.events import ToolOutput
 from ....core.tool import Tool, ToolPolicy, ToolResult
 from ...text import decode_bytes
 from ..base import Plugin
-from ..context import HostContext
+from ..context import BuildContext
 
 #: Called with each chunk of output as it arrives: ``on_output(text, stream)``.
 OutputSink = Callable[[str, str], Awaitable[None]]
@@ -253,7 +253,7 @@ class ShellPlugin(Plugin):
     name = "shell"
     description = "Run shell commands in a persistent bash session"
 
-    def build(self, ctx: HostContext) -> None:
+    def build(self, ctx: BuildContext) -> None:
         # The session's working directory is the conversation's project: build()
         # runs once per conversation, so two projects never share one shell.
         ctx.tools.register(
