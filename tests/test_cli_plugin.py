@@ -54,7 +54,14 @@ CLI_CODE = """
 
 
 
-def _install(root: Path, name: str = "acme", *, host: str = "", cli: str = "") -> Path:
+def _install(
+    root: Path,
+    name: str = "acme",
+    *,
+    host: str = "",
+    cli: str = "",
+    cli_package: dict[str, str] | None = None,
+) -> Path:
     plugin = root / name
     plugin.mkdir(parents=True, exist_ok=True)
     (plugin / "plugin.json").write_text(json.dumps({"name": name}), encoding="utf-8")
@@ -66,6 +73,10 @@ def _install(root: Path, name: str = "acme", *, host: str = "", cli: str = "") -
         module = plugin / "mocode.cli" / "plugin.py"
         module.parent.mkdir(parents=True, exist_ok=True)
         module.write_text(textwrap.dedent(cli), encoding="utf-8")
+    for filename, text in (cli_package or {}).items():
+        module = plugin / "mocode.cli" / "plugin" / filename
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text(textwrap.dedent(text), encoding="utf-8")
     return plugin
 
 
@@ -173,6 +184,56 @@ class TestLoadingRules:
 
         assert "boom" in capsys.readouterr().err
         assert "/help" in {c.name for c in app.commands.all()}
+
+
+class TestThePackageForm:
+    """The terminal namespace judges its entry the same way the host does."""
+
+    CLI_PACKAGE = {
+        "__init__.py": """
+        from mocode.cli import CLIPlugin
+
+        from .title import TITLE
+
+
+        class PackagedCLI(CLIPlugin):
+            name = "packaged.cli"
+            description = TITLE
+
+        plugin = PackagedCLI()
+        """,
+        "title.py": "TITLE = 'assembled from a submodule'\n",
+    }
+
+    def test_a_cli_namespace_package_loads(self, tmp_path: Path):
+        from mocode.cli.plugin import load_cli_plugins
+
+        plugins = tmp_path / "plugins"
+        _install(plugins, cli_package=self.CLI_PACKAGE)
+
+        loaded = load_cli_plugins([plugins / "acme"])
+
+        assert [p.name for p in loaded] == ["packaged.cli"]
+        assert loaded[0].description == "assembled from a submodule"
+
+    def test_the_single_file_wins_when_both_exist(self, tmp_path: Path):
+        from mocode.cli.plugin import load_cli_plugins
+
+        plugins = tmp_path / "plugins"
+        _install(plugins, cli=CLI_CODE, cli_package=self.CLI_PACKAGE)
+
+        assert [p.name for p in load_cli_plugins([plugins / "acme"])] == ["acme.cli"]
+
+    def test_a_package_without_init_is_reported_not_skipped(
+        self, tmp_path: Path, capsys
+    ):
+        from mocode.cli.plugin import load_cli_plugins
+
+        plugins = tmp_path / "plugins"
+        _install(plugins, cli_package={"title.py": "TITLE = 'orphaned'\n"})
+
+        assert load_cli_plugins([plugins / "acme"]) == []
+        assert "plugin/__init__.py" in capsys.readouterr().err
 
 
 class TestTheTerminalsOwnCommands:

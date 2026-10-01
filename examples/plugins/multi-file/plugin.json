@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/v1.json",
+  "name": "multi-file",
+  "version": "1.0.0",
+  "description": "A prompt section and a /motd command from a package-form plugin — the multi-file layout example",
+  "license": "MIT",
+  "keywords": ["example", "multi-file", "package"]
+}
