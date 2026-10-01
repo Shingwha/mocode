@@ -72,11 +72,13 @@
 
 | 工单 | 分支 | 状态 |
 |---|---|---|
-| 01-kernel-p0 | spec/p0-dispatcher | ⬜ |
-| 02-p1-core | spec/p1-core | ⬜ |
-| 03-p1-retry | spec/p1-retry | ⬜ |
-| 04-p1-loader | spec/p1-loader | ⬜ |
-| 05-p2-host | spec/p2-host | ⬜ |
-| 06-shell-bg | spec/shell-bg | ⬜ |
-| 07-testing-channel | spec/testing-channel | ⬜ |
-| 08-cli-t1 | spec/cli-t1 | ⬜ |
+| 01-kernel-p0 | spec/p0-dispatcher | ✅ 2026-10-01 @ merge a4c2de0（507 passed） |
+| 02-p1-core | spec/p1-core | ✅ 2026-10-01 @ merge 2428cab（570 passed） |
+| 03-p1-retry | spec/p1-retry | ✅ 2026-10-01 @ merge efe49a4（582 passed；core/__init__ 导出面冲突由 lead 合并） |
+| 04-p1-loader | spec/p1-loader | ✅ 2026-10-01 @ merge 94c53c3（595 passed） |
+| 05-p2-host | spec/p2-host | ✅ 2026-10-01 @ merge 5014e35（607 passed） |
+| 06-shell-bg | spec/shell-bg | ✅ 2026-10-01/02 @ merge 49b1efc（666 passed；一次打回：合并通知 jobs 顺序 flaky，实现侧按启动序排序后重合并） |
+| 07-testing-channel | spec/testing-channel | ✅ 2026-10-01 @ merge 461d662（622 passed；tests/providers.py 整删无残留） |
+| 08-cli-t1 | spec/cli-t1 | ✅ 2026-10-02 @ merge（686 passed；A/B 字节对比 4/4 一致，视觉零变化达成） |
+
+收尾清扫：`272e7f0`（git-status 示例改新 CLIContext 签名；AGENTS.md 文档表补 testing.md 与 multi-file 范例行）。终验：`uv run pytest -q` → 686 passed、examples 全部可编译、`import mocode` 0.7-0.9ms。
