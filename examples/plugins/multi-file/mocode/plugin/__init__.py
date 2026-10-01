@@ -24,7 +24,7 @@ class MotdPlugin(Plugin):
     description = "A prompt section and a /motd command, in package form"
 
     def build(self, ctx) -> None:
-        ctx.register(motd_command())
+        ctx.commands.register(motd_command())
         ctx.prompt_sections.append(motd_section())
 
 

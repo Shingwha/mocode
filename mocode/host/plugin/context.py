@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from ...core.tool import ToolRegistry
-from ..command import Command, CommandRegistry
+from ..command import CommandRegistry
 from ..config import Config
 
 if TYPE_CHECKING:
@@ -132,11 +132,6 @@ class BuildContext:
         ``rebuild_prompt``, when the model is re-told everything.
         """
         return self.plugin_states.setdefault(name, {})
-
-    def register(self, *commands: Command) -> None:
-        """Register slash commands contributed by a plugin."""
-        for command in commands:
-            self.commands.register(command)
 
     def _with_agent(self, agent: "AgentLoop") -> "HostContext":
         """The host view of this very context: the same object, its agent

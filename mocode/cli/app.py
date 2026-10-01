@@ -26,7 +26,6 @@ from ..host.command import (
     CommandRegistry,
     CommandResult,
     Kind,
-    dispatch,
 )
 from ..host.config import Config
 from ..host.runtime import MoCode
@@ -112,9 +111,7 @@ class CLIApp:
         if text.startswith("/") and head not in self.commands:
             self._suggest_command(head)
             return CONTINUE
-        return await dispatch(
-            text, conversation=self.conversation, commands=self.commands
-        )
+        return await self.commands.dispatch(text, conversation=self.conversation)
 
     def _suggest_command(self, cmd_text: str) -> None:
         if self.display is None:

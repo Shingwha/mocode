@@ -28,7 +28,6 @@ from .command import (
     CommandRegistry,
     CommandResult,
     Kind,
-    dispatch,
 )
 from .config import Config, ModelEntry, ProviderEntry
 from .conversation import Conversation
@@ -66,7 +65,6 @@ __all__ = [
     "Session",
     "SessionStore",
     "builtin_plugins",
-    "dispatch",
     "export_session",
     "export_session_md",
     "load_plugins",

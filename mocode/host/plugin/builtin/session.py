@@ -49,7 +49,7 @@ class SessionPlugin(Plugin):
     description = "Session files: /export /clear"
 
     def build(self, ctx: BuildContext) -> None:
-        ctx.register(
+        ctx.commands.register(
             Command("/export", "Export conversation to a file (json|md)", handler=_export),
             Command("/clear", "Clear the current conversation", handler=_clear),
         )

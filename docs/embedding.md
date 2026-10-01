@@ -290,16 +290,17 @@ third-party plugin can add more; the terminal's own `/help`, `/model`,
 `/resume` live in *its* registry, because they need a picker or a clipboard.
 
 ```python
-from mocode.host import dispatch, Kind
+from mocode.host import Kind
 
-result = await dispatch("/skill:release", conversation=conv, commands=conv.commands)
+result = await conv.commands.dispatch("/skill:release", conversation=conv)
 if result.kind is Kind.PROMPT:
     async for event in conv.stream(result.prompt):
         ...
 ```
 
-`dispatch()` is the shared resolver: a line that names a command runs it, and
-anything else comes back as `Kind.PROMPT` for you to send as a user message.
+`CommandRegistry.dispatch` is the shared resolver: a line that names a command
+runs it, and anything else comes back as `Kind.PROMPT` for you to send as a
+user message.
 `Kind.EXIT` means "end this interaction", which is yours to interpret. A
 command handler gets the conversation, its arguments and the registry, and it
 says things by publishing — `await ctx.conversation.notify("…")` — so it works

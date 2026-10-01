@@ -73,7 +73,11 @@ class Command:
 
 
 class CommandRegistry:
-    """Single source of truth for the commands one frontend offers."""
+    """Single source of truth for the commands one frontend offers.
+
+    Registration and resolution are the same object's business: ``register``
+    adds, :meth:`dispatch` resolves one line of input against what was added.
+    """
 
     def __init__(self) -> None:
         self._by_name: dict[str, Command] = {}
@@ -101,30 +105,27 @@ class CommandRegistry:
         """All commands, sorted by name."""
         return sorted(self._by_name.values(), key=lambda c: c.name)
 
+    async def dispatch(self, text: str, *, conversation: "Conversation") -> CommandResult:
+        """Resolve one line of user input: a command if it names one, else a prompt.
+
+        Shared by every frontend so ``/skill:release`` means the same thing in a
+        terminal and in a browser. A line that merely starts with ``/`` and matches
+        nothing is not a command — it comes back as ``PROMPT``, and the frontend
+        decides what to say about it (the terminal suggests a spelling).
+        """
+        parts = text.split(None, 1)
+        command = self.get(parts[0].lower())
+        if command is None:
+            return CommandResult(Kind.PROMPT, text)
+        ctx = CommandContext(
+            conversation=conversation,
+            args=parts[1] if len(parts) > 1 else "",
+            commands=self,
+        )
+        return await command.handler(ctx)
+
     def __contains__(self, text: str) -> bool:
         return self.get(text) is not None
-
-
-async def dispatch(
-    text: str, *, conversation: "Conversation", commands: CommandRegistry
-) -> CommandResult:
-    """Resolve one line of user input: a command if it names one, else a prompt.
-
-    Shared by every frontend so ``/skill:release`` means the same thing in a
-    terminal and in a browser. A line that merely starts with ``/`` and matches
-    nothing is not a command — it comes back as ``PROMPT``, and the frontend
-    decides what to say about it (the terminal suggests a spelling).
-    """
-    parts = text.split(None, 1)
-    command = commands.get(parts[0].lower())
-    if command is None:
-        return CommandResult(Kind.PROMPT, text)
-    ctx = CommandContext(
-        conversation=conversation,
-        args=parts[1] if len(parts) > 1 else "",
-        commands=commands,
-    )
-    return await command.handler(ctx)
 
 
 __all__ = [
@@ -135,5 +136,4 @@ __all__ = [
     "CommandRegistry",
     "CommandResult",
     "Kind",
-    "dispatch",
 ]

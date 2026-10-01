@@ -79,7 +79,7 @@ class GitStatusPlugin(Plugin):
 
     def build(self, ctx) -> None:
         ctx.tools.register(GitStatusTool(ctx.cwd))
-        ctx.register(Command("/branch", "Show the current git branch", handler=_branch))
+        ctx.commands.register(Command("/branch", "Show the current git branch", handler=_branch))
         ctx.prompt_sections.append(Section("git", _guidance, priority=45))
 
 

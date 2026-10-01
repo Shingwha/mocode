@@ -33,7 +33,7 @@ class HelpPlugin(Plugin):
     description = "List the commands this conversation offers"
 
     def build(self, ctx: BuildContext) -> None:
-        ctx.register(Command("/help", "Show available commands", handler=_help))
+        ctx.commands.register(Command("/help", "Show available commands", handler=_help))
 
 
 PLUGIN = HelpPlugin()

@@ -54,7 +54,7 @@ COMMAND_CODE = """
         description = "contributes a command"
 
         def build(self, ctx):
-            ctx.register(Command("/ping", "Ping", handler=_ping))
+            ctx.commands.register(Command("/ping", "Ping", handler=_ping))
 """
 
 #: A plugin written as a package: the entry is ``mocode/plugin/__init__.py``
@@ -635,14 +635,14 @@ class TestHostContext:
         assert isinstance(ctx, HostContext)  # grown in place, same object
         assert ctx.agent is grown
 
-    def test_register_helper_adds_commands(self, tmp_path: Path):
+    def test_commands_register_adds_commands(self, tmp_path: Path):
         from mocode.host.command import CONTINUE, Command
 
         async def _noop(ctx):
             return CONTINUE
 
         ctx = _ctx(tmp_path)
-        ctx.register(Command("/x", "test", handler=_noop))
+        ctx.commands.register(Command("/x", "test", handler=_noop))
         assert [c.name for c in ctx.commands.all()] == ["/x"]
 
     @pytest.mark.asyncio

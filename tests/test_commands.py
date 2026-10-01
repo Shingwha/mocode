@@ -107,17 +107,13 @@ class TestCommandResults:
 class TestDispatch:
     @pytest.mark.asyncio
     async def test_a_named_command_runs(self, conversation: Conversation):
-        from mocode.host.command import dispatch
-
         registry = CommandRegistry()
         registry.register(_get_builtin_cmd("/quit"))
 
-        assert (await dispatch("/quit", conversation=conversation, commands=registry)) is EXIT
+        assert (await registry.dispatch("/quit", conversation=conversation)) is EXIT
 
     @pytest.mark.asyncio
     async def test_a_command_gets_its_arguments(self, conversation: Conversation):
-        from mocode.host.command import dispatch
-
         seen: list[str] = []
 
         async def handler(ctx):
@@ -127,17 +123,13 @@ class TestDispatch:
         registry = CommandRegistry()
         registry.register(Command("/say", "say it", handler=handler))
 
-        await dispatch("/say hello  world", conversation=conversation, commands=registry)
+        await registry.dispatch("/say hello  world", conversation=conversation)
         assert seen == ["hello  world"]
 
     @pytest.mark.asyncio
     async def test_anything_else_is_a_prompt(self, conversation: Conversation):
-        from mocode.host.command import dispatch
-
-        result = await dispatch(
-            "what is in this project?",
-            conversation=conversation,
-            commands=CommandRegistry(),
+        result = await CommandRegistry().dispatch(
+            "what is in this project?", conversation=conversation
         )
 
         assert result.kind is Kind.PROMPT
@@ -146,10 +138,8 @@ class TestDispatch:
     @pytest.mark.asyncio
     async def test_an_unknown_slash_word_is_a_prompt_too(self, conversation: Conversation):
         """The frontend decides what to say about it; the host does not guess."""
-        from mocode.host.command import dispatch
-
-        result = await dispatch(
-            "/nope", conversation=conversation, commands=CommandRegistry()
+        result = await CommandRegistry().dispatch(
+            "/nope", conversation=conversation
         )
 
         assert result.kind is Kind.PROMPT

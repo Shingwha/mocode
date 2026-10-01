@@ -251,7 +251,7 @@ class SkillsPlugin(Plugin):
             Section("skills", _render_skills(manager), priority=50)
         )
         for skill in manager.all():
-            ctx.register(make_skill_command(skill))
+            ctx.commands.register(make_skill_command(skill))
 
 
 PLUGIN = SkillsPlugin()
