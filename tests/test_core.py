@@ -211,7 +211,7 @@ class TestTool:
         )
         assert await tool.run_async({"v": "x"}) == "sync:x"
 
-    def test_a_tool_may_declare_a_second_parameter_for_its_context(self):
+    def test_a_tool_declares_its_context_explicitly(self):
         def plain(args):
             return "plain"
 
@@ -220,10 +220,38 @@ class TestTool:
 
         schema: dict = {"type": "object", "properties": {}}
         assert Tool("p", "d", schema, plain).wants_context is False
-        assert Tool("c", "d", schema, contextual).wants_context is True
+        tool = Tool("c", "d", schema, contextual, with_context=True)
+        assert tool.wants_context is True
 
         ctx = ToolCallContext(tool_name="c", tool_call_id="call_1")
-        assert Tool("c", "d", schema, contextual).run({}, ctx) == "ctx:call_1"
+        assert tool.run({}, ctx) == "ctx:call_1"
+
+    def test_a_defaulted_second_parameter_counts_as_the_context(self):
+        """The (args, ctx=None) blind spot of signature probing is legal now —
+        the declaration says what the second parameter is, not its default."""
+
+        def contextual(args, ctx=None):
+            return "ctx" if ctx is not None else "bare"
+
+        tool = Tool(
+            "c", "d", {}, contextual, with_context=True
+        )
+        assert tool.run({}) == "bare"
+        assert tool.run({}, ToolCallContext()) == "ctx"
+
+    def test_declaring_a_context_the_function_cannot_take_fails_at_construction(self):
+        def plain(args):
+            return "plain"
+
+        with pytest.raises(TypeError, match="with_context=True needs"):
+            Tool("p", "d", {}, plain, with_context=True)
+
+    def test_a_second_required_parameter_without_the_declaration_fails_at_construction(self):
+        def forgot(args, ctx):
+            return "never runs"
+
+        with pytest.raises(TypeError, match="with_context=True"):
+            Tool("f", "d", {}, forgot)
 
     def test_errors_propagate_to_the_caller(self):
         def boom(args):

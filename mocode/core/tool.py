@@ -200,18 +200,21 @@ def _check(value: Any, schema: Any, path: str) -> Any:
     return value
 
 
-def _accepts_context(func: Callable) -> bool:
-    """Whether *func* declares a second parameter for its ToolCallContext."""
+def _positional_shape(func: Callable) -> tuple[int, int, bool] | None:
+    """(declared positional params, required ones, accepts ``*args``) — or
+    ``None`` when *func* cannot be introspected."""
     try:
-        params = inspect.signature(func).parameters.values()
+        params = list(inspect.signature(func).parameters.values())
     except (TypeError, ValueError):
-        return False
+        return None
     positional = [
         p
         for p in params
         if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
     ]
-    return len(positional) >= 2 or any(p.kind == p.VAR_POSITIONAL for p in params)
+    required = [p for p in positional if p.default is p.empty]
+    star_args = any(p.kind == p.VAR_POSITIONAL for p in params)
+    return len(positional), len(required), star_args
 
 
 class Tool:
@@ -243,11 +246,15 @@ class Tool:
         survive host registration: the path is the authority, so a tool
         cannot claim an identity its loader cannot back.
 
-    A tool may declare a second parameter to receive its
-    :class:`~mocode.core.hook.ToolCallContext`. That is how a long-running tool
-    reports progress (``await ctx.emit(ToolOutput(...))``) or reads the
-    arguments a hook rewrote. Tools that don't ask for it keep the plain
-    ``(args) -> str`` shape.
+    A tool that wants its :class:`~mocode.core.hook.ToolCallContext` says so
+    explicitly: ``with_context=True`` means the function is called as
+    ``(args, ctx)`` — that is how a long-running tool reports progress
+    (``await ctx.emit(ToolOutput(...))``) or reads the arguments a hook
+    rewrote. The declaration is checked at construction, so both mistakes (a
+    declared context the function cannot receive, and a second required
+    parameter nobody will pass) fail at import/build time instead of
+    mid-turn. Tools that don't ask for it keep the plain ``(args) -> str``
+    shape.
 
     A tool may return a :class:`ToolResult` instead of a string when it has
     structured facts worth passing on.
@@ -267,6 +274,7 @@ class Tool:
         summary_key: str = "",
         result_key: str = "",
         returns: dict | None = None,
+        with_context: bool = False,
         availability: Literal["model", "program", "both"] = "both",
         source: str = "",
     ):
@@ -295,7 +303,23 @@ class Tool:
         self.source = source
         self.func = func
         self.is_async = inspect.iscoroutinefunction(func)
-        self.wants_context = _accepts_context(func)
+        self.wants_context = with_context
+        shape = _positional_shape(func)
+        if shape is not None:
+            declared, required_positional, star_args = shape
+            if with_context and declared < 2 and not star_args:
+                raise TypeError(
+                    f"Tool '{name}': with_context=True needs a function callable "
+                    f"as (args, ctx) — it declares {declared} positional "
+                    "parameter(s)"
+                )
+            if not with_context and required_positional > 1:
+                raise TypeError(
+                    f"Tool '{name}': the function requires {required_positional} "
+                    "positional parameters but no context is declared — pass "
+                    "with_context=True so the second one receives its "
+                    "ToolCallContext"
+                )
 
     def run(self, args: dict, ctx: "ToolCallContext | None" = None) -> "str | ToolResult":
         """Call the function directly. An async tool returns its coroutine."""

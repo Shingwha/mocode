@@ -204,7 +204,7 @@ class TestRunState:
             return "slow done"
 
         agent = _make_agent(
-            Tool("slow", "d", {}, _slow, summary_key=""),
+            Tool("slow", "d", {}, _slow, summary_key="", with_context=True),
         )
         agent.provider.responses = [tool_call_response("slow"), _plain_answer()]
 
@@ -325,7 +325,7 @@ class TestToolExecution:
 
         agent = _make_agent(
             _echo_tool(),
-            Tool("slow", "d", {"type": "object", "properties": {"value": {"type": "string"}}}, _slow),
+            Tool("slow", "d", {"type": "object", "properties": {"value": {"type": "string"}}}, _slow, with_context=True),
         )
         agent.provider.responses = [
             Response(
@@ -356,7 +356,7 @@ class TestToolExecution:
             await ctx.emit(ToolOutput(call_id=ctx.tool_call_id, text="line 2\n"))
             return "line 1\nline 2\n"
 
-        agent = _make_agent(Tool("chatty", "d", {}, _chatty))
+        agent = _make_agent(Tool("chatty", "d", {}, _chatty, with_context=True))
         agent.provider.responses = [tool_call_response("chatty"), _plain_answer()]
 
         events = await _events(agent)
@@ -883,7 +883,7 @@ def _patient_tool(noticed: list, started: threading.Event) -> Tool:
         noticed.append(ctx.cancel_event.wait(timeout=5))
         return "finally"
 
-    return Tool("patient", "waits politely", {}, patient)
+    return Tool("patient", "waits politely", {}, patient, with_context=True)
 
 
 async def _until(predicate, timeout: float = 5.0) -> None:

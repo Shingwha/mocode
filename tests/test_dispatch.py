@@ -680,7 +680,7 @@ class TestProgramOriginInsideALoop:
             )
             return f"{first.content}+{second.content}"
 
-        agent = _make_agent(_echo_tool(), Tool("bridge", "b", {}, bridge))
+        agent = _make_agent(_echo_tool(), Tool("bridge", "b", {}, bridge, with_context=True))
         agent.provider = MockProvider([tool_call_response("bridge"), _plain_answer()])
 
         events = [event async for event in agent.stream("hi")]

@@ -155,7 +155,7 @@ class TestConcurrency:
             _answer("first done"),
         )
         second = _conversation(mc, _project(tmp_path, "b"), _answer("second done"))
-        first.tools.register(Tool("wait", "d", {}, slow))
+        first.tools.register(Tool("wait", "d", {}, slow, with_context=True))
 
         first_turn = first.run("hello from a")
         second_turn = second.run("hello from b")

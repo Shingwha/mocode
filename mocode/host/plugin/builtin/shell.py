@@ -226,6 +226,7 @@ class BashTool(Tool):
             tags=_BASH_TAG,
             summary_key="command",
             result_key="exit_code",
+            with_context=True,
         )
 
     async def _execute(self, args: dict, ctx=None) -> "str | ToolResult":

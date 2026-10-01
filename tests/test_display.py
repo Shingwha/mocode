@@ -238,7 +238,7 @@ class TestRenderer:
                 tool_call_response("make"),
                 Response(content="done", usage=Usage(1, 1), finish_reason="stop"),
             ]),
-            Tool("make", "d", {}, chatty),
+            Tool("make", "d", {}, chatty, with_context=True),
         )
 
         out = _plain(capsys.readouterr().out)
@@ -301,7 +301,7 @@ async def _run_parallel(display: Display, delays: dict[str, float]):
     }
     registry = ToolRegistry()
     for name, delay in delays.items():
-        registry.register(Tool(name, "d", schema, slow, summary_key="tag"))
+        registry.register(Tool(name, "d", schema, slow, summary_key="tag", with_context=True))
     provider = MockProvider([
         Response(
             tool_calls=[
@@ -368,7 +368,7 @@ class TestLiveBlock:
 
         display = _make_display(live=True)
         registry = ToolRegistry()
-        registry.register(Tool("noisy", "d", {}, noisy))
+        registry.register(Tool("noisy", "d", {}, noisy, with_context=True))
         agent = AgentLoop(
             provider=MockProvider([
                 tool_call_response("noisy"),
