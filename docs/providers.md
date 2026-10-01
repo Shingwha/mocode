@@ -234,7 +234,28 @@ mistake: `provider_for()` raises instead of falling back.
 
 `extra_body` is a per-model dict of additional request fields
 (`temperature`, `reasoning_effort`, …) merged into the call — provider
-extensions without provider code.
+extensions without provider code. The model entry also carries an optional
+`retry` block, the per-model `RetryPolicy` override — keys are the
+`RetryPolicy` fields, unknown keys are ignored, and an absent block leaves
+the provider's own policy standing:
+
+```jsonc
+{
+  "providers": {
+    "intern": {
+      "base_url": "…",
+      "models": {
+        // rate-limited hard, recovers slowly: fewer attempts, longer waits
+        "Atria-Dawn-Preview": { "retry": { "max_attempts": 3, "base_delay": 5.0 } }
+      }
+    }
+  }
+}
+```
+
+The built-in `OpenAIProvider` accepts the override as a constructor
+parameter (`retry_policy=`); a provider of your own reads it the same way —
+`entry.models[model].retry_policy()` — and decides what to do with `None`.
 
 ## Adding a provider
 

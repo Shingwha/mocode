@@ -71,6 +71,22 @@ class TestTheRuntime:
         assert isinstance(provider, OpenAIProvider)
         assert provider.model == "test-model"
 
+    def test_a_per_model_retry_override_reaches_the_provider(self, mc: MoCode):
+        """The model entry's `retry` block beats the provider's own policy —
+        and a model without one keeps it."""
+        from mocode.core.provider import RetryPolicy
+
+        mc.config.providers["test"].models["test-model"].retry = {
+            "max_attempts": 3,
+            "base_delay": 5.0,
+        }
+
+        overridden = mc.provider_for("test", "test-model")
+        assert overridden.retry_policy == RetryPolicy(max_attempts=3, base_delay=5.0)
+
+        plain = mc.provider_for("test", "other-model")
+        assert plain.retry_policy == RetryPolicy(honor_retry_after=True)
+
 
 class TestProviderTypes:
     """A provider implementation is a capability, and arrives from outside."""

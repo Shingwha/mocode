@@ -57,6 +57,9 @@ def _openai_factory(entry: "ProviderEntry", key: str, model: str) -> "Provider":
         model=model,
         base_url=entry.base_url,
         extra_body=model_entry.extra_body if model_entry else None,
+        # A per-model override from config beats the provider's own policy;
+        # absent (None) leaves that policy standing.
+        retry_policy=model_entry.retry_policy() if model_entry else None,
     )
 
 

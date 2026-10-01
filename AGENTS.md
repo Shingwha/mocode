@@ -83,6 +83,7 @@ The module map and the reasoning per layer are in
 |---|---|
 | `type` | provider entry (`providers.<p>`) — which implementation builds it; registered via `MoCode.register_provider_type()`, absent means the built-in `openai` |
 | `context_window`, `max_output`, `extra_body` | model entry (`providers.<p>.models.<m>`) — physical properties; absence means "unknown", never a guessed default |
+| `retry` | model entry (`providers.<p>.models.<m>`) — per-model `RetryPolicy` override (`max_attempts`, `base_delay`, `max_delay`, `jitter`, `honor_retry_after`); unknown keys ignored, absent means the provider's own policy |
 | `tool_timeout`, `max_iterations`, `max_tool_calls`, `max_turn_seconds`, `tool_result_limit` | `agent` block — loop execution policy, identical whatever model is loaded. The block *is* the core `AgentConfig` (nested-serialized; unknown subkeys ignored), so a field is configurable the moment it exists — no mapping to keep in sync. Budgets are per turn, 0 = unlimited; `tool_result_limit` defaults to 50k chars |
 | `plugins.<name>` | the plugin, read through `ctx.plugin_config(name)` |
 | `active_provider`, `active_model` | the config file, as a *default* for new conversations; only `MoCode.set_default_model()` writes the file |
