@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from ....core.events import ToolOutput
-from ....core.tool import Tool, ToolResult
+from ....core.tool import Tool, ToolPolicy, ToolResult
 from ...text import decode_bytes
 from ..base import Plugin
 from ..context import HostContext
@@ -212,12 +212,13 @@ async def _pump(
 class BashTool(Tool):
     """Run shell commands in a persistent bash session."""
 
-    def __init__(self, cwd: Path, timeout: int = 240) -> None:
+    def __init__(self, cwd: Path, default_timeout: int = 240) -> None:
         self._session = BashSession(cwd)
-        # The number is the host's tool_timeout policy, passed in by build();
-        # the loop enforces the same policy around the whole call, this one
-        # exists to actually kill the child process at the deadline.
-        self._default_timeout = timeout
+        # Only for runs nobody dispatches (bare tool.run): when the dispatcher
+        # is involved it resolves the deadline — the model's ``timeout``
+        # argument via the policy below, else the config — and hands it back
+        # on the context, which drives this tool's foreground wait.
+        self._default_timeout = default_timeout
         super().__init__(
             name="bash",
             description=_BASH_DESC,
@@ -227,6 +228,10 @@ class BashTool(Tool):
             summary_key="command",
             result_key="exit_code",
             with_context=True,
+            # The model-facing timeout argument is policy, not bookkeeping:
+            # the dispatcher enforces it around the whole call; absent means
+            # None, i.e. fall through to the config default.
+            policy=lambda args: ToolPolicy(timeout=args.get("timeout")),
         )
 
     async def _execute(self, args: dict, ctx=None) -> "str | ToolResult":
@@ -234,9 +239,12 @@ class BashTool(Tool):
             self._session.restart()
             return ToolResult("Bash session restarted")
 
+        timeout = self._default_timeout
+        if ctx is not None and ctx.tool_timeout is not None:
+            timeout = ctx.tool_timeout
         return await self._session.execute(
             args["command"],
-            timeout=args.get("timeout", self._default_timeout),
+            timeout=timeout,
             on_output=_tool_output_sink(ctx) if ctx is not None else None,
         )
 
@@ -249,7 +257,7 @@ class ShellPlugin(Plugin):
         # The session's working directory is the conversation's project: build()
         # runs once per conversation, so two projects never share one shell.
         ctx.tools.register(
-            BashTool(cwd=ctx.cwd, timeout=ctx.config.agent.tool_timeout)
+            BashTool(cwd=ctx.cwd, default_timeout=ctx.config.agent.tool_timeout)
         )
 
 

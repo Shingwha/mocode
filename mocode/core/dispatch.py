@@ -51,6 +51,7 @@ from .tool import (
     ERROR_PREFIX,
     TIMEOUT_PREFIX,
     ToolError,
+    ToolPolicy,
     ToolRegistry,
     split_result,
 )
@@ -152,6 +153,8 @@ class ToolDispatcher:
             tool_call_id=cid,
             origin=origin,
             parent_call_id=parent_call_id,
+            tool_timeout=self.config.tool_timeout,
+            tool_result_limit=self.config.tool_result_limit,
             emit=emit,
         )
         if parse_error is None:
@@ -181,7 +184,9 @@ class ToolDispatcher:
 
         await self.hooks.on_tool_complete(tc)
         # After the hook, so a rewritten result is bounded like any other.
-        tc.tool_result = self._truncate(tc.tool_result or "")
+        tc.tool_result = self._truncate(
+            tc.tool_result or "", tc.tool_result_limit
+        )
 
         await self._publish(
             ToolCallFinished(
@@ -224,23 +229,34 @@ class ToolDispatcher:
             tc.tool_result = f"{DENIED_PREFIX} tool '{tc.tool_name}' is switched off"
             return
 
-        limit = self.config.tool_timeout if timeout is None else timeout
+        # Policy resolution: call-level over tool-level over config. The
+        # effective values land on the context, so the tool (the bash tool
+        # drives its foreground wait from ``tc.tool_timeout``) and the
+        # on_tool_complete hooks see exactly what this call runs under.
+        policy = self._resolve_policy(tool, tc.tool_args)
+        if timeout is not None:
+            tc.tool_timeout = timeout
+        elif policy.timeout is not None:
+            tc.tool_timeout = policy.timeout
+        if policy.result_limit is not None:
+            tc.tool_result_limit = policy.result_limit
+
         try:
             if tool.is_async:
                 result = await asyncio.wait_for(
-                    tool.run_async(tc.tool_args, tc), timeout=limit
+                    tool.run_async(tc.tool_args, tc), timeout=tc.tool_timeout
                 )
             else:
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(tool.run, tc.tool_args, tc), timeout=limit
+                    asyncio.to_thread(tool.run, tc.tool_args, tc),
+                    timeout=tc.tool_timeout,
                 )
         except asyncio.TimeoutError:
             # The await is cancelled, not the worker: a sync tool keeps
             # running until it notices the signal. The event tells it to.
             tc.cancel_event.set()
             tc.status = TOOL_TIMEOUT
-            tc.tool_timeout = limit
-            tc.tool_result = f"{TIMEOUT_PREFIX} {limit}s"
+            tc.tool_result = f"{TIMEOUT_PREFIX} {tc.tool_timeout}s"
         except asyncio.CancelledError:
             # Same cooperative signal for a turn cancelled mid-call.
             tc.cancel_event.set()
@@ -255,8 +271,20 @@ class ToolDispatcher:
         else:
             tc.tool_result, tc.tool_details = split_result(result)
 
-    def _truncate(self, result: str) -> str:
-        limit = self.config.tool_result_limit
+    @staticmethod
+    def _resolve_policy(tool, args: dict) -> ToolPolicy:
+        """The tool's policy for this call — a static one, or the callable's
+        answer for these arguments (a non-ToolPolicy answer means no overrides)."""
+        policy = tool.policy
+        if policy is None:
+            return ToolPolicy()
+        if callable(policy):
+            resolved = policy(args)
+            return resolved if isinstance(resolved, ToolPolicy) else ToolPolicy()
+        return policy
+
+    @staticmethod
+    def _truncate(result: str, limit: int) -> str:
         if limit > 0 and len(result) > limit:
             return result[:limit] + "\n... [truncated]"
         return result

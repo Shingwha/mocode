@@ -217,6 +217,21 @@ def _positional_shape(func: Callable) -> tuple[int, int, bool] | None:
     return len(positional), len(required), star_args
 
 
+@dataclass(frozen=True)
+class ToolPolicy:
+    """Execution-policy overrides for one tool.
+
+    ``None`` means "no opinion": the value falls through to the next level of
+    the resolution order — call-level (``dispatcher.run(..., timeout=...)``)
+    over tool-level (this policy) over config (``AgentConfig``). A policy may
+    also be a callable receiving the call's arguments, so a tool can decide
+    per call — the bash tool maps its ``timeout`` argument this way.
+    """
+
+    timeout: int | None = None
+    result_limit: int | None = None
+
+
 class Tool:
     """Tool — supports sync and async functions.
 
@@ -240,6 +255,9 @@ class Tool:
       - ``availability``: who may use the tool — the model, program code, or
         both (the default). A tool invisible to an audience is neither offered
         to it nor runnable by it; see :meth:`ToolRegistry.names`.
+      - ``policy``: execution-policy overrides (:class:`ToolPolicy`, or a
+        callable receiving the call's arguments and returning one) — timeout
+        and result limit per tool, before the config defaults.
       - ``source``: who registered the tool — a channel-prefixed name stamped
         by the registration path (``builtin:<name>``, ``plugin:<name>``,
         ``host``); empty means bare core. A self-reported value does not
@@ -276,6 +294,7 @@ class Tool:
         returns: dict | None = None,
         with_context: bool = False,
         availability: Literal["model", "program", "both"] = "both",
+        policy: "ToolPolicy | Callable[[dict], ToolPolicy] | None" = None,
         source: str = "",
     ):
         if availability not in ("model", "program", "both"):
@@ -300,6 +319,7 @@ class Tool:
         )
         self.result_key = result_key
         self.availability = availability
+        self.policy = policy
         self.source = source
         self.func = func
         self.is_async = inspect.iscoroutinefunction(func)

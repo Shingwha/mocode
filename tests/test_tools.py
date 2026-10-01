@@ -15,7 +15,7 @@ from mocode.host.plugin.builtin.skills import (
     SkillTool,
 )
 from mocode.host.plugin.builtin.skills import parse_frontmatter
-from mocode.core import ToolError
+from mocode.core import ToolError, ToolRegistry
 
 
 class TestBashSession:
@@ -91,6 +91,37 @@ class TestBashTool:
         assert tool.wants_context is True
         assert tool.is_async is True
         assert tool.result_key == "exit_code"
+
+    def test_the_model_timeout_argument_is_policy_not_bookkeeping(self, tmp_path: Path):
+        """The dispatcher enforces the deadline; the tool just maps the
+        argument onto a ToolPolicy and reads the resolved value back."""
+        from mocode.core.tool import ToolPolicy
+
+        tool = BashTool(tmp_path)
+        assert tool.policy({"timeout": 7}) == ToolPolicy(timeout=7)
+        assert tool.policy({}) == ToolPolicy(timeout=None)  # fall to config
+
+    @pytest.mark.asyncio
+    async def test_the_model_timeout_argument_reaches_the_dispatcher(self, tmp_path: Path):
+        from mocode.core.agent import AgentConfig
+        from mocode.core.dispatch import ToolDispatcher
+        from mocode.core.events import Event
+        from mocode.core.hook import HookRunner
+
+        async def publish(event: Event, *, fold: bool) -> None:
+            pass
+
+        tool = BashTool(tmp_path)
+        registry = ToolRegistry()
+        registry.register(tool)
+        dispatcher = ToolDispatcher(
+            registry, HookRunner(), AgentConfig(tool_timeout=30), publish
+        )
+
+        result = await dispatcher.run("bash", {"command": "sleep 5", "timeout": 0.2})
+
+        assert result.status == "timeout"
+        assert result.content.startswith("timeout:")
 
     @pytest.mark.asyncio
     async def test_restart_resets_the_session(self, tmp_path: Path):

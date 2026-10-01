@@ -96,7 +96,13 @@ class ToolCallContext:
     error_code: str | None = None
     tool_result: str | None = None
     tool_details: dict = field(default_factory=dict)
+    #: The execution policy this call actually runs under, resolved by the
+    #: dispatcher (call-level over tool-level over config) before the tool
+    #: runs. ``tool_timeout`` bounds the whole call in seconds; a sync tool
+    #: that outlives it notices via ``cancel_event``.
     tool_timeout: int | None = None
+    #: The character budget applied to the result before it reaches the model.
+    tool_result_limit: int | None = None
     emit: EmitFn = _noop_emit
     #: Set when the loop stops waiting for this call — a timeout, or the turn
     #: being cancelled. Async tools are unwound by cancellation; a sync tool
