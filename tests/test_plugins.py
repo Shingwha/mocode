@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import textwrap
 from pathlib import Path
 
@@ -56,6 +57,23 @@ COMMAND_CODE = """
             ctx.register(Command("/ping", "Ping", handler=_ping))
 """
 
+#: A plugin written as a package: the entry is ``mocode/plugin/__init__.py``
+#: and the submodule is reachable only through a relative import.
+PACKAGE_PLUGIN = {
+    "__init__.py": """
+    from mocode.plugins import Plugin
+
+    from .helper import GREETING
+
+    class Packaged(Plugin):
+        name = "packaged"
+        description = "loads from a package"
+
+    plugin = Packaged()
+    """,
+    "helper.py": "GREETING = 'hello from a submodule'\n",
+}
+
 
 def _write_plugin(
     root: Path,
@@ -65,8 +83,13 @@ def _write_plugin(
     manifest: dict | None = None,
     raw_manifest: str | None = None,
     skills: list[str] | None = None,
+    package: dict[str, str] | None = None,
 ) -> Path:
-    """Create ``root/<name>/`` in the Agent Plugins layout."""
+    """Create ``root/<name>/`` in the Agent Plugins layout.
+
+    *code* writes the single-file entry ``mocode/plugin.py``; *package* writes
+    the package entry ``mocode/plugin/<file>`` instead — the multi-file form.
+    """
     plugin_dir = root / name
     plugin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -81,6 +104,11 @@ def _write_plugin(
         module = plugin_dir / HOST_NAMESPACE / "plugin.py"
         module.parent.mkdir(parents=True, exist_ok=True)
         module.write_text(textwrap.dedent(code), encoding="utf-8")
+
+    for filename, text in (package or {}).items():
+        module = plugin_dir / HOST_NAMESPACE / "plugin" / filename
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text(textwrap.dedent(text), encoding="utf-8")
 
     for skill in skills or []:
         skill_dir = plugin_dir / "skills" / skill
@@ -250,6 +278,134 @@ class TestLoading:
         _write_plugin(tmp_path, "broken", "raise RuntimeError('boom')")
         assert load_plugin(discover([tmp_path])[0]) is None
         assert "boom" in capsys.readouterr().err
+
+
+# ── the package form ────────────────────────────────────────
+
+
+class TestPackagePlugins:
+    def test_a_package_entry_loads(self, tmp_path: Path):
+        _write_plugin(tmp_path, "packaged", package=PACKAGE_PLUGIN)
+        spec = discover([tmp_path])[0]
+        assert spec.module is not None and spec.module.name == "__init__.py"
+        assert load_plugin(spec).name == "packaged"
+
+    def test_submodules_load_by_relative_import(self, tmp_path: Path):
+        """`from .helper import x` inside the package, under the plugin's own name."""
+        _write_plugin(tmp_path, "packaged", package=PACKAGE_PLUGIN)
+        load_plugin(discover([tmp_path])[0])
+
+        from mocode_plugin_packaged.helper import GREETING
+
+        assert GREETING == "hello from a submodule"
+
+    def test_two_plugins_may_ship_same_named_submodules(self, tmp_path: Path):
+        """Each plugin's package lives under its own name — no sys.modules race."""
+        for name in ("one", "two"):
+            _write_plugin(
+                tmp_path,
+                name,
+                package={
+                    "__init__.py": f"""
+                    from mocode.plugins import Plugin
+
+                    from .helper import WHO
+
+
+                    class P(Plugin):
+                        name = "{name}"
+                        description = WHO
+
+                    plugin = P()
+                    """,
+                    "helper.py": f"WHO = '{name}'\n",
+                },
+            )
+
+        plugins = {p.name: p for p in map(load_plugin, discover([tmp_path]))}
+
+        assert plugins["one"].description == "one"
+        assert plugins["two"].description == "two"
+        assert "mocode_plugin_one.helper" in sys.modules
+        assert "mocode_plugin_two.helper" in sys.modules
+
+    def test_the_single_file_wins_when_both_exist(self, tmp_path: Path):
+        _write_plugin(tmp_path, "both", GREET_CODE, package=PACKAGE_PLUGIN)
+        spec = discover([tmp_path])[0]
+        assert spec.module is not None and spec.module.name == "plugin.py"
+        assert load_plugin(spec).name == "greet"
+
+    def test_a_package_without_init_is_reported_not_skipped(
+        self, tmp_path: Path, capsys
+    ):
+        plugin_dir = _write_plugin(tmp_path, "no-init")
+        package = plugin_dir / HOST_NAMESPACE / "plugin"
+        package.mkdir(parents=True)
+        (package / "helper.py").write_text("x = 1", encoding="utf-8")
+
+        spec = discover([tmp_path])[0]
+
+        assert spec.module is None
+        assert "plugin/__init__.py" in capsys.readouterr().err
+
+    def test_stray_modules_beside_no_entry_are_reported(
+        self, tmp_path: Path, capsys
+    ):
+        plugin_dir = _write_plugin(tmp_path, "stray")
+        namespace = plugin_dir / HOST_NAMESPACE
+        namespace.mkdir(parents=True)
+        (namespace / "helpers.py").write_text("x = 1", encoding="utf-8")
+
+        spec = discover([tmp_path])[0]
+
+        assert spec.module is None
+        assert "helpers.py" in capsys.readouterr().err
+
+    def test_a_namespace_that_ships_nothing_stays_quiet(self, tmp_path: Path, capsys):
+        """An empty namespace directory is not a near-miss — nothing to fix."""
+        plugin_dir = _write_plugin(tmp_path, "empty")
+        (plugin_dir / HOST_NAMESPACE).mkdir()
+
+        assert discover([tmp_path])[0].module is None
+        assert capsys.readouterr().err == ""
+
+    def test_a_broken_package_leaves_no_submodules_behind(
+        self, tmp_path: Path, capsys
+    ):
+        _write_plugin(
+            tmp_path,
+            "half-broken",
+            package={
+                "__init__.py": "from .half import x\nraise RuntimeError('boom')\n",
+                "half.py": "x = 1\n",
+            },
+        )
+        assert load_plugin(discover([tmp_path])[0]) is None
+        assert "mocode_plugin_half_broken" not in sys.modules
+        assert "mocode_plugin_half_broken.half" not in sys.modules
+
+
+# ── the shipped multi-file example ──────────────────────────
+
+
+class TestTheMultiFileExample:
+    """examples/plugins/multi-file — the proof the package form works whole."""
+
+    EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "plugins"
+
+    def test_the_example_is_loaded_and_built(self, tmp_path: Path):
+        ctx = _ctx(tmp_path)
+        loaded = load_plugins(plugin_dirs=[self.EXAMPLES], config=ctx.config)
+
+        assert "multi-file" in [p.name for p in loaded.plugins]
+
+        PluginHost(ctx, loaded.plugins).run(
+            provider=MockProvider(), config=AgentConfig()
+        )
+
+        assert "/motd" in {c.name for c in ctx.commands.all()}
+        assert "motd" in {s.name for s in ctx.prompt_sections}
+        assert "motd" not in ctx.tools.names()  # the example registers no tools
 
 
 # ── host ────────────────────────────────────────────────────

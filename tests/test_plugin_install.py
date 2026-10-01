@@ -12,6 +12,7 @@ from mocode.cli_args import parse_args
 from mocode.host.plugin.install import Source
 from mocode.host.plugin import install as plugins
 from mocode.host.plugin.env import PluginVenvError
+from mocode.host.plugin.loader import discover, load_plugin
 
 from .test_plugins import _write_plugin
 
@@ -63,6 +64,32 @@ class TestInstall:
 
         with pytest.raises(plugins.PluginInstallError, match="already installed"):
             plugins.install_plugin(str(source), root=root)
+
+    def test_a_package_form_plugin_installs_and_loads(self, tmp_path):
+        """Install copies the package whole; the loader enters at its __init__."""
+        source = tmp_path / "src" / "pkgsrc"
+        package = source / "mocode" / "plugin"
+        package.mkdir(parents=True)
+        (source / "plugin.json").write_text(
+            json.dumps({"name": "pkgsrc", "description": ""}), encoding="utf-8"
+        )
+        (package / "helper.py").write_text("FLAG = 'installed'\n", encoding="utf-8")
+        (package / "__init__.py").write_text(
+            "from mocode.plugins import Plugin\n\n"
+            "from .helper import FLAG\n\n"
+            "plugin = Plugin()\n"
+            "plugin.name, plugin.description = 'pkgsrc', FLAG\n",
+            encoding="utf-8",
+        )
+        root = tmp_path / "root"
+
+        installed = plugins.install_plugin(str(source), root=root)
+
+        assert installed.name == "pkgsrc"
+        spec = discover([root])[0]
+        assert spec.module is not None and spec.module.name == "__init__.py"
+        loaded = load_plugin(spec)
+        assert loaded is not None and loaded.description == "installed"
 
     def test_git_source_clones_then_places(self, tmp_path, monkeypatch):
         root = tmp_path / "root"
