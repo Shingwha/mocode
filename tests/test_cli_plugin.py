@@ -19,7 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from .conftest import make_config
+from mocode.core.events import PluginMessage
+
+from .conftest import make_config, strip_ansi
 
 HOST_CODE = """
     from mocode.plugins import Plugin, Tool
@@ -49,6 +51,37 @@ CLI_CODE = """
                 return CONTINUE
 
             ctx.commands.register(Command("/shout", "Shout it", handler=_shout))
+"""
+
+DRAWER_CODE = """
+    from dataclasses import dataclass
+
+    from mocode.cli import CLIPlugin
+    from mocode.core import Event
+
+
+    @dataclass
+    class Scored(Event):
+        type = "acme/scored"
+        score: int = 0
+
+
+    class AcmeDrawers(CLIPlugin):
+        name = "acme.draw"
+
+        def build(self, ctx):
+            self.event = Scored
+
+            def draw_scored(event):
+                from mocode.cli import lines
+                return [lines.Line(text=f"score {event.score}")]
+
+            def draw_progress(event):
+                from mocode.cli import lines
+                return [lines.Line(text=f"{event.data['done']} done")]
+
+            ctx.drawers.register(Scored, draw_scored)
+            ctx.drawers.register("acme/progress", draw_progress)
 """
 
 
@@ -255,3 +288,82 @@ class TestTheTerminalsOwnCommands:
         assert isinstance(app.plugins[0], BuiltinCommands)
         assert app.plugins[0] is not app.plugins[0].__class__()
         assert "/model" in {c.name for c in app.commands.all()}
+
+
+class TestDrawers:
+    """The drawer table: how a plugin shapes what the terminal shows."""
+
+    @staticmethod
+    def _draw_plugin(app):
+        return next(p for p in app.plugins if p.name == "acme.draw")
+
+    def test_a_drawer_registered_from_a_cli_plugin_renders(self, tmp_path, capsys):
+        """A plugin's own event type, drawn its own way — not via summary()."""
+        plugins = tmp_path / "plugins"
+        _install(plugins, cli=DRAWER_CODE)
+        app = _app(tmp_path, plugins)
+
+        app.renderer.draw(self._draw_plugin(app).event(score=3))
+
+        assert strip_ansi(capsys.readouterr().out) == "score 3\n"
+
+    def test_a_kind_drawer_shapes_a_plugin_message(self, tmp_path, capsys):
+        """Plugin messages are addressed by kind: the block a drawer renders."""
+        plugins = tmp_path / "plugins"
+        _install(plugins, cli=DRAWER_CODE)
+        app = _app(tmp_path, plugins)
+
+        app.renderer.draw(PluginMessage(kind="acme/progress", data={"done": 12}))
+
+        assert strip_ansi(capsys.readouterr().out) == "12 done\n"
+
+    def test_an_event_without_a_drawer_falls_back_to_its_summary(self, tmp_path, capsys):
+        """Unregistered still draws — the event describes itself."""
+        plugins = tmp_path / "plugins"
+        _install(plugins, cli=DRAWER_CODE)
+        app = _app(tmp_path, plugins)
+
+        app.renderer.draw(self._draw_plugin(app).event(score=9))
+        app.renderer.draw(PluginMessage(kind="acme/unknown-kind", data={}))
+
+        out = strip_ansi(capsys.readouterr().out).splitlines()
+        assert out[0] == "score 9"
+        assert out[1] == "plugin message: acme/unknown-kind"
+
+    def test_replacing_a_registered_drawer_needs_override(self):
+        """Re-skinning a built-in is deliberate, not an accident of load order."""
+        from mocode.cli.plugin import DrawerRegistry
+
+        registry = DrawerRegistry()
+        with pytest.raises(ValueError):
+            registry.register("text", lambda e: [])
+        registry.register("text", lambda e: [], override=True)
+
+    def test_the_builtins_are_pre_registered_through_the_same_table(self):
+        from mocode.core import Notice, TextDelta
+        from mocode.cli import lines
+        from mocode.cli.plugin import DrawerRegistry
+
+        registry = DrawerRegistry()
+
+        assert registry.lines_for(Notice(message="careful", level="warn")) == [
+            lines.notice("careful", "warn")
+        ]
+        assert registry.lines_for(TextDelta(text="x")) is None  # no drawer: summary
+
+
+class TestUI:
+    """The runtime channel — one method, said on the stream."""
+
+    @pytest.mark.asyncio
+    async def test_ui_message_is_a_notice_on_the_conversation(self, tmp_path, capsys):
+        plugins = tmp_path / "plugins"
+        app = _app(tmp_path, plugins)
+        reader = app.conversation.subscribe()
+
+        await app.ui.message("hello there")
+
+        notice = reader.take()
+        assert notice is not None and notice.message == "hello there"
+        app.renderer.draw(notice)   # the frontend's half: render what arrived
+        assert strip_ansi(capsys.readouterr().out) == "hello there\n"

@@ -15,7 +15,7 @@ import re
 
 from mocode.cli import lines
 from mocode.cli.display import Display
-from mocode.cli.painter import clamp_visible
+from mocode.cli.painter import Painter, clamp_visible
 from mocode.cli.render import CLIRenderer
 from mocode.cli.theme import Theme
 from mocode.cli.transcript import Transcript
@@ -28,6 +28,8 @@ from mocode.core import (
     RunFailed,
     TextDelta,
     Tool,
+    ToolCallFinished,
+    ToolCallStarted,
     ToolOutput,
     ToolRegistry,
     ToolResult,
@@ -363,6 +365,62 @@ class TestLiveBlock:
             ("2", "✓ b  b"),
             ("1", "✓ c  c"),
         ]
+
+    def test_a_plugin_message_draws_its_summary(self, capsys):
+        """No drawer registered: the event still says itself, in one line."""
+        renderer = _renderer(_make_display(), ToolRegistry())
+
+        renderer.draw(
+            PluginMessage(kind="shell/background-done", data={"jobs": [{"id": "s1"}]})
+        )
+
+        assert _plain(capsys.readouterr().out) == "plugin message: shell/background-done\n"
+
+
+class TestPainterGolden:
+    """The live region's ANSI, locked byte for byte.
+
+    The escape sequence is the whole mechanism — an offset one row off
+    corrupts the screen — so one small batch is pinned exactly, not just
+    through the REWRITE pattern above.
+    """
+
+    def test_a_live_batch_writes_exact_bytes(self, capsys):
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        for event in (
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolCallStarted(call_id="b", name="read", args={"path": "y"}),
+            ToolCallFinished(call_id="a", name="read"),
+            ToolCallFinished(call_id="b", name="read"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript)
+
+        assert capsys.readouterr().out == (
+            # each call claims its row, in call order, while it runs
+            "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m\n"
+            "\x1b[2m·\x1b[0m \x1b[2mread  y…\x1b[0m\n"
+            # each verdict replaces its own row, from the bottom of the region
+            "\x1b[2A\x1b[K\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m\x1b[2B\r"
+            "\x1b[1A\x1b[K\x1b[92m✓\x1b[0m \x1b[96mread  y\x1b[0m\x1b[1B\r"
+        )
+
+    def test_a_redirected_painter_appends_the_verdict_only(self, capsys):
+        display = _make_display(live=False)
+        painter = Painter(display)
+        transcript = Transcript()
+        for event in (
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolCallFinished(call_id="a", name="read"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript)
+
+        out = capsys.readouterr().out
+        assert _plain(out) == "✓ read  x\n"     # no placeholder row in a log
+        assert "\x1b[" not in _plain(out)
 
     @pytest.mark.asyncio
     async def test_output_that_is_not_a_verdict_freezes_the_block(self, capsys):

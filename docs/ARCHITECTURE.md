@@ -37,11 +37,17 @@ mocode/
 │                         default-prompts, session, help, cache-protect
 ├── cli/                 the terminal front-end — a consumer of host/
 │   ├── app.py           CLIApp — the REPL, dispatch and Ctrl-C
-│   ├── plugin.py        CLIPlugin — the terminal's own extension surface
-│   ├── render.py        CLIRenderer — the event stream, as terminal lines
+│   ├── render.py        CLIRenderer — the thin driver: fold each event, paint it
+│   ├── transcript.py    Transcript — the event stream folded into a document
+│   ├── painter.py       Painter — the live region, projected onto the terminal
+│   ├── display.py       Display — append-only output primitives (render/stream)
 │   ├── lines.py         Line + builders — what a turn looks like, as data
-│   ├── display.py       Display — terminal primitives; theme, text, input, dialogs
-│   └── commands.py      the commands that need a terminal: /quit /copy /model /resume
+│   ├── plugin.py        CLIPlugin, CLIContext, DrawerRegistry, UI — the terminal's extension surface
+│   ├── commands.py      the commands that need a terminal: /quit /copy /model /resume
+│   ├── input.py         Input — PromptSession, paste handling, slash completion
+│   ├── dialogs.py       interactive pickers, only where a terminal answers
+│   ├── text.py          terminal text metrics — width, wrapping, truncation
+│   └── theme.py         Theme — the terminal's whole appearance, one dataclass
 ├── providers/openai.py  OpenAI-compatible streaming provider
 ├── plugins/__init__.py  the public SDK third-party plugins import
 ├── testing/             the public test kit — a scripted model, no network
@@ -387,14 +393,28 @@ subscription:
 subscription = conversation.subscribe()
 turn = conversation.run(prompt)
 async for event in turn.subscribe():
-    renderer.draw(event)          # → mocode.cli.lines → Display
+    renderer.draw(event)          # → Transcript → Painter → Display
 ```
 
-`CLIRenderer` is a pure consumer: no hooks, no interception. It owns only the
-state of the turn *as it is being drawn* — which tool calls are in flight, and
-which row on screen each of them owns. Every shape it draws comes from
-`cli/lines.py`, as data, so the live renderer and history replay cannot drift
-apart and neither needs a terminal to be tested.
+**A frontend is a reader of events, nothing more.** The renderer subscribes
+like any other consumer, implements no hooks and intercepts nothing; the same
+stream drives a web view or a test with no private path into the loop. That
+is what keeps the terminal replaceable, and it is why anything that must
+*answer* — approval prompts, vetoes — belongs in a host hook, not here.
+
+The renderer is a thin driver in two halves. The **Transcript**
+(`cli/transcript.py`) folds each event into a document model — pure data, no
+terminal: a tool call is a block opened by its start and landed by its finish,
+deltas extend one streaming block per kind, a plugin message is a block
+addressed by its `block_id`, and `apply_history` rebuilds the document a
+resumed session should read as (the generalisation of the history replay,
+walking the same grouping in `cli/lines.py`). The same event stream always
+folds into the same transcript, so the document is testable without a screen.
+The **Painter** (`cli/painter.py`) projects what changed onto the terminal:
+committed history is printed and forgotten — the terminal's scrollback is the
+archive — and the one rewritable region is the rows the current turn's open
+tool blocks occupy, generalized from the single block this codebase once
+kept in `Display`.
 
 What a turn looks like, in one picture:
 
@@ -420,14 +440,26 @@ call in the order the calls were made rather than the order they finish —
 which is also why a call's own `ToolOutput` is not printed; it still reaches
 the model and every other consumer, the terminal just does not draw it.
 
-Rewriting a row is only sound while the block is the last thing on screen, so
-`Display` guards it rather than trusting it: block lines are clamped to one
-terminal row, any other output freezes the block for good, and off a terminal
+Rewriting a row is only sound while the region is the last thing on screen, so
+the painter guards it rather than trusting it: every line in the region is
+clamped to one terminal row, and the display keeps an *epoch* — a count of
+every append-style write — that the painter checks before touching a row, so
+anything printed over the region freezes it for good. Off a terminal
 (`Display.live`) the whole mechanism is off and a call appends its verdict
-when it finishes. `main.py` passes `sys.stdout.isatty()`, so `mocode -p "…"`
+when it finishes; `main.py` passes `sys.stdout.isatty()`, so `mocode -p "…"`
 draws its turn on a terminal and stays a plain, escape-free pipe when
 redirected. A modal dialog is drawn only where there is someone to answer it:
 `dialogs.select` returns `None` when either end is not a terminal.
+
+**Terminal plugins are built against a `CLIContext`, never the app.** The
+context carries the three things a plugin may contribute through — the command
+registry, a `DrawerRegistry` for shaping how message-like events render, and
+a `UI` channel (`is_interactive`, `message`) — and nothing it should not
+touch. Drawers are the one rendering mechanism: the built-in events are
+pre-registered in the same table a plugin registers its own event types and
+message kinds into, and an event with no drawer falls back to its own
+`summary()`, which is why a plugin's custom event already draws in any
+frontend written before it.
 
 ## Data flow
 
@@ -436,7 +468,8 @@ user input → CLIApp._dispatch ─┬─ slash command → handler(CommandConte
                                └─ prose → conversation.run() → AgentLoop.start()
                                                             ├─ provider.stream
                                                             └─ events → EventChannel
-                                                                         ├─ Subscription → CLIRenderer → Display
+                                                                         ├─ Subscription → CLIRenderer ─┬─ Transcript (the fold)
+                                                                         │                              └─ Painter → Display (the paint)
                                                                          └─ Subscription → your application
 ```
 
@@ -457,7 +490,9 @@ An embedding application is the same path minus the terminal:
   `tests/test_builtin_plugins.py` — the host's built-in plugins the same way;
   `tests/test_cache_protect.py` — the pinned request prefix and the diff
   notices that announce its drift; `tests/test_display.py` — a whole turn
-  through `CLIRenderer`, no TTY.
+  through the renderer, no TTY: the transcript fold asserted as blocks, the
+  painter's live-region ANSI pinned byte for byte, and the drawn output
+  compared line by line.
 - `mocode.testing` — the public test kit every plugin test is written with:
   `MockProvider` and the chunk-replay helpers, `say` / `call_tool` script
   builders, `collect` / `terminal` / `events_of_type` readers. Its own
