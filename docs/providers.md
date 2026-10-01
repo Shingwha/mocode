@@ -61,6 +61,9 @@ class Provider(Protocol):
     @property
     def model(self) -> str: ...
 
+    @property
+    def retry_policy(self) -> RetryPolicy: ...
+
     def is_retriable(self, exc: Exception) -> bool: ...
     def stream(
         self,
@@ -71,7 +74,7 @@ class Provider(Protocol):
     ) -> AsyncIterator[Chunk]: ...
 ```
 
-All three members are required; the protocol is structural, not inherited. A
+All members are required; the protocol is structural, not inherited. A
 provider that cannot stream natively yields a single chunk holding the whole
 response — the loop does not care which it is.
 
@@ -96,7 +99,7 @@ response — the loop does not care which it is.
 
 ## Retry
 
-`with_retry_stream(provider, *args, max_retries=6)` calls
+`with_retry_stream(provider, *args, policy=None)` calls
 `provider.stream(*args)` and retries until the first chunk:
 
 ```
@@ -111,8 +114,39 @@ failures, rate limits and auth errors all surface when the request is made.
 A failure mid-stream propagates; the caller handles it, because it already
 received partial output. `CancelledError` is never retried.
 
-Backoff: `min(1.0 · 2^attempt + U(0, 0.5)s, 60s)` — 6 retries, so ~1s, 2s, 4s,
-8s, 16s, 32s. Retries are logged at WARNING.
+### Retry policy
+
+The orchestration — when a retry is safe — is the kernel's, because only the
+consumer of the stream knows the window closes at the first chunk and only it
+can keep backoff sleeps cancellable. The *policy* — how many attempts, how
+long between them — is the provider's, declared as a `retry_policy` attribute
+returning a frozen `RetryPolicy`:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `max_attempts` | `7` | total tries, including the first |
+| `base_delay` | `1.0` | seconds; doubles with every failure |
+| `max_delay` | `60.0` | cap on any backoff sleep |
+| `jitter` | `0.5` | uniform `[0, jitter]` added to each backoff |
+| `honor_retry_after` | `True` | a numeric `Retry-After` header on the failing response is slept instead of the curve |
+
+Backoff: `min(base_delay · 2^(n-1) + U(0, jitter)s, max_delay)`. Retries are
+logged at WARNING.
+
+The attribute is resolved defensively at each call — an explicit `policy=`
+argument to `with_retry_stream` wins, then the provider's own
+`retry_policy`, then the kernel default — so a provider (or a test double)
+that never declares one simply runs on the default:
+
+```python
+class LlamaProvider:
+    # a self-hosted endpoint that 429s hard and recovers slowly
+    retry_policy = RetryPolicy(max_attempts=3, base_delay=5.0, honor_retry_after=False)
+```
+
+The built-in `OpenAIProvider` declares `RetryPolicy(honor_retry_after=True)` —
+the official API states on a 429 exactly when to come back, and that value
+beats the exponential curve.
 
 ## The built-in `OpenAIProvider`
 
@@ -216,6 +250,8 @@ class AnthropicProvider:
     @property
     def model(self) -> str: ...
 
+    retry_policy = RetryPolicy(max_attempts=3)   # omit to run on the kernel default
+
     def is_retriable(self, exc: Exception) -> bool:
         from anthropic import APIConnectionError, APITimeoutError, RateLimitError
         return isinstance(exc, (RateLimitError, APIConnectionError, APITimeoutError))
@@ -258,6 +294,7 @@ If your backend is not OpenAI-shaped, the conversion is inside `stream()`:
 ### Checklist
 
 - [ ] `model` property, `is_retriable`, `stream` — all three, structural
+- [ ] `retry_policy` declared, or deliberately omitted for the kernel default
 - [ ] `stream` is an async generator; the request happens on first iteration
 - [ ] yields `Chunk`s and never accumulates them into a `Response`
 - [ ] tool-call fragments split by `index`, `arguments` left as raw JSON text
