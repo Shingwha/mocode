@@ -34,7 +34,12 @@ from .events import (
     RunStarted,
     TextDelta,
 )
-from .hook import HookRunner, IterationContext
+from .hook import (
+    HookRunner,
+    IterationContext,
+    RequestContext,
+    ResponseContext,
+)
 from .provider import (
     ModelSpec,
     Provider,
@@ -364,12 +369,28 @@ class AgentLoop:
 
             await self._publish(IterationStarted(iteration=iteration))
 
+            # The request as it is about to be sent — the last interception
+            # point. The schema list is a copy: an in-place edit by a hook
+            # reaches this one request, never the registry's cache or a
+            # frozen payload.
+            request_tools = list(self._tools.all_schemas())
+            request = RequestContext(
+                messages=self.messages,
+                system_prompt=self.system_prompt,
+                tools=request_tools,
+                model=self.model,
+                emit=self._emit,
+            )
+            await self.hooks.before_request(request)
+            self.messages = request.messages
+            self.system_prompt = request.system_prompt
+
             acc = StreamAccumulator()
             async for chunk in with_retry_stream(
                 self.provider,
                 self.messages,
                 self.system_prompt,
-                self._tools.all_schemas(),
+                request_tools,
                 self.model.max_output,
             ):
                 acc.feed(chunk)
@@ -384,10 +405,20 @@ class AgentLoop:
                     await self._publish(TextDelta(text=chunk.text))
 
             response = acc.build()
+
+            # The response as accounted for — a usage rewrite here flows into
+            # IterationFinished and the turn's totals.
+            answered = ResponseContext(
+                usage=response.usage,
+                finish_reason=response.finish_reason,
+                iteration=iteration,
+            )
+            await self.hooks.after_response(answered)
+
             await self._publish(
                 IterationFinished(
                     iteration=iteration,
-                    usage=response.usage,
+                    usage=answered.usage,
                     stop_reason=response.finish_reason,
                 )
             )

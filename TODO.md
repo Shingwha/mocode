@@ -49,12 +49,16 @@ else; `host/` no longer has a field a plugin can reach a user through.
 
 ---
 
-## 3. Interception is thin in one place
+## 3. ~~Interception is thin in one place~~ — resolved
 
-**Provider requests.** Nothing sits between the loop and `provider.stream()`. To
-inspect or replace the payload — headers, an extra field, a rewritten message
-list — you must wrap the provider object. A `before_request` / `after_response`
-hook pair would be the shape.
+**Provider requests.** `AgentHook.before_request` / `after_response` now sit
+between the loop and `provider.stream()`: a `RequestContext` (messages,
+system_prompt, the tools snapshot this request carries, the model) before the
+call — both messages and prompt read back, edits to the tools list reaching
+that request alone — and a `ResponseContext` (usage, finish_reason, iteration)
+after it, where a usage rewrite flows into the events and the turn's totals.
+Retries deliberately do not re-run them: the retry window closes before the
+first chunk arrives and belongs to the retry orchestration.
 
 The other half of the old gap — user input — closed itself: input resolution is
 `host.command.dispatch(text, *, conversation, commands)`, a plain function any

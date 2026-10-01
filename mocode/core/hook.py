@@ -26,6 +26,7 @@ from .events import TOOL_OK, ToolStatus
 
 if TYPE_CHECKING:
     from .events import Event
+    from .provider import ModelSpec, Usage
 
 #: Signature of ``ctx.emit`` — the sink a context uses to publish an event.
 EmitFn = Callable[["Event"], Awaitable[None]]
@@ -120,6 +121,44 @@ class ToolCallContext:
         return self.cancel_event.is_set()
 
 
+@dataclass
+class RequestContext:
+    """before_request — the last look at what is about to be sent.
+
+    Runs after ``before_iteration``, immediately before the provider call.
+    ``messages`` is the live list — rewrite in place (``ctx.messages[:] =
+    ...``) or rebind (``ctx.messages = [...]``); both are read back.
+    ``system_prompt`` follows the same run-scoped rule as before_iteration's:
+    effective for the rest of this run, restored when the turn ends.
+    ``tools`` is the schema list this one request carries — an in-place edit
+    reaches this request alone, never the registry or a frozen payload.
+
+    Retries do *not* re-run this hook: the retry window closes before the
+    first chunk arrives and belongs to the retry orchestration, not to
+    request interception.
+    """
+
+    messages: list[dict] = field(default_factory=list)
+    system_prompt: str = ""
+    tools: list[dict] = field(default_factory=list)
+    model: "ModelSpec | None" = None
+    emit: EmitFn = _noop_emit
+
+
+@dataclass
+class ResponseContext:
+    """after_response — one provider response, fully received.
+
+    ``usage`` may be rewritten: the corrected numbers are what
+    ``IterationFinished`` reports and what the turn's totals add up to.
+    ``finish_reason`` and ``iteration`` are informational.
+    """
+
+    usage: "Usage | None" = None
+    finish_reason: str | None = None
+    iteration: int = 0
+
+
 class AgentHook:
     """Base class for AgentLoop lifecycle hooks.
 
@@ -129,6 +168,23 @@ class AgentHook:
 
     async def before_iteration(self, ctx: IterationContext) -> None:
         """Before each LLM call. May rewrite ctx.messages or ctx.system_prompt."""
+
+    async def before_request(self, ctx: RequestContext) -> None:
+        """The last look before a provider call. May rewrite ctx.messages or
+        ctx.system_prompt, or edit ctx.tools in place.
+
+        Runs once per *request actually made* — after ``before_iteration``.
+        Provider retries do not re-run it: the retry window closes before the
+        first chunk arrives and is owned by the retry orchestration.
+        """
+
+    async def after_response(self, ctx: ResponseContext) -> None:
+        """One provider response fully received. May rewrite ctx.usage — the
+        correction flows into the events and the turn's token totals.
+
+        Like before_request, not re-run for retried attempts: a response only
+        exists once its stream has delivered a first chunk.
+        """
 
     async def on_tool_start(self, ctx: ToolCallContext) -> None:
         """Before a single tool executes. May rewrite ctx.tool_args or set ctx.deny."""
@@ -175,6 +231,12 @@ class HookRunner:
 
     async def before_iteration(self, ctx: IterationContext) -> None:
         await self._dispatch("before_iteration", ctx=ctx)
+
+    async def before_request(self, ctx: RequestContext) -> None:
+        await self._dispatch("before_request", ctx=ctx)
+
+    async def after_response(self, ctx: ResponseContext) -> None:
+        await self._dispatch("after_response", ctx=ctx)
 
     async def on_tool_start(self, ctx: ToolCallContext) -> None:
         await self._dispatch("on_tool_start", ctx=ctx)

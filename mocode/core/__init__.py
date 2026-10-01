@@ -48,7 +48,14 @@ from .events import (
     ToolOutput,
     ToolStatus,
 )
-from .hook import AgentHook, HookRunner, IterationContext, ToolCallContext
+from .hook import (
+    AgentHook,
+    HookRunner,
+    IterationContext,
+    RequestContext,
+    ResponseContext,
+    ToolCallContext,
+)
 from .prompt import Prompt, Section
 from .provider import (
     Chunk,
@@ -91,7 +98,9 @@ __all__ = [
     "Prompt",
     "Provider",
     "ReasoningDelta",
+    "RequestContext",
     "Response",
+    "ResponseContext",
     "RunFailed",
     "RunFinished",
     "RunStarted",
