@@ -102,10 +102,26 @@ no output cap — MoCode never invents one.
 - `TYPE_CHECKING` guards for types used only in annotations.
 - No global state: dependencies are constructor-injected. `MoCode` is the
   composition root, `Conversation` is the unit an application holds.
-- Tool params are `dict[str, dict]` with `type`, `description`, optional
-  `default` / `optional` — not JSON Schema.
+- Tool arguments are declared as a JSON Schema object node (`Tool(schema=...)`),
+  validated by the built-in dependency-free checker (unknown keywords pass).
 - Standard library first; runtime deps are `openai`, `pyyaml`,
   `prompt-toolkit`, `questionary`, `pyperclip`, `wcwidth`.
+
+## Adding a hook point
+
+Nothing enforces that these stay in sync — that is exactly why the list is
+here. A new interception point on `AgentHook` touches four places, in order:
+
+1. the method on `AgentHook` (`core/hook.py`) — signature plus a docstring
+   saying what may be rewritten;
+2. the wrapper on `HookRunner` (`core/hook.py`) that fans it out with error
+   isolation;
+3. the export in `mocode/plugins/__init__.py` — a plugin author writes
+   against the SDK, not against `mocode.core`;
+4. the hook table in [docs/plugins.md](docs/plugins.md).
+
+Run the checklist both directions: adding without exporting hides the hook
+from every plugin author; exporting without documenting leaves it unusable.
 
 ## Testing Patterns
 

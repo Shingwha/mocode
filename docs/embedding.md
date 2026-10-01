@@ -7,6 +7,12 @@ one event stream — start as many as you like, at the same time. Nothing prints
 and nothing knows about a terminal, so an editor, a web backend, a test
 harness and the built-in CLI are all the same kind of consumer.
 
+Everything that runs a turn is async, and `start()` schedules the turn with
+`asyncio.create_task` — so a turn begins from inside a **running event loop**.
+Synchronous entry points wrap one: `asyncio.run(main())` as below, or your
+framework's loop. Calling `start()` outside a loop raises, by design — a turn
+without a loop could never be awaited, cancelled, or observed.
+
 ```python
 from mocode import MoCode   # lazy — about a millisecond until you construct one
 ```
