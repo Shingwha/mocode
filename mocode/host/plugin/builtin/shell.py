@@ -210,6 +210,16 @@ class _Job:
         return not self.done.is_set()
 
 
+def _start_order(job: _Job) -> int:
+    """A job's position in the start sequence — its id's numeric suffix.
+
+    Ids are minted as ``shell_<n>`` from one monotonically increasing counter,
+    so the number *is* the start order. Sorted as strings they would misorder
+    at ten (``shell_10`` before ``shell_2``); sorted as this key they cannot.
+    """
+    return int(job.id.rsplit("_", 1)[1])
+
+
 class BashSession:
     """Persistent bash session — cwd and env vars survive across commands.
 
@@ -552,9 +562,13 @@ class BashSession:
         coalescing window so a burst of finishers becomes one entry, then
         holds while a turn is running — the model reads what it started with
         ``bash_output`` itself — and speaks once the conversation is idle.
-        Each announcement is its own block (``shell-bg-<n>``); the message is
-        a ``PluginMessage``, so it reaches whoever is watching and is not
-        replayed on a resumed session.
+        The entry lists its jobs in **start order**, not completion order:
+        whichever of two same-moment finishers happened to enqueue first is
+        a scheduling accident, and a deterministic list (shell_1 before
+        shell_2 — and shell_10 after shell_9) is what a frontend can render
+        without sorting for itself. Each announcement is its own block
+        (``shell-bg-<n>``); the message is a ``PluginMessage``, so it reaches
+        whoever is watching and is not replayed on a resumed session.
         """
         while True:
             await asyncio.sleep(_NOTIFY_WINDOW)
@@ -565,6 +579,7 @@ class BashSession:
             jobs, self._pending_done = self._pending_done, []
             if emit_message is None or not jobs:
                 return
+            jobs.sort(key=_start_order)
             self._notify_seq += 1
             await emit_message(
                 "shell/background-done",

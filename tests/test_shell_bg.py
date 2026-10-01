@@ -411,6 +411,24 @@ class TestEarlyOutput:
 class TestCompletionNotification:
     """Jobs that end on their own announce it — once, together, when idle."""
 
+    def test_the_announcement_lists_jobs_in_start_order(self):
+        """The merge is deterministic: start order, numeric — not completion
+        order (a scheduling accident) and not lexicographic (shell_10 would
+        sort before shell_2)."""
+        from mocode.host.plugin.builtin.shell import _start_order
+
+        class Stub:
+            def __init__(self, id: str):
+                self.id = id
+
+        shuffled = [Stub(i) for i in ("shell_10", "shell_2", "shell_1", "shell_9")]
+        assert [s.id for s in sorted(shuffled, key=_start_order)] == [
+            "shell_1",
+            "shell_2",
+            "shell_9",
+            "shell_10",
+        ]
+
     async def _messages(self, conversation, *, count: int, timeout: float = 5.0):
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
