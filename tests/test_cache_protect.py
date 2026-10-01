@@ -128,8 +128,8 @@ class TestTheWorldIsAnnounced:
         assert conversation.agent.system_prompt == frozen
         notice = _notices(conversation)[-1]["content"]
         assert "derived section 'tools-sdk' changed:" in notice
-        assert "-callable tools: bash, edit, read, skill, write" in notice
-        assert "+callable tools: bash, edit, skill, write" in notice
+        assert "-callable tools: bash, bash_output, edit, kill_shell, read, skill, write" in notice
+        assert "+callable tools: bash, bash_output, edit, kill_shell, skill, write" in notice
 
     @pytest.mark.asyncio
     async def test_a_rebuild_re_renders_the_pinned_section(self, mc: MoCode, tmp_path: Path):
@@ -152,7 +152,7 @@ class TestTheWorldIsAnnounced:
 
         # A rebuild is the deliberate cache loss: the pin dropped, the
         # section re-rendered from the registry as it now stands.
-        assert "callable tools: bash, edit, skill, write" in conversation.agent.system_prompt
+        assert "callable tools: bash, bash_output, edit, kill_shell, skill, write" in conversation.agent.system_prompt
         assert _notices(conversation) == []
 
     @pytest.mark.asyncio
