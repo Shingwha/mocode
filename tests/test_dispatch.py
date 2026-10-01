@@ -261,6 +261,108 @@ class TestOutcomeParity:
             assert "switched off" in result.content
 
 
+# ── visibility by audience ───────────────────────────────────
+
+
+class TestAvailability:
+    """Three deployment shapes, one mechanism — who a tool is for."""
+
+    @staticmethod
+    def _tool(name: str, availability: str = "both") -> Tool:
+        return Tool(name, "d", {}, lambda a: f"ran:{name}", availability=availability)
+
+    @staticmethod
+    def _schema_names(registry: ToolRegistry, **kwargs) -> list[str]:
+        return [s["function"]["name"] for s in registry.all_schemas(**kwargs)]
+
+    def test_additive_everything_is_both_by_default(self):
+        registry = ToolRegistry()
+        registry.register(self._tool("a"))
+        registry.register(self._tool("b"))
+
+        assert registry.names() == registry.names(audience="program") == ["a", "b"]
+        assert self._schema_names(registry) == self._schema_names(
+            registry, audience="program"
+        )
+
+    def test_folded_tools_are_marked_program(self):
+        registry = ToolRegistry()
+        registry.register(self._tool("orchestrator"))
+        registry.register(self._tool("read", "program"))
+        registry.register(self._tool("bash", "program"))
+
+        # The model is offered the fold point only; the program side sees all.
+        assert registry.names() == ["orchestrator"]
+        assert registry.names(audience="program") == [
+            "orchestrator",
+            "read",
+            "bash",
+        ]
+
+    def test_mixed_deployment_shows_each_side_its_own_half(self):
+        registry = ToolRegistry()
+        registry.register(self._tool("plain"))
+        registry.register(self._tool("sdk_only", "program"))
+        registry.register(self._tool("model_only", "model"))
+
+        assert registry.names() == ["plain", "model_only"]
+        assert registry.names(audience="program") == ["plain", "sdk_only"]
+        assert self._schema_names(registry) == ["plain", "model_only"]
+        assert self._schema_names(registry, audience="program") == [
+            "plain",
+            "sdk_only",
+        ]
+
+    def test_select_filters_by_audience_too(self):
+        registry = ToolRegistry()
+        registry.register(self._tool("plain"))
+        registry.register(self._tool("sdk_only", "program"))
+
+        assert registry.select().names() == ["plain"]
+        child = registry.select(audience="program")
+        assert child.names(audience="program") == ["plain", "sdk_only"]
+        assert child.get("sdk_only") is registry.get("sdk_only")  # shared instances
+
+    def test_freeze_pins_the_model_projection_only(self):
+        registry = ToolRegistry()
+        registry.register(self._tool("plain"))
+        registry.register(self._tool("sdk_only", "program"))
+        registry.freeze()
+        registry.register(self._tool("late"))
+
+        # The model's offered interface is held still; the program side —
+        # which no request payload carries — keeps reading live.
+        assert self._schema_names(registry) == ["plain"]
+        assert self._schema_names(registry, audience="program") == [
+            "plain",
+            "sdk_only",
+            "late",
+        ]
+
+    def test_an_unknown_availability_is_rejected_at_construction(self):
+        with pytest.raises(ValueError, match="availability"):
+            self._tool("typo", "modle")
+
+    @pytest.mark.asyncio
+    async def test_execution_permission_follows_the_origin(self):
+        dispatcher, _, _ = _bare_dispatcher(
+            self._tool("plain"),
+            self._tool("sdk_only", "program"),
+            self._tool("model_only", "model"),
+        )
+        cases = [
+            ("model", "plain", "ok"),
+            ("model", "model_only", "ok"),
+            ("model", "sdk_only", "denied"),
+            ("program", "plain", "ok"),
+            ("program", "sdk_only", "ok"),
+            ("program", "model_only", "denied"),
+        ]
+        for origin, name, expected in cases:
+            result = await dispatcher.run(name, {}, origin=origin)
+            assert result.status == expected, (origin, name, result.status)
+
+
 # ── provenance: who asked, and nested in what ────────────────
 
 

@@ -215,9 +215,11 @@ class ToolDispatcher:
             tc.status = TOOL_NOT_FOUND
             tc.tool_result = f"{ERROR_PREFIX} unknown tool '{tc.tool_name}'"
             return
-        if tc.tool_name not in self.registry.names():
-            # Registered but switched off: the frozen interface still offers
-            # it, so the model may try — the refusal is the correction.
+        audience = "model" if tc.origin == "model" else "program"
+        if tc.tool_name not in self.registry.names(audience=audience):
+            # Registered but invisible to whoever is calling — switched off,
+            # or declared for the other audience. The frozen interface still
+            # offers it, so the model may try — the refusal is the correction.
             tc.status = TOOL_DENIED
             tc.tool_result = f"{DENIED_PREFIX} tool '{tc.tool_name}' is switched off"
             return
