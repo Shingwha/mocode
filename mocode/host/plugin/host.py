@@ -26,7 +26,7 @@ from ...core.hook import HookRunner
 from ...core.provider import Provider
 from ..prompt import build_system_prompt
 from .base import Plugin
-from .context import HostContext
+from .context import BuildContext
 from .loader import discover, load_plugin, report
 
 if TYPE_CHECKING:
@@ -133,7 +133,7 @@ class PluginHost:
 
     def __init__(
         self,
-        ctx: HostContext,
+        ctx: BuildContext,
         plugins: Sequence[Plugin],
         *,
         sources: Sequence[str] | None = None,
@@ -206,16 +206,19 @@ class PluginHost:
         self._materialized = True
         session = self._pending_session
         if session is not None and session.system_prompt:
-            self.reinstate(session)
+            self._reinstate(session)
             return
         await self.prepare_all()
         self._install(build_system_prompt(self.ctx), None)
 
-    def reinstate(self, session: "Session") -> None:
+    def _reinstate(self, session: "Session") -> None:
         """Adopt the surface a stored session ran on, byte-identical.
 
-        A session recorded with no surface is left alone — the conversation
-        materializes freshly at its first request instead.
+        Private because the only two callers are in here (:meth:`materialize`)
+        and in :meth:`Conversation.reinstate
+        <mocode.host.conversation.Conversation.reinstate>`, which hands the
+        session over. A session recorded with no surface is left alone — the
+        conversation materializes freshly at its first request instead.
         """
         if not session.system_prompt:
             return
@@ -223,9 +226,16 @@ class PluginHost:
         self._materialized = True
 
     def _install(self, prompt: str, schemas: "list[dict] | None") -> None:
-        """The one place the request surface is written."""
-        if self.ctx.agent is not None:
-            self.ctx.agent.system_prompt = prompt
+        """The one place the request surface is written.
+
+        The single write point for what a request carries: prompt plus offered
+        interface, whether freshly rendered or reinstated from a session. Any
+        change to that surface must go through here — a second write site is
+        how byte-identical resumes stop being byte-identical. Only ever
+        reached after :meth:`assemble`: the surface is materialized from a
+        turn or an explicit ``prepare()``, both of which need the loop.
+        """
+        self.ctx.agent.system_prompt = prompt
         if self._freeze:
             if schemas is not None:
                 self.ctx.tools.freeze(schemas)
@@ -239,8 +249,11 @@ class PluginHost:
         drift as notices instead; this replaces it outright, accepting the
         cache loss. Runs no preparation: it re-reads what is registered.
         """
-        if self.ctx.agent is not None:
-            self.ctx.agent.system_prompt = build_system_prompt(self.ctx)
+        # A pinned section held its bytes for cache stability; a rebuild is
+        # the one moment fresh content is wanted, so every pin drops.
+        for section in self.ctx.prompt_sections:
+            section.refresh()
+        self.ctx.agent.system_prompt = build_system_prompt(self.ctx)
         if self._freeze:
             self.ctx.tools.freeze()
         self.ctx.plugin_states.clear()
@@ -259,13 +272,11 @@ class PluginHost:
             model=self.ctx.model,
             prepare=self.materialize,
         )
-        self.ctx.agent = agent
+        # The context becomes its host view here — the same object, its agent
+        # attached — so everything that held it during build() (a watcher, a
+        # tool closing over ctx) sees the agent without any re-wiring.
+        self.ctx._with_agent(agent)
         return agent
-
-    def run(self, *, provider: Provider, config: AgentConfig) -> AgentLoop:
-        """Build every contribution, then assemble the agent."""
-        self.build_all()
-        return self.assemble(provider=provider, config=config)
 
     def close(self) -> None:
         """Tell every plugin this conversation is over. Idempotent."""

@@ -9,41 +9,51 @@ A plugin is a directory following the Agent Plugins layout, installed in
     └── mocode/plugin.py     MoCode's namespace: the code below
 
 Portable parts are data any compatible client can read; MoCode's code lives in
-its own namespace, which other clients ignore::
+its own namespace, which other clients ignore. The whole of a small plugin::
 
-    from mocode.plugins import Plugin, Tool
+    from mocode.plugins import Plugin, Section, Tool
 
-    class GreetTool(Tool):
-        def __init__(self):
-            super().__init__(
-                name="greet",
-                description="Greet someone by name",
-                params={"who": {"type": "string", "description": "Name to greet"}},
-                func=self._run,
-                tags=frozenset({"demo"}),
-            )
-
-        def _run(self, args: dict) -> str:
-            return f"Hello, {args['who']}!"
+    def _greet(args: dict) -> str:
+        return f"Hello, {args['who']}!"
 
     class GreetPlugin(Plugin):
         name = "greet"
         description = "A greeting tool"
 
         def build(self, ctx):
-            ctx.tools.register(GreetTool())
+            ctx.tools.register(Tool(
+                name="greet",
+                description="Greet someone by name",
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "who": {"type": "string", "description": "Name to greet"},
+                    },
+                    "required": ["who"],
+                },
+                func=_greet,
+                tags=frozenset({"demo"}),
+            ))
+            ctx.prompt_sections.append(Section("greet", "Be friendly.", priority=45))
+
+``build()`` receives a :class:`BuildContext` — contribution targets, config,
+paths, no agent. ``prepare()`` and ``close()`` receive a :class:`HostContext`:
+the same object once the loop exists, carrying the agent, ``emit`` /
+``subscribe`` and ``spawn``. A tool that wants its call context declares
+``with_context=True`` and receives ``(args, ctx)``.
 
 A single ``greet.py`` file next to the plugin directories works too, for a
-plugin with no portable parts. Contribution to a *frontend* rather than to the
-agent has its own namespace (``mocode.cli/plugin.py``) and its own interface —
-see :class:`mocode.cli.CLIPlugin`.
+plugin with no portable parts; a larger one becomes a package
+(``mocode/plugin/__init__.py``). Contribution to a *frontend* rather than to
+the agent has its own namespace (``mocode.cli/plugin.py``) and its own
+interface — see :class:`mocode.cli.CLIPlugin`.
 
 Plugins are trusted code — installing one means running it.
 """
 
 from __future__ import annotations
 
-from ..core.agent import AgentConfig, LoopResult, Turn
+from ..core.agent import AgentConfig, IterationLimit, LoopResult, Turn
 from ..core.channel import EventChannel, Subscription
 from ..core.dispatch import DispatchResult, ToolDispatcher
 from ..core.events import (
@@ -66,19 +76,34 @@ from ..core.events import (
     ToolOutput,
     ToolStatus,
 )
-from ..core.hook import AgentHook, HookRunner, IterationContext, ToolCallContext
+from ..core.hook import (
+    AgentHook,
+    HookRunner,
+    IterationContext,
+    RequestContext,
+    ResponseContext,
+    ToolCallContext,
+)
 from ..core.prompt import Prompt, Section
 from ..core.provider import (
     Chunk,
     ModelSpec,
     Provider,
+    RetryPolicy,
     StreamAccumulator,
     ToolCall,
     ToolCallDelta,
     Usage,
 )
 from ..core.state import RunState
-from ..core.tool import Tool, ToolConflictError, ToolError, ToolRegistry, ToolResult
+from ..core.tool import (
+    Tool,
+    ToolConflictError,
+    ToolError,
+    ToolPolicy,
+    ToolRegistry,
+    ToolResult,
+)
 from ..host.command import (
     CONTINUE,
     EXIT,
@@ -90,11 +115,12 @@ from ..host.command import (
 )
 from ..host.conversation import Conversation
 from ..host.plugin.base import Plugin
-from ..host.plugin.context import HostContext
+from ..host.plugin.context import BuildContext, HostContext
 
 __all__ = [
     "AgentConfig",
     "AgentHook",
+    "BuildContext",
     "Chunk",
     "CONTINUE",
     "Command",
@@ -110,6 +136,7 @@ __all__ = [
     "HostContext",
     "IterationContext",
     "IterationFinished",
+    "IterationLimit",
     "IterationStarted",
     "Kind",
     "LoopResult",
@@ -119,6 +146,9 @@ __all__ = [
     "Prompt",
     "Provider",
     "ReasoningDelta",
+    "RequestContext",
+    "ResponseContext",
+    "RetryPolicy",
     "RunFailed",
     "RunFinished",
     "RunStarted",
@@ -142,6 +172,7 @@ __all__ = [
     "ToolDispatcher",
     "ToolError",
     "ToolOutput",
+    "ToolPolicy",
     "ToolRegistry",
     "ToolResult",
     "ToolStatus",

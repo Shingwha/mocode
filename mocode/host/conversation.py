@@ -346,7 +346,7 @@ class Conversation:
         the two now disagree with the live world is announced — see the
         cache-protect plugin.
         """
-        self.host.reinstate(session)
+        self.host._reinstate(session)
 
     def __repr__(self) -> str:
         return f"<Conversation {self.id} {self.cwd}>"

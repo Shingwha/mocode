@@ -23,7 +23,11 @@ The file is organised by who owns each value::
             "Atria-Dawn-Preview": {
               "context_window": 200000,
               "max_output": 32768,    # optional; no cap is sent when absent
-              "extra_body": { }       # provider-specific request fields
+              "extra_body": { },      # provider-specific request fields
+              "retry": {              # optional; RetryPolicy fields, unknown keys ignored
+                "max_attempts": 3,
+                "base_delay": 5.0
+              }
             }
           }
         }
@@ -44,10 +48,16 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from ..core.agent import AgentConfig
-from ..core.provider import ModelSpec
+from ..core.provider import ModelSpec, RetryPolicy
 from .io import read_json, write_json
 
 DEFAULT_CONFIG_PATH = Path.home() / ".mocode" / "config.json"
+
+#: The keys a model entry's ``retry`` sub-object may carry — the RetryPolicy
+#: fields, so an unknown key is dropped at load (forward compatibility, the
+#: same rule every other block here practices) instead of exploding a
+#: constructor later.
+_RETRY_KEYS = frozenset(f.name for f in fields(RetryPolicy))
 
 
 def env_var_for(provider_key: str) -> str:
@@ -80,15 +90,26 @@ class ModelEntry:
     context_window: int | None = None
     max_output: int | None = None
     extra_body: dict[str, Any] | None = None
+    #: Per-model retry override — a dict of :class:`RetryPolicy
+    #: <mocode.core.provider.RetryPolicy>` fields. Rate limits are knowledge
+    #: about a backend, and two models behind one provider key can disagree;
+    #: ``None`` means the provider's own policy stands.
+    retry: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> ModelEntry:
         data = data or {}
         extra_body = data.get("extra_body")
+        retry = data.get("retry")
         return cls(
             context_window=_opt_int(data.get("context_window")),
             max_output=_opt_int(data.get("max_output")),
             extra_body=extra_body if isinstance(extra_body, dict) else None,
+            retry=(
+                {k: v for k, v in retry.items() if k in _RETRY_KEYS}
+                if isinstance(retry, dict) and retry
+                else None
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -99,7 +120,18 @@ class ModelEntry:
             out["max_output"] = self.max_output
         if self.extra_body is not None:
             out["extra_body"] = self.extra_body
+        if self.retry:
+            out["retry"] = dict(self.retry)
         return out
+
+    def retry_policy(self) -> RetryPolicy | None:
+        """The override as a :class:`RetryPolicy` — ``None`` when not set.
+
+        The dict was filtered to the known fields at load, so the splat is
+        safe by construction. A factory hands this to its provider's
+        ``retry_policy`` parameter; absent means the provider keeps its own.
+        """
+        return RetryPolicy(**self.retry) if self.retry else None
 
 
 @dataclass

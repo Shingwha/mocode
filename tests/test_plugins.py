@@ -12,7 +12,7 @@ import pytest
 from mocode.core.agent import AgentConfig
 from mocode.core.provider import ModelSpec
 from mocode.host.config import Config
-from mocode.host.plugin.context import HostContext
+from mocode.host.plugin.context import BuildContext, HostContext
 from mocode.host.plugin.host import PluginHost, builtin_plugins, load_plugins
 from mocode.host.plugin.loader import (
     HOST_NAMESPACE,
@@ -54,7 +54,7 @@ COMMAND_CODE = """
         description = "contributes a command"
 
         def build(self, ctx):
-            ctx.register(Command("/ping", "Ping", handler=_ping))
+            ctx.commands.register(Command("/ping", "Ping", handler=_ping))
 """
 
 #: A plugin written as a package: the entry is ``mocode/plugin/__init__.py``
@@ -120,21 +120,23 @@ def _write_plugin(
     return plugin_dir
 
 
-def _ctx(tmp_path: Path, **config_kwargs) -> HostContext:
+def _ctx(tmp_path: Path, **config_kwargs) -> BuildContext:
     config = Config(active_provider="p", active_model="m", **config_kwargs)
-    return HostContext(home=tmp_path / "home", cwd=tmp_path, config=config)
+    return BuildContext(home=tmp_path / "home", cwd=tmp_path, config=config)
 
 
-def _load(ctx: HostContext, plugin_dirs: list[Path]):
+def _load(ctx: BuildContext, plugin_dirs: list[Path]):
     """What a runtime does for one project: load once, then build."""
     loaded = load_plugins(plugin_dirs=plugin_dirs, config=ctx.config)
     ctx.plugin_sources = list(loaded.sources)
     return PluginHost(ctx, loaded.plugins)
 
 
-def _run_host(ctx: HostContext, plugin_dirs: list[Path]) -> PluginHost:
+def _run_host(ctx: BuildContext, plugin_dirs: list[Path]) -> PluginHost:
+    """What the runtime does: build every contribution, then assemble."""
     host = _load(ctx, plugin_dirs)
-    host.run(provider=MockProvider(), config=AgentConfig())
+    host.build_all()
+    host.assemble(provider=MockProvider(), config=AgentConfig())
     return host
 
 
@@ -399,9 +401,9 @@ class TestTheMultiFileExample:
 
         assert "multi-file" in [p.name for p in loaded.plugins]
 
-        PluginHost(ctx, loaded.plugins).run(
-            provider=MockProvider(), config=AgentConfig()
-        )
+        host = PluginHost(ctx, loaded.plugins)
+        host.build_all()
+        host.assemble(provider=MockProvider(), config=AgentConfig())
 
         assert "/motd" in {c.name for c in ctx.commands.all()}
         assert "motd" in {s.name for s in ctx.prompt_sections}
@@ -416,7 +418,8 @@ class TestPluginHost:
     async def test_builtins_are_loaded_and_contributing(self, tmp_path: Path):
         ctx = _ctx(tmp_path)
         host = _load(ctx, [])
-        agent = host.run(provider=MockProvider(), config=AgentConfig())
+        host.build_all()
+        agent = host.assemble(provider=MockProvider(), config=AgentConfig())
         await host.materialize()
 
         assert sorted(ctx.tools.names()) == ["bash", "edit", "read", "skill", "write"]
@@ -576,12 +579,10 @@ class TestPluginSet:
 
         loaded = load_plugins(plugin_dirs=[plugins_dir], config=_ctx(tmp_path).config)
         first_ctx, second_ctx = _ctx(tmp_path), _ctx(tmp_path)
-        PluginHost(first_ctx, loaded.plugins).run(
-            provider=MockProvider(), config=AgentConfig()
-        )
-        PluginHost(second_ctx, loaded.plugins).run(
-            provider=MockProvider(), config=AgentConfig()
-        )
+        for ctx in (first_ctx, second_ctx):
+            host = PluginHost(ctx, loaded.plugins)
+            host.build_all()
+            host.assemble(provider=MockProvider(), config=AgentConfig())
 
         assert first_ctx.tools.get("greet") is not second_ctx.tools.get("greet")
         assert first_ctx.tools.get("bash") is not second_ctx.tools.get("bash")
@@ -604,7 +605,8 @@ class TestPluginSet:
         )
         ctx = _ctx(tmp_path)
         host = _load(ctx, [plugins_dir])
-        host.run(provider=MockProvider(), config=AgentConfig())
+        host.build_all()
+        host.assemble(provider=MockProvider(), config=AgentConfig())
 
         host.close()
 
@@ -622,29 +624,28 @@ class TestHostContext:
         assert ctx.tools.names() == []
         assert ctx.commands.all() == []
 
-    def test_agent_starts_unset(self, tmp_path: Path):
-        assert _ctx(tmp_path).agent is None
+    def test_build_context_has_no_agent_and_assembly_grows_it(self, tmp_path: Path):
+        """The stage split, as a runtime fact: no agent during build(), the
+        same object carries one after assembly."""
+        ctx = _ctx(tmp_path)
+        assert not hasattr(ctx, "agent")
 
-    def test_register_helper_adds_commands(self, tmp_path: Path):
+        grown = PluginHost(ctx, []).assemble(
+            provider=MockProvider(), config=AgentConfig()
+        )
+
+        assert isinstance(ctx, HostContext)  # grown in place, same object
+        assert ctx.agent is grown
+
+    def test_commands_register_adds_commands(self, tmp_path: Path):
         from mocode.host.command import CONTINUE, Command
 
         async def _noop(ctx):
             return CONTINUE
 
         ctx = _ctx(tmp_path)
-        ctx.register(Command("/x", "test", handler=_noop))
+        ctx.commands.register(Command("/x", "test", handler=_noop))
         assert [c.name for c in ctx.commands.all()] == ["/x"]
-
-    @pytest.mark.asyncio
-    async def test_emit_needs_an_assembled_agent(self, tmp_path: Path):
-        from mocode.core.events import Notice
-
-        with pytest.raises(RuntimeError, match="assembled"):
-            await _ctx(tmp_path).emit(Notice(message="too early"))
-
-    def test_subscribe_needs_an_assembled_agent(self, tmp_path: Path):
-        with pytest.raises(RuntimeError, match="assembled"):
-            _ctx(tmp_path).subscribe()
 
     @pytest.mark.asyncio
     async def test_subscribe_reads_a_turn_out_of_band(self, tmp_path: Path):

@@ -38,7 +38,7 @@ from typing import Any, Callable
 
 from ....core.prompt import Section
 from ..base import Plugin
-from ..context import HostContext
+from ..context import BuildContext
 
 _GUIDELINES = "\n".join(
     [
@@ -88,7 +88,7 @@ def _agents(home: Path, cwd: Path) -> Callable[[dict[str, Any]], list[Section]]:
     return render
 
 
-def _environment(ctx: HostContext) -> str:
+def _environment(ctx: BuildContext) -> str:
     parts = [
         f"cwd: {ctx.cwd}",
         f"home: {ctx.home}",
@@ -110,7 +110,7 @@ class DefaultPromptsPlugin(Plugin):
         "The default prompt sections: guidelines, AGENTS.md, environment, time"
     )
 
-    def build(self, ctx: HostContext) -> None:
+    def build(self, ctx: BuildContext) -> None:
         ctx.prompt_sections += [
             Section("guidelines", _GUIDELINES, priority=10),
             Section("agents", _agents(ctx.home, ctx.cwd), priority=20),

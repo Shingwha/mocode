@@ -83,6 +83,7 @@ The module map and the reasoning per layer are in
 |---|---|
 | `type` | provider entry (`providers.<p>`) — which implementation builds it; registered via `MoCode.register_provider_type()`, absent means the built-in `openai` |
 | `context_window`, `max_output`, `extra_body` | model entry (`providers.<p>.models.<m>`) — physical properties; absence means "unknown", never a guessed default |
+| `retry` | model entry (`providers.<p>.models.<m>`) — per-model `RetryPolicy` override (`max_attempts`, `base_delay`, `max_delay`, `jitter`, `honor_retry_after`); unknown keys ignored, absent means the provider's own policy |
 | `tool_timeout`, `max_iterations`, `max_tool_calls`, `max_turn_seconds`, `tool_result_limit` | `agent` block — loop execution policy, identical whatever model is loaded. The block *is* the core `AgentConfig` (nested-serialized; unknown subkeys ignored), so a field is configurable the moment it exists — no mapping to keep in sync. Budgets are per turn, 0 = unlimited; `tool_result_limit` defaults to 50k chars |
 | `plugins.<name>` | the plugin, read through `ctx.plugin_config(name)` |
 | `active_provider`, `active_model` | the config file, as a *default* for new conversations; only `MoCode.set_default_model()` writes the file |
@@ -102,10 +103,26 @@ no output cap — MoCode never invents one.
 - `TYPE_CHECKING` guards for types used only in annotations.
 - No global state: dependencies are constructor-injected. `MoCode` is the
   composition root, `Conversation` is the unit an application holds.
-- Tool params are `dict[str, dict]` with `type`, `description`, optional
-  `default` / `optional` — not JSON Schema.
+- Tool arguments are declared as a JSON Schema object node (`Tool(schema=...)`),
+  validated by the built-in dependency-free checker (unknown keywords pass).
 - Standard library first; runtime deps are `openai`, `pyyaml`,
   `prompt-toolkit`, `questionary`, `pyperclip`, `wcwidth`.
+
+## Adding a hook point
+
+Nothing enforces that these stay in sync — that is exactly why the list is
+here. A new interception point on `AgentHook` touches four places, in order:
+
+1. the method on `AgentHook` (`core/hook.py`) — signature plus a docstring
+   saying what may be rewritten;
+2. the wrapper on `HookRunner` (`core/hook.py`) that fans it out with error
+   isolation;
+3. the export in `mocode/plugins/__init__.py` — a plugin author writes
+   against the SDK, not against `mocode.core`;
+4. the hook table in [docs/plugins.md](docs/plugins.md).
+
+Run the checklist both directions: adding without exporting hides the hook
+from every plugin author; exporting without documenting leaves it unusable.
 
 ## Testing Patterns
 

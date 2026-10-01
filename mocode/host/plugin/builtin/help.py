@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ...command import CONTINUE, Command, CommandContext, CommandResult
 from ..base import Plugin
-from ..context import HostContext
+from ..context import BuildContext
 
 
 async def _help(ctx: CommandContext) -> CommandResult:
@@ -32,8 +32,8 @@ class HelpPlugin(Plugin):
     name = "help"
     description = "List the commands this conversation offers"
 
-    def build(self, ctx: HostContext) -> None:
-        ctx.register(Command("/help", "Show available commands", handler=_help))
+    def build(self, ctx: BuildContext) -> None:
+        ctx.commands.register(Command("/help", "Show available commands", handler=_help))
 
 
 PLUGIN = HelpPlugin()

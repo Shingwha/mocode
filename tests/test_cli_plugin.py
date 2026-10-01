@@ -120,14 +120,13 @@ class TestBothSurfacesInOneDirectory:
 
     @pytest.mark.asyncio
     async def test_its_command_speaks_on_the_conversations_stream(self, tmp_path: Path):
-        from mocode.host.command import dispatch
 
         plugins = tmp_path / "plugins"
         _install(plugins, cli=CLI_CODE)
         app = _app(tmp_path, plugins)
         reader = app.conversation.subscribe()
 
-        await dispatch("/shout hello", conversation=app.conversation, commands=app.commands)
+        await app.commands.dispatch("/shout hello", conversation=app.conversation)
 
         notice = reader.take()
         assert notice is not None and notice.message == "shout: hello"

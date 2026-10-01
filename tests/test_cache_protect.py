@@ -101,6 +101,61 @@ class TestTheWorldIsAnnounced:
         assert "tool 'read' is now disabled" in _notices(conversation)[-1]["content"]
 
     @pytest.mark.asyncio
+    async def test_a_pinned_derived_section_holds_the_prompt_and_announces_itself(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        """K10, whole: the pin keeps the prompt byte-identical while the
+        registry it derives from moves, and the notice carries the section's
+        live diff — the model hears what the prompt cannot say."""
+        from mocode.core.prompt import Section
+
+        conversation = _conversation(mc, _project(tmp_path, "a"), _answer("1"), _answer("2"))
+
+        def render(_ctx: dict) -> str:
+            offered = sorted(conversation.tools.names())
+            return "callable tools: " + ", ".join(offered)
+
+        conversation.ctx.prompt_sections.append(
+            Section("tools-sdk", render=render, priority=40, pinned=True, derived_from="tools")
+        )
+        await conversation.chat("first")
+        frozen = conversation.agent.system_prompt
+
+        conversation.tools.disable("read")
+        await conversation.chat("second")
+
+        # The prompt never moved — the pin did its job.
+        assert conversation.agent.system_prompt == frozen
+        notice = _notices(conversation)[-1]["content"]
+        assert "derived section 'tools-sdk' changed:" in notice
+        assert "-callable tools: bash, edit, read, skill, write" in notice
+        assert "+callable tools: bash, edit, skill, write" in notice
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_re_renders_the_pinned_section(self, mc: MoCode, tmp_path: Path):
+        from mocode.core.prompt import Section
+
+        conversation = _conversation(mc, _project(tmp_path, "a"), _answer("1"), _answer("2"))
+
+        def render(_ctx: dict) -> str:
+            offered = sorted(conversation.tools.names())
+            return "callable tools: " + ", ".join(offered)
+
+        conversation.ctx.prompt_sections.append(
+            Section("tools-sdk", render=render, priority=40, pinned=True, derived_from="tools")
+        )
+        await conversation.chat("first")
+
+        conversation.tools.disable("read")
+        conversation.rebuild_prompt()
+        await conversation.chat("second")
+
+        # A rebuild is the deliberate cache loss: the pin dropped, the
+        # section re-rendered from the registry as it now stands.
+        assert "callable tools: bash, edit, skill, write" in conversation.agent.system_prompt
+        assert _notices(conversation) == []
+
+    @pytest.mark.asyncio
     async def test_a_switch_back_on_is_news_again(self, mc: MoCode, tmp_path: Path):
         conversation = _conversation(
             mc, _project(tmp_path, "a"), _answer("1"), _answer("2"), _answer("3")

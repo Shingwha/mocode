@@ -1,13 +1,24 @@
-"""HostContext — the shared blackboard between the host and its plugins."""
+"""BuildContext / HostContext — the shared blackboard between the host and its
+plugins, split by lifecycle stage.
+
+A plugin sees the context in two stages, and the stages are *types*:
+``build()`` receives a :class:`BuildContext` — the contribution targets, the
+configuration and the paths — and nothing about the agent, because the agent
+does not exist until every plugin has contributed. ``prepare()``, ``close()``
+and call time receive a :class:`HostContext`: the same object, grown by
+assembly with its ``agent`` attached. What used to be a ``RuntimeError``
+("emit during build") is now a fact a type checker can see before anything
+runs.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from ...core.tool import ToolRegistry
-from ..command import Command, CommandRegistry
+from ..command import CommandRegistry
 from ..config import Config
 
 if TYPE_CHECKING:
@@ -30,7 +41,7 @@ class _StampingToolRegistry(ToolRegistry):
     the stamp. Outside that window a registration belongs to the host itself.
     """
 
-    def __init__(self, ctx: "HostContext"):
+    def __init__(self, ctx: "BuildContext"):
         super().__init__()
         self._ctx = ctx
 
@@ -40,23 +51,21 @@ class _StampingToolRegistry(ToolRegistry):
 
 
 @dataclass
-class HostContext:
-    """Everything a plugin may read, and everything it may contribute to.
+class BuildContext:
+    """What ``build()`` receives: contribution targets plus configuration.
 
     One context belongs to one conversation: ``cwd`` is the project that
-    conversation works in, ``tools``/``commands``/``hooks``/``prompt_sections``
-    are its contributions, and ``agent`` is its loop once assembled.
-
-    Fields fall into three groups:
-
-    - **Ready at construction**: paths, config, and the shared registries.
-    - **Contribution targets**: ``tools`` / ``commands`` / ``hooks`` /
-      ``prompt_sections`` — plugins write into these during ``build()``.
-    - **Assigned later**: ``agent``, set by the host once the loop is built.
+    conversation works in, and ``tools`` / ``commands`` / ``hooks`` /
+    ``prompt_sections`` are its contributions. There is no agent here — the
+    agent is assembled after every plugin has contributed — so a plugin that
+    needs call-time abilities (an event stream, a sub-agent) creates its own
+    objects in ``build()`` and reaches the loop through the
+    :class:`HostContext` this same object becomes, or through the
+    ``ToolCallContext`` a tool receives.
 
     There is no display here on purpose. A plugin that has something to say
-    publishes an event (:meth:`emit`); whatever is watching reads the stream,
-    and the host never learns what shape it has.
+    publishes an event (:meth:`HostContext.emit`); whatever is watching reads
+    the stream, and the host never learns what shape it has.
     """
 
     # ── Host state ──
@@ -96,9 +105,6 @@ class HostContext:
     #: its slot's contents (:meth:`plugin_state`).
     plugin_states: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    # ── Assigned after assembly ──
-    agent: AgentLoop | None = None
-
     def __post_init__(self) -> None:
         if self.tools is None:
             self.tools = _StampingToolRegistry(self)
@@ -127,10 +133,33 @@ class HostContext:
         """
         return self.plugin_states.setdefault(name, {})
 
-    def register(self, *commands: Command) -> None:
-        """Register slash commands contributed by a plugin."""
-        for command in commands:
-            self.commands.register(command)
+    def _with_agent(self, agent: "AgentLoop") -> "HostContext":
+        """The host view of this very context: the same object, its agent
+        attached.
+
+        Called once, by :meth:`PluginHost.assemble
+        <mocode.host.plugin.host.PluginHost.assemble>`, after every plugin has
+        built. Identity is the point: a contributor that kept the context it
+        was built with — the cache-protect watcher, a tool closing over
+        ``ctx`` — sees the agent appear on the object it already holds, so
+        nothing saved during ``build()`` goes stale when assembly happens.
+        """
+        self.__class__ = HostContext
+        self.agent = agent
+        return self  # type: ignore[return-value]
+
+
+@dataclass
+class HostContext(BuildContext):
+    """The same context once the loop exists — what ``prepare()``, ``close()``
+    and call time receive.
+
+    Reached by assembly (a :class:`BuildContext` grows into this, same
+    object) or constructed directly around an agent that already exists. The
+    agent is never ``None`` here; that was the whole point of the split.
+    """
+
+    agent: AgentLoop = field(kw_only=True)
 
     async def emit(self, event: "Event") -> None:
         """Publish an event on this conversation's stream.
@@ -142,14 +171,12 @@ class HostContext:
         see what plugins said while it ran; between turns it carries no run id
         and belongs to the conversation stream alone. Either way it is never
         folded into the run's live state: that folding happens where the run
-        owns the event, in the loop's own publishing path. Available at call
-        time — during ``build()`` there is no agent to publish through yet.
+        owns the event, in the loop's own publishing path.
+
+        Legal in ``prepare()`` and ``close()`` and at call time. A tool that
+        wants to report progress mid-call has a shorter path: its
+        ``ToolCallContext`` carries its own ``emit``.
         """
-        if self.agent is None:
-            raise RuntimeError(
-                "ctx.emit() during build(): the agent is assembled after every "
-                "plugin has contributed — emit at call time instead"
-            )
         turn = self.agent.turn
         if turn is not None and not turn.done and not event.run_id:
             event.run_id = turn.id
@@ -164,13 +191,33 @@ class HostContext:
         bounded backlog and says what it dropped. Close it in
         :meth:`Plugin.close <mocode.host.plugin.base.Plugin.close` when it
         should not outlive the conversation.
-
-        Like :meth:`emit`, this works at call time — during ``build()`` there
-        is no agent to subscribe to yet.
         """
-        if self.agent is None:
-            raise RuntimeError(
-                "ctx.subscribe() during build(): the agent is assembled after "
-                "every plugin has contributed — subscribe at call time instead"
-            )
         return self.agent.channel.subscribe(since=since)
+
+    def spawn(
+        self,
+        *,
+        system_prompt: str,
+        tools: ToolRegistry | None = None,
+        model: ModelSpec | None = None,
+        visible: bool = True,
+    ) -> AgentLoop:
+        """A sub-agent on this conversation's setup — ``derive()`` with the
+        plugin-facing defaults fixed:
+
+        * events are **visible** by default (``visible=True`` shares this
+          agent's channel, so every reader of the conversation sees the
+          nested work; ``visible=False`` gives the child a private stream),
+        * hooks are **not** inherited (a sub-agent should not inherit the
+          host's display or policy hooks — pass nothing and it runs clean),
+        * tools default to a live copy of this agent's registry.
+
+        Call-time use: during ``build()`` there is no agent yet. A tool that
+        spawns closes over this context and spawns per call.
+        """
+        return self.agent.derive(
+            system_prompt=system_prompt,
+            tools=tools if tools is not None else self.agent.tool_registry.select(),
+            model=model,
+            channel=self.agent.channel if visible else None,
+        )

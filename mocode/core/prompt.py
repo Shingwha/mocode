@@ -34,11 +34,43 @@ Content = str | list["Section"] | Callable[[dict[str, Any]], str]
 
 @dataclass
 class Section:
+    """One piece of a prompt.
+
+    ``content`` is static text, nested sections, or a callable receiving the
+    builder's context; ``render`` is the same callable idea as a first-class
+    field — a section that renders itself, which is the shape a section
+    derived from live state wants (see ``pinned`` and ``derived_from``).
+
+    ``pinned=True`` freezes the section's *rendered* bytes after the first
+    :meth:`Prompt.build <Prompt.build>` — a section that re-renders from a
+    live registry on every build would fight the frozen prompt around it.
+    The cache survives until :meth:`refresh`, which is what a deliberate
+    re-render (the host's rebuild) calls.
+
+    ``derived_from`` declares lineage — ``"tools"`` says "my text is derived
+    from the tool registry" — so a watcher that diffs the source can also
+    diff the section. It is metadata: nothing in this module reads it.
+    """
+
     name: str
-    content: Content
-    priority: int = 0
-    enabled: bool = True
-    attrs: dict[str, str] = field(default_factory=dict)
+    content: Content | None = None
+    priority: int = field(kw_only=True, default=0)
+    enabled: bool = field(kw_only=True, default=True)
+    attrs: dict[str, str] = field(kw_only=True, default_factory=dict)
+    render: Callable[[dict[str, Any]], str] | None = field(kw_only=True, default=None)
+    pinned: bool = field(kw_only=True, default=False)
+    derived_from: str | None = field(kw_only=True, default=None)
+    #: The render-once cache for pinned sections — written by ``Prompt.build``,
+    #: dropped by :meth:`refresh`.
+    _pinned_text: "str | None" = field(default=None, init=False, repr=False, compare=False)
+    _pinned_ready: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def refresh(self) -> None:
+        """Drop the pinned render cache — the next build re-renders this
+        section. The deliberate invalidation: a rebuild wants fresh content
+        even from sections pinned for cache stability."""
+        self._pinned_text = None
+        self._pinned_ready = False
 
 
 class Prompt:
@@ -91,10 +123,13 @@ class Prompt:
         return self
 
     def render(self, section: Section) -> str | None:
-        """One section rendered as its XML tag, exactly as ``build()`` emits it.
+        """One section rendered as its XML tag — the **live** render, never
+        the pin cache.
 
         ``None`` when it renders to nothing — the caller skips it the same
-        way ``build`` does.
+        way ``build`` does. Pinning is a ``build()`` behaviour (a frozen
+        prompt needs stable bytes); a caller asking "what would this section
+        say now" — a diff, an inspection — wants the truth of the moment.
         """
         content = self._render(section)
         if not content:
@@ -102,8 +137,10 @@ class Prompt:
         return _xml_tag(section.name, content, **section.attrs)
 
     def _render(self, section: Section) -> str | None:
-        content = section.content
-        if callable(content):
+        content: Content | None = section.content
+        if section.render is not None:
+            content = section.render(self._context)
+        elif callable(content):
             content = content(self._context)
 
         if isinstance(content, list):
@@ -119,7 +156,13 @@ class Prompt:
         return content if content else None
 
     def build(self, wrap: str = "system-prompt") -> str:
-        """Render all enabled sections into one XML string."""
+        """Render all enabled sections into one XML string.
+
+        A ``pinned`` section contributes its cached render here — rendered
+        once, then byte-identical until the section is :meth:`refreshed
+        <Section.refresh>` — so a section drawing from a live registry cannot
+        churn the prompt around it.
+        """
         ordered = sorted(
             enumerate(self._sections.values()),
             key=lambda pair: (pair[1].priority, pair[0]),
@@ -128,7 +171,13 @@ class Prompt:
         for _, s in ordered:
             if not s.enabled:
                 continue
-            content = self._render(s)
+            if s.pinned:
+                if not s._pinned_ready:
+                    s._pinned_text = self._render(s)
+                    s._pinned_ready = True
+                content = s._pinned_text
+            else:
+                content = self._render(s)
             if not content:
                 continue
             parts.append(_xml_tag(s.name, content, **s.attrs))

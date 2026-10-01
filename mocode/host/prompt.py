@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from ..core.prompt import Prompt
 
 if TYPE_CHECKING:
-    from .core.prompt import Section
+    from ..core.prompt import Section
     from .plugin.context import HostContext
 
 

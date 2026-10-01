@@ -53,6 +53,26 @@ class TestModelEntry:
         assert model.context_window is None
         assert model.max_output is None
 
+    def test_retry_roundtrips_and_drops_unknown_keys(self):
+        model = ModelEntry.from_dict(
+            {"retry": {"max_attempts": 3, "base_delay": 5.0, "bogus": 1}}
+        )
+        assert model.retry == {"max_attempts": 3, "base_delay": 5.0}
+        assert ModelEntry.from_dict(model.to_dict()).retry == model.retry
+
+    def test_an_empty_or_non_dict_retry_is_unset(self):
+        assert ModelEntry.from_dict({"retry": {}}).retry is None
+        assert ModelEntry.from_dict({"retry": "fast"}).retry is None
+
+    def test_retry_policy_builds_from_the_dict_or_stays_none(self):
+        from mocode.core.provider import RetryPolicy
+
+        policy = ModelEntry.from_dict(
+            {"retry": {"max_attempts": 3, "base_delay": 5.0}}
+        ).retry_policy()
+        assert policy == RetryPolicy(max_attempts=3, base_delay=5.0)
+        assert ModelEntry().retry_policy() is None
+
 
 class TestProviderEntry:
     def test_defaults(self):

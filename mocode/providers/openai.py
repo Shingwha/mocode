@@ -29,8 +29,8 @@ class OpenAIProvider:
 
     # The official API states on a 429 exactly when to come back, so the
     # default policy honours Retry-After over the exponential curve. The
-    # numbers otherwise match the kernel default; per-model overrides are a
-    # config concern, not a constructor one.
+    # numbers otherwise match the kernel default; a per-model override from
+    # config arrives through the constructor's retry_policy parameter.
     retry_policy = RetryPolicy(honor_retry_after=True)
 
     def __init__(
@@ -39,11 +39,16 @@ class OpenAIProvider:
         model: str = "gpt-4o",
         base_url: str | None = None,
         extra_body: dict[str, Any] | None = None,
+        retry_policy: RetryPolicy | None = None,
     ):
         self._api_key = api_key
         self._base_url = base_url
         self._client = None  # lazy — created on first call
         self._model = model
+        # A per-model override from config replaces the class default; absent
+        # keeps the provider's own policy.
+        if retry_policy is not None:
+            self.retry_policy = retry_policy
 
         # `stream_options` rides inside extra_body — token accounting is
         # configured per endpoint — and is lifted out so it is not sent twice.

@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from mocode.host.plugin.builtin.filesystem import ReadTool
-from mocode.host.plugin.builtin.shell import BashSession, BashTool
+from mocode.host.plugin.builtin.filesystem import read_tool
+from mocode.host.plugin.builtin.shell import BashSession, bash_tool
 from mocode.host.plugin.builtin.skills import (
     Skill,
     SkillManager,
     SkillMetadata,
-    SkillTool,
+    skill_tool,
 )
 from mocode.host.plugin.builtin.skills import parse_frontmatter
 from mocode.core import ToolError, ToolRegistry
@@ -87,7 +87,7 @@ class TestBashSession:
 
 class TestBashTool:
     def test_the_tool_asks_for_its_context_so_it_can_stream(self, tmp_path: Path):
-        tool = BashTool(tmp_path)
+        tool = bash_tool(tmp_path)
         assert tool.wants_context is True
         assert tool.is_async is True
         assert tool.result_key == "exit_code"
@@ -97,7 +97,7 @@ class TestBashTool:
         argument onto a ToolPolicy and reads the resolved value back."""
         from mocode.core.tool import ToolPolicy
 
-        tool = BashTool(tmp_path)
+        tool = bash_tool(tmp_path)
         assert tool.policy({"timeout": 7}) == ToolPolicy(timeout=7)
         assert tool.policy({}) == ToolPolicy(timeout=None)  # fall to config
 
@@ -111,7 +111,7 @@ class TestBashTool:
         async def publish(event: Event, *, fold: bool) -> None:
             pass
 
-        tool = BashTool(tmp_path)
+        tool = bash_tool(tmp_path)
         registry = ToolRegistry()
         registry.register(tool)
         dispatcher = ToolDispatcher(
@@ -125,7 +125,7 @@ class TestBashTool:
 
     @pytest.mark.asyncio
     async def test_restart_resets_the_session(self, tmp_path: Path):
-        tool = BashTool(tmp_path)
+        tool = bash_tool(tmp_path)
         await tool.run_async({"command": "export V=1"}, None)
         assert (await tool.run_async({"command": "echo $V"}, None)).content == "1"
         assert (await tool.run_async({"command": "x", "restart": True}, None)).content == (
@@ -139,7 +139,7 @@ class TestReadTool:
         (tmp_path / "subdir").mkdir()
         (tmp_path / "hello.py").write_text("print('hi')", encoding="utf-8")
 
-        result = ReadTool(tmp_path).run({"path": str(tmp_path)}).content
+        result = read_tool(tmp_path).run({"path": str(tmp_path)}).content
 
         assert result.startswith("[")
         assert "subdir/" in result
@@ -150,7 +150,7 @@ class TestReadTool:
         path = tmp_path / "a.py"
         path.write_text("one\ntwo\nthree\n", encoding="utf-8")
 
-        result = ReadTool(tmp_path).run({"path": str(path)})
+        result = read_tool(tmp_path).run({"path": str(path)})
 
         assert result.details == {"lines": 3, "total_lines": 3}
         assert "one" in result.content
@@ -159,7 +159,7 @@ class TestReadTool:
         path = tmp_path / "big.py"
         path.write_text("\n".join(str(i) for i in range(50)), encoding="utf-8")
 
-        result = ReadTool(tmp_path).run({"path": str(path), "offset": 1, "limit": 10})
+        result = read_tool(tmp_path).run({"path": str(path), "offset": 1, "limit": 10})
 
         assert result.details == {"lines": 10, "total_lines": 50}
 
@@ -167,23 +167,23 @@ class TestReadTool:
         (tmp_path / "__pycache__").mkdir()
         (tmp_path / "real.py").write_text("x", encoding="utf-8")
 
-        result = ReadTool(tmp_path).run({"path": str(tmp_path)}).content
+        result = read_tool(tmp_path).run({"path": str(tmp_path)}).content
 
         assert "__pycache__" not in result
         assert "real.py" in result
 
     def test_an_empty_directory_is_reported(self, tmp_path: Path):
-        result = ReadTool(tmp_path).run({"path": str(tmp_path)}).content
+        result = read_tool(tmp_path).run({"path": str(tmp_path)}).content
         assert "0 directories" in result and "0 files" in result
 
     def test_the_result_explains_the_path_is_a_directory(self, tmp_path: Path):
-        result = ReadTool(tmp_path).run({"path": str(tmp_path)}).content.lower()
+        result = read_tool(tmp_path).run({"path": str(tmp_path)}).content.lower()
         assert "directory" in result
         assert "shell" in result  # the way out is named, no specific tool is
 
     def test_a_directory_reports_no_line_count(self, tmp_path: Path):
         """``result_key`` is lines, and a listing has none — nothing is shown."""
-        assert ReadTool(tmp_path).run({"path": str(tmp_path)}).details == {}
+        assert read_tool(tmp_path).run({"path": str(tmp_path)}).details == {}
 
 
 def _make_skill_dir(base: Path, name: str, description: str, body: str = "") -> Path:
@@ -231,7 +231,7 @@ class TestSkills:
     def test_the_tool_returns_content_and_where_to_find_it(self, tmp_path: Path):
         skill_dir = _make_skill_dir(tmp_path, "fastapi", "FastAPI tips", "Use dependency injection.")
 
-        result = SkillTool(SkillManager([tmp_path])).run({"name": "fastapi"})
+        result = skill_tool(SkillManager([tmp_path])).run({"name": "fastapi"})
 
         assert "Base directory:" in result
         assert str(skill_dir) in result
@@ -239,7 +239,7 @@ class TestSkills:
 
     def test_an_unknown_skill_is_not_found(self, tmp_path: Path):
         with pytest.raises(ToolError) as exc:
-            SkillTool(SkillManager([tmp_path])).run({"name": "nope"})
+            skill_tool(SkillManager([tmp_path])).run({"name": "nope"})
         assert exc.value.code == "not_found"
 
     def test_skill_md_frontmatter_is_parsed(self):
