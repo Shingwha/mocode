@@ -42,13 +42,13 @@ CLI_CODE = """
     class AcmeCommands(CLIPlugin):
         name = "acme.cli"
 
-        def build(self, cli):
-            async def _shout(ctx):
-                await ctx.conversation.notify(f"shout: {ctx.args}")
+        def build(self, ctx):
+            self.ctx = ctx
+            async def _shout(c):
+                await c.conversation.notify(f"shout: {c.args}")
                 return CONTINUE
 
-            cli.commands.register(Command("/shout", "Shout it", handler=_shout))
-            cli.seen_conversation = cli.conversation is not None
+            ctx.commands.register(Command("/shout", "Shout it", handler=_shout))
 """
 
 
@@ -109,14 +109,21 @@ class TestBothSurfacesInOneDirectory:
         assert "/shout" in {c.name for c in app.commands.all()}
         assert "acme.cli" in [p.name for p in app.plugins]
 
-    def test_a_cli_plugin_is_built_against_the_terminal(self, tmp_path: Path):
-        """It can reach the commands, the screen and the conversation."""
+    def test_a_cli_plugin_is_built_against_the_context(self, tmp_path: Path):
+        """A narrow, stable surface: commands, drawers, ui — and no way in."""
         plugins = tmp_path / "plugins"
         _install(plugins, cli=CLI_CODE)
 
         app = _app(tmp_path, plugins)
+        plugin = next(p for p in app.plugins if p.name == "acme.cli")
 
-        assert app.seen_conversation is True
+        from mocode.cli import CLIContext
+
+        assert isinstance(plugin.ctx, CLIContext)
+        assert plugin.ctx.commands is app.commands   # the registry the app dispatches from
+        assert plugin.ctx.drawers is app.drawers    # the table the renderer reads
+        assert plugin.ctx.ui.is_interactive is False   # no terminal under a test pipe
+        assert not hasattr(plugin.ctx, "display") and not hasattr(plugin.ctx, "input")
 
     @pytest.mark.asyncio
     async def test_its_command_speaks_on_the_conversations_stream(self, tmp_path: Path):
