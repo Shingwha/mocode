@@ -323,10 +323,14 @@ A plugin object is created once, and `build()` runs once per conversation.
 **Keep the plugin itself stateless**: anything belonging to a conversation — a
 session handle, a cache, a counter — is created *inside* `build()`, not stored
 on `self`. All three shipped plugins work this way; `ShellPlugin.build` makes
-a fresh `bash` tool, and with it a fresh working directory and environment.
-That invariant is what lets one process serve several conversations from a
-single loaded plugin list. `close(ctx)` is where anything you acquired for a
-conversation is released.
+a fresh session and, around it, the fresh `bash` / `bash_output` /
+`kill_shell` tools — working directory, environment variables and background
+jobs included. That invariant is what lets one process serve several
+conversations from a single loaded plugin list. `close(ctx)` is where
+anything you acquired for a conversation is released — the shell plugin kills
+its background jobs there, reaching the session through the registry (the
+tool owns the session, the registry owns the tool), never through state on
+the plugin instance.
 
 ## Tools
 
@@ -712,5 +716,22 @@ terminal's own commands are the first implementation of this interface
 
 The config governs every plugin, built-ins included. Any keys other than
 `enabled` are handed to the plugin untouched via `ctx.plugin_config("<name>")`.
+The `shell` plugin, for instance, reads two:
+
+```jsonc
+{
+  "plugins": {
+    "shell": {
+      "max_background": 16,        // background jobs running at once
+      "background_timeout": 3600   // hard ceiling per job, seconds; 0 = none
+    }
+  }
+}
+```
+
+A background job's own `timeout` argument may lower that ceiling, never
+raise it. Background output is bounded regardless (2000 lines / 256KB per
+stream, oldest dropped and counted), and every job dies with the
+conversation — `restart`, `close`, no exceptions.
 
 To test a plugin against a scripted model — no network, no API key — see [testing.md](testing.md).
