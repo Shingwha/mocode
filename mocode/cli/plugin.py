@@ -5,7 +5,8 @@ Two surfaces, and the difference is who can use the result:
 * A **host plugin** (``<plugin>/mocode/plugin.py``, ``Plugin.build(ctx)``)
   contributes to the agent: tools, prompt sections, hooks, skills, and commands
   that work in any frontend because they only need a conversation.
-* A **terminal plugin** (``<plugin>/mocode.cli/plugin.py``, :meth:`CLIPlugin.build`)
+* A **terminal plugin** (``<plugin>/mocode.cli/plugin.py``, or a
+  ``mocode.cli/plugin/`` package, :meth:`CLIPlugin.build`)
   contributes to this application: chrome that only a terminal can honour — a
   command with a picker, a keybinding, a screen. It is built against the CLI
   itself, so it can reach ``cli.commands``, ``cli.display``, ``cli.input`` and
@@ -25,16 +26,19 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
-from ..host.plugin.loader import import_module_file, report, resolve_plugin, slugify
+from ..host.plugin.loader import (
+    code_entry,
+    import_module_file,
+    report,
+    resolve_plugin,
+    slugify,
+)
 
 if TYPE_CHECKING:
     from .app import CLIApp
 
 #: The directory a plugin uses to contribute to this frontend.
 NAMESPACE = "mocode.cli"
-
-#: The module inside it.
-ENTRY = "plugin.py"
 
 
 class CLIPlugin:
@@ -65,13 +69,15 @@ def load_cli_plugins(sources: Iterable[Path]) -> list[CLIPlugin]:
 
     *sources* are the plugin directories loaded for a project (``MoCode``
     exposes them as ``plugin_sources_for``); each one is asked for its
-    ``mocode.cli`` namespace and nothing else. A plugin that cannot be imported
-    is reported and skipped.
+    ``mocode.cli`` namespace and nothing else — with the same entry judgment
+    the host applies to ``mocode/``: ``plugin.py`` or a ``plugin/`` package,
+    and a near-miss reported rather than skipped. A plugin that cannot be
+    imported is reported and skipped.
     """
     found: list[CLIPlugin] = []
     for source in sources:
-        entry = Path(source) / NAMESPACE / ENTRY
-        if not entry.is_file():
+        entry = code_entry(Path(source) / NAMESPACE)
+        if entry is None:
             continue
         module = import_module_file(
             entry,
@@ -100,7 +106,6 @@ def build_cli_plugins(cli: "CLIApp", sources: Iterable[Path]) -> list[CLIPlugin]
 
 
 __all__ = [
-    "ENTRY",
     "NAMESPACE",
     "BuiltinCommands",
     "CLIPlugin",
