@@ -27,7 +27,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Sequence
 
 from ..core.agent import AgentConfig
-from ..core.tool import ToolRegistry
 from .command import CommandRegistry
 from .config import DEFAULT_CONFIG_PATH, Config
 from .conversation import Conversation
@@ -131,13 +130,17 @@ class MoCode:
             cwd=project,
             config=self.config,
             model=self.config.model_spec(key, name),
-            tools=ToolRegistry(),
             commands=commands,
             plugin_sources=list(loaded.sources),
             register_provider_type=self.register_provider_type,
             plugin_states=plugin_states,
         )
-        host = PluginHost(ctx, loaded.plugins, freeze=self._freeze_interface)
+        host = PluginHost(
+            ctx,
+            loaded.plugins,
+            sources=loaded.tool_sources,
+            freeze=self._freeze_interface,
+        )
         # Contributions come before the provider: a plugin may ship a provider
         # implementation and register its type in build(), and the conversation
         # that shipped it runs on it — not just the next one.

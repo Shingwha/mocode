@@ -26,6 +26,27 @@ class ToolError(Exception):
         super().__init__(message)
 
 
+class ToolConflictError(Exception):
+    """Two different sources registered a tool under the same name.
+
+    A registration-time explosion instead of a silent overwrite: whoever
+    registered first keeps the name, and the collision says whose is whose.
+    Same-source reregistration stays an overwrite (a plugin hot-updating its
+    own tools), and ``register(..., replace=True)`` forces the takeover.
+    """
+
+    def __init__(self, tool_name: str, existing: str, incoming: str):
+        self.tool_name = tool_name
+        self.existing = existing
+        self.incoming = incoming
+        super().__init__(
+            f"tool '{tool_name}' is already registered by "
+            f"{existing or '<unattributed>'}; refusing the one from "
+            f"{incoming or '<unattributed>'} — register with replace=True to "
+            f"force it"
+        )
+
+
 @dataclass
 class ToolResult:
     """What a tool returns when a bare string is not enough.
@@ -79,6 +100,11 @@ class Tool:
       - ``availability``: who may use the tool — the model, program code, or
         both (the default). A tool invisible to an audience is neither offered
         to it nor runnable by it; see :meth:`ToolRegistry.names`.
+      - ``source``: who registered the tool — a channel-prefixed name stamped
+        by the registration path (``builtin:<name>``, ``plugin:<name>``,
+        ``host``); empty means bare core. A self-reported value does not
+        survive host registration: the path is the authority, so a tool
+        cannot claim an identity its loader cannot back.
 
     A tool may declare a second parameter to receive its
     :class:`~mocode.core.hook.ToolCallContext`. That is how a long-running tool
@@ -104,6 +130,7 @@ class Tool:
         summary_key: str = "",
         result_key: str = "",
         availability: Literal["model", "program", "both"] = "both",
+        source: str = "",
     ):
         if availability not in ("model", "program", "both"):
             raise ValueError(
@@ -116,6 +143,7 @@ class Tool:
         self.summary_key = summary_key or (next(iter(params), ""))
         self.result_key = result_key
         self.availability = availability
+        self.source = source
         self._required = []
         normalized = {}
         for k, v in params.items():
@@ -230,7 +258,26 @@ class ToolRegistry:
         self._schema_cache: list[dict] | None = None
         self._frozen: list[dict] | None = None
 
-    def register(self, tool: Tool) -> "ToolRegistry":
+    def register(self, tool: Tool, *, replace: bool = False) -> "ToolRegistry":
+        """Register *tool*, refusing a takeover by a different source.
+
+        A same-name registration is an overwrite, as ever — but only when the
+        two agree on where they came from: both unattributed (bare core), or
+        both carrying the same source (a plugin hot-updating its own tools).
+        Two different non-empty sources collide loudly
+        (:class:`ToolConflictError`) instead of silently replacing each
+        other's work; ``replace=True`` forces the takeover knowingly.
+        """
+        existing = self._tools.get(tool.name)
+        if (
+            existing is not None
+            and existing is not tool
+            and not replace
+            and existing.source
+            and tool.source
+            and existing.source != tool.source
+        ):
+            raise ToolConflictError(tool.name, existing.source, tool.source)
         self._tools[tool.name] = tool
         self._disabled.discard(tool.name)
         self._schema_cache = None

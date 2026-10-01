@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import textwrap
 import time
+from pathlib import Path
 
 import pytest
 
@@ -11,9 +14,17 @@ from mocode.core.dispatch import DispatchResult, ToolDispatcher
 from mocode.core.events import Event, Notice, ToolCallFinished, ToolCallStarted
 from mocode.core.hook import AgentHook, HookRunner, IterationContext, ToolCallContext
 from mocode.core.provider import Response, Usage
-from mocode.core.tool import Tool, ToolError, ToolRegistry, ToolResult
+from mocode.core.tool import (
+    Tool,
+    ToolConflictError,
+    ToolError,
+    ToolRegistry,
+    ToolResult,
+)
 from mocode.host.config import Config
+from mocode.host.plugin.base import Plugin
 from mocode.host.plugin.context import HostContext
+from mocode.host.plugin.host import PluginHost, load_plugins
 
 from .providers import MockProvider, tool_call_response
 
@@ -482,6 +493,165 @@ class TestEmitAttribution:
 
         with pytest.raises(RuntimeError, match="build"):
             await host_ctx.emit(Notice(message="too early"))
+
+
+# ── source: who a tool belongs to ────────────────────────────
+
+
+def _sourced_tool(name: str, source: str) -> Tool:
+    return Tool(name, "d", {}, lambda a: f"ran:{name}", source=source)
+
+
+class _Registering(Plugin):
+    """A plugin that registers one tool — however that tool presents itself."""
+
+    def __init__(self, name: str, tool: Tool):
+        self.name = name
+        self._tool = tool
+
+    def build(self, ctx) -> None:
+        ctx.tools.register(self._tool)
+
+
+def _host_context_for_tools() -> HostContext:
+    """A HostContext whose registry stamps — no agent, no paths that matter."""
+    return HostContext(
+        home=Path(".") / "home",
+        cwd=Path("."),
+        config=Config(active_provider="p", active_model="m"),
+    )
+
+
+class TestToolSource:
+    def test_bare_core_registration_stays_unattributed(self):
+        registry = ToolRegistry()
+        registry.register(_echo_tool("echo"))
+        registry.register(_echo_tool("echo"))  # unattributed vs unattributed: overwrite
+
+        assert registry.get("echo").source == ""
+
+    def test_a_same_source_reregistration_is_a_hot_update(self):
+        registry = ToolRegistry()
+        registry.register(_sourced_tool("echo", "plugin:acme"))
+        registry.register(_sourced_tool("echo", "plugin:acme"))
+
+        assert registry.get("echo").source == "plugin:acme"
+
+    def test_different_sources_collide_loudly(self):
+        registry = ToolRegistry()
+        registry.register(_sourced_tool("echo", "builtin:shell"))
+
+        with pytest.raises(ToolConflictError) as exc:
+            registry.register(_sourced_tool("echo", "plugin:acme"))
+        assert (exc.value.existing, exc.value.incoming) == (
+            "builtin:shell",
+            "plugin:acme",
+        )
+
+    def test_one_sided_attribution_still_overrides(self):
+        registry = ToolRegistry()
+        registry.register(_sourced_tool("echo", "plugin:acme"))
+        registry.register(_echo_tool("echo"))
+        assert registry.get("echo").source == ""
+
+        registry.register(_sourced_tool("echo", "plugin:acme"))
+        registry.register(_echo_tool("echo"))
+        assert registry.get("echo").source == ""
+
+    def test_replace_forces_the_takeover(self):
+        registry = ToolRegistry()
+        registry.register(_sourced_tool("echo", "builtin:shell"))
+
+        registry.register(_sourced_tool("echo", "plugin:acme"), replace=True)
+
+        assert registry.get("echo").source == "plugin:acme"
+
+
+class TestSourceStamping:
+    def test_a_plugins_registrations_carry_its_channel_not_its_claim(self):
+        ctx = _host_context_for_tools()
+        lying = _sourced_tool("greet", "builtin:shell")  # a fake identity
+        host = PluginHost(
+            ctx, [_Registering("acme", lying)], sources=["plugin:acme"]
+        )
+
+        host.build_all()
+
+        assert ctx.tools.get("greet").source == "plugin:acme"
+
+    def test_a_registration_outside_any_plugin_is_the_hosts(self):
+        ctx = _host_context_for_tools()
+
+        ctx.tools.register(_echo_tool("manual"))
+
+        assert ctx.tools.get("manual").source == "host"
+
+    def test_a_registry_passed_in_is_kept_verbatim(self):
+        plain = ToolRegistry()
+        ctx = HostContext(
+            home=Path(".") / "home",
+            cwd=Path("."),
+            config=Config(active_provider="p", active_model="m"),
+            tools=plain,
+        )
+
+        ctx.tools.register(_echo_tool("mine"))
+
+        assert ctx.tools is plain
+        assert plain.get("mine").source == ""
+
+    def test_builtin_tools_get_their_builtin_identity(self, tmp_path):
+        ctx = HostContext(
+            home=tmp_path / "home",
+            cwd=tmp_path,
+            config=Config(active_provider="p", active_model="m"),
+        )
+        loaded = load_plugins(plugin_dirs=[], config=ctx.config)
+        PluginHost(ctx, loaded.plugins, sources=loaded.tool_sources).build_all()
+
+        assert ctx.tools.get("bash").source == "builtin:shell"
+        assert ctx.tools.get("read").source == "builtin:filesystem"
+        assert all(
+            source.startswith("builtin:")
+            for source in loaded.tool_sources
+        )
+
+    def test_a_discovered_plugin_gets_its_manifest_name(self, tmp_path):
+        plugin_dir = tmp_path / "plugins" / "acme"
+        (plugin_dir / "mocode").mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text(
+            json.dumps({"name": "acme"}), encoding="utf-8"
+        )
+        (plugin_dir / "mocode" / "plugin.py").write_text(
+            textwrap.dedent(
+                """
+                from mocode.plugins import Plugin, Tool
+
+                class AcmePlugin(Plugin):
+                    name = "acme"
+
+                    def build(self, ctx):
+                        ctx.tools.register(Tool(
+                            name="greet", description="g", params={},
+                            func=lambda args: "hi",
+                            source="builtin:shell",  # a claim the path overrides
+                        ))
+                """
+            ),
+            encoding="utf-8",
+        )
+        ctx = HostContext(
+            home=tmp_path / "home",
+            cwd=tmp_path,
+            config=Config(active_provider="p", active_model="m"),
+        )
+        loaded = load_plugins(
+            plugin_dirs=[tmp_path / "plugins"], config=ctx.config
+        )
+        PluginHost(ctx, loaded.plugins, sources=loaded.tool_sources).build_all()
+
+        assert "plugin:acme" in loaded.tool_sources
+        assert ctx.tools.get("greet").source == "plugin:acme"
 
 
 # ── program origin inside a real loop ────────────────────────
