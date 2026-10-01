@@ -8,7 +8,7 @@ from __future__ import annotations
 from functools import cache
 from typing import Any, AsyncIterator
 
-from ..core.provider import Chunk, ToolCallDelta, Usage
+from ..core.provider import Chunk, RetryPolicy, ToolCallDelta, Usage
 
 
 @cache
@@ -26,6 +26,12 @@ def _retriable_exceptions() -> tuple[type[Exception], ...]:
 
 class OpenAIProvider:
     """OpenAI-compatible API provider — implements Provider Protocol."""
+
+    # The official API states on a 429 exactly when to come back, so the
+    # default policy honours Retry-After over the exponential curve. The
+    # numbers otherwise match the kernel default; per-model overrides are a
+    # config concern, not a constructor one.
+    retry_policy = RetryPolicy(honor_retry_after=True)
 
     def __init__(
         self,

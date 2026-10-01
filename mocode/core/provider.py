@@ -179,13 +179,16 @@ class Provider(Protocol):
     edge — the dialect is declared here rather than abstracted away, so the
     kernel has exactly one message shape to keep correct.
 
-    All three members are required. A provider that cannot stream natively
+    All members are required. A provider that cannot stream natively
     yields a single chunk holding the whole response — the loop does not care
     which it is.
     """
 
     @property
     def model(self) -> str: ...
+
+    @property
+    def retry_policy(self) -> RetryPolicy: ...
 
     def is_retriable(self, exc: Exception) -> bool: ...
     def stream(
@@ -201,22 +204,86 @@ class Provider(Protocol):
 
 _retry_log = logging.getLogger(__name__)
 
-_MAX_RETRIES = 6        # 7 total attempts
-_BASE_DELAY = 1.0       # seconds
-_MAX_DELAY = 60.0       # cap
-_JITTER_MAX = 0.5       # random jitter range
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """The policy half of retrying: how often and how long to wait.
+
+    The orchestration half stays in the kernel (:func:`with_retry_stream`):
+    only the consumer of the stream knows that the retry window closes at the
+    first chunk, and only it can keep backoff sleeps cancellable. These
+    numbers, however, are knowledge about a backend — an official API and a
+    rate-limit-sensitive self-hosted endpoint should not share them — so each
+    provider carries its own policy and an explicit caller argument wins.
+
+    ``honor_retry_after``: when the failing response carries a numeric
+    ``Retry-After`` header, that value is slept instead of the exponential
+    backoff — the server said exactly when to come back.
+    """
+
+    max_attempts: int = 7           # including the first try, not just the retries
+    base_delay: float = 1.0         # seconds; doubles with every failure
+    max_delay: float = 60.0         # cap on any backoff sleep
+    jitter: float = 0.5             # uniform [0, jitter] added to every backoff
+    honor_retry_after: bool = True  # a numeric Retry-After beats exponential backoff
 
 
-def _compute_delay(attempt: int) -> float:
-    """Exponential backoff with jitter: base * 2^attempt + jitter, capped."""
-    delay = _BASE_DELAY * (2 ** attempt) + random.uniform(0, _JITTER_MAX)
-    return min(delay, _MAX_DELAY)
+_DEFAULT_RETRY_POLICY = RetryPolicy()
+
+
+def _resolve_retry_policy(
+    provider: Provider, policy: RetryPolicy | None
+) -> RetryPolicy:
+    """An explicit policy beats the provider's own; an undeclared attribute
+    falls back to the kernel default — so a provider (or a test double) that
+    never mentions ``retry_policy`` keeps working unchanged."""
+    return policy or getattr(provider, "retry_policy", None) or _DEFAULT_RETRY_POLICY
+
+
+def _compute_delay(attempt: int, policy: RetryPolicy | None = None) -> float:
+    """Exponential backoff with jitter: base * 2^attempt + jitter, capped.
+
+    ``attempt`` is the number of failures so far, so the sleep before the
+    n-th retry is ``base * 2**(n-1)`` plus jitter, capped at ``max_delay``.
+    """
+    p = policy or _DEFAULT_RETRY_POLICY
+    delay = p.base_delay * (2 ** attempt) + random.uniform(0, p.jitter)
+    return min(delay, p.max_delay)
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Best-effort ``Retry-After`` extraction; None when absent or unparsable.
+
+    Duck-typed on purpose — the kernel imports no HTTP client. SDK errors
+    carry the failed response as ``exc.response`` with ``.headers`` (already
+    case-insensitive on real header objects); a plain dict is scanned
+    case-insensitively. Numeric seconds are returned as-is; the HTTP-date
+    form is recognized only to be skipped, and the caller falls back to
+    exponential backoff.
+    """
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    get = getattr(headers, "get", None)
+    value = get("Retry-After") if get is not None else None
+    if value is None and isinstance(headers, dict):
+        for key, raw in headers.items():
+            if str(key).lower() == "retry-after":
+                value = raw
+                break
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:  # the HTTP-date form, or garbage — not ours to parse
+        return None
+    return max(seconds, 0.0)
 
 
 async def with_retry_stream(
     provider: Provider,
     *args: Any,
-    max_retries: int = _MAX_RETRIES,
+    policy: RetryPolicy | None = None,
 ) -> AsyncIterator[Chunk]:
     """Stream chunks from ``provider.stream(*args)``, retrying until the first.
 
@@ -225,10 +292,18 @@ async def with_retry_stream(
     failures after that propagate, and the caller decides what to do with a
     half-received response.
 
-    Uses ``provider.is_retriable()`` to decide what is worth retrying.
-    Cancellation is never retried.
+    Uses ``provider.is_retriable()`` to decide what is worth retrying. The
+    policy resolves as: an explicit ``policy`` argument, else the provider's
+    own ``retry_policy``, else the kernel default — a provider that never
+    declares one keeps working unchanged. Cancellation is never retried.
+
+    Backoff is exponential — ``base_delay * 2**(n-1)`` plus uniform jitter,
+    capped at ``max_delay``. With ``honor_retry_after`` a numeric
+    ``Retry-After`` on the failing response is slept instead, exactly as the
+    server stated it.
     """
-    for attempt in range(max_retries + 1):
+    p = _resolve_retry_policy(provider, policy)
+    for attempt in range(p.max_attempts):
         stream = provider.stream(*args)
         try:
             first = await anext(stream)
@@ -237,12 +312,15 @@ async def with_retry_stream(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            if not provider.is_retriable(exc) or attempt >= max_retries:
+            if not provider.is_retriable(exc) or attempt >= p.max_attempts - 1:
                 raise
-            delay = _compute_delay(attempt)
+            delay = _compute_delay(attempt, p)
+            retry_after = _retry_after_seconds(exc) if p.honor_retry_after else None
+            if retry_after is not None:
+                delay = retry_after
             _retry_log.warning(
                 "LLM call failed (%s), retrying in %.1fs (attempt %d/%d)",
-                type(exc).__name__, delay, attempt + 1, max_retries,
+                type(exc).__name__, delay, attempt + 1, p.max_attempts,
             )
             await asyncio.sleep(delay)
             continue
@@ -261,6 +339,7 @@ __all__ = [
     "ModelSpec",
     "Provider",
     "Response",
+    "RetryPolicy",
     "StreamAccumulator",
     "ToolCall",
     "ToolCallDelta",
