@@ -170,7 +170,7 @@ class GitStatusTool(Tool):
         super().__init__(
             name="git_status",
             description="Show the working tree status of the project.",
-            params={},
+            schema={"type": "object", "properties": {}},
             func=lambda args: "clean",
         )
 

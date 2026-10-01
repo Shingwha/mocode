@@ -15,12 +15,13 @@ mocode/
 ├── core/                the kernel — mechanism only, no app dependencies
 │   ├── agent.py         AgentConfig, AgentLoop (start/stream/chat/derive), Turn
 │   ├── channel.py       EventChannel, Subscription — the run's event stream
+│   ├── dispatch.py      ToolDispatcher — the one execution path for a tool call
 │   ├── events.py        Event + the eleven events a run emits
 │   ├── state.py         RunState — the events folded into a live snapshot
 │   ├── hook.py          AgentHook, HookRunner, contexts — the interception channel
 │   ├── prompt.py        Prompt, Section — section-based XML assembly
 │   ├── provider.py      Provider protocol, Chunk/Response DTOs, with_retry_stream
-│   └── tool.py          Tool, ToolError, ToolRegistry (freeze pins the offered interface)
+│   └── tool.py          Tool, ToolPolicy, ToolRegistry, the JSON-Schema checker
 ├── host/                the layer an application embeds
 │   ├── runtime.py       MoCode — the process runtime: config, plugins, sessions
 │   ├── conversation.py  Conversation — one project, one model, one history
@@ -110,7 +111,10 @@ Four primitives make features-as-plugins possible:
 - **Interceptable hooks** — `on_tool_start` may rewrite `ctx.tool_args` or set
   `ctx.deny` to veto a call; `on_tool_complete` may rewrite `ctx.tool_result`;
   `before_iteration` may rewrite `ctx.messages` and `ctx.system_prompt` (the
-  prompt rewrite is scoped to the run — restored when the turn ends).
+  prompt rewrite is scoped to the run — restored when the turn ends);
+  `before_request` / `after_response` bracket each provider call — the last
+  look at the payload about to be sent, and a usage-correction point after the
+  response.
   `ctx.status` records the outcome as one of the `TOOL_*` constants in
   `core/events.py` (`ok` / `error` / `timeout` / `denied` / `not_found`) so no
   one parses result strings.
@@ -134,7 +138,15 @@ events it caused: a vetoed call is a `ToolCallFinished` with `status="denied"`.
 
 Ordering is fixed so a consumer never sees a stale view: `on_tool_start` runs
 first, and `ToolCallStarted` is published with the *final* arguments;
-`on_tool_complete` runs before `ToolCallFinished`.
+`on_tool_complete` runs before `ToolCallFinished`; `before_request` runs after
+`before_iteration` and immediately before the provider call; `after_response`
+runs once a response is fully received, and a `usage` rewrite there is what
+`IterationFinished` reports and the turn's totals add up.
+
+**Provider retries do not run the request hooks.** The retry window closes
+before the first chunk arrives, and it belongs to the retry orchestration, not
+to request interception — a retried attempt is not a new request a hook should
+see again.
 
 ## Event attribution
 
@@ -178,6 +190,30 @@ belong to, so every reader can observe and audit them, but they never enter
 conversation stays what the model said and was answered, and the live state
 stays the model's side of the story.
 
+**Execution policy resolves in one order**: call-level
+(`dispatcher.run(..., timeout=...)`) over tool-level (the tool's
+`ToolPolicy` — a static override, or a callable reading the call's arguments,
+which is how `bash` maps its `timeout` argument) over config
+(`AgentConfig`). The effective timeout and result limit land on the
+`ToolCallContext` before the tool runs, so the tool and the completion hooks
+see exactly what the call ran under.
+
+## Tool arguments are JSON Schema
+
+A tool declares its arguments as a JSON Schema object node; `to_schema()`
+passes it through as the request's `parameters`, so what the model is offered
+and what the arguments are checked against are the same document — and nested
+object/array shapes, the MCP ecosystem's basic currency, are expressible. The
+checker is dependency-free and deliberately small: it enforces the common
+keywords (`type`, `required`, `properties`, `items`, `enum`, `anyOf`/`oneOf`,
+`default`) and passes everything else, logged at debug — forward compatibility
+beats false rejections in a kernel that must stay dependency-free. A
+violation is a `ToolError` (`missing_param` or `invalid_type`) flowing through
+the ordinary `error:` result pipeline, never breaking the turn. Defaults are
+filled at the top level and at every nested level the check reaches, and a
+Python `bool` is never accepted as an `integer` or `number` — it is an `int`
+subclass at home, not a number on the wire.
+
 ## Two provenance axes
 
 `source` and `origin` answer different questions about a tool, and neither can
@@ -203,8 +239,10 @@ start(prompt) → Turn
       ├─ per iteration:
       │   ├─ before_iteration(ctx)      intercept: messages / system_prompt writable
       │   ├─ IterationStarted
+      │   ├─ before_request(ctx)        intercept: the request about to be sent
       │   ├─ provider.stream(...)       retried by with_retry_stream
       │   │   └─ TextDelta / ReasoningDelta as chunks arrive
+      │   ├─ after_response(ctx)        intercept: usage / finish reason
       │   ├─ IterationFinished          usage + stop reason
       │   └─ per tool call, in parallel:
       │       ├─ on_tool_start(ctx)     intercept: rewrite args / deny
@@ -212,7 +250,7 @@ start(prompt) → Turn
       │       ├─ ToolOutput             as a streaming tool produces output
       │       ├─ on_tool_complete(ctx)  intercept: rewrite result
       │       └─ ToolCallFinished       status, result, duration
-      └─ RunFinished (cancelled=True when stopped) | RunFailed
+      └─ RunFinished                    stop_reason says how it ended | RunFailed
 ```
 
 Every turn ends with exactly one terminal event — including one that was
@@ -221,6 +259,17 @@ parked on `turn.failure` and the readers still get their `RunFailed`.
 `HookRunner` fans out with per-hook error isolation: a raising hook is logged
 and skipped, never fatal. A cancelled turn leaves the history replayable, with
 an answer for every assistant tool call.
+
+`RunFinished.stop_reason` says how the turn ended: `completed` when the last
+iteration produced the answer; `max_iterations`, `max_tool_calls` or
+`time_budget` when an `AgentConfig` budget cut it (all per turn, 0 =
+unlimited, all checked before each provider call — a cut is an ending, not a
+failure: the history stays replayable because every issued tool call keeps
+its answer); `cancelled` when the turn was stopped. `chat()` raises
+`IterationLimit` for the iteration cap rather than returning an empty string
+a caller could mistake for the model's answer. The wall-clock budget is not
+checked inside retry backoff: a turn mid-backoff may overshoot it by one
+backoff interval, by design.
 
 ## The host
 
