@@ -262,6 +262,7 @@ resolved policy for that call.
 | Files it ships | `ctx.plugin_sources` — the directories the project's plugins were loaded from |
 | Provider types | `ctx.register_provider_type(name, factory)` — see [providers.md](providers.md) |
 | Messages to the user | `await ctx.emit(Notice(...))` at call time — a `Notice` carries its own text and level |
+| Structured messages | `await ctx.emit_message(kind, data, block_id=...)` — a `PluginMessage` block; see below |
 | Watching the conversation | `ctx.subscribe()` at call time — the event stream, out-of-band |
 | Sub-agents | `ctx.spawn(system_prompt=..., ...)` at call time — see below |
 
@@ -322,10 +323,14 @@ A plugin object is created once, and `build()` runs once per conversation.
 **Keep the plugin itself stateless**: anything belonging to a conversation — a
 session handle, a cache, a counter — is created *inside* `build()`, not stored
 on `self`. All three shipped plugins work this way; `ShellPlugin.build` makes
-a fresh `bash` tool, and with it a fresh working directory and environment.
-That invariant is what lets one process serve several conversations from a
-single loaded plugin list. `close(ctx)` is where anything you acquired for a
-conversation is released.
+a fresh session and, around it, the fresh `bash` / `bash_output` /
+`kill_shell` tools — working directory, environment variables and background
+jobs included. That invariant is what lets one process serve several
+conversations from a single loaded plugin list. `close(ctx)` is where
+anything you acquired for a conversation is released — the shell plugin kills
+its background jobs there, reaching the session through the registry (the
+tool owns the session, the registry owns the tool), never through state on
+the plugin instance.
 
 ## Tools
 
@@ -521,6 +526,40 @@ The child's events on the conversation's channel reach channel subscribers
 `visible=False` gives the child a private stream instead. Nothing in `core/`
 knows what a sub-agent is.
 
+## Plugin messages — `emit_message` / `seal_message`
+
+A `Notice` is a line of text. When what a plugin wants to say has *structure*
+— progress with numbers, a completion with facts — publish it as a
+`PluginMessage` instead:
+
+```python
+await ctx.emit_message("rag/index", {"done": 12, "total": 40}, block_id="rag-1")
+await ctx.emit_message("rag/index", {"done": 40, "total": 40}, block_id="rag-1")
+await ctx.seal_message("rag-1")
+```
+
+`kind` is the discriminator and carries the namespace: a third-party plugin
+writes `"<plugin>/<type>"` (`"shell/background-done"` is the shell plugin's),
+and kinds without a `/` are reserved for built-ins. `data` is the JSON-ready
+payload. `block_id` addresses a **block**: messages that share one update the
+same display block instead of opening a new one — the shape for progress that
+keeps moving. A message without a `block_id` is a block of its own.
+
+`seal_message(block_id)` closes a block. What a frontend does with the
+addressing is its own policy, stated here so plugin authors know what to
+expect: the terminal keeps a block *open* — updatable in place — only while
+it is on screen; once committed to the scrollback it is immutable, and an
+update arriving after the seal is appended as a follow-up block (a `✓ shell_3
+completed, exit 0` line after the block that started it) rather than a
+rewrite. `emit_message` is legal in `prepare()`, in `close()` and at call
+time; during a turn the message is attributed to it, so the turn's readers
+see it, and between turns it belongs to the conversation stream alone.
+
+**A known limitation**: plugin messages are **not** persisted with the
+session. They speak to whoever is watching now; a resumed conversation does
+not replay them. Facts that must survive belong in `plugin_state()` or in the
+conversation history.
+
 ## Context compaction — a worked example
 
 Usage is *observed* from the event stream; the message list is *rewritten*
@@ -677,5 +716,22 @@ terminal's own commands are the first implementation of this interface
 
 The config governs every plugin, built-ins included. Any keys other than
 `enabled` are handed to the plugin untouched via `ctx.plugin_config("<name>")`.
+The `shell` plugin, for instance, reads two:
+
+```jsonc
+{
+  "plugins": {
+    "shell": {
+      "max_background": 16,        // background jobs running at once
+      "background_timeout": 3600   // hard ceiling per job, seconds; 0 = none
+    }
+  }
+}
+```
+
+A background job's own `timeout` argument may lower that ceiling, never
+raise it. Background output is bounded regardless (2000 lines / 256KB per
+stream, oldest dropped and counted), and every job dies with the
+conversation — `restart`, `close`, no exceptions.
 
 To test a plugin against a scripted model — no network, no API key — see [testing.md](testing.md).

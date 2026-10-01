@@ -421,7 +421,15 @@ class TestPluginHost:
         agent = host.assemble(provider=MockProvider(), config=AgentConfig())
         await host.materialize()
 
-        assert sorted(ctx.tools.names()) == ["bash", "edit", "read", "skill", "write"]
+        assert sorted(ctx.tools.names()) == [
+            "bash",
+            "bash_output",
+            "edit",
+            "kill_shell",
+            "read",
+            "skill",
+            "write",
+        ]
         assert ctx.agent is agent
         assert "<system-prompt>" in agent.system_prompt
 

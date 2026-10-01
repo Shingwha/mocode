@@ -272,11 +272,42 @@ class Notice(Event):
     type: ClassVar[str] = "notice"
 
 
+@dataclass(kw_only=True)
+class PluginMessage(Event):
+    """A plugin-authored entry on the conversation's stream.
+
+    The generic message channel: whatever a plugin wants to say as a
+    first-class entry — progress, a completion, structured state — travels as
+    this event rather than a type of its own, so a consumer written later can
+    render it without ever having imported the plugin. ``kind`` is the
+    discriminator; by convention a third-party plugin namespaces its kinds as
+    ``"<plugin>/<type>"`` (``"shell/background-done"``), while kinds without a
+    ``/`` are reserved for built-ins.
+
+    ``data`` is the payload, plain and JSON-ready. ``block_id`` addresses a
+    *block*: messages that share one update the same display block instead of
+    opening a new one, and a message without a block id is a block of its own.
+    ``sealed`` marks a block as finished — sent by ``seal_message``; an update
+    arriving after its block was sealed follows the frontend's append-only
+    follow-up policy rather than rewriting it.
+    """
+
+    kind: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
+    block_id: str = ""
+    sealed: bool = False
+    type: ClassVar[str] = "plugin_message"
+
+    def summary(self) -> str:
+        return f"plugin message: {self.kind}"
+
+
 __all__ = [
     "Event",
     "IterationFinished",
     "IterationStarted",
     "Notice",
+    "PluginMessage",
     "ReasoningDelta",
     "RunFailed",
     "RunFinished",
