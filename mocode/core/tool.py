@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 if TYPE_CHECKING:
     from .hook import ToolCallContext
@@ -24,6 +24,27 @@ class ToolError(Exception):
         self.message = message
         self.code = code
         super().__init__(message)
+
+
+class ToolConflictError(Exception):
+    """Two different sources registered a tool under the same name.
+
+    A registration-time explosion instead of a silent overwrite: whoever
+    registered first keeps the name, and the collision says whose is whose.
+    Same-source reregistration stays an overwrite (a plugin hot-updating its
+    own tools), and ``register(..., replace=True)`` forces the takeover.
+    """
+
+    def __init__(self, tool_name: str, existing: str, incoming: str):
+        self.tool_name = tool_name
+        self.existing = existing
+        self.incoming = incoming
+        super().__init__(
+            f"tool '{tool_name}' is already registered by "
+            f"{existing or '<unattributed>'}; refusing the one from "
+            f"{incoming or '<unattributed>'} — register with replace=True to "
+            f"force it"
+        )
 
 
 @dataclass
@@ -76,6 +97,14 @@ class Tool:
       - ``result_key``: which entry of :class:`ToolResult` ``details`` to show
         alongside that summary, so the same line can report what came back.
         Empty means "show nothing extra".
+      - ``availability``: who may use the tool — the model, program code, or
+        both (the default). A tool invisible to an audience is neither offered
+        to it nor runnable by it; see :meth:`ToolRegistry.names`.
+      - ``source``: who registered the tool — a channel-prefixed name stamped
+        by the registration path (``builtin:<name>``, ``plugin:<name>``,
+        ``host``); empty means bare core. A self-reported value does not
+        survive host registration: the path is the authority, so a tool
+        cannot claim an identity its loader cannot back.
 
     A tool may declare a second parameter to receive its
     :class:`~mocode.core.hook.ToolCallContext`. That is how a long-running tool
@@ -100,12 +129,21 @@ class Tool:
         tags: frozenset[str] = frozenset(),
         summary_key: str = "",
         result_key: str = "",
+        availability: Literal["model", "program", "both"] = "both",
+        source: str = "",
     ):
+        if availability not in ("model", "program", "both"):
+            raise ValueError(
+                f"Tool '{name}': availability must be 'model', 'program' or "
+                f"'both', got {availability!r}"
+            )
         self.name = name
         self.description = description
         self.tags = frozenset(tags)
         self.summary_key = summary_key or (next(iter(params), ""))
         self.result_key = result_key
+        self.availability = availability
+        self.source = source
         self._required = []
         normalized = {}
         for k, v in params.items():
@@ -179,6 +217,16 @@ class Tool:
         }
 
 
+#: What each audience may see. A tool declared for one audience only is
+#: invisible to the other — invisible means neither offered nor runnable.
+_AUDIENCES: dict[str, frozenset[str]] = {
+    "model": frozenset({"model", "both"}),
+    "program": frozenset({"program", "both"}),
+}
+
+Audience = Literal["model", "program"]
+
+
 class ToolRegistry:
     """Instance-scoped tool registry — storage and schema generation.
 
@@ -188,13 +236,20 @@ class ToolRegistry:
     — a disabled tool stays registered and ``get()``-able but is not offered to
     the model, exactly like a disabled prompt section is not rendered.
 
+    The projection is per **audience**: ``names()`` and friends answer for the
+    model by default, and ``audience="program"`` answers for code running
+    tools on its own behalf — one mechanism expresses an additive deployment
+    (everything ``both``), a folded one (the folded tools marked ``program``,
+    the model sees the fold point only) or a mixed one, without anyone
+    reaching for the freeze lever to fake it.
+
     The visible projection can also be *pinned* (:meth:`freeze`): the schemas
-    offered stop following the registry while every other view stays live.
-    That is the host's cache-protection lever — a request's tool payload held
-    byte-identical turn after turn, while a tool switched off after the freeze
-    is still absent from ``names()`` and still refuses to run. Off by default:
-    an unpinned registry reads live on every call, which is what an embedder
-    that wants the raw flexibility gets.
+    offered to the model stop following the registry while every other view
+    stays live. That is the host's cache-protection lever — a request's tool
+    payload held byte-identical turn after turn, while a tool switched off
+    after the freeze is still absent from ``names()`` and still refuses to
+    run. Off by default: an unpinned registry reads live on every call, which
+    is what an embedder that wants the raw flexibility gets.
     """
 
     def __init__(self):
@@ -203,7 +258,26 @@ class ToolRegistry:
         self._schema_cache: list[dict] | None = None
         self._frozen: list[dict] | None = None
 
-    def register(self, tool: Tool) -> "ToolRegistry":
+    def register(self, tool: Tool, *, replace: bool = False) -> "ToolRegistry":
+        """Register *tool*, refusing a takeover by a different source.
+
+        A same-name registration is an overwrite, as ever — but only when the
+        two agree on where they came from: both unattributed (bare core), or
+        both carrying the same source (a plugin hot-updating its own tools).
+        Two different non-empty sources collide loudly
+        (:class:`ToolConflictError`) instead of silently replacing each
+        other's work; ``replace=True`` forces the takeover knowingly.
+        """
+        existing = self._tools.get(tool.name)
+        if (
+            existing is not None
+            and existing is not tool
+            and not replace
+            and existing.source
+            and tool.source
+            and existing.source != tool.source
+        ):
+            raise ToolConflictError(tool.name, existing.source, tool.source)
         self._tools[tool.name] = tool
         self._disabled.discard(tool.name)
         self._schema_cache = None
@@ -222,9 +296,14 @@ class ToolRegistry:
     def all(self) -> list[Tool]:
         return list(self._tools.values())
 
-    def names(self) -> list[str]:
-        """Names of the enabled tools — the set the model is offered."""
-        return [name for name in self._tools if name not in self._disabled]
+    def names(self, *, audience: Audience = "model") -> list[str]:
+        """Names of the tools visible to *audience* — the set the model is offered."""
+        allowed = _AUDIENCES[audience]
+        return [
+            name
+            for name, tool in self._tools.items()
+            if name not in self._disabled and tool.availability in allowed
+        ]
 
     def enable(self, name: str) -> "ToolRegistry":
         self._disabled.discard(name)
@@ -253,29 +332,37 @@ class ToolRegistry:
         freeze disappears from ``names()`` (and refuses to run) while the
         payload the model was offered stays byte-identical. Pass a stored
         interface to reinstate one, the way a resumed session does.
+
+        What is pinned is the *model* projection, as ever; the program
+        projection keeps reading live.
         """
         if schemas is None:
             schemas = self._live_schemas()
         self._frozen = list(schemas)
         return self
 
-    def all_schemas(self) -> list[dict]:
-        if self._frozen is not None:
-            return self._frozen
-        if self._schema_cache is None:
-            self._schema_cache = self._live_schemas()
-        return self._schema_cache
+    def all_schemas(self, *, audience: Audience = "model") -> list[dict]:
+        """The schemas offered to *audience* — the model's by default."""
+        if audience == "model":
+            if self._frozen is not None:
+                return self._frozen
+            if self._schema_cache is None:
+                self._schema_cache = self._live_schemas()
+            return self._schema_cache
+        return self._live_schemas(audience)
 
-    def _live_schemas(self) -> list[dict]:
+    def _live_schemas(self, audience: Audience = "model") -> list[dict]:
+        allowed = _AUDIENCES[audience]
         return [
-            self._tools[name].to_schema()
-            for name in self._tools
-            if name not in self._disabled
+            tool.to_schema()
+            for name, tool in self._tools.items()
+            if name not in self._disabled and tool.availability in allowed
         ]
 
     def select(
         self,
         *,
+        audience: Audience = "model",
         include_tags: set[str] | None = None,
         exclude_tags: set[str] | None = None,
         include_names: set[str] | None = None,
@@ -283,13 +370,16 @@ class ToolRegistry:
     ) -> ToolRegistry:
         """Create a filtered view sharing the same Tool instances.
 
-        A tool is kept when it is enabled and matches every filter that is
-        supplied: ``include_tags`` / ``include_names`` are allow-lists,
-        ``exclude_tags`` / ``exclude_names`` are deny-lists.
+        A tool is kept when it is visible to *audience*, enabled, and matches
+        every filter that is supplied: ``include_tags`` / ``include_names``
+        are allow-lists, ``exclude_tags`` / ``exclude_names`` are deny-lists.
         """
         new = ToolRegistry()
+        allowed = _AUDIENCES[audience]
         for name, tool in self._tools.items():
             if name in self._disabled:
+                continue
+            if tool.availability not in allowed:
                 continue
             if include_names is not None and name not in include_names:
                 continue

@@ -42,10 +42,17 @@ class LoadedPlugins:
     to find its own namespace inside them (``<source>/mocode.cli/``) and which
     a plugin uses to reach the files it ships (``<source>/skills/``). The host
     hands the paths over without reading them.
+
+    ``tool_sources`` is aligned with ``plugins``: the channel-prefixed name
+    each one's tool registrations are stamped with — ``builtin:<name>`` for
+    the plugins MoCode ships, ``plugin:<manifest name>`` for discovered ones.
+    Attribution is a loader fact, so the host stamps it where the tools are
+    registered, never trusting what a plugin says about itself.
     """
 
     plugins: list[Plugin] = field(default_factory=list)
     sources: list[Path] = field(default_factory=list)
+    tool_sources: list[str] = field(default_factory=list)
 
 
 def builtin_plugins() -> list[Plugin]:
@@ -94,6 +101,7 @@ def load_plugins(
     for plugin in builtins:
         if _enabled(config, plugin.name, True):
             loaded.plugins.append(plugin)
+            loaded.tool_sources.append(f"builtin:{plugin.name}")
 
     for spec in discover(list(plugin_dirs), reserved=blocked):
         if not _enabled(config, spec.name, True):
@@ -103,6 +111,7 @@ def load_plugins(
         plugin = load_plugin(spec)
         if plugin is not None:
             loaded.plugins.append(plugin)
+            loaded.tool_sources.append(f"plugin:{spec.name}")
     return loaded
 
 
@@ -123,10 +132,19 @@ class PluginHost:
     """
 
     def __init__(
-        self, ctx: HostContext, plugins: Sequence[Plugin], *, freeze: bool = True
+        self,
+        ctx: HostContext,
+        plugins: Sequence[Plugin],
+        *,
+        sources: Sequence[str] | None = None,
+        freeze: bool = True,
     ) -> None:
         self.ctx = ctx
         self.plugins = list(plugins)
+        #: Aligned with ``plugins`` — each one's channel-prefixed source, from
+        #: :attr:`LoadedPlugins.tool_sources`, stamped onto the tools it
+        #: registers while it builds. Missing entries mean "unattributed".
+        self._sources = list(sources) if sources is not None else []
         #: Names of plugins whose build()/prepare()/close() failed — the rest
         #: still worked.
         self.failures: list[str] = []
@@ -137,23 +155,34 @@ class PluginHost:
         self._materialized = False
         self._pending_session: "Session | None" = None
 
+    def _each(self):
+        """(plugin, source) pairs — the source padded when not supplied."""
+        for index, plugin in enumerate(self.plugins):
+            yield plugin, self._sources[index] if index < len(self._sources) else ""
+
     def build_all(self) -> None:
         """Run every plugin's build(). One failure never stops the host."""
-        for plugin in self.plugins:
+        for plugin, source in self._each():
+            self.ctx._current_source = source
             try:
                 plugin.build(self.ctx)
             except Exception as e:
                 self.failures.append(plugin.name)
                 report(f"{plugin.name}: build() failed: {e}")
+            finally:
+                self.ctx._current_source = ""
 
     async def prepare_all(self) -> None:
         """Run every plugin's prepare(). One failure never stops the host."""
-        for plugin in self.plugins:
+        for plugin, source in self._each():
+            self.ctx._current_source = source
             try:
                 await plugin.prepare(self.ctx)
             except Exception as e:
                 self.failures.append(plugin.name)
                 report(f"{plugin.name}: prepare() failed: {e}")
+            finally:
+                self.ctx._current_source = ""
 
     def adopt_session(self, session: "Session") -> None:
         """Hand over the surface a resumed conversation should run on.

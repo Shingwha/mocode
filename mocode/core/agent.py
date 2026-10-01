@@ -18,12 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from dataclasses import dataclass, field, replace
 from typing import AsyncIterator, Awaitable, Callable
 from uuid import uuid4
 
 from .channel import EventChannel
+from .dispatch import ToolDispatcher
 from .events import (
     Event,
     IterationFinished,
@@ -33,14 +33,8 @@ from .events import (
     RunFinished,
     RunStarted,
     TextDelta,
-    TOOL_DENIED,
-    TOOL_ERROR,
-    TOOL_NOT_FOUND,
-    TOOL_TIMEOUT,
-    ToolCallFinished,
-    ToolCallStarted,
 )
-from .hook import HookRunner, IterationContext, ToolCallContext
+from .hook import HookRunner, IterationContext
 from .provider import (
     ModelSpec,
     Provider,
@@ -50,14 +44,7 @@ from .provider import (
     with_retry_stream,
 )
 from .state import RunState
-from .tool import (
-    DENIED_PREFIX,
-    ERROR_PREFIX,
-    TIMEOUT_PREFIX,
-    ToolError,
-    ToolRegistry,
-    split_result,
-)
+from .tool import ERROR_PREFIX, ToolRegistry
 from .turn import Turn
 
 
@@ -134,10 +121,21 @@ class AgentLoop:
         #: Where this conversation's events go. Pass one to let a derived agent
         #: report into the same stream as its parent.
         self.channel = channel if channel is not None else EventChannel()
+        #: The one execution path for a tool call — hook interception, the
+        #: switched-off check, timeout and cooperative cancellation, status
+        #: mapping, truncation, Started/Finished events. The loop runs every
+        #: model-origin call through it; anything driving tools of its own
+        #: (a plugin, a sub-agent tool) calls it with ``origin="program"`` and
+        #: gets the identical pipeline. See :mod:`mocode.core.dispatch`.
+        self.dispatcher = ToolDispatcher(
+            registry=self._tools,
+            hooks=self.hooks,
+            config=self.config,
+            publish=self._dispatch_publish,
+        )
         self._turn: Turn | None = None
         self._idle_state = RunState()
         self._run_id = ""
-        self._call_seq = 0
         self._failure: BaseException | None = None
         # Observation is in-band for hooks: the channel awaits them, so a hook
         # still sees every event before the run moves on.
@@ -442,7 +440,9 @@ class AgentLoop:
         events through, because the channel is the ordering point for everyone
         watching.
         """
-        tasks = [asyncio.create_task(self._one(call)) for call in tool_calls]
+        tasks = [
+            asyncio.create_task(self._dispatch_model_call(call)) for call in tool_calls
+        ]
         try:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for call, result in zip(tool_calls, results):
@@ -462,119 +462,13 @@ class AgentLoop:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _one(self, call: ToolCall) -> dict:
+    async def _dispatch_model_call(self, call: ToolCall) -> dict:
+        """One model-origin call through the dispatcher, as a tool message."""
         args, parse_error = self._parse_args(call)
-        return await self._run_tool(
-            call_id=self._next_call_id(call.id),
-            provider_id=call.id,
-            name=call.name,
-            args=args,
-            parse_error=parse_error,
+        result = await self.dispatcher.run(
+            call.name, args, call_id=call.id, parse_error=parse_error
         )
-
-    async def _run_tool(
-        self,
-        *,
-        call_id: str,
-        provider_id: str,
-        name: str,
-        args: dict,
-        parse_error: str | None,
-    ) -> dict:
-        """Run one tool call, publishing Started/Output/Finished around it.
-
-        Hooks intercept at two points: ``on_tool_start`` (rewrite args, veto via
-        deny) and ``on_tool_complete`` (rewrite the result). ``status`` records
-        the structured outcome so callers never parse the result text. The first
-        event is published *after* ``on_tool_start``, so a consumer only ever
-        sees final arguments.
-        """
-        tc = ToolCallContext(
-            tool_name=name,
-            tool_args=args,
-            tool_call_id=call_id,
-            emit=self._emit,
-        )
-        if parse_error is None:
-            await self.hooks.on_tool_start(tc)
-
-        await self._publish(
-            ToolCallStarted(call_id=call_id, name=name, args=dict(tc.tool_args))
-        )
-
-        started = time.monotonic()
-        if parse_error is not None:
-            tc.status = TOOL_ERROR
-            tc.tool_result = parse_error
-        elif tc.deny:
-            tc.status = TOOL_DENIED
-            tc.tool_result = f"{DENIED_PREFIX} {tc.deny}"
-        else:
-            await self._execute_tool(tc)
-        duration = time.monotonic() - started
-
-        await self.hooks.on_tool_complete(tc)
-        # After the hook, so a rewritten result is bounded like any other.
-        tc.tool_result = self._truncate(tc.tool_result or "")
-
-        await self._publish(
-            ToolCallFinished(
-                call_id=call_id,
-                name=name,
-                status=tc.status,
-                result=tc.tool_result,
-                error_code=tc.error_code,
-                duration=duration,
-                details=tc.tool_details,
-            )
-        )
-        return {"role": "tool", "tool_call_id": provider_id, "content": tc.tool_result}
-
-    async def _execute_tool(self, tc: ToolCallContext) -> None:
-        """Execute tc's tool, recording status/result on the context."""
-        tool = self._tools.get(tc.tool_name)
-        if tool is None:
-            tc.status = TOOL_NOT_FOUND
-            tc.tool_result = f"{ERROR_PREFIX} unknown tool '{tc.tool_name}'"
-            return
-        if tc.tool_name not in self._tools.names():
-            # Registered but switched off: the frozen interface still offers
-            # it, so the model may try — the refusal is the correction.
-            tc.status = TOOL_DENIED
-            tc.tool_result = f"{DENIED_PREFIX} tool '{tc.tool_name}' is switched off"
-            return
-
-        try:
-            if tool.is_async:
-                result = await asyncio.wait_for(
-                    tool.run_async(tc.tool_args, tc),
-                    timeout=self.config.tool_timeout,
-                )
-            else:
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(tool.run, tc.tool_args, tc),
-                    timeout=self.config.tool_timeout,
-                )
-        except asyncio.TimeoutError:
-            # The await is cancelled, not the worker: a sync tool keeps
-            # running until it notices the signal. The event tells it to.
-            tc.cancel_event.set()
-            tc.status = TOOL_TIMEOUT
-            tc.tool_timeout = self.config.tool_timeout
-            tc.tool_result = f"{TIMEOUT_PREFIX} {self.config.tool_timeout}s"
-        except asyncio.CancelledError:
-            # Same cooperative signal for a turn cancelled mid-call.
-            tc.cancel_event.set()
-            raise
-        except ToolError as e:
-            tc.status = TOOL_ERROR
-            tc.error_code = e.code
-            tc.tool_result = f"{ERROR_PREFIX} {e.code}: {e.message}"
-        except Exception as e:
-            tc.status = TOOL_ERROR
-            tc.tool_result = f"{ERROR_PREFIX} {e}"
-        else:
-            tc.tool_result, tc.tool_details = split_result(result)
+        return {"role": "tool", "tool_call_id": call.id, "content": result.content}
 
     @staticmethod
     def _parse_args(call: ToolCall) -> tuple[dict, str | None]:
@@ -587,17 +481,25 @@ class AgentLoop:
             return {}, f"{ERROR_PREFIX} tool arguments must be a JSON object"
         return args, None
 
-    def _truncate(self, result: str) -> str:
-        limit = self.config.tool_result_limit
-        if limit > 0 and len(result) > limit:
-            return result[:limit] + "\n... [truncated]"
-        return result
-
     # ---- Helpers ----
 
     async def _emit(self, event: Event) -> None:
         """Sink for hooks and tools — publish an event on the run's behalf."""
         await self._publish(event)
+
+    async def _dispatch_publish(self, event: Event, *, fold: bool) -> None:
+        """The dispatcher's sink: stamp the event, fold it when it is the run's.
+
+        Model-origin events fold into the turn's live state — the run's own
+        story. Program-origin ones (nested calls a plugin made on its own
+        behalf) are stamped with the same run id and reach every reader of the
+        channel, but the live state stays the model's side of the story, so
+        they are sent unfolded.
+        """
+        event.run_id = self._run_id
+        if fold and self._turn is not None:
+            self._turn.state.apply(event)
+        await self.channel.publish(event)
 
     async def _publish(self, event: Event) -> Event:
         """Stamp an event, fold it into the turn's state, and publish it.
@@ -606,20 +508,8 @@ class AgentLoop:
         whole run and ``state`` is already up to date by the time an inline
         subscriber (a hook) looks at it.
         """
-        event.run_id = self._run_id
-        if self._turn is not None:
-            self._turn.state.apply(event)
-        await self.channel.publish(event)
+        await self._dispatch_publish(event, fold=True)
         return event
-
-    def _next_call_id(self, provider_id: str = "") -> str:
-        """Identity for a tool call, shared by its events and its context.
-
-        Prefer the provider's own id so events correlate directly with the tool
-        message in the history; synthesize one when an endpoint omits it.
-        """
-        self._call_seq += 1
-        return provider_id or f"call_{self._call_seq}"
 
     @staticmethod
     def _tool_call_dicts(tool_calls: list[ToolCall]) -> list[dict]:

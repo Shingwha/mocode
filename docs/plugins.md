@@ -419,6 +419,44 @@ do: register a renderer. The event describes itself — that is what `summary()`
 is for — so a terminal, a web UI and a log all display it without the plugin
 knowing any of them exist.
 
+## Who a tool is for — and running one yourself
+
+`Tool` carries two facts about itself beyond its schema:
+
+- **`availability`** — who may use it: `"model"` (offered to the model only),
+  `"program"` (callable by code only, invisible to the model — the shape a
+  folded deployment uses), or `"both"`, the default. Invisible to an audience
+  means neither offered nor runnable: `registry.names(audience="program")` is
+  the projection code sees, and the dispatcher refuses a call from the wrong
+  side exactly like a switched-off tool.
+- **`source`** — who registered it. You do not set it: the host stamps every
+  registration with the plugin's channel-prefixed name (`plugin:<manifest
+  name>`; built-ins get `builtin:<name>`), so attribution is a fact of the
+  path and a tool cannot claim an identity its loader cannot back. What the
+  stamp buys everyone: a same-name registration from a *different* source
+  raises `ToolConflictError` at registration time instead of silently erasing
+  someone's work — name your tools distinctively, and collisions become loud.
+
+When your code — not the model — needs to run a tool, do not copy the loop's
+plumbing and do not call `tool.run` directly: both drift. Call the dispatcher
+every call already goes through:
+
+```python
+async def _run(self, args, ctx):        # one of your tools, mid-call
+    result = await self._ctx.agent.dispatcher.run(
+        "read", {"path": args["path"]},
+        origin="program",               # this call is yours, not the model's
+        parent_call_id=ctx.tool_call_id,
+    )
+    return result.content               # status / details / error_code alongside
+```
+
+Hooks intercept it, availability is enforced, timeouts and cooperative
+cancellation apply, the result is truncated and reported exactly as the
+model's calls are — and the nested call's events are observable on the channel
+while staying out of the conversation (`ToolDispatcher`'s program-origin
+contract; see [ARCHITECTURE.md](ARCHITECTURE.md)).
+
 ## Contributing to the terminal
 
 Chrome belongs to the frontend, so it goes in that frontend's namespace:
@@ -482,8 +520,12 @@ conversation. A hook may enrich it in `on_tool_complete` by writing to
 
 - **Plugins are trusted code.** Importing `mocode/plugin.py` executes it —
   same trust model as a pytest plugin.
-- **Name your tools and commands distinctively.** A later registration with
-  the same name replaces an earlier one.
+- **Name your tools and commands distinctively.** A same-name registration
+  from a different source raises `ToolConflictError` rather than quietly
+  replacing the earlier one: the host stamps every tool with the plugin that
+  registered it, and only a same-source reregistration — a plugin updating
+  its own tool — is an overwrite. `register(tool, replace=True)` forces a
+  takeover knowingly.
 - **Built-in names are reserved** (`filesystem`, `shell`, `skills`,
   `default-prompts`, `session`, `help`, `cache-protect`): a third-party plugin
   cannot shadow them. Overriding built-in behaviour means disabling the

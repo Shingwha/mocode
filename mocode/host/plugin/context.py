@@ -20,6 +20,25 @@ if TYPE_CHECKING:
     from ..runtime import ProviderFactory
 
 
+class _StampingToolRegistry(ToolRegistry):
+    """A registry that attributes every registration to whoever is registering.
+
+    ``source`` is a fact about the path, not a claim by the tool. The host
+    sets the current source around each plugin's ``build()`` / ``prepare()``,
+    and every tool registered in that window is stamped with it — a plugin
+    cannot claim a builtin's identity by saying so, because the loader backs
+    the stamp. Outside that window a registration belongs to the host itself.
+    """
+
+    def __init__(self, ctx: "HostContext"):
+        super().__init__()
+        self._ctx = ctx
+
+    def register(self, tool, *, replace: bool = False) -> "ToolRegistry":
+        tool.source = self._ctx._current_source or "host"
+        return super().register(tool, replace=replace)
+
+
 @dataclass
 class HostContext:
     """Everything a plugin may read, and everything it may contribute to.
@@ -62,6 +81,11 @@ class HostContext:
     register_provider_type: Callable[[str, "ProviderFactory"], None] | None = None
 
     # ── Contribution targets ──
+    #: Tools contributed for this conversation. The registry the context
+    #: builds stamps each registration with its source — who is registering
+    #: (the current plugin's channel-prefixed name, or the host) — so
+    #: attribution is a fact of the path. Passing a registry in keeps it
+    #: verbatim: an embedder that manages its own tools answers for them.
     tools: ToolRegistry = None  # type: ignore[assignment]
     commands: CommandRegistry = None  # type: ignore[assignment]
     hooks: list[AgentHook] = field(default_factory=list)
@@ -77,9 +101,13 @@ class HostContext:
 
     def __post_init__(self) -> None:
         if self.tools is None:
-            self.tools = ToolRegistry()
+            self.tools = _StampingToolRegistry(self)
         if self.commands is None:
             self.commands = CommandRegistry()
+        #: The source the current plugin's registrations are stamped with —
+        #: set by :class:`~mocode.host.plugin.host.PluginHost` around each
+        #: plugin's build()/prepare(), empty between them.
+        self._current_source = ""
 
     def plugin_config(self, name: str) -> dict:
         """Settings for plugin *name* from the ``plugins`` section of config.json."""
@@ -109,14 +137,22 @@ class HostContext:
 
         Works between turns as well as during one: a plugin with something to
         say does not need a run in flight and does not need to know who is
-        watching. Available at call time — during ``build()`` there is no agent
-        to publish through yet.
+        watching. During a run the event is attributed to it — stamped with
+        the turn's id unless the publisher claimed one — so the turn's readers
+        see what plugins said while it ran; between turns it carries no run id
+        and belongs to the conversation stream alone. Either way it is never
+        folded into the run's live state: that folding happens where the run
+        owns the event, in the loop's own publishing path. Available at call
+        time — during ``build()`` there is no agent to publish through yet.
         """
         if self.agent is None:
             raise RuntimeError(
                 "ctx.emit() during build(): the agent is assembled after every "
                 "plugin has contributed — emit at call time instead"
             )
+        turn = self.agent.turn
+        if turn is not None and not turn.done and not event.run_id:
+            event.run_id = turn.id
         await self.agent.channel.publish(event)
 
     def subscribe(self, *, since: int | None = None) -> "Subscription":

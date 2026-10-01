@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable, Literal
 
 from .events import TOOL_OK, ToolStatus
 
@@ -74,11 +74,23 @@ class ToolCallContext:
 
     ``tool_result`` is what the model reads; ``tool_details`` is structured data
     for everything else and never enters the conversation.
+
+    Provenance: ``origin`` says who asked for this call — ``"model"`` when the
+    model asked for it in a turn, ``"program"`` when code (a plugin, a
+    sub-agent tool) ran it on its own behalf — and ``parent_call_id`` names the
+    call a program-origin call is nested inside. A hook no longer has to parse
+    ``tool_call_id`` strings to tell the two apart. The program-origin
+    contract, enforced by :class:`~mocode.core.dispatch.ToolDispatcher`: those
+    calls' events reach the channel stamped with the run they belong to, but
+    never enter ``messages`` and never fold into the parent turn's
+    ``tool_calls_made`` count.
     """
 
     tool_name: str = ""
     tool_args: dict = field(default_factory=dict)
     tool_call_id: str = ""
+    origin: Literal["model", "program"] = "model"
+    parent_call_id: str | None = None
     deny: str | None = None
     status: ToolStatus = TOOL_OK
     error_code: str | None = None
