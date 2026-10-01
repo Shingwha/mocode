@@ -191,12 +191,6 @@ dependencies = [
     { name = "wcwidth" },
 ]
 
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
@@ -208,13 +202,10 @@ requires-dist = [
     { name = "openai", specifier = ">=1.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.52" },
     { name = "pyperclip", specifier = ">=1.8" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "questionary", specifier = ">=2.1.1" },
     { name = "wcwidth", specifier = ">=0.2" },
 ]
-provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [

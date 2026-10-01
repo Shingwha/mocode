@@ -1,5 +1,7 @@
 *.pyc
 __pycache__/
+.venv/
+.pytest_cache/
 session_*.json
 .mocode/
 .mimocode/
