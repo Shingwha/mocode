@@ -179,13 +179,16 @@ class Provider(Protocol):
     edge — the dialect is declared here rather than abstracted away, so the
     kernel has exactly one message shape to keep correct.
 
-    All three members are required. A provider that cannot stream natively
+    All members are required. A provider that cannot stream natively
     yields a single chunk holding the whole response — the loop does not care
     which it is.
     """
 
     @property
     def model(self) -> str: ...
+
+    @property
+    def retry_policy(self) -> RetryPolicy: ...
 
     def is_retriable(self, exc: Exception) -> bool: ...
     def stream(
@@ -201,22 +204,57 @@ class Provider(Protocol):
 
 _retry_log = logging.getLogger(__name__)
 
-_MAX_RETRIES = 6        # 7 total attempts
-_BASE_DELAY = 1.0       # seconds
-_MAX_DELAY = 60.0       # cap
-_JITTER_MAX = 0.5       # random jitter range
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """The policy half of retrying: how often and how long to wait.
+
+    The orchestration half stays in the kernel (:func:`with_retry_stream`):
+    only the consumer of the stream knows that the retry window closes at the
+    first chunk, and only it can keep backoff sleeps cancellable. These
+    numbers, however, are knowledge about a backend — an official API and a
+    rate-limit-sensitive self-hosted endpoint should not share them — so each
+    provider carries its own policy and an explicit caller argument wins.
+
+    ``honor_retry_after``: when the failing response carries a numeric
+    ``Retry-After`` header, that value is slept instead of the exponential
+    backoff — the server said exactly when to come back.
+    """
+
+    max_attempts: int = 7           # including the first try, not just the retries
+    base_delay: float = 1.0         # seconds; doubles with every failure
+    max_delay: float = 60.0         # cap on any backoff sleep
+    jitter: float = 0.5             # uniform [0, jitter] added to every backoff
+    honor_retry_after: bool = True  # a numeric Retry-After beats exponential backoff
 
 
-def _compute_delay(attempt: int) -> float:
-    """Exponential backoff with jitter: base * 2^attempt + jitter, capped."""
-    delay = _BASE_DELAY * (2 ** attempt) + random.uniform(0, _JITTER_MAX)
-    return min(delay, _MAX_DELAY)
+_DEFAULT_RETRY_POLICY = RetryPolicy()
+
+
+def _resolve_retry_policy(
+    provider: Provider, policy: RetryPolicy | None
+) -> RetryPolicy:
+    """An explicit policy beats the provider's own; an undeclared attribute
+    falls back to the kernel default — so a provider (or a test double) that
+    never mentions ``retry_policy`` keeps working unchanged."""
+    return policy or getattr(provider, "retry_policy", None) or _DEFAULT_RETRY_POLICY
+
+
+def _compute_delay(attempt: int, policy: RetryPolicy | None = None) -> float:
+    """Exponential backoff with jitter: base * 2^attempt + jitter, capped.
+
+    ``attempt`` is the number of failures so far, so the sleep before the
+    n-th retry is ``base * 2**(n-1)`` plus jitter, capped at ``max_delay``.
+    """
+    p = policy or _DEFAULT_RETRY_POLICY
+    delay = p.base_delay * (2 ** attempt) + random.uniform(0, p.jitter)
+    return min(delay, p.max_delay)
 
 
 async def with_retry_stream(
     provider: Provider,
     *args: Any,
-    max_retries: int = _MAX_RETRIES,
+    max_retries: int = _DEFAULT_RETRY_POLICY.max_attempts - 1,
 ) -> AsyncIterator[Chunk]:
     """Stream chunks from ``provider.stream(*args)``, retrying until the first.
 
@@ -261,6 +299,7 @@ __all__ = [
     "ModelSpec",
     "Provider",
     "Response",
+    "RetryPolicy",
     "StreamAccumulator",
     "ToolCall",
     "ToolCallDelta",
