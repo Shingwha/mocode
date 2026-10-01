@@ -86,21 +86,38 @@ class CLIApp:
         self.conversation = self.runtime.new_conversation(
             cwd=self.cwd, commands=self.commands
         )
+
+        # Rendering is a subscription, as ever — now folded into a transcript
+        # and painted from it. The drawer table sits between them: it is where
+        # message-like events pick up their lines, so the plugins'
+        # registrations (built below) and the renderer share one table.
+        from .plugin import DrawerRegistry
+
+        self.drawers = DrawerRegistry()
         self.renderer: "CLIRenderer | None" = None
         if self.display is not None:
             from .render import CLIRenderer
 
-            self.renderer = CLIRenderer(self.display, self.conversation)
+            self.renderer = CLIRenderer(
+                self.display, self.conversation, drawers=self.drawers
+            )
 
         # The terminal's own contributions — the commands that need a terminal,
         # plus whatever the project's plugins ship under `mocode.cli`. Built
         # last, so a plugin can reach the conversation it landed in; the
         # commands a conversation offers itself (/export, /clear, /help) were
         # registered before it existed, by the host's built-in plugins.
-        from .plugin import build_cli_plugins
+        from .plugin import CLIContext, UI, build_cli_plugins
 
+        self.ui = UI(
+            self.conversation,
+            is_interactive=bool(
+                self.interactive and self.display is not None and self.display.live
+            ),
+        )
+        self.ctx = CLIContext(commands=self.commands, drawers=self.drawers, ui=self.ui)
         self.plugins = build_cli_plugins(
-            self, self.runtime.plugin_sources_for(self.cwd)
+            self.ctx, self.runtime.plugin_sources_for(self.cwd)
         )
 
     # ── Dispatch ───────────────────────────────────────────

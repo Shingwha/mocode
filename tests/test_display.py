@@ -14,19 +14,27 @@ import pytest
 import re
 
 from mocode.cli import lines
-from mocode.cli.display import Display, clamp_visible
+from mocode.cli.display import Display
+from mocode.cli.painter import Painter, clamp_visible
 from mocode.cli.render import CLIRenderer
 from mocode.cli.theme import Theme
+from mocode.cli.transcript import Transcript
 from mocode.core import (
     AgentLoop,
     Event,
     HookRunner,
     Notice,
+    ReasoningDelta,
+    RunFailed,
+    TextDelta,
     Tool,
+    ToolCallFinished,
+    ToolCallStarted,
     ToolOutput,
     ToolRegistry,
     ToolResult,
 )
+from mocode.core.events import PluginMessage
 from mocode.core.provider import Response, ToolCall, Usage
 from mocode.testing import MockProvider, tool_call_response
 
@@ -358,6 +366,62 @@ class TestLiveBlock:
             ("1", "✓ c  c"),
         ]
 
+    def test_a_plugin_message_draws_its_summary(self, capsys):
+        """No drawer registered: the event still says itself, in one line."""
+        renderer = _renderer(_make_display(), ToolRegistry())
+
+        renderer.draw(
+            PluginMessage(kind="shell/background-done", data={"jobs": [{"id": "s1"}]})
+        )
+
+        assert _plain(capsys.readouterr().out) == "plugin message: shell/background-done\n"
+
+
+class TestPainterGolden:
+    """The live region's ANSI, locked byte for byte.
+
+    The escape sequence is the whole mechanism — an offset one row off
+    corrupts the screen — so one small batch is pinned exactly, not just
+    through the REWRITE pattern above.
+    """
+
+    def test_a_live_batch_writes_exact_bytes(self, capsys):
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        for event in (
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolCallStarted(call_id="b", name="read", args={"path": "y"}),
+            ToolCallFinished(call_id="a", name="read"),
+            ToolCallFinished(call_id="b", name="read"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript)
+
+        assert capsys.readouterr().out == (
+            # each call claims its row, in call order, while it runs
+            "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m\n"
+            "\x1b[2m·\x1b[0m \x1b[2mread  y…\x1b[0m\n"
+            # each verdict replaces its own row, from the bottom of the region
+            "\x1b[2A\x1b[K\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m\x1b[2B\r"
+            "\x1b[1A\x1b[K\x1b[92m✓\x1b[0m \x1b[96mread  y\x1b[0m\x1b[1B\r"
+        )
+
+    def test_a_redirected_painter_appends_the_verdict_only(self, capsys):
+        display = _make_display(live=False)
+        painter = Painter(display)
+        transcript = Transcript()
+        for event in (
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolCallFinished(call_id="a", name="read"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript)
+
+        out = capsys.readouterr().out
+        assert _plain(out) == "✓ read  x\n"     # no placeholder row in a log
+        assert "\x1b[" not in _plain(out)
+
     @pytest.mark.asyncio
     async def test_output_that_is_not_a_verdict_freezes_the_block(self, capsys):
         """A row is only rewritable while nothing else has been printed."""
@@ -404,10 +468,217 @@ class TestLiveBlock:
         self, capsys, monkeypatch
     ):
         """Rows above the fold have scrolled away; their offsets mean nothing."""
-        monkeypatch.setattr("mocode.cli.display.terminal_height", lambda: 3)
+        monkeypatch.setattr("mocode.cli.painter.terminal_height", lambda: 3)
 
         await _run_parallel(_make_display(live=True), {"a": 0.01, "b": 0.02, "c": 0.03})
 
         out = capsys.readouterr().out
         assert len([l for l in _plain(out).splitlines() if l.startswith("· ")]) == 3 - 1
         assert "✓ c  c" in _plain(out)   # the third call is appended when it ends
+
+
+class TestTranscript:
+    """The same event stream, folded into a document — no terminal involved."""
+
+    @staticmethod
+    def _registry() -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register(
+            Tool("echo", "d", {"value": {"type": "string", "description": "v"}},
+                 lambda a: "x", summary_key="value"),
+        )
+        return registry
+
+    async def _events(self, provider, *tools: Tool):
+        registry = ToolRegistry()
+        for tool in tools:
+            registry.register(tool)
+        agent = AgentLoop(
+            provider=provider,
+            system_prompt="t",
+            tools=registry,
+            hooks=HookRunner(),
+        )
+        return registry, [event async for event in agent.stream("hi")]
+
+    @staticmethod
+    def _messages() -> list[dict]:
+        return [
+            {"role": "user", "content": "ls 一下"},
+            {
+                "role": "assistant",
+                "content": "看一下。",
+                "tool_calls": [{
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "echo", "arguments": '{"value": "x"}'},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "c1", "content": "x"},
+            {"role": "assistant", "content": "里面有 3 行。"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_turn_folds_into_blocks(self):
+        """The shapes the renderer drew, as blocks: prose, the call, the rule."""
+        registry = ToolRegistry()
+        registry.register(
+            Tool("echo", "d", {"value": {"type": "string", "description": "v"}},
+                 lambda a: "x", summary_key="value")
+        )
+        _, events = await self._events(
+            MockProvider([
+                Response(
+                    content="let me check", usage=Usage(1, 1), finish_reason="tool_calls",
+                    tool_calls=tool_call_response("echo", '{"value":"x"}').tool_calls,
+                ),
+                Response(content="all done", usage=Usage(2, 2), finish_reason="stop"),
+            ]),
+            registry.get("echo"),
+        )
+
+        transcript = Transcript(registry)
+        for event in events:
+            transcript.apply(event)
+
+        assert [b.kind for b in transcript.blocks] == [
+            "answer", "tool", "answer", "rule",
+        ]
+        assert transcript.blocks[0].lines == [lines.Line(text="let me check")]
+        tool_block = transcript.blocks[1]
+        assert tool_block.state == "done"
+        assert tool_block.lines[0].icon == "✓" and tool_block.lines[0].text == "echo  x"
+        assert tool_block.meta["args"] == {"value": "x"}
+        assert transcript.blocks[3].lines[0].text == "↑3 ↓3 tokens"
+        assert set(transcript.blocks[3].lines[1].text) == {"─"}
+
+        # A pure fold: replaying the same events builds the same document.
+        replay = Transcript(registry)
+        for event in events:
+            replay.apply(event)
+        assert replay.blocks == transcript.blocks
+
+    @pytest.mark.asyncio
+    async def test_a_tools_live_output_is_kept_with_its_call(self):
+        async def chatty(args, ctx):
+            await ctx.emit(ToolOutput(call_id=ctx.tool_call_id, text="building\n"))
+            await ctx.emit(ToolOutput(call_id=ctx.tool_call_id, text="linking\n"))
+            return "building\nlinking"
+
+        _, events = await self._events(
+            MockProvider([
+                tool_call_response("make"),
+                Response(content="done", usage=Usage(1, 1), finish_reason="stop"),
+            ]),
+            Tool("make", "d", {}, chatty, with_context=True),
+        )
+
+        transcript = Transcript()
+        for event in events:
+            transcript.apply(event)
+
+        block = next(b for b in transcript.blocks if b.kind == "tool")
+        assert block.meta["output"] == "building\nlinking\n"   # kept, not drawn
+        assert len(block.lines) == 1                            # one line, as ever
+
+    def test_deltas_extend_one_streaming_block_per_kind(self):
+        transcript = Transcript()
+        transcript.apply(ReasoningDelta(text="think"))
+        transcript.apply(TextDelta(text="thus"))
+
+        assert [b.kind for b in transcript.blocks] == ["reasoning", "answer"]
+        assert transcript.blocks[0].state == "done"
+        assert transcript.blocks[0].lines == [lines.Line(text="think", style="reasoning")]
+        assert transcript.blocks[1].state == "streaming"
+        assert transcript.blocks[1].meta["text"] == "thus"
+
+    def test_a_failed_turn_closes_with_the_error_and_the_rule(self):
+        transcript = Transcript()
+        transcript.apply(RunFailed(error="boom", kind="ValueError"))
+
+        block = transcript.blocks[-1]
+        assert block.kind == "rule"
+        assert block.lines[0] == lines.notice("ValueError: boom", "error")
+        assert set(block.lines[1].text) == {"─"}
+
+    def test_plugin_messages_without_a_block_id_are_blocks_of_their_own(self):
+        transcript = Transcript()
+        transcript.apply(PluginMessage(kind="shell/background-done", data={"jobs": []}))
+        transcript.apply(PluginMessage(kind="shell/background-done", data={"jobs": [1]}))
+
+        assert [b.kind for b in transcript.blocks] == ["plugin", "plugin"]
+        # No drawer was registered, so the event describes itself — one line.
+        assert transcript.blocks[0].lines == [
+            lines.notice("plugin message: shell/background-done", "info")
+        ]
+
+    def test_one_block_id_folds_updates_into_one_block(self):
+        transcript = Transcript()
+        transcript.apply(PluginMessage(kind="rag/index", data={"done": 1}, block_id="rag"))
+        transcript.apply(PluginMessage(kind="rag/index", data={"done": 2}, block_id="rag"))
+        transcript.apply(PluginMessage(block_id="rag", sealed=True))
+
+        assert len(transcript.blocks) == 1
+        block = transcript.blocks[0]
+        assert block.state == "done"
+        assert block.meta["data"] == {"done": 2}
+
+    def test_an_update_after_the_seal_follows_the_block(self):
+        transcript = Transcript()
+        transcript.apply(PluginMessage(kind="shell/bg", data={"id": 1}, block_id="j1"))
+        transcript.apply(PluginMessage(block_id="j1", sealed=True))
+        transcript.apply(
+            PluginMessage(kind="shell/bg", data={"id": 1, "exit": 0}, block_id="j1")
+        )
+
+        block = transcript.blocks[0]
+        assert len(block.lines) == 2                      # the block, then its follow-up
+        assert block.meta["follow-ups"] == [{"id": 1, "exit": 0}]
+
+    def test_a_registered_drawer_decides_a_message_lines(self):
+        class Table:
+            def lines_for(self, event):
+                return [lines.Line(text=f"rag {event.data['done']}/40")]
+
+        transcript = Transcript(drawers=Table())
+        transcript.apply(PluginMessage(kind="rag/index", data={"done": 12}))
+
+        assert transcript.blocks[0].lines[0].text == "rag 12/40"
+
+    def test_an_unknown_event_becomes_a_notice_of_its_summary(self):
+        from dataclasses import dataclass
+
+        @dataclass
+        class Compacted(Event):
+            type = "compacted"
+            before: int = 0
+            after: int = 0
+
+            def summary(self) -> str:
+                return f"compacted {self.before} → {self.after}"
+
+        transcript = Transcript()
+        transcript.apply(Compacted(before=12, after=3))
+
+        assert transcript.blocks[0].kind == "notice"
+        assert transcript.blocks[0].lines == [lines.notice("compacted 12 → 3", "info")]
+
+    def test_history_folds_into_blocks_in_turn_shape(self):
+        transcript = Transcript(self._registry())
+        transcript.apply_history(self._messages(), self._registry())
+
+        assert [b.kind for b in transcript.blocks] == [
+            "user", "answer", "tool", "answer", "rule",
+        ]
+        assert transcript.blocks[0].lines == lines.prompt("ls 一下")
+        assert transcript.blocks[2].lines[0].icon == "✓"
+
+    def test_history_flattens_to_what_the_flat_replay_drew(self):
+        """The block fold and ``L.conversation`` are one vocabulary, not two."""
+        registry = self._registry()
+
+        transcript = Transcript(registry)
+        transcript.apply_history(self._messages(), registry)
+        flattened = [line for block in transcript.blocks for line in block.lines]
+
+        assert flattened == lines.conversation(self._messages(), registry)
