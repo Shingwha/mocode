@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
@@ -280,10 +281,34 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     return max(seconds, 0.0)
 
 
+class RetryDeadlineExceeded(Exception):
+    """The wall-clock deadline passed while retrying — backoff stops here.
+
+    Not a provider failure: the caller's time budget ran out while the
+    orchestrator was waiting to retry, so no chunk ever reached the caller
+    (this is raised only inside the retry window, which closes at the first
+    chunk). A caller should treat it as the budget endgame — the same
+    outcome as its own budget checkpoints — never as an error to surface or
+    to retry. Carries the provider name and the exception that triggered the
+    backoff (``last_error`` is None when the deadline was already gone
+    before the first attempt).
+    """
+
+    def __init__(self, provider: str, last_error: Exception | None = None) -> None:
+        if last_error is not None:
+            detail = f"last error: {type(last_error).__name__}: {last_error}"
+        else:
+            detail = "no attempt had failed yet"
+        super().__init__(f"time budget expired while retrying {provider} ({detail})")
+        self.provider = provider
+        self.last_error = last_error
+
+
 async def with_retry_stream(
     provider: Provider,
     *args: Any,
     policy: RetryPolicy | None = None,
+    deadline: float | None = None,
 ) -> AsyncIterator[Chunk]:
     """Stream chunks from ``provider.stream(*args)``, retrying until the first.
 
@@ -301,9 +326,19 @@ async def with_retry_stream(
     capped at ``max_delay``. With ``honor_retry_after`` a numeric
     ``Retry-After`` on the failing response is slept instead, exactly as the
     server stated it.
+
+    ``deadline`` (a ``time.monotonic`` moment; ``None`` = unlimited) bounds
+    the orchestration itself: it is checked at the top of every attempt and
+    again before every backoff sleep. Past it nothing is slept or retried —
+    :class:`RetryDeadlineExceeded` is raised, which the caller should treat
+    as the budget endgame, not an error. A pending ``Retry-After`` never
+    overrides the deadline: the budget is the hard boundary.
     """
     p = _resolve_retry_policy(provider, policy)
+    last_error: Exception | None = None
     for attempt in range(p.max_attempts):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise RetryDeadlineExceeded(provider.model, last_error) from last_error
         stream = provider.stream(*args)
         try:
             first = await anext(stream)
@@ -312,12 +347,17 @@ async def with_retry_stream(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            last_error = exc
             if not provider.is_retriable(exc) or attempt >= p.max_attempts - 1:
                 raise
             delay = _compute_delay(attempt, p)
             retry_after = _retry_after_seconds(exc) if p.honor_retry_after else None
             if retry_after is not None:
                 delay = retry_after
+            if deadline is not None and time.monotonic() >= deadline:
+                # The budget is a hard boundary: a pending Retry-After does
+                # not buy back a sleep or a retry past it.
+                raise RetryDeadlineExceeded(provider.model, exc) from exc
             _retry_log.warning(
                 "LLM call failed (%s), retrying in %.1fs (attempt %d/%d)",
                 type(exc).__name__, delay, attempt + 1, p.max_attempts,
@@ -339,6 +379,7 @@ __all__ = [
     "ModelSpec",
     "Provider",
     "Response",
+    "RetryDeadlineExceeded",
     "RetryPolicy",
     "StreamAccumulator",
     "ToolCall",
