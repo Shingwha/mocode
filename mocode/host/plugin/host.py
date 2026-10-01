@@ -206,16 +206,19 @@ class PluginHost:
         self._materialized = True
         session = self._pending_session
         if session is not None and session.system_prompt:
-            self.reinstate(session)
+            self._reinstate(session)
             return
         await self.prepare_all()
         self._install(build_system_prompt(self.ctx), None)
 
-    def reinstate(self, session: "Session") -> None:
+    def _reinstate(self, session: "Session") -> None:
         """Adopt the surface a stored session ran on, byte-identical.
 
-        A session recorded with no surface is left alone — the conversation
-        materializes freshly at its first request instead.
+        Private because the only two callers are in here (:meth:`materialize`)
+        and in :meth:`Conversation.reinstate
+        <mocode.host.conversation.Conversation.reinstate>`, which hands the
+        session over. A session recorded with no surface is left alone — the
+        conversation materializes freshly at its first request instead.
         """
         if not session.system_prompt:
             return
@@ -225,8 +228,12 @@ class PluginHost:
     def _install(self, prompt: str, schemas: "list[dict] | None") -> None:
         """The one place the request surface is written.
 
-        Only ever reached after :meth:`assemble` — the surface is materialized
-        from a turn or an explicit ``prepare()``, both of which need the loop.
+        The single write point for what a request carries: prompt plus offered
+        interface, whether freshly rendered or reinstated from a session. Any
+        change to that surface must go through here — a second write site is
+        how byte-identical resumes stop being byte-identical. Only ever
+        reached after :meth:`assemble`: the surface is materialized from a
+        turn or an explicit ``prepare()``, both of which need the loop.
         """
         self.ctx.agent.system_prompt = prompt
         if self._freeze:
@@ -266,11 +273,6 @@ class PluginHost:
         # tool closing over ctx) sees the agent without any re-wiring.
         self.ctx._with_agent(agent)
         return agent
-
-    def run(self, *, provider: Provider, config: AgentConfig) -> AgentLoop:
-        """Build every contribution, then assemble the agent."""
-        self.build_all()
-        return self.assemble(provider=provider, config=config)
 
     def close(self) -> None:
         """Tell every plugin this conversation is over. Idempotent."""

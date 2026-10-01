@@ -133,8 +133,10 @@ def _load(ctx: BuildContext, plugin_dirs: list[Path]):
 
 
 def _run_host(ctx: BuildContext, plugin_dirs: list[Path]) -> PluginHost:
+    """What the runtime does: build every contribution, then assemble."""
     host = _load(ctx, plugin_dirs)
-    host.run(provider=MockProvider(), config=AgentConfig())
+    host.build_all()
+    host.assemble(provider=MockProvider(), config=AgentConfig())
     return host
 
 
@@ -399,9 +401,9 @@ class TestTheMultiFileExample:
 
         assert "multi-file" in [p.name for p in loaded.plugins]
 
-        PluginHost(ctx, loaded.plugins).run(
-            provider=MockProvider(), config=AgentConfig()
-        )
+        host = PluginHost(ctx, loaded.plugins)
+        host.build_all()
+        host.assemble(provider=MockProvider(), config=AgentConfig())
 
         assert "/motd" in {c.name for c in ctx.commands.all()}
         assert "motd" in {s.name for s in ctx.prompt_sections}
@@ -416,7 +418,8 @@ class TestPluginHost:
     async def test_builtins_are_loaded_and_contributing(self, tmp_path: Path):
         ctx = _ctx(tmp_path)
         host = _load(ctx, [])
-        agent = host.run(provider=MockProvider(), config=AgentConfig())
+        host.build_all()
+        agent = host.assemble(provider=MockProvider(), config=AgentConfig())
         await host.materialize()
 
         assert sorted(ctx.tools.names()) == ["bash", "edit", "read", "skill", "write"]
@@ -576,12 +579,10 @@ class TestPluginSet:
 
         loaded = load_plugins(plugin_dirs=[plugins_dir], config=_ctx(tmp_path).config)
         first_ctx, second_ctx = _ctx(tmp_path), _ctx(tmp_path)
-        PluginHost(first_ctx, loaded.plugins).run(
-            provider=MockProvider(), config=AgentConfig()
-        )
-        PluginHost(second_ctx, loaded.plugins).run(
-            provider=MockProvider(), config=AgentConfig()
-        )
+        for ctx in (first_ctx, second_ctx):
+            host = PluginHost(ctx, loaded.plugins)
+            host.build_all()
+            host.assemble(provider=MockProvider(), config=AgentConfig())
 
         assert first_ctx.tools.get("greet") is not second_ctx.tools.get("greet")
         assert first_ctx.tools.get("bash") is not second_ctx.tools.get("bash")
@@ -604,7 +605,8 @@ class TestPluginSet:
         )
         ctx = _ctx(tmp_path)
         host = _load(ctx, [plugins_dir])
-        host.run(provider=MockProvider(), config=AgentConfig())
+        host.build_all()
+        host.assemble(provider=MockProvider(), config=AgentConfig())
 
         host.close()
 
