@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mocode.core.provider import Chunk, _compute_delay, with_retry_stream
+from mocode.core.provider import Chunk, RetryPolicy, _compute_delay, with_retry_stream
 
 _rate = type("RateLimitError", (Exception,), {})
 _auth = type("AuthenticationError", (Exception,), {})
@@ -52,7 +52,7 @@ class TestWithRetryStream:
     @pytest.mark.asyncio
     async def test_retries_before_the_first_chunk(self):
         provider = _MockProvider([_rate("429"), _rate("429"), ["ok"]])
-        assert await _collect(provider, max_retries=3) == ["ok"]
+        assert await _collect(provider, policy=RetryPolicy(max_attempts=4)) == ["ok"]
 
     @pytest.mark.asyncio
     async def test_error_after_the_first_chunk_is_not_replayed(self):
@@ -64,25 +64,25 @@ class TestWithRetryStream:
                 raise _rate("429")
 
         with pytest.raises(_rate):
-            await _collect(Halfway([]), max_retries=3)
+            await _collect(Halfway([]), policy=RetryPolicy(max_attempts=4))
 
     @pytest.mark.asyncio
     async def test_non_retriable_error_propagates_immediately(self):
         provider = _MockProvider([_auth("bad key")])
         with pytest.raises(_auth):
-            await _collect(provider, max_retries=3)
+            await _collect(provider, policy=RetryPolicy(max_attempts=4))
 
     @pytest.mark.asyncio
     async def test_retries_are_exhausted(self):
         provider = _MockProvider([_rate("429")] * 3)
         with pytest.raises(_rate):
-            await _collect(provider, max_retries=2)
+            await _collect(provider, policy=RetryPolicy(max_attempts=3))
 
     @pytest.mark.asyncio
     async def test_cancellation_is_never_retried(self):
         provider = _MockProvider([asyncio.CancelledError()])
         with pytest.raises(asyncio.CancelledError):
-            await _collect(provider, max_retries=3)
+            await _collect(provider, policy=RetryPolicy(max_attempts=4))
 
     @pytest.mark.asyncio
     async def test_arguments_are_forwarded(self):

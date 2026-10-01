@@ -251,10 +251,39 @@ def _compute_delay(attempt: int, policy: RetryPolicy | None = None) -> float:
     return min(delay, p.max_delay)
 
 
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Best-effort ``Retry-After`` extraction; None when absent or unparsable.
+
+    Duck-typed on purpose — the kernel imports no HTTP client. SDK errors
+    carry the failed response as ``exc.response`` with ``.headers`` (already
+    case-insensitive on real header objects); a plain dict is scanned
+    case-insensitively. Numeric seconds are returned as-is; the HTTP-date
+    form is recognized only to be skipped, and the caller falls back to
+    exponential backoff.
+    """
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    get = getattr(headers, "get", None)
+    value = get("Retry-After") if get is not None else None
+    if value is None and isinstance(headers, dict):
+        for key, raw in headers.items():
+            if str(key).lower() == "retry-after":
+                value = raw
+                break
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:  # the HTTP-date form, or garbage — not ours to parse
+        return None
+    return max(seconds, 0.0)
+
+
 async def with_retry_stream(
     provider: Provider,
     *args: Any,
-    max_retries: int = _DEFAULT_RETRY_POLICY.max_attempts - 1,
+    policy: RetryPolicy | None = None,
 ) -> AsyncIterator[Chunk]:
     """Stream chunks from ``provider.stream(*args)``, retrying until the first.
 
@@ -263,10 +292,18 @@ async def with_retry_stream(
     failures after that propagate, and the caller decides what to do with a
     half-received response.
 
-    Uses ``provider.is_retriable()`` to decide what is worth retrying.
-    Cancellation is never retried.
+    Uses ``provider.is_retriable()`` to decide what is worth retrying. The
+    policy resolves as: an explicit ``policy`` argument, else the provider's
+    own ``retry_policy``, else the kernel default — a provider that never
+    declares one keeps working unchanged. Cancellation is never retried.
+
+    Backoff is exponential — ``base_delay * 2**(n-1)`` plus uniform jitter,
+    capped at ``max_delay``. With ``honor_retry_after`` a numeric
+    ``Retry-After`` on the failing response is slept instead, exactly as the
+    server stated it.
     """
-    for attempt in range(max_retries + 1):
+    p = _resolve_retry_policy(provider, policy)
+    for attempt in range(p.max_attempts):
         stream = provider.stream(*args)
         try:
             first = await anext(stream)
@@ -275,12 +312,15 @@ async def with_retry_stream(
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            if not provider.is_retriable(exc) or attempt >= max_retries:
+            if not provider.is_retriable(exc) or attempt >= p.max_attempts - 1:
                 raise
-            delay = _compute_delay(attempt)
+            delay = _compute_delay(attempt, p)
+            retry_after = _retry_after_seconds(exc) if p.honor_retry_after else None
+            if retry_after is not None:
+                delay = retry_after
             _retry_log.warning(
                 "LLM call failed (%s), retrying in %.1fs (attempt %d/%d)",
-                type(exc).__name__, delay, attempt + 1, max_retries,
+                type(exc).__name__, delay, attempt + 1, p.max_attempts,
             )
             await asyncio.sleep(delay)
             continue
