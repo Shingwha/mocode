@@ -90,6 +90,13 @@ class RunState:
     model wraps around tool calls. ``answer`` is the last iteration's text —
     the reply itself, and what ``chat()`` returns.
 
+    ``content`` has a soft ceiling (``content_limit``, default 200k
+    characters): past it the newest text is kept and the front replaced by a
+    marker saying how much came before — a valve against a runaway turn
+    growing the snapshot without bound, in the same spirit as
+    ``AgentConfig.tool_result_limit``. ``answer`` is never elided: it comes
+    from the terminal event, not from this accumulation.
+
     Folding is guarded, so the same events may be applied more than once —
     a reconnect replaying a range the reader had already folded — and events
     from another run sharing the channel are ignored. Each ``RunState`` is one
@@ -107,6 +114,10 @@ class RunState:
     usage: Usage = field(default_factory=lambda: Usage(0, 0))
     last_usage: Usage | None = None
     error: str = ""
+    #: Characters of streamed text ``content`` keeps once past the soft
+    #: limit. ``0`` disables the ceiling. Constructor policy only — a
+    #: loop-internal valve, deliberately not a config key.
+    content_limit: int = 200_000
     #: Highest stamped ``seq`` folded so far. An unstamped event (``seq == 0``)
     #: is one the loop folds *before* the channel stamps it — those always
     #: pass, so the live path keeps its ordering; replayed events, already
@@ -129,6 +140,7 @@ class RunState:
                 self.iteration = event.iteration
             case TextDelta():
                 self.content += event.text
+                self._elide_content()
             case ReasoningDelta():
                 self.reasoning += event.text
             case ToolCallStarted():
@@ -172,6 +184,20 @@ class RunState:
                 self.error = event.error
 
     # ---- Queries ----
+
+    def _elide_content(self) -> None:
+        """Past the soft limit, keep the newest text and mark the elision.
+
+        The snapshot stays a ``str`` and readers stay unaware — only the head
+        of the window says that text was dropped, and how much. The count is
+        derived from the trimmed string, so a second elision counts the first
+        marker too: a few characters of drift on a valve, not a ledger.
+        """
+        if not self.content_limit or len(self.content) <= self.content_limit:
+            return
+        total = len(self.content)
+        window = self.content[-self.content_limit :]
+        self.content = f"…[{total - len(window)} chars elided]\n" + window
 
     @property
     def running_tool_calls(self) -> list[ToolCallState]:
