@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from mocode.core.agent import AgentConfig, AgentLoop
+from mocode.core.agent import AgentConfig, AgentLoop, IterationLimit
 from mocode.core.events import (
     Event,
     Notice,
@@ -554,6 +554,109 @@ class TestInterception:
 
         assert seen == [1, 2]
         assert [m["role"] for m in agent.provider.calls[1]["messages"]] == ["user"]
+
+
+# ── stop reasons and budgets ────────────────────────────────
+
+
+class TestStopReasons:
+    """Five endings, one distinguishable field — and a replayable history."""
+
+    @pytest.mark.asyncio
+    async def test_a_completed_turn_says_so(self):
+        agent = _make_agent(provider=MockProvider([_plain_answer("done")]))
+        events = await _events(agent)
+        assert events[-1].stop_reason == "completed"
+        assert events[-1].cancelled is False
+
+    @pytest.mark.asyncio
+    async def test_max_iterations_reports_its_stop_reason(self):
+        agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=2))
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
+
+        events = await _events(agent)
+
+        assert events[-1].stop_reason == "max_iterations"
+        assert events[-1].content == ""
+        assert events[-1].iterations == 2
+        assert events[-1].to_dict()["stop_reason"] == "max_iterations"
+
+    @pytest.mark.asyncio
+    async def test_a_tool_call_budget_ends_the_turn(self):
+        agent = _make_agent(_echo_tool(), config=AgentConfig(max_tool_calls=1))
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
+
+        events = await _events(agent)
+
+        assert events[-1].stop_reason == "max_tool_calls"
+        assert events[-1].iterations == 1
+        assert events[-1].tool_calls_made == 1
+        # The cut history is replayable: the one call that ran is answered.
+        assistant = next(m for m in agent.messages if m.get("tool_calls"))
+        answers = [m for m in agent.messages if m["role"] == "tool"]
+        assert len(answers) == len(assistant["tool_calls"])
+
+    @pytest.mark.asyncio
+    async def test_a_wall_clock_budget_ends_the_turn(self, monkeypatch):
+        import mocode.core.agent as agent_module
+
+        class FastClock:
+            """Ten seconds pass between every *pair* of reads: the turn-start
+            read and the first checkpoint agree (within budget, iteration one
+            runs), the second checkpoint is already past it — no sleeping."""
+
+            def __init__(self) -> None:
+                self.now = 1000.0
+                self.reads = 0
+
+            def monotonic(self) -> float:
+                self.reads += 1
+                if self.reads > 2:
+                    self.now += 10.0
+                return self.now
+
+        clock = FastClock()
+        monkeypatch.setattr(agent_module, "time", clock)
+        agent = _make_agent(_echo_tool(), config=AgentConfig(max_turn_seconds=5))
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
+
+        events = await _events(agent)
+
+        assert events[-1].stop_reason == "time_budget"
+        assert events[-1].iterations == 1
+
+    @pytest.mark.asyncio
+    async def test_cancelled_is_a_stop_reason(self):
+        agent = _make_agent(provider=_slow_provider())
+        turn = agent.start("hi")
+        await asyncio.sleep(0.01)
+        turn.cancel()
+
+        terminal = await turn.wait()
+
+        assert terminal.stop_reason == "cancelled"
+        assert terminal.cancelled is True
+
+    @pytest.mark.asyncio
+    async def test_chat_raises_iteration_limit_instead_of_answering_empty(self):
+        agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=2))
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
+
+        with pytest.raises(IterationLimit) as exc:
+            await agent.chat("go")
+
+        assert exc.value.iterations == 2
+        assert agent.state.status == DONE  # a budget cut is an ending, not a failure
+
+    @pytest.mark.asyncio
+    async def test_run_with_messages_reports_the_limit_as_an_error_result(self):
+        agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=1))
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
+
+        result = await agent.run_with_messages([{"role": "user", "content": "hi"}])
+
+        assert result.had_error is True
+        assert "iterations" in result.content
 
 
 # ── request interception ────────────────────────────────────

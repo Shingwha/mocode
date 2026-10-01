@@ -25,7 +25,7 @@ awaits. Everything else watches out-of-band and never slows the run down.
 
 from __future__ import annotations
 
-from .agent import AgentConfig, AgentLoop, LoopResult
+from .agent import AgentConfig, AgentLoop, IterationLimit, LoopResult
 from .channel import EventChannel, Subscription
 from .dispatch import DispatchResult, ToolDispatcher
 from .events import (
@@ -37,6 +37,7 @@ from .events import (
     RunFailed,
     RunFinished,
     RunStarted,
+    StopReason,
     TextDelta,
     TOOL_DENIED,
     TOOL_ERROR,
@@ -91,6 +92,7 @@ __all__ = [
     "HookRunner",
     "IterationContext",
     "IterationFinished",
+    "IterationLimit",
     "IterationStarted",
     "LoopResult",
     "ModelSpec",
@@ -105,6 +107,7 @@ __all__ = [
     "RunFinished",
     "RunStarted",
     "RunState",
+    "StopReason",
     "Section",
     "StreamAccumulator",
     "Subscription",

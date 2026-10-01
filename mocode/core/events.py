@@ -89,27 +89,41 @@ class RunStarted(Event):
     type: ClassVar[str] = "run_started"
 
 
+#: Why a turn ended — the vocabulary of ``RunFinished.stop_reason``.
+StopReason = Literal[
+    "completed", "max_iterations", "max_tool_calls", "time_budget", "cancelled"
+]
+
+
 @dataclass
 class RunFinished(Event):
-    """A turn ended normally.
+    """A turn ended without an exception.
 
     ``content`` is the final answer — the text of the last iteration, which is
     what a caller wants as "the reply". Text streamed during earlier iterations
     was commentary around tool calls; a consumer that rendered the deltas has
     already shown it.
 
-    ``cancelled`` marks a turn that was stopped rather than completed: it is
-    still a normal ending (the terminal event of that turn), and ``content`` is
-    empty because no iteration produced an answer. What had streamed so far is
-    in ``RunState.content``.
+    ``stop_reason`` says how it came to end: ``completed`` when the last
+    iteration produced the answer; ``max_iterations`` / ``max_tool_calls`` /
+    ``time_budget`` when an :class:`~mocode.core.agent.AgentConfig` budget cut
+    the turn — the history stays replayable (every issued tool call keeps its
+    answer; ``content`` is empty because no iteration was allowed to finish a
+    reply); ``cancelled`` when the turn was stopped. What had streamed before
+    any of these is in ``RunState.content``.
     """
 
     content: str = ""
     usage: Usage | None = None
     iterations: int = 0
     tool_calls_made: int = 0
-    cancelled: bool = False
+    stop_reason: StopReason = "completed"
     type: ClassVar[str] = "run_finished"
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether the turn was stopped rather than ending on its own."""
+        return self.stop_reason == "cancelled"
 
 
 @dataclass
@@ -267,6 +281,7 @@ __all__ = [
     "RunFailed",
     "RunFinished",
     "RunStarted",
+    "StopReason",
     "TextDelta",
     "TOOL_DENIED",
     "TOOL_ERROR",
