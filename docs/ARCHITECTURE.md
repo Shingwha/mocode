@@ -149,6 +149,25 @@ Ordering is fixed so a consumer never sees a stale view: `on_tool_start` runs
 first, and `ToolCallStarted` is published with the *final* arguments;
 `on_tool_complete` runs before `ToolCallFinished`.
 
+## Event attribution
+
+Which stream an event belongs to is the `run_id` it carries, and who put it
+there decides how far it travels. One table, the whole contract:
+
+| Published by | Stamped with | Folds into `RunState` | In a `Turn` view |
+|---|---|---|---|
+| the loop (`_publish`): run lifecycle, deltas | its `run_id` | yes | yes |
+| the dispatcher, `origin="model"` | the run's id | yes | yes |
+| the dispatcher, `origin="program"` | the run it belongs to | no | yes — observable, auditable, never counted |
+| `ctx.emit` during a turn | the turn's id, unless the publisher claimed one | no | yes |
+| `ctx.emit` between turns | no run id | no | no — the conversation stream only |
+
+So a turn's readers see everything that happened while it ran — including
+what plugins said and what program-origin calls did — while `RunState` (and
+`tool_calls_made`, and `messages`) stays the model's side of the story. A
+publisher that needs a different attribution sets `event.run_id` itself before
+emitting; the host never overwrites a claimed id.
+
 ## Run lifecycle
 
 ```

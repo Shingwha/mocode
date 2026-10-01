@@ -109,14 +109,22 @@ class HostContext:
 
         Works between turns as well as during one: a plugin with something to
         say does not need a run in flight and does not need to know who is
-        watching. Available at call time — during ``build()`` there is no agent
-        to publish through yet.
+        watching. During a run the event is attributed to it — stamped with
+        the turn's id unless the publisher claimed one — so the turn's readers
+        see what plugins said while it ran; between turns it carries no run id
+        and belongs to the conversation stream alone. Either way it is never
+        folded into the run's live state: that folding happens where the run
+        owns the event, in the loop's own publishing path. Available at call
+        time — during ``build()`` there is no agent to publish through yet.
         """
         if self.agent is None:
             raise RuntimeError(
                 "ctx.emit() during build(): the agent is assembled after every "
                 "plugin has contributed — emit at call time instead"
             )
+        turn = self.agent.turn
+        if turn is not None and not turn.done and not event.run_id:
+            event.run_id = turn.id
         await self.agent.channel.publish(event)
 
     def subscribe(self, *, since: int | None = None) -> "Subscription":

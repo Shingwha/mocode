@@ -8,10 +8,12 @@ import pytest
 
 from mocode.core.agent import AgentConfig, AgentLoop
 from mocode.core.dispatch import DispatchResult, ToolDispatcher
-from mocode.core.events import Event, ToolCallFinished, ToolCallStarted
-from mocode.core.hook import AgentHook, HookRunner, ToolCallContext
+from mocode.core.events import Event, Notice, ToolCallFinished, ToolCallStarted
+from mocode.core.hook import AgentHook, HookRunner, IterationContext, ToolCallContext
 from mocode.core.provider import Response, Usage
 from mocode.core.tool import Tool, ToolError, ToolRegistry, ToolResult
+from mocode.host.config import Config
+from mocode.host.plugin.context import HostContext
 
 from .providers import MockProvider, tool_call_response
 
@@ -415,6 +417,71 @@ class TestProvenance:
         await dispatcher.run("echo", {}, origin="program", parent_call_id="c1")
 
         assert seen == [("model", None), ("program", "c1")]
+
+
+# ── attribution: what ctx.emit belongs to ────────────────────
+
+
+def _host_context(tmp_path, agent: AgentLoop | None) -> HostContext:
+    ctx = HostContext(
+        home=tmp_path / "home",
+        cwd=tmp_path,
+        config=Config(active_provider="p", active_model="m"),
+    )
+    ctx.agent = agent
+    return ctx
+
+
+class TestEmitAttribution:
+    @pytest.mark.asyncio
+    async def test_an_emit_during_a_run_belongs_to_the_turn(self, tmp_path):
+        class Talker(AgentHook):
+            async def before_iteration(self, ctx: IterationContext) -> None:
+                await host_ctx.emit(Notice(message="mid-run"))
+
+        agent = _make_agent(provider=MockProvider([_plain_answer()]), hooks=[Talker()])
+        host_ctx = _host_context(tmp_path, agent)
+
+        turn = agent.start("hi")
+        events = [event async for event in turn.subscribe()]
+
+        notice = next(event for event in events if isinstance(event, Notice))
+        assert notice.message == "mid-run"
+        assert notice.run_id == turn.id
+
+    @pytest.mark.asyncio
+    async def test_an_idle_emit_has_no_run_and_no_turn_claims_it(self, tmp_path):
+        agent = _make_agent()
+        host_ctx = _host_context(tmp_path, agent)
+
+        reader = agent.channel.subscribe()
+        await host_ctx.emit(Notice(message="idle words"))
+        seen = []
+        while reader.pending():
+            seen.append(await reader.get())
+        assert [e.run_id for e in seen] == [""]
+
+        # …and a later turn's view does not reach back for it.
+        agent.provider = MockProvider([_plain_answer()])
+        turn_events = [event async for event in agent.stream("go")]
+        assert not any(isinstance(event, Notice) for event in turn_events)
+
+    @pytest.mark.asyncio
+    async def test_a_publisher_may_claim_its_own_run_id(self, tmp_path):
+        agent = _make_agent()
+        host_ctx = _host_context(tmp_path, agent)
+        claimed = Notice(message="mine", run_id="someone-elses")
+
+        await host_ctx.emit(claimed)
+
+        assert claimed.run_id == "someone-elses"
+
+    @pytest.mark.asyncio
+    async def test_emitting_during_build_is_still_refused(self, tmp_path):
+        host_ctx = _host_context(tmp_path, agent=None)
+
+        with pytest.raises(RuntimeError, match="build"):
+            await host_ctx.emit(Notice(message="too early"))
 
 
 # ── program origin inside a real loop ────────────────────────
