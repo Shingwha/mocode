@@ -33,7 +33,11 @@ def _echo_tool(name: str = "echo", **kwargs) -> Tool:
     return Tool(
         name=name,
         description="echo",
-        params={"value": {"type": "string", "description": "v"}},
+        schema={
+            "type": "object",
+            "properties": {"value": {"type": "string", "description": "v"}},
+            "required": ["value"],
+        },
         func=lambda args: f"echo:{args['value']}",
         **kwargs,
     )
@@ -321,7 +325,7 @@ class TestToolExecution:
 
         agent = _make_agent(
             _echo_tool(),
-            Tool("slow", "d", {"value": {"type": "string", "description": "v"}}, _slow),
+            Tool("slow", "d", {"type": "object", "properties": {"value": {"type": "string"}}}, _slow),
         )
         agent.provider.responses = [
             Response(
@@ -424,7 +428,7 @@ class TestInterception:
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
                 ctx.deny = "not allowed here"
 
-        tool = Tool("risky", "d", {"value": {"type": "string", "description": "v"}},
+        tool = Tool("risky", "d", {"type": "object", "properties": {"value": {"type": "string"}}},
                     lambda a: executed.append(a) or "ran")
         agent = _make_agent(tool, hooks=[Denier()])
         agent.provider.responses = [tool_call_response("risky", '{"value": "x"}'), _plain_answer()]
@@ -713,7 +717,12 @@ class TestChat:
         assert registry.select().get("a") is registry.get("a")
 
     def test_summary_key_defaults_to_the_first_param(self):
-        tool = Tool("t", "d", {"pattern": {"type": "string", "description": "p"}}, lambda a: "")
+        tool = Tool(
+            "t",
+            "d",
+            {"type": "object", "properties": {"pattern": {"type": "string"}}},
+            lambda a: "",
+        )
         assert tool.summary_key == "pattern"
 
 

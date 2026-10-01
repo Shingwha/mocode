@@ -146,7 +146,13 @@ class SkillManager:
 
 # ── Tool & command ──────────────────────────────────────────
 
-_SKILL_PARAMS = {"name": {"type": "string", "description": "The skill name to load"}}
+_SKILL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "description": "The skill name to load"},
+    },
+    "required": ["name"],
+}
 _SKILL_DESC = (
     "Load a skill by name. Use when the user's request matches a skill's description. "
     "Returns the skill's instructions for you to follow."
@@ -161,7 +167,7 @@ class SkillTool(Tool):
         super().__init__(
             name=name,
             description=_SKILL_DESC,
-            params=_SKILL_PARAMS,
+            schema=_SKILL_SCHEMA,
             func=self._execute,
             tags=frozenset({"skills"}),
             summary_key="name",

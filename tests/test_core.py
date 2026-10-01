@@ -166,10 +166,14 @@ class TestTool:
         async def async_(args):
             return f"async:{args['v']}"
 
-        params = {"v": {"type": "string", "description": "v"}}
-        assert Tool("s", "d", params, sync).run({"v": "x"}) == "sync:x"
+        schema = {
+            "type": "object",
+            "properties": {"v": {"type": "string", "description": "v"}},
+            "required": ["v"],
+        }
+        assert Tool("s", "d", schema, sync).run({"v": "x"}) == "sync:x"
 
-        tool = Tool("a", "d", params, async_)
+        tool = Tool("a", "d", schema, async_)
         assert tool.is_async is True
         assert tool.wants_context is False
 
@@ -178,7 +182,16 @@ class TestTool:
         async def run(args):
             return f"async:{args['v']}"
 
-        tool = Tool("a", "d", {"v": {"type": "string", "description": "v"}}, run)
+        tool = Tool(
+            "a",
+            "d",
+            {
+                "type": "object",
+                "properties": {"v": {"type": "string", "description": "v"}},
+                "required": ["v"],
+            },
+            run,
+        )
         assert await tool.run_async({"v": "x"}) == "async:x"
 
     @pytest.mark.asyncio
@@ -186,7 +199,16 @@ class TestTool:
         def run(args):
             return f"sync:{args['v']}"
 
-        tool = Tool("s", "d", {"v": {"type": "string", "description": "v"}}, run)
+        tool = Tool(
+            "s",
+            "d",
+            {
+                "type": "object",
+                "properties": {"v": {"type": "string", "description": "v"}},
+                "required": ["v"],
+            },
+            run,
+        )
         assert await tool.run_async({"v": "x"}) == "sync:x"
 
     def test_a_tool_may_declare_a_second_parameter_for_its_context(self):
@@ -196,12 +218,12 @@ class TestTool:
         def contextual(args, ctx):
             return f"ctx:{ctx.tool_call_id}"
 
-        params: dict = {}
-        assert Tool("p", "d", params, plain).wants_context is False
-        assert Tool("c", "d", params, contextual).wants_context is True
+        schema: dict = {"type": "object", "properties": {}}
+        assert Tool("p", "d", schema, plain).wants_context is False
+        assert Tool("c", "d", schema, contextual).wants_context is True
 
         ctx = ToolCallContext(tool_name="c", tool_call_id="call_1")
-        assert Tool("c", "d", params, contextual).run({}, ctx) == "ctx:call_1"
+        assert Tool("c", "d", schema, contextual).run({}, ctx) == "ctx:call_1"
 
     def test_errors_propagate_to_the_caller(self):
         def boom(args):
@@ -211,32 +233,272 @@ class TestTool:
             Tool("t", "T", {}, boom).run({})
 
     def test_missing_required_parameter_is_rejected(self):
-        tool = Tool("t", "T", {"a": {"type": "string", "description": "a"}}, lambda a: "ok")
-        with pytest.raises(ToolError, match="Missing required parameter"):
+        tool = Tool(
+            "t",
+            "T",
+            {
+                "type": "object",
+                "properties": {"a": {"type": "string", "description": "a"}},
+                "required": ["a"],
+            },
+            lambda a: "ok",
+        )
+        with pytest.raises(ToolError, match="missing required"):
             tool.run({})
 
     def test_defaults_are_filled_in(self):
         tool = Tool(
             "t",
             "T",
-            {"a": {"type": "string", "description": "a", "default": "fallback"}},
+            {
+                "type": "object",
+                "properties": {
+                    "a": {"type": "string", "description": "a", "default": "fallback"}
+                },
+            },
             lambda a: a["a"],
         )
         assert tool.run({}) == "fallback"
 
-    def test_schema_marks_required_and_optional_parameters(self):
-        schema = Tool(
+
+# ── the schema dialect and its checker ──────────────────────
+
+
+def _tool_with(schema: dict) -> Tool:
+    return Tool("t", "T", schema, lambda a: "ok")
+
+
+class TestSchemaDeclaration:
+    def test_to_schema_passes_the_object_node_through(self):
+        schema = {
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {"field": {"type": "string"}},
+                    "required": ["field"],
+                },
+                "tags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["filter"],
+        }
+
+        assert _tool_with(schema).to_schema()["function"]["parameters"] is schema
+
+    def test_a_non_dict_schema_is_refused_at_construction(self):
+        with pytest.raises(TypeError, match="JSON Schema object node"):
+            Tool("t", "T", ["not", "a", "schema"], lambda a: "ok")
+
+    def test_summary_key_defaults_to_the_first_required_parameter(self):
+        schema = {
+            "type": "object",
+            "properties": {"z": {"type": "string"}, "a": {"type": "string"}},
+            "required": ["z", "a"],
+        }
+        assert _tool_with(schema).summary_key == "z"
+
+    def test_summary_key_falls_back_to_the_first_property(self):
+        schema = {"type": "object", "properties": {"z": {"type": "string"}}}
+        assert _tool_with(schema).summary_key == "z"
+
+    def test_returns_travels_as_metadata_only(self):
+        tool = Tool(
+            "t",
+            "T",
+            {"type": "object", "properties": {}},
+            lambda a: "ok",
+            returns={"type": "object", "properties": {"rows": {"type": "integer"}}},
+        )
+        assert tool.returns is not None and "rows" in tool.returns["properties"]
+        assert "returns" not in str(tool.to_schema())
+
+
+class TestSchemaChecker:
+    """The dependency-free checker behind ``Tool._validate_args``."""
+
+    @pytest.mark.parametrize(
+        "declared,value",
+        [
+            ("string", "x"),
+            ("integer", 3),
+            ("number", 3.5),
+            ("number", 3),
+            ("boolean", True),
+            ("array", [1, 2]),
+            ("object", {"a": 1}),
+            ("null", None),
+        ],
+    )
+    def test_values_of_the_declared_type_pass(self, declared, value):
+        tool = _tool_with(
+            {"type": "object", "properties": {"v": {"type": declared}}}
+        )
+        assert tool.run({"v": value}) == "ok"
+
+    @pytest.mark.parametrize(
+        "declared,value",
+        [
+            ("string", 3),
+            ("integer", "3"),
+            ("integer", 3.5),
+            ("number", "3"),
+            ("boolean", "yes"),
+            ("array", {"a": 1}),
+            ("object", [1]),
+            ("null", 0),
+        ],
+    )
+    def test_values_of_another_type_are_rejected(self, declared, value):
+        tool = _tool_with(
+            {"type": "object", "properties": {"v": {"type": declared}}}
+        )
+        with pytest.raises(ToolError) as exc:
+            tool.run({"v": value})
+        assert exc.value.code == "invalid_type"
+
+    @pytest.mark.parametrize("declared", ["integer", "number"])
+    @pytest.mark.parametrize("value", [True, False])
+    def test_a_boolean_is_not_a_number(self, declared, value):
+        """Python bools are ints; JSON booleans are not numbers."""
+        tool = _tool_with(
+            {"type": "object", "properties": {"v": {"type": declared}}}
+        )
+        with pytest.raises(ToolError) as exc:
+            tool.run({"v": value})
+        assert exc.value.code == "invalid_type"
+
+    def test_a_missing_required_property_is_missing_param(self):
+        tool = _tool_with(
+            {
+                "type": "object",
+                "properties": {"a": {"type": "string"}},
+                "required": ["a"],
+            }
+        )
+        with pytest.raises(ToolError) as exc:
+            tool.run({})
+        assert exc.value.code == "missing_param"
+
+    def test_enum_rejects_values_outside_it(self):
+        tool = _tool_with(
+            {
+                "type": "object",
+                "properties": {"state": {"enum": ["open", "closed"]}},
+            }
+        )
+        assert tool.run({"state": "open"}) == "ok"
+        with pytest.raises(ToolError) as exc:
+            tool.run({"state": "wedged"})
+        assert exc.value.code == "invalid_type"
+
+    def test_any_of_accepts_any_branch(self):
+        tool = _tool_with(
+            {
+                "type": "object",
+                "properties": {
+                    "v": {"anyOf": [{"type": "string"}, {"type": "integer"}]}
+                },
+            }
+        )
+        assert tool.run({"v": "x"}) == "ok"
+        assert tool.run({"v": 1}) == "ok"
+        with pytest.raises(ToolError) as exc:
+            tool.run({"v": True})
+        assert exc.value.code == "invalid_type"
+
+    def test_one_of_rejects_a_value_matching_two_branches(self):
+        tool = _tool_with(
+            {
+                "type": "object",
+                "properties": {
+                    "v": {"oneOf": [{"type": "integer"}, {"type": "number"}]}
+                },
+            }
+        )
+        with pytest.raises(ToolError) as exc:  # an integer is both — ambiguous
+            tool.run({"v": 1})
+        assert exc.value.code == "invalid_type"
+        with pytest.raises(ToolError) as none:  # a string is neither
+            tool.run({"v": "s"})
+        assert none.value.code == "invalid_type"
+
+    def test_nested_objects_validate_recursively(self):
+        tool = _tool_with(
+            {
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {"limit": {"type": "integer"}},
+                        "required": ["limit"],
+                    }
+                },
+                "required": ["filter"],
+            }
+        )
+        assert tool.run({"filter": {"limit": 5}}) == "ok"
+        with pytest.raises(ToolError) as missing:
+            tool.run({"filter": {}})
+        assert missing.value.code == "missing_param"
+        with pytest.raises(ToolError) as bad_type:
+            tool.run({"filter": {"limit": "5"}})
+        assert bad_type.value.code == "invalid_type"
+
+    def test_array_items_validate_element_wise(self):
+        tool = _tool_with(
+            {
+                "type": "object",
+                "properties": {"tags": {"type": "array", "items": {"type": "string"}}},
+            }
+        )
+        assert tool.run({"tags": ["a", "b"]}) == "ok"
+        with pytest.raises(ToolError) as exc:
+            tool.run({"tags": ["a", 2]})
+        assert exc.value.code == "invalid_type"
+
+    def test_defaults_are_filled_at_nested_levels(self):
+        seen = {}
+
+        def run(args):
+            seen.update(args)
+            return "ok"
+
+        Tool(
             "t",
             "T",
             {
-                "name": {"type": "string", "description": "name"},
-                "count": {"type": "number", "description": "count", "optional": True},
+                "type": "object",
+                "properties": {
+                    "filter": {
+                        "type": "object",
+                        "properties": {
+                            "limit": {"type": "integer", "default": 50},
+                            "state": {"enum": ["open", "closed"], "default": "open"},
+                        },
+                    },
+                    "page": {"type": "integer", "default": 1},
+                },
             },
-            lambda a: "ok",
-        ).to_schema()
-        params = schema["function"]["parameters"]
-        assert params["required"] == ["name"]
-        assert params["properties"]["count"]["type"] == "number"
+            run,
+        ).run({"filter": {}})
+
+        assert seen == {"filter": {"limit": 50, "state": "open"}, "page": 1}
+
+    def test_unknown_keywords_pass(self):
+        tool = _tool_with(
+            {
+                "type": "object",
+                "properties": {
+                    "v": {"type": "string", "minLength": 2, "pattern": "^x"},
+                },
+                "additionalProperties": False,
+                "x-vendor-extension": {"anything": True},
+            }
+        )
+        assert tool.run({"v": "whatever", "extra": 1}) == "ok"
+
+    def test_an_empty_schema_accepts_anything(self):
+        assert _tool_with({}).run({"anything": ["at", "all"]}) == "ok"
 
 
 class TestHookRunner:

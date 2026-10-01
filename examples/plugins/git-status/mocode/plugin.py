@@ -34,7 +34,7 @@ class GitStatusTool(Tool):
                 "Show the working tree status of the conversation's git repository "
                 "in short format."
             ),
-            params={},
+            schema={"type": "object", "properties": {}},
             func=self._run,
             tags=frozenset({"git"}),
         )

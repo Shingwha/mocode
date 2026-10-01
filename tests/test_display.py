@@ -294,10 +294,14 @@ async def _run_parallel(display: Display, delays: dict[str, float]):
         await asyncio.sleep(delays[args["tag"]])
         return args["tag"]
 
-    params = {"tag": {"type": "string", "description": "t"}}
+    schema = {
+        "type": "object",
+        "properties": {"tag": {"type": "string", "description": "t"}},
+        "required": ["tag"],
+    }
     registry = ToolRegistry()
     for name, delay in delays.items():
-        registry.register(Tool(name, "d", params, slow, summary_key="tag"))
+        registry.register(Tool(name, "d", schema, slow, summary_key="tag"))
     provider = MockProvider([
         Response(
             tool_calls=[

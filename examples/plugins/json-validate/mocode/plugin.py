@@ -28,15 +28,19 @@ class ValidateJsonTool(Tool):
                 "project. Use it whenever a config, manifest or payload has a "
                 "schema — before trusting it or shipping it."
             ),
-            params={
-                "schema_path": {
-                    "type": "string",
-                    "description": "Path to the JSON Schema file, relative to the project",
+            schema={
+                "type": "object",
+                "properties": {
+                    "schema_path": {
+                        "type": "string",
+                        "description": "Path to the JSON Schema file, relative to the project",
+                    },
+                    "document_path": {
+                        "type": "string",
+                        "description": "Path to the JSON document to check",
+                    },
                 },
-                "document_path": {
-                    "type": "string",
-                    "description": "Path to the JSON document to check",
-                },
+                "required": ["schema_path", "document_path"],
             },
             func=self._run,
             result_key="error_count",

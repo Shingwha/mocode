@@ -25,10 +25,14 @@ OutputSink = Callable[[str, str], Awaitable[None]]
 
 _BASH_TAG = frozenset({"shell"})
 
-_BASH_PARAMS = {
-    "command": {"type": "string", "description": "The bash command to execute (Unix-style syntax)"},
-    "restart": {"type": "boolean", "optional": True, "description": "Reset session state (working directory and environment variables)"},
-    "timeout": {"type": "number", "optional": True, "description": "Max execution time in seconds (default: the host's tool_timeout policy)"},
+_BASH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "command": {"type": "string", "description": "The bash command to execute (Unix-style syntax)"},
+        "restart": {"type": "boolean", "description": "Reset session state (working directory and environment variables)"},
+        "timeout": {"type": "number", "description": "Max execution time in seconds (default: the host's tool_timeout policy)"},
+    },
+    "required": ["command"],
 }
 _BASH_DESC = (
     "Run a shell command in a persistent bash session (Unix-style, e.g. ls, grep, find). "
@@ -217,7 +221,7 @@ class BashTool(Tool):
         super().__init__(
             name="bash",
             description=_BASH_DESC,
-            params=_BASH_PARAMS,
+            schema=_BASH_SCHEMA,
             func=self._execute,
             tags=_BASH_TAG,
             summary_key="command",

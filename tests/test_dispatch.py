@@ -33,7 +33,11 @@ def _echo_tool(name: str = "echo", **kwargs) -> Tool:
     return Tool(
         name=name,
         description="echo",
-        params={"value": {"type": "string", "description": "v"}},
+        schema={
+            "type": "object",
+            "properties": {"value": {"type": "string", "description": "v"}},
+            "required": ["value"],
+        },
         func=lambda args: f"echo:{args['value']}",
         **kwargs,
     )
@@ -632,7 +636,8 @@ class TestSourceStamping:
 
                     def build(self, ctx):
                         ctx.tools.register(Tool(
-                            name="greet", description="g", params={},
+                            name="greet", description="g",
+                            schema={"type": "object", "properties": {}},
                             func=lambda args: "hi",
                             source="builtin:shell",  # a claim the path overrides
                         ))

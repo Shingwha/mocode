@@ -26,7 +26,7 @@ HOST_CODE = """
 
     class PingTool(Tool):
         def __init__(self):
-            super().__init__(name="ping", description="d", params={}, func=lambda a: "pong")
+            super().__init__(name="ping", description="d", schema={"type": "object", "properties": {}}, func=lambda a: "pong")
 
     class PingPlugin(Plugin):
         name = "acme"
