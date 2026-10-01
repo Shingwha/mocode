@@ -32,8 +32,7 @@ from mocode.core.hook import (
 from mocode.core.provider import Response, ToolCall, Usage
 from mocode.core.state import DONE, RUNNING, RunState
 from mocode.core.tool import ERROR_PREFIX, TIMEOUT_PREFIX, Tool, ToolError, ToolRegistry, ToolResult
-
-from .providers import MockProvider, tool_call_response
+from mocode.testing import MockProvider, tool_call_response
 
 
 def _echo_tool(name: str = "echo", **kwargs) -> Tool:

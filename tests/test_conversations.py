@@ -19,9 +19,9 @@ from mocode.core.events import Notice, RunFinished, TextDelta
 from mocode.core.provider import ModelSpec, Response, Usage
 from mocode.host.runtime import MoCode
 from mocode.host.session import Session
+from mocode.testing import MockProvider, SlowProvider, tool_call_response
 
 from .conftest import make_config
-from .providers import MockProvider, SlowProvider, tool_call_response
 
 
 def _answer(text: str = "done") -> Response:

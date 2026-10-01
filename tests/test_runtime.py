@@ -13,9 +13,9 @@ from mocode.core.events import RunFinished, TextDelta
 from mocode.core.provider import Response, Usage
 from mocode.host.config import Config, ModelEntry, ProviderEntry
 from mocode.host.runtime import MoCode
+from mocode.testing import MockProvider
 
 from .conftest import make_config, strip_ansi
-from .providers import MockProvider
 
 class TestThePackage:
     def test_importing_mocode_stays_lazy(self):

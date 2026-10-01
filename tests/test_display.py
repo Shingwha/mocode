@@ -28,9 +28,9 @@ from mocode.core import (
     ToolResult,
 )
 from mocode.core.provider import Response, ToolCall, Usage
+from mocode.testing import MockProvider, tool_call_response
 
 from .conftest import strip_ansi
-from .providers import MockProvider, tool_call_response
 
 
 def _make_display(live: bool = False) -> Display:
