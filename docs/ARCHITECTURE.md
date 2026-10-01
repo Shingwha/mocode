@@ -44,6 +44,9 @@ mocode/
 │   └── commands.py      the commands that need a terminal: /quit /copy /model /resume
 ├── providers/openai.py  OpenAI-compatible streaming provider
 ├── plugins/__init__.py  the public SDK third-party plugins import
+├── testing/             the public test kit — a scripted model, no network
+│   ├── __init__.py      collect / terminal / events_of_type — reading a turn
+│   └── providers.py     MockProvider, SlowProvider, say/call_tool, chunk replay
 └── cli_args.py main.py  argument parsing and process entry
 ```
 
@@ -91,11 +94,26 @@ Two delivery policies, one publish path: a hook's `on_event` is an *inline*
 subscription (the publisher waits, because a hook must see the event before
 the run moves on); everything else is buffered and nobody waits.
 
+Both bounds are constructor parameters (`EventChannel(replay=…, backlog=…)`);
+the constants in `core/channel.py` are only the defaults. A terminal running
+one conversation at a time keeps 1000/1000 — a renderer that reconnects wants
+the whole turn it missed. An embedding with many conversations in one process
+lowers *replay* (≈100): a turn emits deltas fast, and replaying a thousand of
+them at every reconnect is its own storm — a reader that was away longer
+resyncs from state instead. A slow reader is never an error: it reports
+`dropped > 0`, the gap in `seq` says the same without trusting the counter,
+and the model was never held back. What was missed is recovered from
+`RunState`, not from the stream.
+
 `RunState` is the same stream folded into a snapshot, for callers that want to
 ask "what is happening now" — `conversation.state.to_dict()` is the shape to
 put behind an HTTP status endpoint. Folding is guarded (by `seq`, by `run_id`),
 so a reconnect replay never double-counts and another run sharing the channel
-never folds into yours.
+never folds into yours. `content` is a bounded window rather than a ledger:
+past `content_limit` (200k characters by default, constructor-only — the same
+internal-valve standing as `tool_result_limit`) the fold keeps the newest text
+and marks at the front how much was elided, so a runaway turn cannot grow
+every held snapshot without bound.
 
 Four primitives make features-as-plugins possible:
 
@@ -440,4 +458,8 @@ An embedding application is the same path minus the terminal:
   `tests/test_cache_protect.py` — the pinned request prefix and the diff
   notices that announce its drift; `tests/test_display.py` — a whole turn
   through `CLIRenderer`, no TTY.
-- `tests/providers.py` — `MockProvider` and the chunk-replay helpers.
+- `mocode.testing` — the public test kit every plugin test is written with:
+  `MockProvider` and the chunk-replay helpers, `say` / `call_tool` script
+  builders, `collect` / `terminal` / `events_of_type` readers. Its own
+  contract is pinned in `tests/test_testing.py`; `tests/test_state.py` pins
+  `RunState`'s bounded content window.

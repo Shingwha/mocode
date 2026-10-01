@@ -20,6 +20,30 @@ Two delivery policies, one publish path:
   bounded backlog; if it falls behind, the oldest events are dropped and
   ``seq`` says so, because a gap is self-describing: re-read the state and
   resync instead of pretending the stream was complete.
+
+The two bounds are constructor parameters — :data:`REPLAY` and :data:`BACKLOG`
+are only the defaults — and they answer different questions. ``replay`` is how
+much history a *reconnecting* reader can still be handed; ``backlog`` is how
+far one *attached* reader may fall behind before it starts losing its oldest
+events instead of holding the publisher up.
+
+============================  ======  =======  ==============================
+Deployment                    replay  backlog  Why
+============================  ======  =======  ==============================
+Terminal, one conversation    1000    1000     a renderer that reconnects wants
+at a time                                      the whole turn it missed
+Web embedding, many           ~100    1000     a turn emits deltas fast;
+conversations in one process                   replaying a thousand of them at
+                                               every reconnect is its own storm
+                                               — an away reader resyncs from
+                                               state, not from replay
+============================  ======  =======  ==============================
+
+A slow reader is not an error condition: one that cannot keep up reports
+``dropped > 0``, and the gap in ``seq`` says the same without trusting the
+counter. That is the design — the model is never held back, and what was
+missed is recovered from :class:`~mocode.core.state.RunState`, not from the
+stream.
 """
 
 from __future__ import annotations
@@ -34,11 +58,12 @@ if TYPE_CHECKING:
 
 _log = logging.getLogger(__name__)
 
-#: How many events a channel keeps for replay.
+#: How many events a channel keeps for replay. Constructor-tunable — see the
+#: module docstring for the recommended values per deployment.
 REPLAY = 1000
 
 #: How far one buffered subscriber may fall behind before it starts losing the
-#: oldest events instead of holding the publisher back.
+#: oldest events instead of holding the publisher back. Constructor-tunable.
 BACKLOG = 1000
 
 _CLOSED = object()
