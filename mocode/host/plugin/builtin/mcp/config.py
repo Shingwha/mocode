@@ -52,6 +52,7 @@ from pathlib import Path
 from typing import Mapping
 
 from ...loader import report
+from .naming import fold_server_name
 
 #: The only ``$schema`` a plugin-directory ``mcp.json`` may claim (Agent
 #: Plugins 1.0.0). A mismatch disables the plugin's MCP configuration.
@@ -109,16 +110,6 @@ class McpServerConfig:
     #: child environment.
     plugin_root: Path | None = None
     plugin_data: Path | None = None
-
-
-def _fold(name: str) -> str:
-    """The comparison key for server names — ``-`` and ``_`` collapse.
-
-    Deliberately the same fold :mod:`.naming` applies; unified there once it
-    exists.
-    """
-
-    return "".join(c if c.isalnum() or c == "_" else "_" for c in name)
 
 
 def _expand_vars(value: str, environ: Mapping[str, str], source: str) -> str:
@@ -422,7 +413,7 @@ def _parse_mocode_file(path: Path, *, environ: Mapping[str, str]) -> dict[str, M
             environ=environ,
         )
         if cfg is not None:
-            out[_fold(str(name))] = cfg
+            out[fold_server_name(str(name))] = cfg
     return out
 
 
@@ -447,7 +438,7 @@ def _parse_inline(
             environ=environ,
         )
         if cfg is not None:
-            out[_fold(str(name))] = cfg
+            out[fold_server_name(str(name))] = cfg
     return out
 
 
@@ -497,7 +488,7 @@ def _parse_plugin_file(path: Path, plugin_root: Path) -> dict[str, McpServerConf
             environ={},
         )
         if cfg is not None:
-            out[_fold(str(name))] = cfg
+            out[fold_server_name(str(name))] = cfg
     return out
 
 

@@ -21,6 +21,16 @@ from mocode.host.plugin.builtin.mcp.config import (
     McpServerConfig,
     load_servers,
 )
+from mocode.host.plugin.builtin.mcp.naming import (
+    assign_tool_names,
+    availability_for,
+    canon_exposure,
+    default_exposure,
+    fold_server_name,
+    normalize,
+    resolve_exposure,
+    tool_full_name,
+)
 
 
 def write_mcp_json(path: Path, data: dict | str) -> Path:
@@ -441,3 +451,120 @@ class TestPluginFileRules:
         )
         assert merged == {}
         assert "missing 'type'" in capsys.readouterr().err
+
+
+class TestNormalize:
+    def test_everything_outside_alnum_and_underscore_folds(self):
+        assert normalize("dev-radius") == "dev_radius"
+        assert normalize("a b.c/d:e") == "a_b_c_d_e"
+        assert normalize("already_ok") == "already_ok"
+        assert normalize("UPPER-1") == "UPPER_1"
+
+    def test_server_names_differing_only_in_separator_fold_equal(self):
+        assert fold_server_name("my-server") == fold_server_name("my_server")
+        assert fold_server_name("a.b") == fold_server_name("a-b")
+        assert fold_server_name("ab") != fold_server_name("a-b")
+
+    def test_full_tool_names(self):
+        assert tool_full_name("dev-radius", "search") == "mcp__dev_radius__search"
+        assert tool_full_name("srv", "do-thing") == "mcp__srv__do_thing"
+
+
+class TestAssignToolNames:
+    def test_no_collision_maps_raw_names_directly(self):
+        out = assign_tool_names("srv", ["search", "get_one"])
+        assert out == {
+            "search": "mcp__srv__search",
+            "get_one": "mcp__srv__get_one",
+        }
+
+    def test_colliding_names_get_a_stable_hash_suffix(self):
+        import hashlib
+
+        out = assign_tool_names("srv", ["a-b", "a_b", "a b"])
+        assert set(out) == {"a-b", "a_b", "a b"}
+        # sorted: "a b" < "a-b" < "a_b" — the first keeps the plain name
+        assert out["a b"] == "mcp__srv__a_b"
+        assert out["a-b"] == "mcp__srv__a_b_" + hashlib.sha1(b"a-b").hexdigest()[:6]
+        assert out["a_b"] == "mcp__srv__a_b_" + hashlib.sha1(b"a_b").hexdigest()[:6]
+
+    def test_the_assignment_does_not_depend_on_listing_order(self):
+        names = ["x-1", "x_1", "plain", "y z", "y-z"]
+        forward = assign_tool_names("srv", names)
+        backward = assign_tool_names("srv", list(reversed(names)))
+        assert forward == backward
+
+
+class TestDefaultExposure:
+    def test_auto_follows_the_codemode_plugin(self):
+        assert default_exposure({}, codemode_enabled=False) == "direct"
+        assert default_exposure({}, codemode_enabled=True) == "codemode"
+        assert default_exposure({"default_exposure": "auto"}, codemode_enabled=True) == "codemode"
+
+    def test_an_explicit_value_is_used_directly(self):
+        assert default_exposure({"default_exposure": "hidden"}, codemode_enabled=True) == "hidden"
+        assert default_exposure({"default_exposure": "codemode-deferred"}, codemode_enabled=False) == "codemode-deferred"
+
+    def test_garbage_reports_and_falls_back_to_auto(self, capsys):
+        assert default_exposure({"default_exposure": 7}, codemode_enabled=False) == "direct"
+        assert default_exposure({"default_exposure": "bogus"}, codemode_enabled=True) == "codemode"
+        err = capsys.readouterr().err
+        assert "default_exposure" in err
+
+    def test_non_dict_config_is_auto(self):
+        assert default_exposure([], codemode_enabled=False) == "direct"
+
+
+def _cfg(**kwargs) -> McpServerConfig:
+    kwargs.setdefault("name", "demo")
+    kwargs.setdefault("command", "x")
+    kwargs.setdefault("source", "test")
+    return McpServerConfig(**kwargs)
+
+
+class TestResolveExposure:
+    def test_server_exposure_overrides_the_default(self):
+        cfg = _cfg(exposure="hidden")
+        assert resolve_exposure(cfg, "anything", "direct") == "hidden"
+
+    def test_no_server_exposure_uses_the_default(self):
+        assert resolve_exposure(_cfg(), "anything", "codemode") == "codemode"
+
+    def test_exact_tool_name_beats_pattern_and_server(self):
+        cfg = _cfg(
+            exposure="hidden",
+            tool_exposure={"search": "direct", "get_*": "codemode"},
+        )
+        assert resolve_exposure(cfg, "search", "hidden") == "direct"
+        assert resolve_exposure(cfg, "get_one", "hidden") == "codemode"
+        assert resolve_exposure(cfg, "delete_one", "hidden") == "hidden"
+
+    def test_star_matches_any_characters_and_first_pattern_wins(self):
+        cfg = _cfg(tool_exposure={"*_x": "direct", "get_*": "hidden"})
+        assert resolve_exposure(cfg, "get_x", "codemode") == "direct"
+        cfg = _cfg(tool_exposure={"a*c": "direct"})
+        assert resolve_exposure(cfg, "aanythingc", "codemode") == "direct"
+        assert resolve_exposure(cfg, "aanythingcX", "codemode") == "codemode"
+
+    def test_codemode_deferred_alias(self):
+        assert canon_exposure("codemode-deferred") == "codemode"
+        cfg = _cfg(exposure="codemode-deferred")
+        assert resolve_exposure(cfg, "t", "direct") == "codemode"
+
+    def test_unknown_values_report_and_fall_through(self, capsys):
+        cfg = _cfg(exposure="sideways", tool_exposure={"t": "also-bogus"})
+        assert resolve_exposure(cfg, "t", "direct") == "direct"
+        cfg = _cfg(tool_exposure={"other": "bogus"})
+        assert resolve_exposure(cfg, "other", "codemode") == "codemode"
+        err = capsys.readouterr().err
+        assert "sideways" in err and "bogus" in err
+
+    def test_unknown_default_falls_back_to_direct(self, capsys):
+        assert resolve_exposure(_cfg(), "t", "zzz") == "direct"
+        assert "zzz" in capsys.readouterr().err
+
+    def test_availability_mapping(self):
+        assert availability_for("direct") == ("both", False)
+        assert availability_for("codemode") == ("program", False)
+        assert availability_for("deferred") == ("program", False)
+        assert availability_for("hidden") == ("both", True)
