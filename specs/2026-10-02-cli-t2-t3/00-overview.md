@@ -1,6 +1,8 @@
 # Spec 组 · CLI T2/T3 + 内核收尾（2026-10-02）
 
-> 状态：✅ 完成（2026-10-02）。七份工单全部合并；终态 **802 passed, 2 skipped**（exit 0，哈希见 git log）。spec 是定义、不是看板——分支被合并 = 工单完成，git 是唯一进度权威。
+> 状态：✅ 完成（2026-10-02），随后 **CLI/TUI 全部回退**。
+> **回退裁决（2026-10-02，用户实测后拍板）**：本组及上一组 cli-t1 的 CLI/TUI 改造（实时区管理器、painter/transcript、键位两态、状态栏、UI 对话框、命令菜单、markdown 渲染）**整体回退至 cli-t1 合并（`a8a8d99`）之前的经典形态**——执行于 `cli/restore-classic` 分支，合并为 master `58d325a`。**保留**：内核全部改动（K8×K13 deadline 退避、RetryDeadlineExceeded 导出）、plugin 机制全部改动（PluginMessage 事件、emit/seal_message、session 持久化与 resume 回放、shell 后台任务与 `promote()`、testing 公共测试替身）、宿主层文档更新。**回退方式**：`mocode/cli/**`、`tests/test_cli_plugin.py`、`tests/test_display.py`、`examples/plugins/git-status` 恢复自 `a8a8d99^`；删除 `painter.py`/`transcript.py`/`markdown.py`、`test_input.py`/`test_ui.py`/`test_content.py`、`examples/plugins/message-drawers`；pyproject 移除 tui 组；docs 恢复旧 CLI 章节后重放三处宿主侧更新（deadline 退避段、PluginMessage 持久化段 ×2）。回退后门禁 **693 passed / exit 0**，真实 provider 冒烟通过。新 CLI 的全部实现留在 git 历史与本组分支中，可随时检索。
+> spec 是定义、不是看板——分支被合并 = 工单完成，git 是唯一进度权威。
 > worker agent 不改任何 spec、不写状态；完成信号 = 最终报告 + 分支 commit。
 > 上一组：`specs/2026-10-01-kernel-plugin-refactor/`（内核线 + T1 已全部合并，终态 686 passed）。
 > 当前 master：`e45b44d`，全量门禁 704 passed。**新对话入口 = 文末「跨会话交接快照」**。
