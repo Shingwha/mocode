@@ -118,10 +118,6 @@ class Prompt:
             s.enabled = False
         return self
 
-    def context(self, **kwargs: Any) -> Self:
-        self._context.update(kwargs)
-        return self
-
     def render(self, section: Section) -> str | None:
         """One section rendered as its XML tag — the **live** render, never
         the pin cache.

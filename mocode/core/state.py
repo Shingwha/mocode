@@ -20,7 +20,6 @@ from .events import (
     RunFinished,
     RunStarted,
     TextDelta,
-    TOOL_OK,
     ToolCallFinished,
     ToolCallStarted,
     ToolOutput,
@@ -200,20 +199,9 @@ class RunState:
         self.content = f"…[{total - len(window)} chars elided]\n" + window
 
     @property
-    def running_tool_calls(self) -> list[ToolCallState]:
-        """Tool calls that have started and not yet finished."""
-        return [c for c in self.tool_calls.values() if not c.done]
-
-    @property
     def tool_calls_made(self) -> int:
         """Tool calls started this turn, including denied and failed ones."""
         return len(self.tool_calls)
-
-    @property
-    def failed_tool_calls(self) -> list[ToolCallState]:
-        return [
-            c for c in self.tool_calls.values() if c.status not in (TOOL_OK, TOOL_RUNNING)
-        ]
 
     def to_dict(self) -> dict[str, Any]:
         return {

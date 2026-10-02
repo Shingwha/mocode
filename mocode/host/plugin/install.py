@@ -22,7 +22,6 @@ import re
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -223,17 +222,14 @@ def _rmtree(directory: Path) -> None:
 
     A git-installed plugin carries ``.git``, and git marks its pack files
     read-only — ``shutil.rmtree`` on Windows refuses to unlink those. Clear
-    the flag and retry, per file.
+    the flag and retry, per file (requires-python >= 3.12, so ``onexc``).
     """
 
     def _clear_readonly(func, path, _exc) -> None:
         os.chmod(path, stat.S_IWRITE)
         func(path)
 
-    if sys.version_info >= (3, 12):
-        shutil.rmtree(directory, onexc=_clear_readonly)
-    else:
-        shutil.rmtree(directory, onerror=_clear_readonly)
+    shutil.rmtree(directory, onexc=_clear_readonly)
 
 
 def _is_git(source: str) -> bool:

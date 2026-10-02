@@ -48,7 +48,6 @@ from .provider import (
     RetryDeadlineExceeded,
     StreamAccumulator,
     ToolCall,
-    Usage,
     with_retry_stream,
 )
 from .state import RunState
@@ -673,21 +672,6 @@ class AgentLoop:
         return self._tools
 
     @property
-    def iteration(self) -> int:
-        """LLM calls made in the current or last turn."""
-        return self.state.iteration
-
-    @property
     def tool_call_count(self) -> int:
         """Tool calls started in the current or last turn."""
         return self.state.tool_calls_made
-
-    @property
-    def last_usage(self) -> Usage | None:
-        """Usage of the last completed iteration."""
-        return self.state.last_usage
-
-    @property
-    def total_usage(self) -> Usage:
-        """Usage summed over the current or last turn."""
-        return self.state.usage

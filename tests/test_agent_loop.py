@@ -206,7 +206,7 @@ class TestRunState:
         seen: list[list[str]] = []
 
         async def _slow(args, ctx):
-            seen.append([c.name for c in agent.state.running_tool_calls])
+            seen.append([c.name for c in agent.state.tool_calls.values() if not c.done])
             return "slow done"
 
         agent = _make_agent(
@@ -218,7 +218,7 @@ class TestRunState:
 
         assert seen == [["slow"]]
         assert agent.state.status == DONE
-        assert agent.state.running_tool_calls == []
+        assert [c for c in agent.state.tool_calls.values() if not c.done] == []
         assert agent.state.tool_calls_made == 1
 
     @pytest.mark.asyncio
@@ -246,7 +246,7 @@ class TestRunState:
 
         await _events(agent)
 
-        assert agent.iteration == 2
+        assert agent.state.iteration == 2
         assert agent.tool_call_count == 1
 
     def test_state_starts_idle(self):
@@ -1138,8 +1138,8 @@ class TestTurns:
         await child.chat("hi")
 
         seen = []
-        while reader.pending():
-            seen.append(await reader.get())
+        while (event := reader.take()) is not None:
+            seen.append(event)
         assert any(isinstance(e, TextDelta) for e in seen)
         # The parent's own history is untouched: it was the child's turn.
         assert parent.messages == []

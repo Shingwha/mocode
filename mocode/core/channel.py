@@ -106,10 +106,6 @@ class Subscription:
         """Whether this reader has lost events (``seq`` will have gaps)."""
         return self.dropped > 0
 
-    def pending(self) -> int:
-        """Events waiting in the backlog, not yet taken."""
-        return self._queue.qsize()
-
     async def get(self) -> "Event | None":
         """The next event this reader wants, or ``None`` when it is over."""
         while not self._done:

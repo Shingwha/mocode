@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 ERROR_PREFIX = "error:"
 TIMEOUT_PREFIX = "timeout:"
 DENIED_PREFIX = "denied:"
-ERROR_PREFIXES: tuple[str, ...] = (ERROR_PREFIX, TIMEOUT_PREFIX, DENIED_PREFIX)
 
 
 class ToolError(Exception):
@@ -239,8 +238,7 @@ class Tool:
     (``{"type": "object", "properties": {...}, "required": [...]}``), passed
     through to the provider as the function's ``parameters`` and used by the
     built-in checker (see :func:`_check`) to fill defaults and reject bad
-    arguments before the function runs. ``returns`` is optional structured-
-    output metadata for SDKs to render; it never enters the request.
+    arguments before the function runs.
 
     Metadata beyond the schema:
       - ``tags``: semantic capabilities (e.g. ``{"fs"}``, ``{"shell"}``,
@@ -291,7 +289,6 @@ class Tool:
         tags: frozenset[str] = frozenset(),
         summary_key: str = "",
         result_key: str = "",
-        returns: dict | None = None,
         with_context: bool = False,
         availability: Literal["model", "program", "both"] = "both",
         policy: "ToolPolicy | Callable[[dict], ToolPolicy] | None" = None,
@@ -310,7 +307,6 @@ class Tool:
         self.name = name
         self.description = description
         self.schema = schema
-        self.returns = returns
         self.tags = frozenset(tags)
         properties = schema.get("properties") or {}
         required = list(schema.get("required") or [])

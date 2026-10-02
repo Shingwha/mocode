@@ -40,7 +40,7 @@ from .session import (
 
 if TYPE_CHECKING:
     from ..core.agent import Turn
-    from ..core.provider import ModelSpec, Provider
+    from ..core.provider import ModelSpec
     from ..core.state import RunState
     from .command import CommandRegistry
     from .runtime import MoCode
@@ -172,10 +172,6 @@ class Conversation:
     @property
     def model(self) -> "ModelSpec | None":
         return self.ctx.model
-
-    @property
-    def provider(self) -> "Provider":
-        return self.agent.provider
 
     def set_model(self, key: str, model: str) -> None:
         """Point this conversation at another provider/model.
