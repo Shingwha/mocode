@@ -33,7 +33,7 @@ from ..host.command import (
 )
 from ..host.config import Config
 from ..host.runtime import MoCode
-from .plugin import KeyContext
+from .plugin import KeyContext, Option
 
 _log = logging.getLogger(__name__)
 
@@ -170,6 +170,7 @@ class CLIApp:
         )
         self._register_builtin_keys()
         self._register_builtin_status()
+        self._prefill = ""
 
     def _register_builtin_status(self) -> None:
         """The bar the terminal always shows: model, tokens, cwd."""
@@ -236,11 +237,33 @@ class CLIApp:
 
     async def _dispatch(self, text: str) -> CommandResult:
         """Resolve input: run a command if slash-prefixed, else send it to the agent."""
+        if text in ("/", "/?"):
+            return await self._command_menu()
         head = text.split(None, 1)[0].lower()
         if text.startswith("/") and head not in self.commands:
             self._suggest_command(head)
             return CONTINUE
         return await self.commands.dispatch(text, conversation=self.conversation)
+
+    async def _command_menu(self) -> CommandResult:
+        """The bare-/ menu: every command in the registry, the pick refilled.
+
+        The chosen name goes back into the prompt, not to the dispatcher —
+        picking a command is a shortcut for typing it, never its execution.
+        """
+        options = [
+            Option(cmd.name, cmd.name, cmd.description)
+            for cmd in self.commands.all()
+        ]
+        chosen = await self.ui.select("Select a command:", options)
+        if chosen is not None:
+            self._prefill = str(chosen.value)
+        return CONTINUE
+
+    def _take_prefill(self) -> str:
+        """What the menu left in the prompt, once — the next prompt starts empty."""
+        prefill, self._prefill = self._prefill, ""
+        return prefill
 
     def _suggest_command(self, cmd_text: str) -> None:
         if self.display is None:
@@ -443,7 +466,11 @@ class CLIApp:
                 self._drain(subscription)
                 self._flush_header()
                 try:
-                    user_input = await self.display.prompt()
+                    prefill = self._take_prefill()
+                    if prefill:
+                        user_input = await self.display.prompt(default=prefill)
+                    else:
+                        user_input = await self.display.prompt()
                 except (EOFError, KeyboardInterrupt):
                     self.display.print()
                     break

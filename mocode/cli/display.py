@@ -106,8 +106,8 @@ class Display:
         """Clear the paste store when starting a new conversation."""
         self._input.clear_session()
 
-    async def prompt(self) -> str:
-        return await self._input.prompt()
+    async def prompt(self, default: str = "") -> str:
+        return await self._input.prompt(default=default)
 
     # ── Output ─────────────────────────────────────────────
 
