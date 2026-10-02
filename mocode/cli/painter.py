@@ -154,7 +154,9 @@ class Painter:
         self._frame = 0
         self._ticker: "asyncio.Task | None" = None
         #: Whether the region shows anything a repaint must redraw while
-        # streaming (spinner frame, running-tool line) — what animates.
+        # streaming (spinner frame, running-tool line) — what animates. The
+        #: ticker ticks on that alone; a stream's rows are redrawn by its
+        #: own flushes.
         self._spinning = False
         self._last: "Transcript | None" = None
 
@@ -286,6 +288,7 @@ class Painter:
         self._has_live = False
         self._declined = False
         self._open_tail = False
+        self._spinning = False
         cap = max(terminal_height() - 2, 1)
         for block in self._tail(transcript):
             member = self._member_rows(block, cap - len(rows))
@@ -296,6 +299,15 @@ class Painter:
             if member.live:
                 self._has_live = True
             rows.extend(member.rows)
+        # Nothing is on stage and the turn is under way: the thinking row,
+        # first live row of the region and its top row when nothing else
+        # has landed yet. A full region makes no room for it.
+        if self._in_turn and not self._has_live and len(rows) < cap:
+            rows.append(self._row(L.thinking(SPINNER_FRAMES[self._frame])))
+            self._has_live = True
+            self._spinning = True
+            if first_live is None:
+                first_live = len(rows) - 1
         if first_live is None:
             first_live = len(rows)
         return rows, first_live
@@ -344,6 +356,7 @@ class Painter:
                         return None
                     self._admitted.add(who)
                 line = _line_replace(block.lines[0], text=self._running_text(block))
+                self._spinning = True  # the frame moves while the call runs
                 return _Member([self._row(line)] + tail, True)
             if who in self._refused or who not in self._admitted:
                 return None  # never ours: the appended path owns its landing
@@ -400,8 +413,15 @@ class Painter:
         return False
 
     def _running_text(self, block: "Block") -> str:
-        """The pending line as shown while the call runs."""
-        return block.lines[0].text
+        """The pending line as shown while the call runs.
+
+        The marker that says "still going" is the spinner's current frame,
+        not a static ellipsis — the line moves because the call is moving.
+        """
+        text = block.lines[0].text
+        if text.endswith("…"):  # the pending ellipsis, replaced by the frame
+            text = text[:-1]
+        return f"{text} {SPINNER_FRAMES[self._frame]}"
 
     def _tail_rows(self, block: "Block") -> list[str]:
         """The last rows of what a running call printed — the tail, not the log.
@@ -653,11 +673,13 @@ class Painter:
         self._ticker = loop.create_task(self._tick_loop())
 
     async def _tick_loop(self) -> None:
+        """The clock the spinner turns on — one per turn, nothing more."""
         while True:
             await asyncio.sleep(SPINNER_STEP)
-            if not (self._in_turn and self._has_live and self._h):
-                return
-            self.tick()
+            if not self._in_turn:
+                return  # the turn closed: the spinner row goes with it
+            if self._spinning:
+                self.tick()
 
     # ── The appended path (a pipe, or a frozen region) ─────
 

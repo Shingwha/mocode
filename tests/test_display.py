@@ -27,6 +27,7 @@ from mocode.core import (
     ReasoningDelta,
     RunFailed,
     RunFinished,
+    RunStarted,
     TextDelta,
     Tool,
     ToolCallFinished,
@@ -366,10 +367,13 @@ class TestLiveBlock:
 
         # Every call claims its row before any of them finishes: the three
         # placeholders appear, in call order, as the region grows to three.
+        # A pending call says "still going" with the spinner's frame, not
+        # an ellipsis — the rows are claimed in the same instant, so the
+        # frame is the first one for all three.
         assert list(dict.fromkeys(l for l in _plain(out).splitlines() if l.startswith("· "))) == [
-            "· a  a…",
-            "· b  b…",
-            "· c  c…",
+            "· a  a ⠋",
+            "· b  b ⠋",
+            "· c  c ⠋",
         ]
         assert UP.search(out).group(1) == "1"          # one row when 'b' joins
         assert out.count("\x1b[3A") >= 1               # three rows once 'c' has
@@ -414,8 +418,8 @@ class TestPainterGolden:
             transcript.apply(event)
             painter.paint(transcript)
 
-        A = "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m"
-        B = "\x1b[2m·\x1b[0m \x1b[2mread  y…\x1b[0m"
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m"
+        B = "\x1b[2m·\x1b[0m \x1b[2mread  y ⠋\x1b[0m"
         VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
         VB = "\x1b[92m✓\x1b[0m \x1b[96mread  y\x1b[0m"
         assert capsys.readouterr().out == (
@@ -428,6 +432,75 @@ class TestPainterGolden:
             # 'b' lands: 'a' is final now, so only 'b's row is rewritten
             f"\x1b[1A\r\x1b[K{VB}\n"
         )
+
+    def test_a_thinking_row_turns_while_the_turn_is_empty(self, capsys, monkeypatch):
+        """Nothing live on stage: the spinner says the turn is under way — it
+        rides below a landed verdict, and the turn's end deletes its row."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        T0 = "\x1b[2m⠋\x1b[0m \x1b[2mthinking\x1b[0m"
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m"
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        for event in (
+            RunStarted(),
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolCallFinished(call_id="a", name="read"),
+            RunFinished(usage=Usage(1, 1)),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # the turn opens on an empty stage: one spinner row
+            f"{T0}\n"
+            # a call claims the row: the spinner makes room — the verdict
+            # row above is final once it lands, so only its own row rewrites
+            f"\x1b[1A\r\x1b[K{A}\n"
+            # the verdict lands and nothing else is live: the spinner rides
+            # below it, on the row the verdict's growth pushed down
+            f"\x1b[1A\r\x1b[K{VA}\n{T0}\n"
+            # the turn closes: the spinner's row is deleted — up one from
+            # below both rows, then two deletions, leaving the verdict in
+            # place for the rule to land under
+            "\x1b[1A\x1b[M\x1b[M"
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+
+    def test_the_spinner_frame_advances_only_while_it_spins(self, capsys, monkeypatch):
+        """A tick rewrites the thinking row's frame; a closed turn's screen
+        is final, and ticking it changes nothing."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        T0 = "\x1b[2m⠋\x1b[0m \x1b[2mthinking\x1b[0m"
+        T1 = "\x1b[2m⠙\x1b[0m \x1b[2mthinking\x1b[0m"
+        T2 = "\x1b[2m⠹\x1b[0m \x1b[2mthinking\x1b[0m"
+        event = RunStarted()
+        transcript.apply(event)
+        painter.paint(transcript, event)
+        painter.tick()
+        painter.tick()
+
+        assert capsys.readouterr().out == (
+            f"{T0}\n"
+            f"\x1b[1A\r\x1b[K{T1}\n"
+            f"\x1b[1A\r\x1b[K{T2}\n"
+        )
+
+        end = RunFinished(usage=Usage(1, 1))
+        transcript.apply(end)
+        painter.paint(transcript, end)
+        assert capsys.readouterr().out == (
+            "\x1b[1A\x1b[M"  # the spinner's row goes with the turn
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+        painter.tick()
+        assert capsys.readouterr().out == ""  # a closed turn is untouched
 
     def test_a_redirected_painter_appends_the_verdict_only(self, capsys):
         display = _make_display(live=False)
@@ -508,7 +581,7 @@ class TestPainterGolden:
         painter = Painter(display)
         transcript = Transcript()
         R = "\x1b[90mthink\x1b[0m"
-        A = "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m"
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m"
         VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
         for event in (
             ReasoningDelta(text="think"),
@@ -544,7 +617,7 @@ class TestPainterGolden:
         display = _make_display(live=True)
         painter = Painter(display)
         transcript = Transcript()
-        A = "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m"
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m"
         VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
         for event in (
             ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
@@ -585,9 +658,9 @@ class TestPainterGolden:
 
         assert capsys.readouterr().out == (
             # the call claims its row before it speaks
-            "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m\n"
+            "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m\n"
             # its output grows the region below that row
-            "\x1b[1A\r\x1b[K\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m\n"
+            "\x1b[1A\r\x1b[K\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m\n"
             "building\nlinking\n"
             # the verdict lands with the tail riding below it — the whole
             # region repaints, nothing is deleted
@@ -620,7 +693,7 @@ class TestPainterGolden:
         display = _make_display(live=True)
         painter = Painter(display)
         transcript = Transcript()
-        A = "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m"
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m"
         VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
         for event in (
             TextDelta(text="Hel"),
@@ -670,10 +743,13 @@ class TestPainterGolden:
             renderer.draw(event)
 
         out = capsys.readouterr().out
-        assert "· noisy…" in _plain(out)          # the row it claimed
+        assert re.search(r"· noisy [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]", _plain(out))  # the row it claimed
         assert "careful" in _plain(out)           # what committed the region
         after = out[out.index("careful"):]
-        assert not UP.search(after)               # nothing is rewritten past it
+        # The region is rebuilt from nothing after the notice, so a repaint
+        # may reach one row up — the newest row, the spinner's — but never
+        # deeper into what the notice committed.
+        assert not re.search(r"\x1b\[[2-9]\d*A", after)
         assert "✓ noisy" in _plain(out)           # so the verdict is appended
 
     @pytest.mark.asyncio
