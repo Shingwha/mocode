@@ -1,5 +1,9 @@
 # MoCode — Development Guide
 
+For contributors to the framework itself. Users are in
+[README.md](README.md); plugin authors are in [docs/plugins.md](docs/plugins.md);
+embedders are in [docs/embedding.md](docs/embedding.md).
+
 ## Commands
 
 ```bash
@@ -18,14 +22,6 @@ it observable. Everything else — workflows, sub-agents, context compaction, we
 fetch, the virtual file system — is a capability and has been removed from this
 codebase for that reason. If you are tempted to add an `if` for a specific
 tool, hook or feature inside `core/`, write a plugin instead.
-
-## The plugin lifecycle (the contract in two lines)
-
-`build(ctx)` registers — cheap, synchronous, no I/O. `prepare(ctx)` (async,
-optional) finishes — discovery, connections, anything slow — before the
-request surface (system prompt + offered tool interface) is materialized once,
-at the top of the first turn or byte-identically from a resumed session.
-`PluginHost.materialize()` is the one place that surface is written.
 
 ## Layering
 
@@ -49,9 +45,10 @@ The module map and the reasoning per layer are in
 1. Exactly one way to build an agent: the `AgentLoop` constructor or
    `AgentLoop.derive()`. No builder on top, no second assembly site.
 2. Exactly one way to execute a turn: `AgentLoop.start()`. `stream()` and
-   `chat()` are views over it, and nothing else gets its own path through the
-   loop. One conversation runs one turn at a time; a second `start()` raises
-   rather than interleaving two histories.
+   `chat()` are views over it, `run_with_messages()` is its convenience
+   wrapper for a pre-built message list, and nothing else gets its own path
+   through the loop. One conversation runs one turn at a time; a second
+   `start()` raises rather than interleaving two histories.
 3. Observation goes through the event stream — the channel is the only way
    anything learns what a run did. Anything that must *answer* (rewrite
    messages or the system prompt, veto a call, redact a result) is an
@@ -77,22 +74,25 @@ The module map and the reasoning per layer are in
 10. `import mocode` stays under a millisecond (PEP 562 `__getattr__`); heavy
     imports (`openai`, `questionary`, `prompt_toolkit`) resolve on first use.
 
+## The plugin lifecycle
+
+`build(ctx)` registers — cheap, synchronous, no I/O. `prepare(ctx)` (async,
+optional) finishes — discovery, connections, anything slow — before the request
+surface (system prompt + offered tool interface) is materialized once, at the
+top of the first turn or byte-identically from a resumed session.
+`PluginHost.materialize()` is the one place that surface is written. The full
+contract, the two context types and the escape hatches are
+[docs/plugins.md](docs/plugins.md#the-two-stages-buildctx-and-preparectx).
+
 ## Where config values belong
 
-| Value | Owner |
-|---|---|
-| `type` | provider entry (`providers.<p>`) — which implementation builds it; registered via `MoCode.register_provider_type()`, absent means the built-in `openai` |
-| `context_window`, `max_tokens` | model entry (`providers.<p>.models.<m>`) — physical properties; absence means "unknown", never a guessed default |
-| `efforts`, `effort` | model entry (`providers.<p>.models.<m>`) — the reasoning-level table and the level new conversations send; absent `efforts` means the kernel default triple, absent `effort` means the request carries no such parameter |
-| `retry` | model entry (`providers.<p>.models.<m>`) — per-model `RetryPolicy` override (`max_attempts`, `base_delay`, `max_delay`, `jitter`, `honor_retry_after`); unknown keys ignored, absent means the provider's own policy |
-| `tool_timeout`, `max_iterations`, `max_tool_calls`, `max_turn_seconds`, `tool_result_limit` | `agent` block — loop execution policy, identical whatever model is loaded. The block *is* the core `AgentConfig` (nested-serialized; unknown subkeys ignored), so a field is configurable the moment it exists — no mapping to keep in sync. Budgets are per turn, 0 = unlimited; `tool_result_limit` defaults to 50k chars |
-| `plugins.<name>` | the plugin, read through `ctx.plugin_config(name)` |
-| `provider`, `model` | the config file, as a *default* for new conversations; only `MoCode.set_default_model()` writes the file |
-| unknown top-level keys | whoever wrote them — preserved verbatim across load → save (`Config.foreign`) |
-
-API keys resolve as `api_key` → `$<PROVIDER_KEY>_API_KEY` (`config.env_var_for`);
-nothing to declare in the file. An unset `max_tokens` means the request carries
-no output cap — MoCode never invents one.
+The table of which value is owned by which entry — and what an absent value
+means — is the Configuration section of
+[README.md](README.md#configuration); provider authors keep their own copy of
+the keys they read in [docs/providers.md](docs/providers.md). The
+contributor-relevant part is one line: the `agent` block *is* the core
+`AgentConfig` (nested-serialized; unknown subkeys ignored), so a field is
+configurable the moment it exists — no mapping to keep in sync.
 
 ## Code Conventions
 
@@ -120,28 +120,45 @@ here. A new interception point on `AgentHook` touches four places, in order:
    isolation;
 3. the export in `mocode/plugins/__init__.py` — a plugin author writes
    against the SDK, not against `mocode.core`;
-4. the hook table in [docs/plugins.md](docs/plugins.md).
+4. the hook table in [docs/plugins.md](docs/plugins.md#hooks).
 
 Run the checklist both directions: adding without exporting hides the hook
 from every plugin author; exporting without documenting leaves it unusable.
 
+## Adding an event class
+
+Same discipline, its own four places:
+
+1. the subclass in `core/events.py` — a unique `type` discriminator and a
+   `summary()`, so any frontend can show it without knowing the type;
+2. the exports — `mocode/core/__init__.py` (the kernel's surface) and
+   `mocode/plugins/__init__.py` (the plugin SDK);
+3. the event table in [docs/embedding.md](docs/embedding.md#the-event-stream);
+4. the `events.py` line in the module map of
+   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), which counts them, and the
+   run-lifecycle diagram if the event is part of the turn's shape.
+
+## Adding a builtin plugin
+
+1. the class in `host/plugin/builtin/<name>.py`, with a module-level `PLUGIN`
+   — `build()` cheap, `prepare()` for the I/O, `close()` for what you acquired;
+2. the entry in `builtin_plugins()` (`host/plugin/host.py`) — the fixed,
+   prompt-stable order, and the name every reserved-name check reads;
+3. the reserved-name list in
+   [docs/plugins.md](docs/plugins.md#rules-of-the-road) and the built-in
+   table in [README.md](README.md#built-ins), so the names stay visible to
+   plugin authors and users.
+
 ## Testing Patterns
 
-- `MockProvider` (`tests/providers.py`) replays canned `Response` objects as
-  chunk streams, splitting tool-call arguments the way a real API does.
-  Remember: its **last response repeats forever** — end a tool-call script
-  with a plain answer or the turn never finishes.
-- Plugin fixtures: write `plugin.json` + `mocode/plugin.py` (and optionally
-  `mocode.cli/plugin.py`) into `tmp_path`, point `load_plugins(plugin_dirs=[...])`
-  at it.
-- Nothing touches the real `~/.mocode` — `MoCode(home=tmp_path / "home")`.
-- A conversation is cheap: `mc.new_conversation(cwd=tmp_path)`, then replace
-  `conversation.agent.provider` with a `MockProvider`.
-- Commands publish, they do not print: collect what a handler said by
-  subscribing to the conversation and draining it.
-- Async tests need `@pytest.mark.asyncio`; plain pytest classes, no
-  `unittest.TestCase`; display capture overrides `display.print` with a list
-  append.
+Tests script the model: `MockProvider` (`mocode/testing/providers.py`) replays
+canned `Response` objects as chunk streams, splitting tool-call arguments the
+way a real API does — and its **last response repeats forever**, so a script
+that ends on a tool call never finishes; end on a `say(...)`. `tests/conftest.py`
+supplies the fixtures (`make_mc`, `wired`, `write_plugin`, `plugin_host`,
+`run_command`, …), and nothing touches the real `~/.mocode`. The details, the
+readers and the conventions are in
+[docs/testing.md](docs/testing.md).
 
 ## Deliberately absent from core
 
@@ -163,6 +180,7 @@ plugin, and [docs/plugins.md](docs/plugins.md) shows the worked version:
 | [docs/plugins.md](docs/plugins.md) | writing a plugin |
 | [docs/providers.md](docs/providers.md) | the Provider protocol, writing a provider |
 | [docs/testing.md](docs/testing.md) | testing a plugin against a scripted model |
+| [docs/api.md](docs/api.md) | the public surface, layer by layer |
 | [examples/core/](examples/core) | agents built from `core/` alone, runnable |
 | [examples/plugins/git-status/](examples/plugins/git-status) | a complete plugin, both surfaces |
 | [examples/plugins/json-validate/](examples/plugins/json-validate) | a plugin with its own environment (a dependency via uv) |
