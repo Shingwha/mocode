@@ -72,14 +72,32 @@ spec 中文；代码/注释/仓库文档/commit 英文（仓库惯例：小写�
 | `pyproject.toml` / `uv.lock` | — | 05 | — |
 | `AGENTS.md` | — | — | lead 收尾 |
 
-## 状态记录（lead 收尾时一次写完）
+## 状态记录（lead 维护；git 是唯一进度权威）
 
 | 工单 | 分支 | 状态 |
 |---|---|---|
-| 01-t2-render | spec/t2-render | ⬜ |
-| 02-bash-promote | spec/bash-promote | ⬜ |
-| 03-k8-deadline | spec/k8-deadline | ⬜ |
+| 01-t2-render | spec/t2-render | 🔶 进行中：T1 已提交 `37a7d7c`（区域管理器落地，689 passed）；**T2-T5 待续**（见 01 号头部快照） |
+| 02-bash-promote | spec/bash-promote | ✅ 2026-10-02 @ merge（promote() API + 12 测试，合并后 698 passed） |
+| 03-k8-deadline | spec/k8-deadline | ✅ 2026-10-02 @ merge（deadline 进编排器 + RetryDeadlineExceeded，合并后 704 passed） |
 | 04-t3-input-status | spec/t3-input-status | ⬜ |
 | 05-t3-content | spec/t3-content | ⬜ |
 | 06-session-replay | spec/session-replay | ⬜ |
 | 07-t3-ui | spec/t3-ui | ⬜ |
+
+## 跨会话交接快照（2026-10-02，Wave A 中断点）
+
+- **master**：Wave A 之二已合并（bash-promote、k8-deadline），全量门禁 **704 passed**。分支出处与合并序完整保留在 git log。
+- **01 号工单（T2 渲染泛化）做到一半**：T1（区域管理器重构）已在分支 `spec/t2-render` 提交 `37a7d7c`，基于 e2da75b；**worktree 保留在 `C:\Users\shifu\.worktrees\mocode\spec-t2-render`**，续作直接在该 worktree 继续（无需重建）。
+- **T1 已定型的实现契约**（T2-T5 续作必须遵守，均在 painter.py 落地）：
+  1. 统一重画算法：`CUU 上移 h_old → 逐行 \r\x1b[K+行+\n → 增行直接追加 → 缩行 \x1b[M 删除`；行按可视宽度预算（每行恰好一个可视行，进区域前 wrap/fit 完成）。
+  2. 冻结前缀：`_frozen` 只增（`max(top, min(live_start, len(rows)))`），final 行（已落 verdict、已完结流式行）只被"原样重写"，长 turn 重画只碰 live 后缀。
+  3. 同帧跳过：`rows == self._span` 时不写屏。
+  4. 成员资格看 `_admitted`（区域账本），落定 verdict 同时登记 `_printed`（追加账本）防双印；`_refused` 的成员 verdict 走追加。
+  5. 非工具块出现在 tail → `_commit_span()` + 追加路径（T1 阶段流式仍走 display.stream 追加——**T2 的任务就是把它搬进区域**）。
+  6. 非TTY路径（`_paint_appended`）与旧实现字节级一致，redirected 测试原样通过——这是回归红线。
+  7. cap = `terminal_height() - 2`；超限拒绝新成员（verdict 追加）。
+  8. `Painter(display, animate=False)`；spinner 骨架（`tick()`/`_ensure_ticker`/`SPINNER_FRAMES`）已就位但未接线——T4 填 `_running_text` 的帧后缀与 thinking 行。
+- **T2-T5 剩余**：T2 流式块进区域（partial 行成员 + 完结行冻结）、T3 工具输出尾部（TOOL_TAIL_ROWS=6 常量已备）+ 收拢 + `painter.verbose`、T4 spinner 接线、T5 `docs/ARCHITECTURE.md` 终端章节改写。
+- **收尾欠账**（k8-deadline agent 按禁触留下的）：`RetryDeadlineExceeded` 的 `mocode/core/__init__.py`/SDK 导出 + ARCHITECTURE 一句话——并入 Wave B 任一工单或 lead 收尾。
+- **下一步**：01 号 T2-T5 完成 → 门禁合并 → Wave B 三并行（04/05/06，worktree 从最新 master 建）→ Wave C（07）→ 终验收尾。
+- 环境：PATH 需 `export PATH="/c/Users/shifu/.local/bin:$PATH"` 后才有 uv。

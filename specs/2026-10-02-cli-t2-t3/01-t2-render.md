@@ -3,6 +3,13 @@
 > 分支 `spec/t2-render`；worktree `C:\Users\shifu\.worktrees\mocode\spec-t2-render`；
 > 前置：W0；深读：总纲 + `ref/cli-tui-api.md` §2/§3（以 §3.4 修正架构为准）/§3.5/§6 T2 行/§7。
 > 只读本 worktree；绝不 merge/push/tag。
+>
+> **进行中状态（2026-02 快照，续作者必读）**：T1 已完成并提交（`37a7d7c`，全量 689 passed）。
+> T1 已把区域管理器、冻结前缀、同帧跳过、cap/epoch 守卫、`fit_row`/`wrap_rows`、
+> spinner 骨架（`tick()`/`_ensure_ticker`，未接线）全部落地；**实现契约八条已录入总纲
+> "跨会话交接快照"**——T2-T5 在其上续作，勿推翻已定型机制。T1 阶段流式仍走
+> `display.stream` 追加（T2 搬进区域）；非TTY路径字节级保持是回归红线。
+> 剩余：T2 流式进区域｜T3 工具输出尾部+收拢+verbose｜T4 spinner 接线｜T5 文档。
 
 ## 现状事实（已核实）
 
