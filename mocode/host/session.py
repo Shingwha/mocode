@@ -53,6 +53,11 @@ class Session:
     #: plugin remember anything across a save/resume — a baseline, a counter,
     #: an index — without the host knowing any plugin's shape.
     plugin_state: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Plugin-authored messages — :class:`~mocode.core.events.PluginMessage`
+    #: events, serialized — republished onto the channel in order when the
+    #: session is resumed. The conversation's capture is bounded (the newest
+    #: PLUGIN_MESSAGE_CAP survive); what fell off is gone for good.
+    plugin_messages: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -69,6 +74,7 @@ class Session:
             system_prompt=data.get("system_prompt", ""),
             tool_schemas=data.get("tool_schemas", []),
             plugin_state=data.get("plugin_state", {}),
+            plugin_messages=_plugin_messages_from(data.get("plugin_messages")),
             metadata=data.get("metadata", {}),
         )
 
@@ -85,8 +91,17 @@ class Session:
             "system_prompt": self.system_prompt,
             "tool_schemas": self.tool_schemas,
             "plugin_state": self.plugin_state,
+            "plugin_messages": self.plugin_messages,
             "metadata": self.metadata,
         }
+
+
+def _plugin_messages_from(raw: Any) -> list[dict[str, Any]]:
+    """Tolerant read of the stored capture: only a list of dicts survives —
+    a wrong-shaped field or a bad entry is dropped, never fatal to the load."""
+    if not isinstance(raw, list):
+        return []
+    return [m for m in raw if isinstance(m, dict)]
 
 
 def _hash_workdir(workdir: str) -> str:

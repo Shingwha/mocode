@@ -357,6 +357,7 @@ class Conversation:
             system_prompt=self.agent.system_prompt,
             tool_schemas=self.ctx.tools.all_schemas(),
             plugin_state=self.ctx.plugin_states,
+            plugin_messages=list(self._plugin_messages),
         )
 
     def adopt(self, messages: list[dict]) -> None:
