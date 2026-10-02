@@ -198,8 +198,6 @@ conv.state.iteration              # which LLM call
 conv.state.content                # everything streamed this turn
 conv.state.answer                 # the final answer ("" if the turn did not finish)
 conv.state.usage                  # Usage, summed over the turn
-conv.state.running_tool_calls     # [ToolCallState, ...] still executing
-conv.state.failed_tool_calls      # those that did not end "ok"
 conv.state.tool_calls["c1"]       # one call by id
 ```
 
