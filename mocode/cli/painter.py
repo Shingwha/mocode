@@ -652,7 +652,7 @@ class Painter:
         if done:
             fresh = done[len(shown) :]
             if fresh:
-                self._d.render_all(self._streamed_lines(fresh, self._stream_kind))
+                self._d.render_all(self._streamed_lines(fresh + "\n", self._stream_kind))
             else:
                 self._d.print()  # the line was already written: end it
             # The finished lines commit, and with them the rows they sat
@@ -663,18 +663,20 @@ class Painter:
     def _streamed_lines(self, text: str, kind: str) -> list[L.Line]:
         """Completed streamed lines as they append — fenced ones de-emphasised.
 
-        The fence judgment belongs to the moment a line completes: the row
-        that opens a fence passes plain (the fence did not exist yet), the
-        rows inside it dim, and its closing row reads as the frame's end.
+        *text* is newline-terminated: the terminator closes the last of the
+        completed lines, empty ones included. The fence judgment belongs to
+        the moment a line completes: the row that opens a fence passes plain
+        (the fence did not exist yet), the rows inside it dim, and its
+        closing row reads as the frame's end.
         """
         tracker = self._fences.setdefault(kind, FenceTracker())
-        base = L.reasoning if kind == "reasoning" else L.answer
+        style = "reasoning" if kind == "reasoning" else "answer"
         out: list[L.Line] = []
         for row in text.splitlines():
             out.append(
                 style_code_line(row, self._d.theme)
                 if tracker.in_fence()
-                else base(row)[0]
+                else L.Line(text=row, style=style)
             )
             tracker.feed(row)
         return out
