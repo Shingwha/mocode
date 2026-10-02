@@ -150,6 +150,11 @@ class _Job:
 
     @property
     def running(self) -> bool:
+        """Whether the job's process is still alive — its ``done`` not yet set.
+
+        Distinct from having unread output: a finished job keeps its ring until
+        something reads it, and that is exactly the case this answers False for.
+        """
         return not self.done.is_set()
 
 

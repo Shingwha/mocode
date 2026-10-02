@@ -112,11 +112,13 @@ class _Watcher(AgentHook):
     # ── the two triggers ────────────────────────────────────
 
     async def on_event(self, event: "Event") -> None:
+        """A conversation that was just replaced — its artifacts are back."""
         if isinstance(event, ConversationChanged):
             # A resume (or /clear): the frozen artifacts were just put back.
             self._announce()
 
     async def before_iteration(self, ctx: "IterationContext") -> None:
+        """The first iteration of a turn — where a diff belongs in the prompt."""
         if ctx.iteration == 1:
             self._announce(messages=ctx.messages)
 

@@ -24,6 +24,12 @@ class _Ring:
         self.discarded = 0
 
     def append(self, line: str) -> None:
+        """Add one line, evicting the oldest until the bounds hold again.
+
+        The eviction runs to convergence rather than once, because a single
+        line can be longer than the whole byte budget — dropping it beats
+        keeping it and lying about the bound.
+        """
         self.lines.append(line)
         self._bytes += len(line)
         while self.lines and (

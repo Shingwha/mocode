@@ -47,6 +47,12 @@ class _StampingToolRegistry(ToolRegistry):
         self._ctx = ctx
 
     def register(self, tool, *, replace: bool = False) -> "ToolRegistry":
+        """Register *tool*, stamped with whoever is registering right now.
+
+        The stamp is set by the host around each plugin's ``build()`` /
+        ``prepare()`` — outside that window the source is empty, which the base
+        class reads as "unattributed", i.e. the host itself.
+        """
         tool.source = self._ctx._current_source or "host"
         return super().register(tool, replace=replace)
 

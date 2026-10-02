@@ -58,6 +58,10 @@ class Session:
     #: session is resumed. The conversation's capture is bounded (the newest
     #: PLUGIN_MESSAGE_CAP survive); what fell off is gone for good.
     plugin_messages: list[dict[str, Any]] = field(default_factory=list)
+    #: Anything else a caller wants recorded about this conversation. MoCode
+    #: never reads it, only preserves it through load → save — the slot an
+    #: embedding uses for its own bookkeeping without the host knowing the
+    #: shape.
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
