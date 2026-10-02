@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 from wcwidth import wcswidth
 
 from . import lines as L
+from .markdown import FenceTracker, style_code_line
 from .text import terminal_height, terminal_width, visible_width
 from .theme import RESET
 from .transcript import RUNNING, STREAMING
@@ -203,6 +204,9 @@ class Painter:
         self._stream_partial = ""
         self._pending = ""
         self._last_flush: float | None = None
+        #: Fence state per stream kind — each block starts outside a fence,
+        #: so a tracker resets the moment a block of that kind opens.
+        self._fences: dict[str, FenceTracker] = {}
 
     # ── The projection ────────────────────────────────────
 
@@ -580,6 +584,7 @@ class Painter:
         self._stream_kind = block.kind
         self._streamed = 0
         self._stream_partial = ""
+        self._fences[block.kind] = FenceTracker()
 
     def _reset_stream(self) -> None:
         """Forget the stream entirely — a redraw starts the document over."""
@@ -589,6 +594,7 @@ class Painter:
         self._streamed = 0
         self._stream_partial = ""
         self._block_rows.clear()
+        self._fences.clear()
         self._pending = ""
         self._last_flush = None
 
@@ -643,13 +649,32 @@ class Painter:
         if done:
             fresh = done[len(shown) :]
             if fresh:
-                self._d.render_all(_stream_lines(fresh + "\n", self._stream_kind))
+                self._d.render_all(self._streamed_lines(fresh, self._stream_kind))
             else:
                 self._d.print()  # the line was already written: end it
             # The finished lines commit, and with them the rows they sat
             # under — the region starts again below them, at the new line.
             self._commit_span()
         self._stream_partial = partial
+
+    def _streamed_lines(self, text: str, kind: str) -> list[L.Line]:
+        """Completed streamed lines as they append — fenced ones de-emphasised.
+
+        The fence judgment belongs to the moment a line completes: the row
+        that opens a fence passes plain (the fence did not exist yet), the
+        rows inside it dim, and its closing row reads as the frame's end.
+        """
+        tracker = self._fences.setdefault(kind, FenceTracker())
+        base = L.reasoning if kind == "reasoning" else L.answer
+        out: list[L.Line] = []
+        for row in text.splitlines():
+            out.append(
+                style_code_line(row, self._d.theme)
+                if tracker.in_fence()
+                else base(row)[0]
+            )
+            tracker.feed(row)
+        return out
 
     # ── Animation ─────────────────────────────────────────
 
