@@ -141,6 +141,11 @@ class Input:
     conversation, a new app). *key_context* builds the context object idle
     handlers receive, and is only called once a key is pressed, so the app
     may pass a factory that reaches things built after the Input.
+
+    Ctrl-C at the prompt is Claude Code semantics, not an instant abort: with
+    text in the buffer it clears the line; on an empty buffer it arms a
+    confirmation — a second Ctrl-C exits, and :attr:`confirm_armed` (read by
+    whoever paints the chrome) says the confirmation is pending.
     """
 
     def __init__(
@@ -157,6 +162,15 @@ class Input:
         self._keys = keys
         self._key_context = key_context
         self._session = None
+        self._confirm_armed = False
+
+    #: What the chrome shows while a second Ctrl-C would exit.
+    CONFIRM_HINT = "Press Ctrl-C again to exit"
+
+    @property
+    def confirm_armed(self) -> bool:
+        """Whether the idle Ctrl-C confirmation is waiting for its second press."""
+        return self._confirm_armed
 
     def _ensure_session(self):
         if self._session is None:
@@ -167,7 +181,8 @@ class Input:
                 completer=SlashCompleter(self._registry),
                 complete_while_typing=False,
                 key_bindings=build_keybindings(
-                    self._handle_paste, extra=self._registered_bindings()
+                    self._handle_paste,
+                    extra=[self._ctrl_c_binding(), *self._registered_bindings()],
                 ),
             )
             # PromptSession merges its own defaults BEFORE `key_bindings`, and
@@ -177,6 +192,25 @@ class Input:
             self._session.app.key_bindings = merge_key_bindings(
                 [self._session.key_bindings, self._session.app.key_bindings]
             )
+
+    def _ctrl_c_binding(self):
+        """The idle Ctrl-C pair: clear the line, then confirm before exiting."""
+
+        def _on_ctrl_c(event):
+            buf = event.current_buffer
+            if buf.text:
+                buf.reset()
+                self._confirm_armed = False
+            elif self._confirm_armed:
+                self._confirm_armed = False
+                event.app.exit(exception=KeyboardInterrupt)
+            else:
+                self._confirm_armed = True
+            # Whatever happened, the chrome may need re-painting — the
+            # confirm hint in the toolbar appears and disappears here.
+            event.app.invalidate()
+
+        return ("c-c", _on_ctrl_c)
 
     def _registered_bindings(self):
         """Idle key registrations adapted to raw prompt_toolkit handlers."""
@@ -209,6 +243,7 @@ class Input:
         self._pastes.clear()
 
     async def prompt(self, default: str = "") -> str:
+        self._confirm_armed = False  # a fresh prompt is never mid-confirmation
         self._ensure_session()
         raw = await self._session.prompt_async(f"{self._ps1} ", default=default)
         # Clear the prompt_toolkit input lines from the terminal
