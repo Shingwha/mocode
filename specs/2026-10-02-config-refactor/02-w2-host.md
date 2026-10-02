@@ -1,5 +1,6 @@
 # Spec 02 · W2 — host：config.py 重写 + set_effort
 
+> ✅ 2026-10-02 完成 @ config-refactor-w2-host（已合并 master）
 > 分支 `config-refactor-w2-host`；前置：**W1 已合并进 master**（分支从
 > 合并后的 master 创建）；深读：
 > `specs/2026-10-02-config-refactor/00-overview.md`（总纲，必读）。

@@ -1,5 +1,6 @@
 # Spec 00 · config 机制重构 — 总纲
 
+> ✅ 2026-10-02 完成 @ merged（已合并 master）
 > 2026-10-02 启动。三波串行：W1 core → W2 host → W3 cli+docs。
 > Git / worktree 协议见 spec-team SKILL.md「Git / worktree 协议」一节，本组不重复。
 

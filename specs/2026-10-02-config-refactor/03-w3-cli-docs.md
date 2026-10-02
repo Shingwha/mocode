@@ -1,5 +1,6 @@
 # Spec 03 · W3 — cli：/model 适配 + /effort 新命令 + 文档
 
+> ✅ 2026-10-02 完成 @ config-refactor-w3-cli-docs（已合并 master）
 > 分支 `config-refactor-w3-cli-docs`；前置：**W2 已合并进 master**；
 > 深读：`specs/2026-10-02-config-refactor/00-overview.md`（总纲，必读）。
 > W1/W2 已交付：`ModelSpec.efforts`/`effort`；`ProviderEntry` 的 models

@@ -1,5 +1,6 @@
 # Spec 01 · W1 — core：efforts 系列 + Provider 协议 + 删 extra_body
 
+> ✅ 2026-10-02 完成 @ config-refactor-w1-core（已合并 master）
 > 分支 `config-refactor-w1-core`；前置：无（第一个波）；深读：
 > `specs/2026-10-02-config-refactor/00-overview.md`（总纲，必读）。
 
