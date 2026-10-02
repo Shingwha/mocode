@@ -568,10 +568,14 @@ rewrite. `emit_message` is legal in `prepare()`, in `close()` and at call
 time; during a turn the message is attributed to it, so the turn's readers
 see it, and between turns it belongs to the conversation stream alone.
 
-**A known limitation**: plugin messages are **not** persisted with the
-session. They speak to whoever is watching now; a resumed conversation does
-not replay them. Facts that must survive belong in `plugin_state()` or in the
-conversation history.
+**Persistence**: plugin messages **are** persisted with the session — the
+newest 200 of them, serialized with everything else. Resuming the
+conversation replays them on the stream after the history, in order, so a
+frontend that draws blocks rebuilds what was on screen; nothing replays
+twice, and what a frontend already committed to the scrollback it treats
+as history. The bound is a session's worth of display chatter, not an
+archive: facts that must survive unbounded belong in `plugin_state()` or
+in the conversation history.
 
 ## Context compaction — a worked example
 

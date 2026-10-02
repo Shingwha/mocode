@@ -192,9 +192,9 @@ class HostContext(BuildContext):
         with a kind and a payload, optionally updating one display block:
         messages that share *block_id* render as one block rather than one
         each. The payload is copied, so later edits to the caller's dict never
-        rewrite what was published. These messages are **not** persisted with
-        the session: they say something to whoever is watching now, and a
-        resumed conversation does not replay them — a known limitation.
+        rewrite what was published. The messages are persisted with the
+        session — the newest 200 of them — and replayed on the stream when the
+        session resumes, so a frontend that draws blocks rebuilds them.
         """
         await self.emit(PluginMessage(kind=kind, data=dict(data), block_id=block_id))
 
