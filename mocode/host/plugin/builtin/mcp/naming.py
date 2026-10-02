@@ -122,6 +122,17 @@ def _pattern_re(pattern: str) -> "re.Pattern[str]":
     return re.compile(re.escape(pattern).replace(r"\*", ".*") + r"\Z", re.DOTALL)
 
 
+def resolve_server_exposure(cfg: "McpServerConfig", default: str) -> str:
+    """The exposure a server itself resolves to — its configured value when
+    valid, else the (canonicalized) default, else ``direct``."""
+    if cfg.exposure is not None:
+        canon = canon_exposure(cfg.exposure)
+        if canon in EXPOSURES:
+            return canon
+    canon = canon_exposure(default)
+    return canon if canon in EXPOSURES else "direct"
+
+
 def resolve_exposure(
     cfg: "McpServerConfig", raw_tool: str, default: str, *, source: str = ""
 ) -> str:

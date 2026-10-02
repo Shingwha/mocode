@@ -1234,3 +1234,187 @@ class TestSyncTools:
         )
         await asyncio.wait_for(runtime.start(), BOUND)
         assert runtime._codemode_warned is False
+
+
+# ── plugin lifecycle ────────────────────────────────────────
+
+from mocode.host.plugin.builtin.mcp import PLUGIN, McpPlugin, McpRuntime
+from mocode.host.plugin.builtin.mcp.naming import resolve_server_exposure
+
+
+def _demo_servers(tmp_path: Path, script: Path, **servers) -> dict:
+    """mcpServers table for <cwd>/.mocode/mcp.json."""
+    table = {}
+    for name, extra in servers.items():
+        table[name] = {"command": sys.executable, "args": [str(script)], **extra}
+    return table
+
+
+class TestPluginLifecycle:
+    def test_build_registers_the_anchor_tool_with_the_runtime(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=False)
+        assert not host.failures
+        status = host.ctx.tools.get("mcp_status")
+        assert status is not None
+        assert isinstance(status.mcp_runtime, McpRuntime)
+        # program-only: the model is never offered the anchor
+        assert "mcp_status" not in host.ctx.tools.names(audience="model")
+        assert "mcp_status" in host.ctx.tools.names(audience="program")
+
+    def test_the_plugin_instance_is_stateless(self):
+        assert McpPlugin().name == "mcp"
+        assert McpPlugin().description == "Connect to MCP servers and expose their tools"
+        assert PLUGIN.name == "mcp"
+
+    async def test_prepare_connects_and_the_section_joins_the_prompt(
+        self, plugin_host, tmp_path
+    ):
+        script = write_server(tmp_path, "pl_modern.py", MODERN_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {
+                "mcpServers": _demo_servers(
+                    tmp_path, script, demo={"description": "Search things"}
+                )
+            },
+        )
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+
+        registry = host.ctx.tools
+        assert "mcp__demo__search" in registry.names(audience="model")
+        assert host.ctx.agent.system_prompt.count("<mcp_servers>") == 1
+        assert "- demo: direct — Search things" in host.ctx.agent.system_prompt
+
+        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
+        assert section.priority == 46
+        assert section.derived_from == "tools"
+        assert section.pinned is False
+
+        host.close()
+        runtime = registry.get("mcp_status").mcp_runtime
+        proc = runtime.sessions["demo"]._proc
+        for _ in range(200):
+            if proc.returncode is not None:
+                break
+            await asyncio.sleep(0.05)
+        assert proc.returncode is not None  # close() killed the child
+
+    async def test_the_section_uses_server_instructions_without_a_description(
+        self, plugin_host, tmp_path
+    ):
+        script = write_server(tmp_path, "pl_instr.py", MODERN_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {"mcpServers": _demo_servers(tmp_path, script, demo={})},
+        )
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        assert "- demo: direct — Modern server instructions." in (
+            host.ctx.agent.system_prompt
+        )
+        host.close()
+
+    async def test_hidden_and_disabled_servers_stay_out_of_the_section(
+        self, plugin_host, tmp_path
+    ):
+        script = write_server(tmp_path, "pl_hidden.py", MODERN_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {
+                "mcpServers": _demo_servers(
+                    tmp_path,
+                    script,
+                    shown={},
+                    hid={"exposure": "hidden"},
+                    off={"enabled": False},
+                )
+            },
+        )
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
+        text = section.render({})
+        assert "- shown: direct" in text
+        assert "hid" not in text
+        assert "off" not in text
+        # hidden still registered — just unreachable
+        assert host.ctx.tools.get("mcp__hid__search") is not None
+        host.close()
+
+    async def test_no_servers_renders_no_section(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
+        assert section.render({}) == ""
+        assert "<mcp_servers>" not in host.ctx.agent.system_prompt
+        host.close()
+
+    async def test_codemode_warning_notice_emits_once_per_conversation(
+        self, plugin_host, tmp_path
+    ):
+        script = write_server(tmp_path, "pl_warn.py", MODERN_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {
+                "mcpServers": _demo_servers(
+                    tmp_path, script, demo={"exposure": "codemode"}
+                )
+            },
+        )
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        reader = host.ctx.subscribe(since=0)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        runtime = host.ctx.tools.get("mcp_status").mcp_runtime
+        for _ in range(200):
+            if runtime._codemode_warned:
+                break
+            await asyncio.sleep(0.05)
+        assert runtime._codemode_warned
+        # let a possible second emission land, then count
+        await asyncio.sleep(0.5)
+        seen = []
+        while (event := reader.take()) is not None:
+            seen.append(event)
+        warnings = [
+            e
+            for e in seen
+            if isinstance(e, Notice) and "reachable only through codemode" in e.message
+        ]
+        assert len(warnings) == 1
+        assert warnings[0].level == "warn"
+        assert warnings[0].message.startswith("4 MCP tools")
+        host.close()
+
+    async def test_codemode_enabled_suppresses_the_notice(self, plugin_host, tmp_path):
+        script = write_server(tmp_path, "pl_cm.py", MODERN_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {
+                "mcpServers": _demo_servers(
+                    tmp_path, script, demo={"exposure": "codemode"}
+                )
+            },
+        )
+        host = plugin_host(
+            plugins=[PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={"plugins": {"codemode": {"enabled": True}}},
+        )
+        reader = host.ctx.subscribe(since=0)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        runtime = host.ctx.tools.get("mcp_status").mcp_runtime
+        await asyncio.sleep(0.5)
+        assert runtime._codemode_warned is False
+        seen = []
+        while (event := reader.take()) is not None:
+            seen.append(event)
+        assert not [e for e in seen if isinstance(e, Notice)]
+        host.close()
+
+    def test_resolve_server_exposure(self):
+        assert resolve_server_exposure(_cfg(exposure="hidden"), "direct") == "hidden"
+        assert resolve_server_exposure(_cfg(exposure="bogus"), "codemode") == "codemode"
+        assert resolve_server_exposure(_cfg(), "deferred") == "deferred"
+        assert resolve_server_exposure(_cfg(), "garbage") == "direct"
