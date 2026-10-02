@@ -70,9 +70,16 @@ class OpenAIProvider:
 
     @property
     def model(self) -> str:
+        """The model id every request is sent as."""
         return self._model
 
     def is_retriable(self, exc: Exception) -> bool:
+        """Whether *exc* is a transport-level failure worth another attempt.
+
+        Rate limits, timeouts and connection errors are; a 400 about the
+        request body is not — that is the provider's own message about its own
+        input, and asking again sends the same bad request.
+        """
         return isinstance(exc, _retriable_exceptions())
 
     async def stream(
@@ -83,6 +90,18 @@ class OpenAIProvider:
         max_tokens: int | None,
         effort: str | None,
     ) -> AsyncIterator[Chunk]:
+        """Stream one chat completion as kernel chunks, in the OpenAI dialect.
+
+        The kernel's dialect *is* the OpenAI wire format, so the translation
+        here is thin: ``system`` becomes a leading system message and the rest
+        normalize into role dicts. An unset ``max_tokens`` sends no cap at all
+        rather than a number MoCode invented, and ``effort`` travels verbatim
+        as ``reasoning_effort``.
+
+        The request is awaited before the first chunk is yielded, so a rate
+        limit or a dead connection surfaces inside the retry window rather than
+        mid-stream.
+        """
         openai_messages = [
             {"role": "system", "content": system},
             *self._normalize_messages(messages),

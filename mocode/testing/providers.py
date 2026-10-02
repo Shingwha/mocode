@@ -20,7 +20,14 @@ ARG_FRAGMENT = 8
 
 
 def response_to_chunks(response: Response, chunk_size: int = 0) -> Iterable[Chunk]:
-    """Replay a canned Response as the chunk sequence a provider would send."""
+    """Replay a canned Response as the chunk sequence a provider would send.
+
+    Tool-call arguments are always split into ``ARG_FRAGMENT``-sized pieces so
+    the ``StreamAccumulator`` joins them the way it would join a real
+    backend's. ``chunk_size`` does the same to text and reasoning (0 = one
+    chunk, no fragmentation). Usage and ``finish_reason`` come last, which is
+    where a real API puts them.
+    """
     if response.reasoning_content:
         for part in _split(response.reasoning_content, chunk_size):
             yield Chunk(reasoning=part)
@@ -79,6 +86,16 @@ class MockProvider:
         retriable: Callable[[Exception], bool] | None = None,
         on_attempt: Callable[[], None] | None = None,
     ):
+        """Script *responses* in order; the last one repeats forever.
+
+        ``chunk_size`` fragments text and reasoning into per-chunk pieces so a
+        test can drive the streaming path instead of one atomic chunk (tool-call
+        arguments are always fragmented). ``model`` is what ``.model`` reports.
+        ``retriable`` decides which scripted exceptions the kernel retries —
+        default none, so an unknown error fails the turn rather than looping.
+        ``on_attempt`` is called once per ``stream()`` before anything is popped
+        or raised, which is where a fake clock or an attempt counter advances.
+        """
         self.responses = list(responses or [Response(content="done", usage=Usage(1, 1))])
         self.calls: list[dict] = []
         self.chunk_size = chunk_size
@@ -90,6 +107,7 @@ class MockProvider:
 
     @property
     def model(self) -> str:
+        """The model name this mock claims to be — never sent anywhere."""
         return self._model
 
     @property
@@ -98,6 +116,7 @@ class MockProvider:
         return self.calls[-1] if self.calls else None
 
     def is_retriable(self, exc: Exception) -> bool:
+        """Whether the kernel should retry *exc* — answered by ``retriable``."""
         return self._retriable(exc)
 
     async def stream(
@@ -108,6 +127,11 @@ class MockProvider:
         max_tokens,
         effort,
     ) -> AsyncIterator[Chunk]:
+        """Record the request, then yield the next scripted response.
+
+        An exception in the script is raised here instead — the point a real
+        provider would fail, inside the window the retry logic covers.
+        """
         self.calls.append(
             {
                 "messages": list(messages),
@@ -151,9 +175,16 @@ def call_tool(name: str, args: dict, *, call_id: str = "c1") -> Response:
 
 
 class SlowProvider(MockProvider):
-    """A provider whose turn never finishes on its own."""
+    """A provider whose turn never finishes on its own.
+
+    Every ``stream()`` parks — used to rehearse cancellation: a turn started
+    against it stays running until something cancels it, which is the only way
+    to exercise that path deterministically. Not a "slow" provider in the
+    polling sense: it does not finish eventually either.
+    """
 
     async def stream(self, *args):
+        """Park for far longer than any test wait — the turn stays cancellable."""
         import asyncio
 
         await asyncio.sleep(30)
