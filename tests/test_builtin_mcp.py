@@ -1418,3 +1418,145 @@ class TestPluginLifecycle:
         assert resolve_server_exposure(_cfg(exposure="bogus"), "codemode") == "codemode"
         assert resolve_server_exposure(_cfg(), "deferred") == "deferred"
         assert resolve_server_exposure(_cfg(), "garbage") == "direct"
+
+
+# ── end to end through the dispatcher ───────────────────────
+
+from mocode.core.agent import AgentConfig
+from mocode.core.dispatch import ToolDispatcher
+from mocode.core.events import ToolCallFinished, ToolCallStarted
+from mocode.core.hook import HookRunner
+
+
+async def _dispatch(host, name: str, args: dict, *, origin: str = "model"):
+    """One call through the real dispatcher pipeline; events come back too."""
+    events: list = []
+
+    async def publish(event, *, fold: bool) -> None:
+        events.append((event, fold))
+
+    dispatcher = ToolDispatcher(host.ctx.tools, HookRunner(), AgentConfig(), publish)
+    result = await asyncio.wait_for(
+        dispatcher.run(name, args, origin=origin), BOUND
+    )
+    return result, events
+
+
+async def _wait_registered(runtime: McpRuntime, key: str, full_name: str) -> None:
+    for _ in range(200):
+        if full_name in runtime._registered.get(key, {}):
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{full_name} never registered")
+
+
+class TestEndToEnd:
+    async def test_the_model_reaches_a_direct_tool_through_the_dispatcher(
+        self, plugin_host, tmp_path
+    ):
+        script = write_server(tmp_path, "e2e_direct.py", MODERN_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {"mcpServers": _demo_servers(tmp_path, script, demo={})},
+        )
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+
+        result, events = await _dispatch(host, "mcp__demo__search", {"q": "x"})
+        assert result.status == "ok"
+        assert result.content == "hello"
+        assert result.details["structured_content"] == {"ok": True}
+        started = [e for e, _ in events if isinstance(e, ToolCallStarted)]
+        finished = [e for e, _ in events if isinstance(e, ToolCallFinished)]
+        assert len(started) == len(finished) == 1
+        assert finished[0].status == "ok"
+        host.close()
+
+    async def test_program_origin_reaches_codemode_tools_and_the_model_cannot(
+        self, plugin_host, tmp_path
+    ):
+        script = write_server(tmp_path, "e2e_cm.py", MODERN_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {
+                "mcpServers": _demo_servers(
+                    tmp_path, script, demo={"exposure": "codemode"}
+                )
+            },
+        )
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        runtime = host.ctx.tools.get("mcp_status").mcp_runtime
+        await _wait_registered(runtime, "demo", "mcp__demo__search")
+
+        # a program call (what a codemode script would make) succeeds
+        result, _ = await _dispatch(
+            host, "mcp__demo__search", {"q": "x"}, origin="program"
+        )
+        assert result.status == "ok"
+        # the model's origin cannot see or run it
+        result, _ = await _dispatch(host, "mcp__demo__search", {"q": "x"})
+        assert result.status == "denied"
+        # the anchor answers program calls too
+        result, _ = await _dispatch(host, "mcp_status", {}, origin="program")
+        assert result.status == "ok"
+        assert result.details["servers"][0]["name"] == "demo"
+        result, _ = await _dispatch(host, "mcp_status", {})
+        assert result.status == "denied"
+        host.close()
+
+    async def test_hidden_tools_refuse_every_origin(self, plugin_host, tmp_path):
+        script = write_server(tmp_path, "e2e_hidden.py", MODERN_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {
+                "mcpServers": _demo_servers(
+                    tmp_path, script, demo={"exposure": "hidden"}
+                )
+            },
+        )
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        for origin in ("model", "program"):
+            result, _ = await _dispatch(
+                host, "mcp__demo__search", {"q": "x"}, origin=origin
+            )
+            assert result.status == "denied"
+        host.close()
+
+    async def test_close_kills_every_child(self, plugin_host, tmp_path):
+        script_a = write_server(tmp_path, "e2e_a.py", MODERN_SERVER)
+        script_b = write_server(tmp_path, "e2e_b.py", LEGACY_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {
+                "mcpServers": _demo_servers(
+                    tmp_path, script_a, a={}, b={"args": [str(script_b)]}
+                )
+            },
+        )
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        runtime = host.ctx.tools.get("mcp_status").mcp_runtime
+        procs = [s._proc for s in runtime.sessions.values()]
+        assert len(procs) == 2
+        assert all(p.returncode is None for p in procs)
+
+        host.close()
+        for proc in procs:
+            for _ in range(200):
+                if proc.returncode is not None:
+                    break
+                await asyncio.sleep(0.05)
+            assert proc.returncode is not None
+
+    def test_the_package_exports_the_plugin_surface(self):
+        from mocode.host.plugin.builtin.mcp import (
+            PLUGIN as exported,
+            McpPlugin,
+            McpRuntime,
+        )
+
+        assert isinstance(exported, McpPlugin)
+        assert exported.name == "mcp"
+        assert McpRuntime is not None

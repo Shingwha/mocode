@@ -467,7 +467,9 @@ class StdioSession:
             task.add_done_callback(self._notify_tasks.discard)
 
     def _on_disconnect(self) -> None:
-        if self.state == STATE_CLOSED:
+        # A failed connect owns its ERROR state, and close() owns CLOSED —
+        # the read loop exiting (we killed the child) must not clobber either.
+        if self.state in (STATE_CLOSED, STATE_ERROR):
             return
         self.state = STATE_DISCONNECTED
         self.last_error = "server disconnected"
