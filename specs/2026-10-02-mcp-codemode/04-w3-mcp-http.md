@@ -1,4 +1,4 @@
-⏸️ 2026-10-02 未实施 — 用户已点名转主线；分支 `feat/mcp-http` 与 worktree（`C:\Users\shifu\.worktrees\mocode\feat-mcp-http`）已建、零 commit 指向 master，转交新对话从 T1 开始
+🚧 2026-10-03 实施中 — lead 修订：§1.6 冻结实现决策 + 写范围加 `tests/test_builtin_mcp.py` 窄化例外（T1 必然翻转两个现存断言）；分支 ff 至 master 后从 T1 开工
 
 # Spec 04 · W3（可选）：MCP streamable HTTP + resources + subscriptions（波次 W3）
 
@@ -78,6 +78,30 @@
 - mocode 自有文件：允许 `${VAR}` 展开（`os.environ`）。
 - `sse` 仍跳过并 report。
 
+### 1.6 已冻结实现决策（lead 增补 2026-10-03）
+
+lead 核实现状代码后拍板，worker 不再自行取舍：
+
+| # | 决策 | 依据 |
+|---|---|---|
+| W3-D1 | `HttpSession` 放**新模块** `http.py`（同包）；`session.py` 保持 stdio 专用，不改其传输逻辑 | `session.py` 约 24KB 且全为 stdio 细节 |
+| W3-D2 | session 的鸭子接口固化为包内共享 `McpSession` Protocol，`runtime.py` 里所有 `StdioSession` 注解替换为该类型；`_key_for` 的身份比较不变 | `runtime.py:31/67/88/133/145/151/154/160/192` 现写死 `StdioSession`，且无基类 |
+| W3-D3 | `McpServerConfig` 增加 `transport: str`（`"stdio"`/`"streamable-http"`）与 `url: str \| None`、`headers: dict[str, str]` 字段，`command` 改可选；docstring 同步更新 | `config.py:84-114` 现 `command: str` 必填 |
+| W3-D4 | `http` 与 `streamable-http` 均归一为 `"streamable-http"`；`_TRANSPORT_TYPES`（`config.py:72`）、`_HTTP_KEYS`（`config.py:66`）两个预留常量接进新解析路径，不留死常量 | W1a 预留钩子 |
+| W3-D5 | `sse` 维持跳过 + report（D15 不变）；未知 type 维持 report + skip | 本组范围（legacy HTTP+SSE 不实现） |
+| W3-D6 | legacy HTTP：`initialize` 响应头 `Mcp-Session-Id` 回显后续请求；GET stream 不做，登记遗留 | §1.2 |
+| W3-D7 | listen task 由 `HttpSession` 内部起停，经既有 `on_tools_changed` 回调汇入 `McpRuntime.sync_tools`；断线按 bounded backoff 重新 listen，最终失败 report + `state=error`；同步 `shutdown()` 必须**非阻塞**取消（`McpRuntime.close` 走同步 teardown 路径） | `runtime.py:119-129`、`session.py` teardown 契约 |
+| W3-D8 | `x-mcp-header`（`Mcp-Param-<name>` 镜像、非法标注剔除）本波**不严格**执行：不剔除工具、保证不崩；登记遗留并在 docs 写明 | 工单 §1.1 授权可选项 |
+| W3-D9 | resources 工具仅在"已连接且声明 `resources` 能力"时注册；capabilities stdio 取自 `initialize` result，modern 取自 `server/discover` result（具体形态以 `ref/mcp-protocol.md` 为准）；exposure 取这些 server 中最宽者（`direct` > `codemode`，其余按 program 处理） | §1.4 |
+| W3-D10 | 假 HTTP 端点统一模式：`ThreadingHTTPServer(("127.0.0.1", 0))`、`server_address` 取端口、daemon 线程 `serve_forever`、teardown `shutdown()` + `server_close()`；每个 await 用 `BOUND=15` 包裹（沿用 `tests/test_builtin_mcp.py` 的 BOUND 惯例） | 仓库无 HTTP 测试先例 |
+
+**写范围窄化例外（本工单唯一新增授权）**：`tests/test_builtin_mcp.py` 中两个测试因 T1 必然翻转——
+
+- `TestLoadServers.test_streamable_http_is_skipped_until_wave_w3`（现 :150，断言 `merged == {}` 且 stderr 含 `"stdio only"`）；
+- `TestLoadServers.test_type_is_optional_in_mocode_files_and_inferred`（现 :164，断言 url 条目被跳过）。
+
+允许改写为"解析成功"断言（详细 HTTP 解析用例移入 `tests/test_builtin_mcp_http.py`）；该文件**其余部分逐字节不变**，diff 中这两处之外不允许出现任何其它行。行号以合并基线为准。
+
 ## 2. 工单（每项一个 commit）
 
 ### T1 `HttpSession`（modern + legacy 回退）
@@ -104,13 +128,13 @@
 
 1. `uv run pytest -q` 全绿，独立退出码 0，数量不降。
 2. `uv run pytest tests/test_builtin_mcp_http.py -q` 全绿。
-3. `git diff --stat` 只含 `builtin/mcp/**`、`tests/test_builtin_mcp_http.py`、`docs/plugins.md`。
+3. `git diff --stat` 只含 `builtin/mcp/**`、`tests/test_builtin_mcp_http.py`、`docs/plugins.md`，外加 `tests/test_builtin_mcp.py` 的窄化例外（仅 §1.6 所列两个测试可改）。
 4. 无新依赖：`git diff pyproject.toml uv.lock` 为空。
 
 ## 4. 禁触清单
 
 `mocode/core/**`；`mocode/host/**` 除 `builtin/mcp/**` 外的一切；`mocode/host/plugin/host.py`；
-`README.md`；`docs/**` 中除 `plugins.md` 外的一切；其它测试文件；spec 文件。
+`README.md`；`docs/**` 中除 `plugins.md` 外的一切；其它测试文件（**唯一例外**：`tests/test_builtin_mcp.py` 仅允许按 §1.6 改写所列两个测试，文件其余部分逐字节不变）；spec 文件。
 
 ## 5. 最终报告格式
 
