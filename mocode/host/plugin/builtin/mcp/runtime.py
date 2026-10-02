@@ -8,8 +8,10 @@ Servers whose tools may be offered to the model (``direct`` exposure) get a
 bounded wait during ``start()`` — the first turn must not wait on a slow
 server; everything else connects in the background and registers its tools
 when it arrives. A legacy ``tools/list_changed`` notification re-syncs the
-tool set. Nothing here lives on the plugin instance — one plugin object
-serves every conversation in the process.
+tool set. A server that declares the ``resources`` capability also lends the
+conversation the three read-only resource tools, registered and unregistered
+as that set of servers changes. Nothing here lives on the plugin instance —
+one plugin object serves every conversation in the process.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from typing import TYPE_CHECKING
 from .....core.events import Notice
 from ...context import BuildContext
 from ...loader import report
-from .client import STATE_ERROR, McpSession
+from .client import STATE_CONNECTED, STATE_ERROR, McpSession
 from .config import McpServerConfig, load_servers
 from .naming import (
     assign_tool_names,
@@ -28,8 +30,9 @@ from .naming import (
     canon_exposure,
     default_exposure,
     resolve_exposure,
+    resolve_server_exposure,
 )
-from .tools import mcp_status_tool, mcp_tool
+from .tools import RESOURCE_TOOL_NAMES, mcp_status_tool, mcp_tool, resource_tools
 
 if TYPE_CHECKING:
     from ...context import HostContext
@@ -72,6 +75,9 @@ class McpRuntime:
         #: folded server key -> {raw tool name -> full tool name} — the
         #: collision-aware assignment, exposed for the tool builders
         self.assignments: dict[str, dict[str, str]] = {}
+        #: what the three resource tools are registered with — None while no
+        #: connected server declares the resources capability (decision D2)
+        self._resource_applied: tuple[str, bool] | None = None
         self._codemode_warned = False
 
     # ── lifecycle ───────────────────────────────────────────
@@ -148,6 +154,7 @@ class McpRuntime:
         self, session: McpSession, tools: list[dict]
     ) -> None:
         self._apply_tools(session, tools)
+        self._apply_resource_tools()
         await self._maybe_warn_codemode()
 
     async def _on_tools_changed(self, session: McpSession) -> None:
@@ -158,6 +165,81 @@ class McpRuntime:
         ``tools/list_changed``) — newcomers register, the gone unregister."""
         tools = await session.list_tools()
         self._apply_tools(session, tools)
+        self._apply_resource_tools()
+
+    # ── the resource tools ───────────────────────────────────
+
+    def _has_resources(self, session: McpSession) -> bool:
+        """Whether *session* is live and declares the resources capability —
+        the gate the resource tools hang on (decision D2)."""
+        capabilities = session.server_capabilities
+        return (
+            session.state == STATE_CONNECTED
+            and capabilities is not None
+            and bool(getattr(capabilities, "resources", None))
+        )
+
+    def resource_sessions(self) -> list[tuple[str, McpServerConfig, McpSession]]:
+        """(key, config, session) per connected server that declares the
+        resources capability — what the resource tools choose between."""
+        out = []
+        for key, session in self.sessions.items():
+            cfg = self.config.get(key)
+            if cfg is not None and self._has_resources(session):
+                out.append((key, cfg, session))
+        return out
+
+    def _resource_exposure(self) -> str | None:
+        """The widest exposure among the connected servers that declare the
+        resources capability — any ``direct`` wins, else ``codemode``, else
+        ``hidden``; None while no server declares the capability at all
+        (decision D3)."""
+        exposures = {
+            resolve_server_exposure(cfg, self.default_exposure)
+            for _key, cfg, _session in self.resource_sessions()
+        }
+        if not exposures:
+            return None
+        if "direct" in exposures:
+            return "direct"
+        if "codemode" in exposures or "deferred" in exposures:
+            return "codemode"
+        return "hidden"
+
+    def _resource_availability(self) -> tuple[str, bool] | None:
+        """(availability, disabled) for the resource tools — the widest
+        exposure through the same :func:`availability_for` mapping the
+        per-server tools use, so a hidden server's resources stay invisible
+        to both audiences rather than leaking into the program's reach,
+        which would be wider than ``codemode`` (decision D3). None while no
+        server declares the capability."""
+        exposure = self._resource_exposure()
+        if exposure is None:
+            return None
+        return availability_for(exposure)
+
+    def _apply_resource_tools(self) -> None:
+        """Register or unregister the three resource tools as the set of
+        connected resource-capable servers changes — idempotent, so a
+        repeated connect or re-sync that changed nothing does nothing
+        (decision D2). A switched-off (hidden) set is registered and then
+        disabled, exactly like ``_apply_tools`` handles a hidden tool, so
+        the reconciliation path below covers both forms. A silent transport
+        drop is only observed by the next call, which fails with
+        ``mcp_transport``; there is no disconnect callback to reconcile on."""
+        wanted = self._resource_availability()
+        if wanted == self._resource_applied:
+            return
+        for name in RESOURCE_TOOL_NAMES:
+            self._ctx.tools.unregister(name)
+        self._resource_applied = wanted
+        if wanted is None:
+            return
+        availability, disabled = wanted
+        for tool in resource_tools(self, availability):
+            self._ctx.tools.register(tool)
+            if disabled:
+                self._ctx.tools.disable(tool.name)
 
     def _apply_tools(self, session: StdioSession, tools: list[dict]) -> None:
         key = self._key_for(session)
@@ -249,6 +331,13 @@ class McpRuntime:
                 exposure = resolve_exposure(cfg, raw_name, self.default_exposure)
                 if exposure in ("codemode", "deferred"):
                     count += 1
+        # the resource tools follow the same exposure pipeline, so a
+        # program-only set is just as unreachable with codemode off (a
+        # switched-off set is visibly absent, not unreachable)
+        if self._resource_applied is not None:
+            availability, disabled = self._resource_applied
+            if availability == "program" and not disabled:
+                count += len(RESOURCE_TOOL_NAMES)
         if count == 0:
             return
         self._codemode_warned = True
@@ -267,4 +356,4 @@ class McpRuntime:
         )
 
 
-__all__ = ["McpRuntime", "mcp_status_tool", "mcp_tool"]
+__all__ = ["McpRuntime", "mcp_status_tool", "mcp_tool", "resource_tools"]
