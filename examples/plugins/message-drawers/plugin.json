@@ -1,8 +1,0 @@
-{
-  "$schema": "https://agent-plugins.org/schemas/v1.json",
-  "name": "message-drawers",
-  "version": "1.0.0",
-  "description": "A diff-demo tool whose unified diff renders through a custom CLI drawer — the official message-drawer example",
-  "license": "MIT",
-  "keywords": ["example", "drawer", "diff", "plugin-message"]
-}

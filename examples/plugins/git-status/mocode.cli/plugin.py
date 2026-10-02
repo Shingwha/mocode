@@ -11,7 +11,7 @@ through the conversation, which is the only thing they share.
 
 from __future__ import annotations
 
-from mocode.cli import CLIContext, CLIPlugin
+from mocode.cli import CLIPlugin
 from mocode.plugins import CONTINUE, Command, CommandContext, CommandResult
 
 
@@ -30,8 +30,8 @@ class GitStatusCLI(CLIPlugin):
     name = "git-status.cli"
     description = "git-status in the terminal: /status"
 
-    def build(self, ctx: CLIContext) -> None:
-        ctx.commands.register(
+    def build(self, cli) -> None:
+        cli.commands.register(
             Command("/status", "Show git status (terminal)", handler=_status)
         )
 

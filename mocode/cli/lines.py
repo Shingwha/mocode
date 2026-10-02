@@ -122,15 +122,6 @@ def notice(text: str, level: str = "info") -> Line:
     return Line(text=text, style={"warn": "warning", "error": "error"}.get(level, "info"))
 
 
-def thinking(frame: str) -> Line:
-    """The turn is under way and nothing else is on stage.
-
-    *frame* is the spinner's current glyph — the one part of this vocabulary
-    that moves, so the painter hands it in rather than owning a clock.
-    """
-    return Line(text="thinking", icon=frame, style="dim")
-
-
 # ── tool calls ──────────────────────────────────────────────
 
 
@@ -232,9 +223,8 @@ def _failure_text(event: ToolCallFinished) -> str:
 # ── replaying a stored conversation ─────────────────────────
 
 #: A stored tool result records its outcome as a prefix, because a message list
-#: has nowhere else to put it. See ``core/tool.py``. Public because the
-#: transcript's history fold rebuilds blocks from the same stored shapes.
-STATUS_BY_PREFIX = {
+#: has nowhere else to put it. See ``core/tool.py``.
+_STATUS_BY_PREFIX = {
     ERROR_PREFIX: TOOL_ERROR,
     TIMEOUT_PREFIX: TOOL_TIMEOUT,
     DENIED_PREFIX: TOOL_DENIED,
@@ -249,10 +239,10 @@ def conversation(messages: list[dict], tools: ToolRegistry | None = None) -> lis
     a tool's live output (it was never stored).
     """
     out: list[Line] = []
-    for msg, results in grouped_messages(messages):
+    for msg, results in _grouped(messages):
         role = msg.get("role")
         if role == "user":
-            out.extend(prompt(flatten_content(msg.get("content", ""))))
+            out.extend(prompt(_flatten(msg.get("content", ""))))
         elif role == "assistant":
             if msg.get("reasoning_content"):
                 out.extend(reasoning(msg["reasoning_content"]))
@@ -267,14 +257,12 @@ def conversation(messages: list[dict], tools: ToolRegistry | None = None) -> lis
     return out
 
 
-def grouped_messages(messages: list[dict]) -> Iterator[tuple[dict, dict[str, str]]]:
+def _grouped(messages: list[dict]) -> Iterator[tuple[dict, dict[str, str]]]:
     """Yield each drawable message paired with the tool results that answer it.
 
     Only user and assistant messages are drawable; the pairing exists so an
     assistant's calls and their results are rendered as one unit, the way the
-    live renderer sees them — one batch, one row per call. Public because the
-    transcript's history fold walks the same grouping — one replay vocabulary,
-    two readers (the flat one below, and the block-structured one).
+    live renderer sees them — one batch, one row per call.
     """
     i = 0
     while i < len(messages):
@@ -298,27 +286,26 @@ def _replay_calls(
     calls: list[dict], results: dict[str, str], tools: ToolRegistry | None
 ) -> list[Line]:
     """One assistant message's tool calls, against the results that answered them."""
-    return [replay_call(call, results.get(call.get("id", ""), ""), tools) for call in calls]
-
-
-def replay_call(call: dict, result: str, tools: ToolRegistry | None = None) -> Line:
-    """One stored tool call as its verdict line — the unit of a history fold.
-
-    History carries no timing, so the verdict reports none. Public so the
-    transcript can make one block per call without re-walking the message list.
-    """
-    function = call.get("function", {})
-    return tool_close(
-        ToolCallFinished(
-            call_id=call.get("id", ""),
-            name=function.get("name", "?"),
-            status=STATUS_BY_PREFIX.get(result.split(":")[0] + ":", TOOL_OK),
-            result=result,
-            duration=-1.0,  # history does not carry timings
-        ),
-        _load_args(function.get("arguments")),
-        tools,
-    )
+    out: list[Line] = []
+    for call in calls:
+        function = call.get("function", {})
+        name = function.get("name", "?")
+        args = _load_args(function.get("arguments"))
+        result = results.get(call.get("id", ""), "")
+        out.append(
+            tool_close(
+                ToolCallFinished(
+                    call_id=call.get("id", ""),
+                    name=name,
+                    status=_STATUS_BY_PREFIX.get(result.split(":")[0] + ":", TOOL_OK),
+                    result=result,
+                    duration=-1.0,  # history does not carry timings
+                ),
+                args,
+                tools,
+            )
+        )
+    return out
 
 
 def _load_args(arguments: object) -> dict:
@@ -333,7 +320,7 @@ def _load_args(arguments: object) -> dict:
     return arguments or {}
 
 
-def flatten_content(content: object) -> str:
+def _flatten(content: object) -> str:
     """A user message's content as text — multimodal parts become placeholders."""
     if isinstance(content, list):
         return " ".join(
@@ -345,18 +332,13 @@ def flatten_content(content: object) -> str:
 __all__ = [
     "FAILURE_WIDTH",
     "Line",
-    "STATUS_BY_PREFIX",
     "SUMMARY_WIDTH",
     "answer",
     "conversation",
     "divider",
-    "flatten_content",
-    "grouped_messages",
     "notice",
     "prompt",
     "reasoning",
-    "replay_call",
-    "thinking",
     "tokens",
     "tool_close",
     "tool_pending",
