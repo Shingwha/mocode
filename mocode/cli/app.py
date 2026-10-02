@@ -3,7 +3,8 @@
 Assembly (config → plugins → agent → conversation) lives in
 :class:`~mocode.host.runtime.MoCode` and :class:`~mocode.host.conversation.Conversation`,
 so an embedding application gets exactly the same setup. This class adds only
-what a terminal needs: the REPL, input, slash-command dispatch and Ctrl-C.
+what a terminal needs: the REPL, input, slash-command dispatch, key handling
+while a turn runs and Ctrl-C.
 
 It contributes nothing to the host. Its commands it registers on the registry it
 owns, its rendering it does by subscribing to the conversation's event stream —
@@ -14,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import inspect
+import logging
 import signal
 import sys
 from pathlib import Path
@@ -21,6 +24,7 @@ from typing import TYPE_CHECKING
 
 from ..core.channel import Subscription
 from ..core.events import RunFailed, RunFinished
+from ..core.tool import ToolError
 from ..host.command import (
     CONTINUE,
     CommandRegistry,
@@ -29,6 +33,9 @@ from ..host.command import (
 )
 from ..host.config import Config
 from ..host.runtime import MoCode
+from .plugin import KeyContext
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..core.agent import Turn
@@ -94,7 +101,14 @@ class CLIApp:
             self.theme = Theme()
             # A render-only run never prompts, so the Input goes unused — it is
             # cheap to build and prompt_toolkit is imported only on first use.
-            self.input = Input(self.commands, ps1="❯")
+            # key_context is called only once a key is pressed, long after the
+            # conversation and ui exist, so deferring the lookups is safe.
+            self.input = Input(
+                self.commands,
+                ps1="❯",
+                keys=self.keys,
+                key_context=lambda buffer=None: self._key_context(buffer=buffer),
+            )
             self.display = Display(input_=self.input, theme=self.theme)
         else:
             # A display handed in from outside carries its own theme; the
@@ -152,6 +166,28 @@ class CLIApp:
         self.plugins = build_cli_plugins(
             self.ctx, self.runtime.plugin_sources_for(self.cwd)
         )
+        self._register_builtin_keys()
+
+    def _register_builtin_keys(self) -> None:
+        """The terminal's own running-time keys — the flagships of the API."""
+        self.keys.add(
+            "c-b",
+            self._promote_foreground,
+            when="running",
+            description="Move the running command to the background",
+        )
+        self.keys.add(
+            "c-o",
+            self._toggle_verbose,
+            when="running",
+            description="Toggle verbose tool output",
+        )
+
+    def _key_context(self, buffer=None, turn: "Turn | None" = None) -> KeyContext:
+        """What a key handler sees — built per key press, never stored."""
+        return KeyContext(
+            conversation=self.conversation, ui=self.ui, buffer=buffer, turn=turn
+        )
 
     def _status_state(self):
         """The world as the status bar should report it — rebuilt per redraw."""
@@ -201,6 +237,7 @@ class CLIApp:
 
         task = asyncio.ensure_future(self._follow(subscription, turn))
         self._running = True
+        keys_task = self._start_running_keys(turn)
 
         def _on_sigint(signum, frame):
             if not task.done():
@@ -215,6 +252,94 @@ class CLIApp:
         finally:
             signal.signal(signal.SIGINT, original_handler)
             self._running = False
+            if keys_task is not None:
+                keys_task.cancel()
+                await asyncio.gather(keys_task, return_exceptions=True)
+
+    def _start_running_keys(self, turn: "Turn"):
+        """The raw key loop for this turn — nothing without an interactive TTY."""
+        if not self.ui.is_interactive or not sys.stdin.isatty():
+            return None
+        return asyncio.ensure_future(self._running_keys(turn))
+
+    async def _running_keys(self, turn: "Turn") -> None:
+        """Read the terminal raw while a turn runs and dispatch running keys.
+
+        Started by :meth:`_start_running_keys`; cancelled by ``_run_chat`` the
+        moment the turn ends. A failure here costs the key channel, never the
+        turn — the SIGINT fallback still cancels a run the keys cannot.
+        """
+        from prompt_toolkit.input import create_input
+        from prompt_toolkit.keys import Keys
+
+        try:
+            source = create_input(sys.stdin)
+        except Exception:
+            return
+        loop = asyncio.get_running_loop()
+        ready = asyncio.Event()
+
+        def _wake() -> None:
+            loop.call_soon_threadsafe(ready.set)
+
+        try:
+            with source.raw_mode(), source.attach(_wake):
+                while True:
+                    await ready.wait()
+                    ready.clear()
+                    for press in source.read_keys():
+                        name = (
+                            press.key.value if isinstance(press.key, Keys) else press.key
+                        )
+                        await self._dispatch_running_key(name, turn)
+        except asyncio.CancelledError:
+            raise
+        except (EOFError, OSError):
+            pass  # the terminal went away; the turn outlives the keys
+        except Exception:
+            _log.exception("the running-key loop died")
+        finally:
+            try:
+                source.close()
+            except Exception:
+                pass
+
+    async def _dispatch_running_key(self, name: str, turn: "Turn") -> None:
+        """One key while a turn runs: Esc and Ctrl-C cancel it, the rest dispatch."""
+        if name in ("escape", "c-c"):
+            turn.cancel()
+            return
+        binding = self.keys.running(name)
+        if binding is None:
+            return
+        result = binding.handler(self._key_context(turn=turn))
+        if inspect.isawaitable(result):
+            await result
+
+    async def _promote_foreground(self, kctx: KeyContext) -> None:
+        """Ctrl+B — lift the one running foreground command into the background."""
+        bash = kctx.conversation.tools.get("bash")
+        session = getattr(bash, "session", None)
+        if session is None:
+            return  # no shell in this conversation — nothing to move
+        try:
+            handle = await session.promote()
+        except ToolError as e:
+            if e.code == "no_running_call":
+                return  # quiet by design: pressing it early is not an error
+            raise
+        await kctx.ui.message(f"moved to background as {handle['shell_id']}")
+
+    def _toggle_verbose(self, kctx: KeyContext) -> None:
+        """Ctrl+O — flip whether landed calls keep their output tail, and repaint."""
+        if self.renderer is None:
+            return
+        # The painter belongs to the renderer; the flag is its public surface
+        # (wired by the renderer work), and this is the one place the app
+        # reaches through for an immediate repaint.
+        painter = self.renderer._painter
+        painter.verbose = not painter.verbose
+        painter.redraw_all(self.renderer._transcript)
 
     async def _follow(self, subscription: Subscription, turn: "Turn") -> None:
         """Draw events until this turn ends. Leaving early stops the turn."""
