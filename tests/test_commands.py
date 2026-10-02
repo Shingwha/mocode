@@ -25,6 +25,7 @@ from mocode.host.command import (
     CommandResult,
     Kind,
 )
+from mocode.host.config import Config, ModelEntry, ProviderEntry
 from mocode.host.conversation import Conversation
 from mocode.host.events import ConversationChanged
 from mocode.host.plugin.builtin.skills import make_skill_command
@@ -217,6 +218,97 @@ class TestModelCommand:
         _result, events = await _run(_get_builtin_cmd("/model"), conversation)
 
         assert conversation.model_name == "test-model"
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_the_picker_shows_ids_and_falls_back_to_them_for_titles(
+        self, make_mc, tmp_path: Path, monkeypatch
+    ):
+        """Value is always the model id; the title is the display name when
+        the entry declares one, and the id otherwise."""
+        config = Config(
+            provider="p",
+            model="a",
+            providers={
+                "p": ProviderEntry(
+                    name="P",
+                    api_key="sk-x",
+                    base_url="http://localhost",
+                    models=[ModelEntry(id="a", name="Alpha"), ModelEntry(id="b")],
+                )
+            },
+        )
+        conversation = make_mc(config).new_conversation(cwd=tmp_path)
+        conversation.runtime.config.save = lambda *a, **k: None
+        seen: list[tuple[str, list, str | None]] = []
+        answers = iter(["p", "b"])
+
+        async def fake_select(title, choices, *, default=None, instruction=""):
+            seen.append((title, choices, default))
+            return next(answers)
+
+        monkeypatch.setattr("mocode.cli.dialogs.select", fake_select)
+
+        result, events = await _run(_get_builtin_cmd("/model"), conversation)
+
+        assert result is CONTINUE
+        assert conversation.model_name == "b"
+        provider_title, provider_choices, _ = seen[0]
+        assert provider_title == "Select a provider:"
+        assert [(c.title, c.value, c.description) for c in provider_choices] == [
+            ("P", "p", "a, b")
+        ]
+        model_title, model_choices, model_default = seen[1]
+        assert model_title == "Select a model for P:"
+        assert [(c.title, c.value, c.description) for c in model_choices] == [
+            ("Alpha", "a", "current"),
+            ("b", "b", None),
+        ]
+        assert model_default == "a"
+        assert [n.message for n in _notices(events)] == ["Switched to P / b"]
+
+
+class TestEffortCommand:
+    @pytest.mark.asyncio
+    async def test_picking_a_level_switches_it_for_this_conversation(
+        self, conversation: Conversation, monkeypatch
+    ):
+        """The default model declares no table, so the kernel default triple
+        stands; nothing is marked current and the first level is preselected."""
+        assert conversation.agent.model.effort is None
+
+        async def fake_select(title, choices, *, default=None, instruction=""):
+            assert title == "Reasoning effort for test-model:"
+            assert [(c.title, c.value) for c in choices] == [
+                ("low", "low"),
+                ("medium", "medium"),
+                ("high", "high"),
+            ]
+            assert [c.description for c in choices] == [None, None, None]
+            assert default == "low"
+            return "high"
+
+        monkeypatch.setattr("mocode.cli.dialogs.select", fake_select)
+
+        result, events = await _run(_get_builtin_cmd("/effort"), conversation)
+
+        assert result is CONTINUE
+        assert conversation.agent.model.effort == "high"
+        assert [n.message for n in _notices(events)] == ["Reasoning effort: high"]
+
+    @pytest.mark.asyncio
+    async def test_cancelling_leaves_the_effort_alone(
+        self, conversation: Conversation, monkeypatch
+    ):
+        async def fake_select(title, choices, *, default=None, instruction=""):
+            return None
+
+        monkeypatch.setattr("mocode.cli.dialogs.select", fake_select)
+
+        result, events = await _run(_get_builtin_cmd("/effort"), conversation)
+
+        assert result is CONTINUE
+        assert conversation.agent.model.effort is None
         assert events == []
 
 
