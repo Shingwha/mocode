@@ -3,7 +3,7 @@
 Connects MoCode to [MCP](https://modelcontextprotocol.io) servers over
 **stdio** (v1; streamable HTTP is a later wave) and exposes their tools as
 `mcp__<server>__<tool>` — with a name fold, an exposure model, and a
-dual-era protocol client.
+dual-era protocol client built on the official `mcp` SDK (v2).
 
 ## What it does
 
@@ -24,12 +24,13 @@ dual-era protocol client.
   `${PLUGIN_ROOT}`/`${PLUGIN_DATA}` (the child always gets both; `env` may
   not set them; an expanded `cwd` must stay inside its root), and unknown
   fields (like `exposure`) are reported and ignored.
-- Protocol: **dual-era**. Modern servers (2026-07-28) are probed with
-  `server/discover` and spoken to with a per-request `_meta`; recognized
-  negotiation errors (`-32020..-32022`) retry at a supported version.
-  Anything else means legacy (≤2025-11-25): the `initialize` handshake plus
-  `notifications/initialized`, no `_meta`. The era is cached per server;
-  a dropped connection reconnects once on the next call. Legacy
+- Protocol: **dual-era**, carried by the official SDK's `Client(mode="auto")`
+  — it probes `server/discover` for the current era (2026-07-28) and falls
+  back to the `initialize` handshake for everything else (≤2025-11-25). The
+  negotiated version is on the session; `era` is its display name
+  (`modern` for 2026-07-28, `legacy` for the handshake eras). A dropped
+  connection reconnects once on the next call; the SDK's client is an async
+  context manager, so a reconnect is a fresh client. Legacy
   `notifications/tools/list_changed` re-syncs the tool list; modern
   subscriptions are not implemented (v1). MRTR `input_required` results
   raise an error — there is no elicitation UI.
@@ -47,9 +48,17 @@ dual-era protocol client.
   `mcp_status` anchor tool holding the runtime; `prepare()` connects
   servers whose tools the model may see under a bounded wait (default 10 s)
   and the rest in the background, then adds the `mcp_servers` prompt
-  section; `close()` kills every child process. If program-only tools exist
-  while the codemode plugin is disabled, one warning Notice is emitted per
-  conversation.
+  section; `close()` unwinds every session — the SDK's bounded shutdown
+  kills each child (stdin close, grace, then the whole process tree). If
+  program-only tools exist while the codemode plugin is disabled, one
+  warning Notice is emitted per conversation.
+- The child's stderr is a bounded tail kept in a temporary file for status
+  and error reports (logging, never a protocol error); the child's
+  environment is the whole process environment plus the entry's `env`
+  overlay — the SDK layers `env` over a trimmed platform default, so the
+  full environment is passed explicitly. Error codes are stable:
+  `mcp_transport`, `mcp_timeout`, `mcp_input_required`, `mcp_closed`,
+  `mcp_error`.
 - Not implemented on purpose (v1): OAuth, `!command`, the legacy `sse`
   transport (skipped with a hint to use the streamable HTTP endpoint),
   streamable HTTP, modern `subscriptions/listen`.

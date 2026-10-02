@@ -5,12 +5,12 @@ A server tool becomes a plain :class:`~mocode.core.tool.Tool`: its MCP
 go through the session, and its result is split the way mocode wants —
 text for the model in ``content``, facts for everything else in
 ``details``. Error mapping (decision D8): an ``isError`` result raises
-:class:`~mocode.core.tool.ToolError` (``mcp_error``), a modern
-``input_required`` result is already an ``McpError`` from the session and
-becomes ``mcp_input_required``, and transport/protocol failures become
-``mcp_transport``. ``mcp_status`` is the anchor the plugin hangs the whole
-runtime on — the registry is the per-conversation handle, so ``close()``
-finds the runtime again through ``ctx.tools.get("mcp_status").mcp_runtime``.
+:class:`~mocode.core.tool.ToolError` (``mcp_error``), an ``input_required``
+answer is an ``McpError`` from the session and becomes
+``mcp_input_required``, and a transport, timeout or protocol failure keeps
+the session's category. ``mcp_status`` is the anchor the plugin hangs the
+whole runtime on — the registry is the per-conversation handle, so
+``close()`` finds the runtime again through ``ctx.tools.get("mcp_status").mcp_runtime``.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .....core.tool import Tool, ToolError, ToolResult
+from .client import McpError, McpSession
 from .naming import normalize, tool_full_name
-from .session import McpError, StdioSession
 
 if TYPE_CHECKING:
     from .....core.hook import ToolCallContext
@@ -48,7 +48,7 @@ def _split_content(content: list) -> "tuple[str, list[dict], list[Any]]":
 
 def mcp_tool(
     runtime: "McpRuntime",
-    session: StdioSession,
+    session: McpSession,
     server_name: str,
     raw_tool: dict,
     availability: str,
@@ -78,7 +78,7 @@ def mcp_tool(
         try:
             result = await session.call_tool(raw_name, args)
         except McpError as e:
-            raise ToolError(str(e), e.code or "mcp_transport")
+            raise ToolError(str(e), e.code or "mcp_error")
         blocks = result.get("content")
         content = blocks if isinstance(blocks, list) else []
         text, images, others = _split_content(content)
