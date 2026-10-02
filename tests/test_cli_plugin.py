@@ -156,7 +156,10 @@ class TestBothSurfacesInOneDirectory:
         assert plugin.ctx.commands is app.commands   # the registry the app dispatches from
         assert plugin.ctx.drawers is app.drawers    # the table the renderer reads
         assert plugin.ctx.ui.is_interactive is False   # no terminal under a test pipe
-        assert not hasattr(plugin.ctx, "display") and not hasattr(plugin.ctx, "input")
+        assert plugin.ctx.input is app.input_middleware  # the chain, not the Input session
+        assert plugin.ctx.conversation is app.conversation
+        for internal in ("app", "display", "renderer"):
+            assert not hasattr(plugin.ctx, internal)
 
     @pytest.mark.asyncio
     async def test_its_command_speaks_on_the_conversations_stream(self, tmp_path: Path):
@@ -273,6 +276,109 @@ class TestThePackageForm:
 
         assert load_cli_plugins([plugins / "acme"]) == []
         assert "plugin/__init__.py" in capsys.readouterr().err
+
+
+class TestTheFullContext:
+    """The T3 surface: keys, input middleware, status, header, theme, on_close."""
+
+    def test_every_member_is_the_apps_own(self, tmp_path):
+        plugins = tmp_path / "plugins"
+        app = _app(tmp_path, plugins)
+
+        assert app.ctx.keys is app.keys
+        assert app.ctx.input is app.input_middleware
+        assert app.ctx.status is app.status
+        assert app.ctx.header is app.header
+        assert app.ctx.theme is app.theme
+        assert app.ctx.conversation is app.conversation
+        assert app.ctx.ui is app.ui
+
+    def test_the_terminal_contributes_its_own_keys_and_status(self, tmp_path):
+        plugins = tmp_path / "plugins"
+        app = _app(tmp_path, plugins)
+
+        assert app.keys.running("c-b") is not None
+        assert app.keys.running("c-o") is not None
+
+        bar = app.status.toolbar()
+        assert "test-model" in bar  # the model segment
+        from mocode.cli.app import _shorten_home
+
+        assert _shorten_home(app.cwd) in bar  # the cwd segment, home contracted
+
+    def test_a_plugin_registers_keys_and_middleware(self, tmp_path):
+        plugins = tmp_path / "plugins"
+        _install(
+            plugins,
+            cli="""
+            from mocode.cli import CLIPlugin
+
+            class InputPlugin(CLIPlugin):
+                name = "input.cli"
+
+                def build(self, ctx):
+                    ctx.keys.add("c-x", lambda kctx: None, when="running")
+                    ctx.input.use(lambda text: text + "!")
+        """,
+        )
+        app = _app(tmp_path, plugins)
+
+        assert app.keys.running("c-x") is not None
+        assert app.input_middleware.run("hello") == "hello!"
+
+    def test_a_plugin_can_decorate_header_and_status(self, tmp_path, capsys):
+        plugins = tmp_path / "plugins"
+        _install(
+            plugins,
+            cli="""
+            from mocode.cli import CLIPlugin
+            from mocode.cli.plugin import Segment
+
+            class ChromePlugin(CLIPlugin):
+                name = "chrome.cli"
+
+                def build(self, ctx):
+                    ctx.header.set(["banner line"])
+                    ctx.status.use(lambda s: Segment("[chrome]", priority=99))
+        """,
+        )
+        app = _app(tmp_path, plugins)
+
+        assert app.header.lines == ["banner line"]
+        assert "banner line" in capsys.readouterr().out
+        assert app.status.toolbar().startswith("[chrome]")
+
+    @pytest.mark.asyncio
+    async def test_on_close_runs_last_registered_first_and_isolated(self, tmp_path):
+        plugins = tmp_path / "plugins"
+        app = _app(tmp_path, plugins)
+        calls = []
+
+        app.ctx.on_close(lambda: calls.append("first"))
+        app.ctx.on_close(lambda: calls.append("second") or (_ for _ in ()).throw(
+            RuntimeError("boom")
+        ))
+        app.ctx.on_close(lambda: calls.append("third"))
+
+        await app.ctx.aclose()
+
+        # LIFO; the boom ran inside its own callback, and cost only itself.
+        assert calls == ["third", "second", "first"]
+        await app.ctx.aclose()  # a second close has nothing left to run
+
+    @pytest.mark.asyncio
+    async def test_on_close_awaits_async_callbacks(self, tmp_path):
+        plugins = tmp_path / "plugins"
+        app = _app(tmp_path, plugins)
+        calls = []
+
+        async def _release():
+            calls.append("async")
+
+        app.ctx.on_close(_release)
+        await app.ctx.aclose()
+
+        assert calls == ["async"]
 
 
 class TestTheTerminalsOwnCommands:

@@ -682,15 +682,74 @@ async def _status(ctx):
 class GitHelperCLI(CLIPlugin):
     name = "git-helper.cli"
 
-    def build(self, cli):
-        cli.commands.register(Command("/status", "Show git status", handler=_status))
-        # also: cli.display, cli.input, cli.conversation, cli.runtime
+    def build(self, ctx):
+        ctx.commands.register(Command("/status", "Show git status", handler=_status))
+        # also: ctx.keys, ctx.input, ctx.status, ctx.header, ctx.drawers
 ```
+
+A terminal plugin builds against a `CLIContext` — never the application. The
+context carries what a plugin may contribute through (commands, drawers,
+keys, input middleware, status and header) plus read-only views (the theme,
+the conversation, the runtime UI channel), and nothing it should not touch:
+there is deliberately no `ctx.app`, `ctx.display` or `ctx.renderer`. A plugin
+that needs a lower ability gets it by that ability being promoted into the
+context, not by a hole.
 
 The two namespaces never import each other; when they need to cooperate, they
 go through the conversation, which is the only thing they share. The
 terminal's own commands are the first implementation of this interface
 (`cli/plugin.py::BuiltinCommands`), so there is one way to contribute here.
+
+### Keys, middleware and the status bar
+
+The context's input surface splits by **when** it fires:
+
+- `ctx.keys.add(key, handler, when="idle", description="")` — while the prompt
+  is editing. The handler receives a `KeyContext` (the conversation, the UI
+  channel, and the buffer being edited) and runs synchronously; returning
+  `"clear"` empties the buffer afterwards. Idle bindings join the prompt's
+  keybindings when the PromptSession is first built — registrations after
+  that take effect when the session is next rebuilt.
+- `ctx.keys.add(key, handler, when="running", description="")` — while the
+  agent is mid-turn, read by a raw key loop the terminal runs over the TTY.
+  The handler may be async; its `KeyContext` carries the running turn instead
+  of a buffer.
+
+Two running-time keys are built in, as the API's first real users:
+
+| Key      | Effect                                                           |
+| -------- | ---------------------------------------------------------------- |
+| `Ctrl+B` | move the one running foreground command to the background        |
+| `Ctrl+O` | toggle verbose tool output (landed calls keep their output tail) |
+
+While a turn runs, `Esc` and `Ctrl+C` cancel it (the SIGINT fallback stays,
+and the two are idempotent together). At an idle prompt, `Ctrl+C` clears the
+line first and only exits on a second press — Claude Code semantics.
+
+`ctx.input.use(fn)` appends to the middleware chain every submitted line
+folds through before dispatch — `text -> text`; returning `None` consumes the
+line, so neither a command nor the model ever sees it and the prompt simply
+comes back. Registration order is run order, and a `build()`-time
+registration is in effect from the first prompt.
+
+`ctx.status.use(fn)` contributes one segment to the bottom bar. Each redraw
+runs every provider against the current `StatusState` (model, cwd, running,
+usage, pending approvals); a provider returns a `Segment(text, priority)` or
+`None`, the merge sorts by priority (highest leftmost), joins with ` · ` and
+truncates at the terminal width. The terminal itself contributes the model,
+the token counts (`↑in ↓out`, once a usage has landed) and the cwd (home
+contracted to `~`) — a plugin's segment sits beside them, not over them.
+
+`ctx.header.set(lines)` prints lines above the prompt, once, into the scroll
+buffer — there is no live header region. `ctx.theme` is a read-only view of
+the terminal's theme; registering new style names is deliberately not v1.
+
+`ctx.on_close(fn)` registers cleanup for when the terminal goes away —
+callbacks run in reverse registration order, each in isolation, so one
+failing callback never costs another plugin its release.
+
+All of this is terminal chrome: in a pipe (`ui.is_interactive` is `False`)
+status and header contributions are ignored and the key channels never start.
 
 ## Rules of the road
 
