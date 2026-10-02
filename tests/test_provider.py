@@ -220,33 +220,55 @@ class TestStreamAccumulator:
         assert response.tool_calls is None
 
 
-class TestNormalizeMessages:
-    def test_unchanged_when_no_tool_calls(self):
-        messages = [{"role": "user", "content": "hi"}]
-        assert OpenAIProvider._normalize_messages(messages) == messages
+class TestUnansweredToolCalls:
+    """An endpoint refuses a tool call whose answer is gone from the history,
+    so the outgoing payload is cleaned of them — assert on what is sent."""
 
-    def test_strips_orphaned_tool_calls(self):
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{"id": "c1", "type": "function", "function": {}}],
-            },
-            {"role": "user", "content": "next"},
-        ]
-        assert "tool_calls" not in OpenAIProvider._normalize_messages(messages)[0]
+    @pytest.mark.asyncio
+    async def test_a_history_nothing_is_missing_from_travels_unchanged(self):
+        sent: list[dict] = []
+        await _stream(_provider(sent), messages=[{"role": "user", "content": "hi"}])
+        assert sent[0]["messages"][1:] == [{"role": "user", "content": "hi"}]
 
-    def test_drops_only_unmatched_tool_calls(self):
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {"id": "c1", "type": "function", "function": {}},
-                    {"id": "c2", "type": "function", "function": {}},
-                ],
-            },
-            {"role": "tool", "tool_call_id": "c1", "content": "result"},
-        ]
-        normalized = OpenAIProvider._normalize_messages(messages)
-        assert [tc["id"] for tc in normalized[0]["tool_calls"]] == ["c1"]
+    @pytest.mark.asyncio
+    async def test_an_orphaned_tool_call_loses_its_field(self):
+        """The answer vanished, so the call goes with it — a field, not a message."""
+        sent: list[dict] = []
+        await _stream(
+            _provider(sent),
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "c1", "type": "function", "function": {}}],
+                },
+                {"role": "user", "content": "next"},
+            ],
+        )
+        assert sent[0]["messages"][1] == {"role": "assistant", "content": ""}
+        assert sent[0]["messages"][2] == {"role": "user", "content": "next"}
+
+    @pytest.mark.asyncio
+    async def test_only_the_unanswered_call_is_dropped(self):
+        """One answered call keeps its partner sent; only the orphan goes."""
+        sent: list[dict] = []
+        await _stream(
+            _provider(sent),
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "c1", "type": "function", "function": {}},
+                        {"id": "c2", "type": "function", "function": {}},
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "result"},
+            ],
+        )
+        assert [tc["id"] for tc in sent[0]["messages"][1]["tool_calls"]] == ["c1"]
+        assert sent[0]["messages"][2] == {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": "result",
+        }
