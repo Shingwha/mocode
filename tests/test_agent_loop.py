@@ -975,7 +975,7 @@ class TestTurns:
         agent = make_agent(provider=MockProvider([say("hello")]))
 
         turn = agent.start("hi")
-        events = [event async for event in turn.subscribe()]
+        events = await collect(turn.subscribe())
 
         assert isinstance(events[0], RunStarted)
         assert isinstance(events[-1], RunFinished)
@@ -988,8 +988,8 @@ class TestTurns:
         first = turn.subscribe()
         second = turn.subscribe()
 
-        watched = [event async for event in first]
-        mirrored = [event async for event in second]
+        watched = await collect(first)
+        mirrored = await collect(second)
 
         assert [e.seq for e in watched] == [e.seq for e in mirrored]
         assert mirrored[-1].content == "hello"
@@ -1077,7 +1077,7 @@ class TestTerminalEventGuarantee:
 
         assert isinstance(terminal, RunFailed)
         assert isinstance(turn.failure, KeyboardInterrupt)
-        events = [event async for event in reader]
+        events = await collect(reader)
         assert events[-1] is terminal
         assert agent.state.status == "failed"
         assert not agent.busy

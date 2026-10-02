@@ -20,7 +20,7 @@ from mocode.core.provider import ModelSpec
 from mocode.host.events import ConversationChanged
 from mocode.host.runtime import MoCode
 from mocode.host.session import Session
-from mocode.testing import SlowProvider, say, tool_call_response
+from mocode.testing import SlowProvider, collect, say, terminal, tool_call_response
 
 from .conftest import make_config, make_mc, project, wire, wired, write_plugin
 
@@ -189,14 +189,8 @@ class TestConcurrency:
 
         await conversation.chat("hi")
 
-        seen = []
-        while True:
-            event = reader.take()
-            if event is None:
-                break
-            seen.append(event)
-        assert isinstance(seen[-1], RunFinished)
-        assert seen[-1].content == "watched"
+        seen = _drain(reader)
+        assert terminal(seen).content == "watched"
 
     async def test_a_notice_between_turns_reaches_readers(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
@@ -617,14 +611,8 @@ class TestGracefulClose:
 
         await conversation.aclose()
 
-        events = []
-        while True:
-            event = await reader.get()
-            if event is None:
-                break
-            events.append(event)
-        assert isinstance(events[-1], RunFinished)
-        assert events[-1].cancelled is True
+        events = await collect(reader)
+        assert terminal(events).cancelled is True
         assert turn.done and turn.cancelled
         assert conversation.agent.channel.closed
 
