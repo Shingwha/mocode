@@ -1,4 +1,4 @@
-✅ 2026-10-03 @ feat/mcp-sdk-stdio（T1 done @ `45f4ca6`；lead 修订写范围后 T2 重派 —— W2 集成测试是重构消费者，见 §3/§5）
+✅ 2026-10-03 @ feat/mcp-sdk-stdio（已合并 master `221f8d6`；896 passed exit 0，lead 合并前后各复核一次）
 
 # Spec 05 · W3a-1：MCP stdio 客户端改用官方 SDK（波次 W3a-1）
 

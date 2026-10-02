@@ -1,4 +1,4 @@
-⏸️ 未实施 — 前置 W3a-1 合并后派工
+✅ 2026-10-03 @ feat/mcp-sdk-http（已派工，进行中）
 
 # Spec 06 · W3a-2：streamable HTTP + SSE 传输（波次 W3a-2）
 
@@ -42,7 +42,7 @@ config 层真解析 `url`/`headers` 条目（替换今天的 report+skip），se
 | W3a-2-D4 | headers：大小写不敏感重名检测（重名 → report+skip 该条目）；严格插件文件**禁止**对 url/header 名/header 值做 `${VAR}` 或 `!command` 展开（按标准，遇到即 report+skip）；mocode 自有文件只允许对 **url 与 header 值**做 `${VAR}` 展开（header 名不展开） |
 | W3a-2-D5 | `sse` 条目**支持**（取代总纲 D15）：skipped 分支删除；解析为 `transport="sse"`。legacy 2024-11-05 HTTP+SSE 语义由 SDK 承载 |
 | W3a-2-D6 | session target 构造（`client.py`）：`streamable-http` → `httpx2.AsyncClient(headers=cfg.headers, timeout=httpx2.Timeout(connect, read=cfg.timeout or 60))` + `streamable_http_client(cfg.url, http_client=http)`；`sse` → `sse_client(cfg.url, headers=cfg.headers, timeout=…, sse_read_timeout=…)`；同一 `McpSession`/`Client(mode="auto", read_timeout_seconds=…)` 路径不变 |
-| W3a-2-D7 | runtime `start()` 按 `cfg.transport` 分派构造（stdio 分支即 W3a-1 现状）；`_must_be_declared`/背景连接/超时/`sync_tools` 不变 |
+| W3a-2-D7 | target 选择落在 `client.py`：`_serve()` 按 `cfg.transport` 构造（stdio 即 W3a-1 现状；streamable-http/sse 按 D6），**构造点保持唯一**；`runtime.py` 不因传输类型增加分支（`_must_be_declared`/背景连接/超时/`sync_tools` 不变，若确需改动须在报告论证） |
 | W3a-2-D8 | 测试：新文件 `tests/test_builtin_mcp_http.py`——假端点用 stdlib `http.server`（`ThreadingHTTPServer(("127.0.0.1", 0))`、`server_address` 取端口、daemon 线程 `serve_forever`、teardown `shutdown()+server_close()`），覆盖：modern JSON 响应、SSE 响应、**Authorization/自定义头断言**、legacy `initialize`+session（sse fake）；每个 await 用 `BOUND=15` 包裹。**零网络依赖** |
 
 ## 3. 工单（每项一个 commit，每个 commit 独立过全量门禁）
