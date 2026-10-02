@@ -26,6 +26,7 @@ from mocode.core import (
     Notice,
     ReasoningDelta,
     RunFailed,
+    RunFinished,
     TextDelta,
     Tool,
     ToolCallFinished,
@@ -442,6 +443,131 @@ class TestPainterGolden:
         out = capsys.readouterr().out
         assert _plain(out) == "✓ read  x\n"     # no placeholder row in a log
         assert "\x1b[" not in _plain(out)
+
+    def test_a_live_stream_rewrites_the_unfinished_line(self, capsys, monkeypatch):
+        """A finished line appends; the line still being written is rewritten."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)  # one write per delta
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        for event in (
+            TextDelta(text="Hel"),
+            TextDelta(text="lo\n"),
+            TextDelta(text="world"),
+            RunFinished(usage=Usage(4, 4)),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # the unfinished line is the region's row, left unterminated so
+            # the next fragment continues it
+            "Hel"
+            # the line finishes: what is new appends — a committed line is
+            # never rewritten — and the row it owned commits with it
+            "lo\n"
+            # the next unfinished line, again the region's row
+            "world"
+            # the turn closes: the line ends, and the rule lands below the
+            # region rather than being lost to it
+            "\n"
+            "\x1b[90m↑4 ↓4 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+
+    def test_a_wrapping_line_counts_visual_rows(self, capsys, monkeypatch):
+        """A partial line that wraps is split — one offset off corrupts the screen."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        monkeypatch.setattr("mocode.cli.painter.terminal_width", lambda: 20)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        for event in (
+            TextDelta(text="0123456789"),
+            TextDelta(text="abcdefghij"),
+            TextDelta(text="klm"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            "0123456789"
+            # the line fills the row: one visual row, rewritten in place
+            "\x1b[1A\r\x1b[K0123456789abcdefghij"
+            # and overflows it: two visual rows, so the rewrite moves up one
+            # and writes the second row below
+            "\x1b[1A\r\x1b[K0123456789abcdefghij\nklm"
+        )
+
+    def test_a_sealed_stream_rides_in_the_region_below_the_next_tool(
+        self, capsys, monkeypatch
+    ):
+        """Reasoning and answer are region members in turn — one each, in order."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        R = "\x1b[90mthink\x1b[0m"
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m"
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        for event in (
+            ReasoningDelta(text="think"),
+            TextDelta(text="ans"),
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolCallFinished(call_id="a", name="read"),
+            RunFinished(usage=Usage(1, 1)),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # reasoning's unfinished line: the region's first row
+            f"{R}"
+            # the answer opens: reasoning's line ends and rides as a final row
+            f"\n"
+            f"ans"
+            # the call starts: the answer's line ends and rides, and the
+            # call's row grows below both
+            f"\n{A}\n"
+            # the verdict lands over the row the call claimed
+            f"\x1b[1A\r\x1b[K{VA}\n"
+            # and the turn closes below the region
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+
+    def test_a_window_coalesces_deltas_and_other_output_flushes_first(
+        self, capsys, monkeypatch
+    ):
+        """Fragments inside the window are one write; a call takes the stage next."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 3600)  # never closes
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m"
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        for event in (
+            TextDelta(text="Hel"),
+            TextDelta(text="lo world"),
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolCallFinished(call_id="a", name="read"),
+            RunFinished(usage=Usage(1, 1)),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # the first fragment: nothing has been written yet
+            "Hel"
+            # the second is coalesced — until the call starts, which flushes
+            # the stream first: the row is rewritten with both fragments
+            "\x1b[1A\r\x1b[KHello world"
+            # the line ends with the stream, and the call's row grows below
+            f"\n{A}\n"
+            f"\x1b[1A\r\x1b[K{VA}\n"
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
 
     @pytest.mark.asyncio
     async def test_output_that_is_not_a_verdict_freezes_the_block(self, capsys):
