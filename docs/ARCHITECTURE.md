@@ -39,7 +39,8 @@ mocode/
 │   └── plugin/          Plugin, BuildContext/HostContext, loader, PluginHost,
 │                        env (a plugin's own uv environment), install (install/sync/list/remove)
 │       └── builtin/     the plugins MoCode ships: filesystem, shell, skills,
-│                         default-prompts, session, help, effort, cache-protect
+│                         mcp, codemode, default-prompts, session, help,
+│                         effort, cache-protect
 ├── cli/                 the terminal front-end — a consumer of host/
 │   ├── app.py           CLIApp — the REPL, dispatch and Ctrl-C
 │   ├── plugin.py        CLIPlugin — the terminal's own extension surface
@@ -393,7 +394,7 @@ that defines it. The layout, the manifest rules and the worked examples are in
 git-status/
 ├── plugin.json              the manifest: name, version, description
 ├── skills/commit/SKILL.md   portable skills
-├── mcp.json                 MCP servers (recognised, not served yet)
+├── mcp.json                 MCP servers (served by the `mcp` builtin)
 ├── mocode/plugin.py         contributions to the agent — every frontend
 └── mocode.cli/plugin.py     contributions to the terminal — this frontend only
 ```
