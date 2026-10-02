@@ -220,6 +220,7 @@ class EventChannel:
 
     @property
     def closed(self) -> bool:
+        """Whether this channel is closed — no more events, and none accepted."""
         return self._closed
 
     def history(self, *, since: int = 0) -> list["Event"]:

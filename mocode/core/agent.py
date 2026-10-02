@@ -80,6 +80,16 @@ class AgentConfig:
 
 @dataclass
 class LoopResult:
+    """What a turn adds up to — the non-streaming view of the same run.
+
+    Returned by :meth:`AgentLoop.chat`, which is a convenience over
+    :meth:`start <AgentLoop.start>` for a caller that wants the answer and
+    does not want to drive an event loop of its own. ``messages`` is the
+    conversation as of the end of the turn, so the next caller can continue
+    without re-reading the state; ``had_error`` says the turn failed rather
+    than the answer being empty.
+    """
+
     content: str = ""
     tool_calls_made: int = 0
     messages: list[dict] = field(default_factory=list)
