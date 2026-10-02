@@ -536,10 +536,86 @@ class TestPainterGolden:
             "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
         )
 
+    def test_a_running_call_shows_the_tail_of_what_it_printed(
+        self, capsys, monkeypatch
+    ):
+        """New output replaces the oldest rows of the tail — one repaint, not appends."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m"
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        for event in (
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolOutput(call_id="a", text="building\n"),
+            ToolOutput(call_id="a", text="linking\n"),
+            ToolCallFinished(call_id="a", name="read"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # the call claims its row before it speaks
+            f"{A}\n"
+            # its first output grows the region below that row
+            f"\x1b[1A\r\x1b[K{A}\nbuilding\n"
+            # the next replaces the tail — the rows are rewritten, and the
+            # surplus row is deleted rather than scrolled
+            f"\x1b[2A\r\x1b[K{A}\n\r\x1b[Kbuilding\nlinking\n"
+            # the verdict lands: the tail goes with it, one line as ever
+            f"\x1b[3A\r\x1b[K{VA}\n\x1b[M\x1b[M"
+        )
+
+    def test_verbose_keeps_a_landed_calls_output_tail(self, capsys, monkeypatch):
+        """The verbose view commits the tail with the verdict, not before it."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        painter.verbose = True
+        transcript = Transcript()
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        for event in (
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolOutput(call_id="a", text="building\nlinking\n"),
+            ToolCallFinished(call_id="a", name="read"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # the call claims its row before it speaks
+            "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m\n"
+            # its output grows the region below that row
+            "\x1b[1A\r\x1b[K\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m\n"
+            "building\nlinking\n"
+            # the verdict lands with the tail riding below it — the whole
+            # region repaints, nothing is deleted
+            "\x1b[3A\r\x1b[K" + VA + "\n"
+            "\r\x1b[Kbuilding\n\r\x1b[Klinking\n"
+        )
+
+    def test_a_redirected_call_prints_its_verdict_and_nothing_else(self, capsys):
+        """A log gets no placeholder rows and no output tail — just the verdict."""
+        display = _make_display(live=False)
+        painter = Painter(display)
+        transcript = Transcript()
+        for event in (
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolOutput(call_id="a", text="building\n"),
+            ToolOutput(call_id="a", text="linking\n"),
+            ToolCallFinished(call_id="a", name="read"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        out = _plain(capsys.readouterr().out)
+        assert out == "✓ read  x\n"
+        assert "building" not in out
+
     def test_a_window_coalesces_deltas_and_other_output_flushes_first(
         self, capsys, monkeypatch
     ):
-        """Fragments inside the window are one write; a call takes the stage next."""
         monkeypatch.setattr("mocode.cli.painter.THROTTLE", 3600)  # never closes
         display = _make_display(live=True)
         painter = Painter(display)

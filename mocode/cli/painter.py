@@ -336,21 +336,27 @@ class Painter:
             if block.state == RUNNING:
                 if who in self._refused:
                     return None
-                want = 1  # the summary line; the output tail joins in T3
+                tail = self._tail_rows(block)
+                want = 1 + len(tail)  # the summary line, and what it printed
                 if who not in self._admitted:
                     if want > room:
                         self._refused.add(who)
                         return None
                     self._admitted.add(who)
                 line = _line_replace(block.lines[0], text=self._running_text(block))
-                return _Member([self._row(line)], True)
+                return _Member([self._row(line)] + tail, True)
             if who in self._refused or who not in self._admitted:
                 return None  # never ours: the appended path owns its landing
             # The verdict rides in the region one repaint — final rows under
             # whatever is still running — and is booked as printed, so no
-            # appended path can land it twice.
+            # appended path can land it twice. The tail it grows over goes
+            # with it: a landed call shows its output tail only in verbose,
+            # where what it printed is worth a second look.
             self._printed[block.id] = list(block.lines)
-            return _Member([self._row(line) for line in block.lines], False)
+            rows = [self._row(line) for line in block.lines]
+            if self.verbose:
+                rows += self._tail_rows(block)
+            return _Member(rows, False)
 
         if block.kind in ("answer", "reasoning"):
             if block.state == STREAMING:
@@ -396,6 +402,23 @@ class Painter:
     def _running_text(self, block: "Block") -> str:
         """The pending line as shown while the call runs."""
         return block.lines[0].text
+
+    def _tail_rows(self, block: "Block") -> list[str]:
+        """The last rows of what a running call printed — the tail, not the log.
+
+        Output streams in faster than a repaint is allowed to, so the newest
+        lines replace the oldest: the region carries ``TOOL_TAIL_ROWS`` rows
+        of it, wrapped to the width, and each arrival is one repaint rather
+        than one append. What a call printed in full reaches the model, not
+        the reader.
+        """
+        text = block.meta.get("output", "")
+        if not text:
+            return []
+        rows: list[str] = []
+        for line in text.splitlines()[-TOOL_TAIL_ROWS * 4 :]:
+            rows.extend(self._stream_rows_of_line(L.Line(text=line)))
+        return rows[-TOOL_TAIL_ROWS:]
 
     def _width(self) -> int:
         return max(terminal_width(), 1)
