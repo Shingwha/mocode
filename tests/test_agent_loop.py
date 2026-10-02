@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 
 import pytest
 
@@ -123,8 +122,11 @@ class TestEventStream:
         assert set(data) == {"type", "run_id", "seq", "model", "tools"}
 
     async def test_cancellation_leaves_the_history_answerable(self):
+        started = asyncio.Event()
+
         class Stuck(AgentHook):
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
+                started.set()  # the call is in flight, held open below
                 await asyncio.sleep(30)
 
         agent = make_agent(echo_tool(), hooks=[Stuck()])
@@ -135,7 +137,10 @@ class TestEventStream:
                 pass
 
         task = asyncio.ensure_future(consume())
-        await asyncio.sleep(0.05)
+        # Cancel against the tool being held in the hook — an event the hook
+        # sets when it gets there — not against a sleep that might lose the
+        # race on a loaded machine.
+        await asyncio.wait_for(started.wait(), 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -223,7 +228,10 @@ class TestToolExecution:
         [
             (_failing(RuntimeError("kaboom")), 5, "error"),
             (_failing(ToolError("nope", "teapot")), 5, "error"),
-            (Tool("slow", "d", {}, lambda a: __import__("time").sleep(1)), 0.05, "timeout"),
+            # Real work that outlasts the timeout by a wide margin, shrunk so
+            # the loop's own timer — not the tool — decides the outcome: the
+            # worker thread finishes on its own shortly after the verdict.
+            (Tool("slow", "d", {}, lambda a: __import__("time").sleep(0.3)), 0.05, "timeout"),
         ],
     )
     async def test_failure_statuses(self, tool, timeout, expected):
@@ -272,13 +280,26 @@ class TestToolExecution:
         assert "invalid JSON" in finished.result
 
     async def test_a_batch_runs_concurrently_and_reports_each_call(self):
+        """The two calls ran together — proven by construction, not a clock.
+
+        The second call releases the first, so a loop that ran them back to
+        back could never finish this test. (A wall-clock "elapsed was under
+        the sum" could only ever hope the machine was fast enough.)
+        """
+        sibling = asyncio.Event()
+
         async def _slow(args, ctx):
-            await asyncio.sleep(0.05)
+            await sibling.wait()  # the other call is running before this ends
             return args["value"]
 
+        def _pong(args):
+            sibling.set()
+            return f"echo:{args['value']}"
+
+        schema = {"type": "object", "properties": {"value": {"type": "string"}}}
         agent = make_agent(
-            echo_tool(),
-            Tool("slow", "d", {"type": "object", "properties": {"value": {"type": "string"}}}, _slow, with_context=True),
+            Tool("echo", "d", schema, _pong),
+            Tool("slow", "d", schema, _slow, with_context=True),
         )
         agent.provider.responses = [
             Response(
@@ -292,11 +313,11 @@ class TestToolExecution:
             say("done"),
         ]
 
-        start = asyncio.get_running_loop().time()
-        events = await collect(agent.stream("hi"))
-        elapsed = asyncio.get_running_loop().time() - start
+        # Bounded: a sequential loop would deadlock on the wait above, so the
+        # bound is what turns that hang into a plain failure.
+        events = await asyncio.wait_for(collect(agent.stream("hi")), 5.0)
 
-        assert elapsed < 0.1  # ran together, not back to back
+        assert sibling.is_set()
         results = {
             e.call_id: e.result for e in events if isinstance(e, ToolCallFinished)
         }
@@ -625,9 +646,10 @@ class TestStopReasons:
         assert agent.messages == [{"role": "user", "content": "hi"}]
 
     async def test_cancelled_is_a_stop_reason(self):
-        agent = make_agent(provider=_slow_provider())
+        entered = asyncio.Event()
+        agent = make_agent(provider=_slow_provider(entered))
         turn = agent.start("hi")
-        await asyncio.sleep(0.01)
+        await asyncio.wait_for(entered.wait(), 5)  # the request went out
         turn.cancel()
 
         terminal = await turn.wait()
@@ -948,9 +970,19 @@ class TestChat:
 # ── turns: addressable, watched by many, cancellable ────────
 
 
-def _slow_provider() -> MockProvider:
+def _slow_provider(entered: asyncio.Event | None = None) -> MockProvider:
+    """A provider whose turn never finishes on its own.
+
+    *entered*, when given, is set the moment the request goes out — the "tool
+    (or turn) has started" signal a cancel test synchronizes on, so the
+    cancellation meets a request genuinely under way rather than a sleep of
+    comparable length that might lose the race.
+    """
+
     class Slow(MockProvider):
         async def stream(self, *args):
+            if entered is not None:
+                entered.set()
             await asyncio.sleep(30)
             yield  # pragma: no cover - never reached
 
@@ -1007,11 +1039,12 @@ class TestTurns:
         assert not terminal.cancelled
 
     async def test_giving_up_on_the_wait_does_not_stop_the_turn(self):
-        agent = make_agent(provider=_slow_provider())
+        entered = asyncio.Event()
+        agent = make_agent(provider=_slow_provider(entered))
         turn = agent.start("hi")
 
         waiter = asyncio.ensure_future(turn.wait())
-        await asyncio.sleep(0.01)
+        await asyncio.wait_for(entered.wait(), 5)  # the turn is under way
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
@@ -1021,10 +1054,11 @@ class TestTurns:
         assert (await turn.wait()).cancelled
 
     async def test_cancelling_ends_the_turn_and_the_agent_runs_again(self):
-        agent = make_agent(provider=_slow_provider())
+        entered = asyncio.Event()
+        agent = make_agent(provider=_slow_provider(entered))
 
         turn = agent.start("hi")
-        await asyncio.sleep(0.01)
+        await asyncio.wait_for(entered.wait(), 5)  # the request is in flight
         turn.cancel()
         terminal = await turn.wait()
 
@@ -1086,35 +1120,41 @@ class TestTerminalEventGuarantee:
 # ── cooperative cancellation for sync tools ────────────────
 
 
-def _patient_tool(noticed: list, started: threading.Event) -> Tool:
-    """A sync tool that waits for the loop's signal instead of spinning."""
+def _patient_tool(started: threading.Event, abandoned: threading.Event) -> Tool:
+    """A sync tool that waits for the loop's signal instead of spinning.
+
+    ``started`` is set on entry; ``abandoned`` only once the loop's cancel
+    signal actually arrives — so the test waits on observed events, and "the
+    worker noticed it was abandoned" is a fact rather than a polled guess.
+    """
 
     def patient(args, ctx):
         started.set()
-        noticed.append(ctx.cancel_event.wait(timeout=5))
+        if ctx.cancel_event.wait(timeout=5):
+            abandoned.set()
         return "finally"
 
     return Tool("patient", "waits politely", {}, patient, with_context=True)
 
 
-async def _until(predicate, timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        assert time.monotonic() < deadline, "timed out waiting for the tool thread"
-        await asyncio.sleep(0.01)
+async def _thread_event(event: threading.Event, timeout: float = 5.0) -> None:
+    """Await a flag a worker thread set — a wait, not a poll.
 
-
-async def _thread_started(started: threading.Event, timeout: float = 5.0) -> None:
-    """Let the loop run while the tool's worker reaches its first line."""
-    await _until(started.is_set, timeout)
+    ``to_thread`` runs the thread's own blocking wait, so the test carries no
+    sleep cadence of its own: the moment the thread notices, the test resumes.
+    A flag that never comes fails the assertion instead of spinning.
+    """
+    assert await asyncio.wait_for(asyncio.to_thread(event.wait, timeout), timeout + 5)
 
 
 class TestSyncToolCancellation:
     async def test_a_timed_out_sync_tool_sees_the_cancel_signal(self):
-        noticed: list = []
         started = threading.Event()
+        abandoned = threading.Event()
+        # A tenth of a second: the loop's timer decides the timeout, and the
+        # worker is still inside its wait when it does.
         agent = make_agent(
-            _patient_tool(noticed, started), config=AgentConfig(tool_timeout=1)
+            _patient_tool(started, abandoned), config=AgentConfig(tool_timeout=0.1)
         )
         agent.provider = MockProvider(
             [tool_call_response("patient"), say("given up waiting")]
@@ -1124,25 +1164,25 @@ class TestSyncToolCancellation:
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.status == "timeout"
-        assert started.is_set()
-        await _until(lambda: bool(noticed))
-        assert noticed == [True]  # the worker noticed it was abandoned
+        await _thread_event(started)
+        await _thread_event(abandoned)
+        assert abandoned.is_set()  # the worker noticed it was abandoned
 
     async def test_cancelling_the_turn_signals_a_running_sync_tool(self):
-        noticed: list = []
         started = threading.Event()
+        abandoned = threading.Event()
         agent = make_agent(
-            _patient_tool(noticed, started),
+            _patient_tool(started, abandoned),
             provider=MockProvider([tool_call_response("patient")]),
         )
 
         turn = agent.start("hi")
-        await _thread_started(started)
+        await _thread_event(started)  # the tool is running — safe to cancel
         turn.cancel()
 
         assert (await turn.wait()).cancelled is True
-        await _until(lambda: bool(noticed))
-        assert noticed == [True]
+        await _thread_event(abandoned)
+        assert abandoned.is_set()
 
 
 # ── the persisted outcome protocol ─────────────────────────
@@ -1186,10 +1226,10 @@ class TestErrorPrefixes:
         assert finished.result.startswith(f"{ERROR_PREFIX} unknown tool")
 
     async def test_a_timeout_result_carries_the_timeout_prefix(self):
-        noticed: list = []
         started = threading.Event()
+        abandoned = threading.Event()
         agent = make_agent(
-            _patient_tool(noticed, started), config=AgentConfig(tool_timeout=1)
+            _patient_tool(started, abandoned), config=AgentConfig(tool_timeout=0.1)
         )
         agent.provider = MockProvider(
             [tool_call_response("patient"), say("given up waiting")]
