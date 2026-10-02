@@ -15,13 +15,15 @@ on Windows, where only the direct child process is killed.
 from __future__ import annotations
 
 import asyncio
+import os
+import sys
 
 from mocode.core.events import Notice, ToolCallFinished, ToolCallStarted
 from mocode.host.config import Config
-from mocode.host.plugin.builtin.mcp.session import STATE_CLOSED
+from mocode.host.plugin.builtin.mcp.client import STATE_CLOSED
 from mocode.testing import call_tool, say
 
-from ._mcp_fake import stdio_entry, write_mcp_json, write_server
+from ._mcp_fake import pidfile_env, stdio_entry, write_mcp_json, write_server
 from .conftest import make_config, project, wire
 
 BOUND = 15  # seconds — every await in this file stays bounded
@@ -30,6 +32,25 @@ POLL_ATTEMPTS = 200  # 200 * 0.05s = 10s
 
 #: What the scripted model's codemode call runs: one MCP call, output kept.
 SCRIPT_CALL_ECHO = 'text((await tools.mcp__echo__echo({"x": "hi"})).content)'
+
+
+def _child_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            return False
+        kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _config(plugins: dict) -> Config:
@@ -60,7 +81,7 @@ def _echo_project(tmp_path, name: str, **server_extra):
     script = write_server(tmp_path, f"{name}_server.py")
     write_mcp_json(
         proj / ".mocode" / "mcp.json",
-        {"echo": stdio_entry(script, **server_extra)},
+        {"echo": stdio_entry(script, env=pidfile_env(tmp_path, name), **server_extra)},
     )
     return proj
 
@@ -254,14 +275,14 @@ class TestClose:
             "the echo tool to register",
         )
         session = runtime.sessions["echo"]
-        proc = session._proc
-        assert proc is not None and proc.returncode is None
+        pidfile = tmp_path / "close.pid"
+        assert pidfile.exists() and _child_alive(int(pidfile.read_text()))
 
         await asyncio.wait_for(conversation.aclose(), BOUND)
 
         for _ in range(POLL_ATTEMPTS):
-            if proc.returncode is not None:
+            if not _child_alive(int(pidfile.read_text())):
                 break
             await asyncio.sleep(POLL)
-        assert proc.returncode is not None  # the direct child is gone
+        assert not _child_alive(int(pidfile.read_text()))  # the direct child is gone
         assert session.state == STATE_CLOSED

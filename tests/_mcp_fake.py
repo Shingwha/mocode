@@ -17,12 +17,15 @@ from pathlib import Path
 #: A minimal modern-era MCP server with one tool, ``echo``, that answers
 #: ``tools/call`` with its arguments serialized as JSON.
 ECHO_SERVER = r'''
-import json, sys
+import json, sys, os
 
 def send(msg):
     sys.stdout.write(json.dumps(msg) + "\n")
     sys.stdout.flush()
 
+pidfile = os.environ.get("MCP_TEST_PIDFILE")
+if pidfile:
+    open(pidfile, "w").write(str(os.getpid()))
 sys.stderr.write("echo server starting\n")
 sys.stderr.flush()
 
@@ -50,7 +53,7 @@ for line in sys.stdin:
             "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "echo-srv", "version": "1.0"}},
             "instructions": "Echo server instructions."}})
     elif method == "tools/list":
-        send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "tools": TOOLS}})
+        send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "tools": TOOLS, "ttlMs": 0, "cacheScope": "public"}})
     elif method == "tools/call":
         send({"jsonrpc": "2.0", "id": rid, "result": {
             "resultType": "complete",
@@ -78,3 +81,8 @@ def write_mcp_json(path: Path, servers: dict) -> Path:
 def stdio_entry(script: Path, **extra) -> dict:
     """A stdio server entry pointing at a fake script."""
     return {"type": "stdio", "command": sys.executable, "args": [str(script)], **extra}
+
+
+def pidfile_env(tmp_path: Path, name: str) -> dict:
+    """The env naming the fake's pidfile, so a test can watch its child."""
+    return {"MCP_TEST_PIDFILE": str(tmp_path / f"{name}.pid")}

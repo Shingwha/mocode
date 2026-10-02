@@ -2,7 +2,7 @@
 
 Built once per conversation (in the plugin's ``build()``), the runtime owns
 what a conversation knows about its servers: the merged configuration, one
-:class:`~mocode.host.plugin.builtin.mcp.session.StdioSession` per enabled
+:class:`~mocode.host.plugin.builtin.mcp.client.McpSession` per enabled
 server, and the mapping from server tool names to registered mocode tools.
 Servers whose tools may be offered to the model (``direct`` exposure) get a
 bounded wait during ``start()`` — the first turn must not wait on a slow
@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 from .....core.events import Notice
 from ...context import BuildContext
 from ...loader import report
+from .client import STATE_ERROR, McpSession
 from .config import McpServerConfig, load_servers
 from .naming import (
     assign_tool_names,
@@ -28,7 +29,6 @@ from .naming import (
     default_exposure,
     resolve_exposure,
 )
-from .session import STATE_ERROR, StdioSession
 from .tools import mcp_status_tool, mcp_tool
 
 if TYPE_CHECKING:
@@ -63,8 +63,8 @@ class McpRuntime:
         )
         self.connect_timeout = _positive(mcp_config.get("connect_timeout_s"), 10.0)
         self.request_timeout = _positive(mcp_config.get("request_timeout_s"), 60.0)
-        #: folded server key -> StdioSession
-        self.sessions: dict[str, StdioSession] = {}
+        #: folded server key -> McpSession
+        self.sessions: dict[str, McpSession] = {}
         #: background connect tasks, cancelled on shutdown
         self.tasks: list[asyncio.Task] = []
         #: folded server key -> {full tool name -> raw tool name}
@@ -85,7 +85,7 @@ class McpRuntime:
                 continue
             if cfg.timeout is None:
                 cfg.timeout = self.request_timeout
-            session = StdioSession(
+            session = McpSession(
                 cfg,
                 on_connected=self._on_connected,
                 on_tools_changed=self._on_tools_changed,
@@ -118,7 +118,9 @@ class McpRuntime:
 
     def shutdown(self) -> None:
         """Sync teardown for the plugin's ``close()`` — cancel background
-        connects and kill every child without awaiting I/O."""
+        connects and ask every session to unwind; each session schedules the
+        SDK's bounded shutdown, so no child outlives the loop that made it.
+        """
         for task in self.tasks:
             task.cancel()
         self.tasks.clear()
@@ -130,7 +132,7 @@ class McpRuntime:
 
     # ── registration ────────────────────────────────────────
 
-    async def _connect_in_background(self, key: str, session: StdioSession) -> None:
+    async def _connect_in_background(self, key: str, session: McpSession) -> None:
         try:
             await session.connect_and_register()
         except asyncio.CancelledError:
@@ -143,15 +145,15 @@ class McpRuntime:
         await self._maybe_warn_codemode()
 
     async def _on_connected(
-        self, session: StdioSession, tools: list[dict]
+        self, session: McpSession, tools: list[dict]
     ) -> None:
         self._apply_tools(session, tools)
         await self._maybe_warn_codemode()
 
-    async def _on_tools_changed(self, session: StdioSession) -> None:
+    async def _on_tools_changed(self, session: McpSession) -> None:
         await self.sync_tools(session)
 
-    async def sync_tools(self, session: StdioSession) -> None:
+    async def sync_tools(self, session: McpSession) -> None:
         """Re-list a server's tools and reconcile the registry (legacy
         ``tools/list_changed``) — newcomers register, the gone unregister."""
         tools = await session.list_tools()
@@ -189,7 +191,7 @@ class McpRuntime:
                 self._ctx.tools.disable(full_name)
             current[full_name] = raw_name
 
-    def _key_for(self, session: StdioSession) -> str | None:
+    def _key_for(self, session: McpSession) -> str | None:
         for key, candidate in self.sessions.items():
             if candidate is session:
                 return key
