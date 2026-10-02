@@ -109,6 +109,7 @@ class CLIApp:
                 keys=self.keys,
                 key_context=lambda buffer=None: self._key_context(buffer=buffer),
                 middleware=self.input_middleware,
+                status=self.status,
             )
             self.display = Display(input_=self.input, theme=self.theme)
         else:
@@ -168,6 +169,25 @@ class CLIApp:
             self.ctx, self.runtime.plugin_sources_for(self.cwd)
         )
         self._register_builtin_keys()
+        self._register_builtin_status()
+
+    def _register_builtin_status(self) -> None:
+        """The bar the terminal always shows: model, tokens, cwd."""
+        from .plugin import Segment
+
+        self.status.use(lambda s: Segment(s.model, priority=30) if s.model else None)
+
+        def _tokens(s):
+            if s.usage is None or not (
+                s.usage.prompt_tokens or s.usage.completion_tokens
+            ):
+                return None
+            return Segment(
+                f"↑{s.usage.prompt_tokens} ↓{s.usage.completion_tokens}", priority=20
+            )
+
+        self.status.use(_tokens)
+        self.status.use(lambda s: Segment(_shorten_home(s.cwd), priority=10))
 
     def _register_builtin_keys(self) -> None:
         """The terminal's own running-time keys — the flagships of the API."""
@@ -454,6 +474,17 @@ class CLIApp:
             # whatever the plugins built for it.
             await self.ctx.aclose()
             await self.conversation.aclose(save=False)
+
+
+def _shorten_home(cwd: Path) -> str:
+    """The cwd with the home directory contracted to ``~``."""
+    home = Path.home()
+    if cwd == home:
+        return "~"
+    try:
+        return f"~/{cwd.relative_to(home)}"
+    except ValueError:
+        return str(cwd)
 
 
 def _compose_prompt(prompt: str, stdin_text: str | None) -> str:

@@ -9,7 +9,7 @@ from .text import count_visual_lines
 
 if TYPE_CHECKING:
     from ..host.command import CommandRegistry
-    from .plugin import InputMiddleware, KeyRegistry
+    from .plugin import InputMiddleware, KeyRegistry, StatusRegistry
 
 #: Paste marker thresholds (OR: below either → insert directly)
 _PASTE_LINE_THRESHOLD = 5
@@ -151,6 +151,10 @@ class Input:
     submitted line passes through before the caller sees it — a middleware
     returning ``None`` consumes the line: the caller gets ``""`` and the
     prompt simply comes back.
+
+    *status* is the :class:`~mocode.cli.plugin.StatusRegistry` whose merged
+    line paints the prompt's ``bottom_toolbar`` on every redraw; the armed
+    Ctrl-C confirmation appends its hint to whatever the registry produced.
     """
 
     def __init__(
@@ -161,6 +165,7 @@ class Input:
         keys: "KeyRegistry | None" = None,
         key_context: Callable | None = None,
         middleware: "InputMiddleware | None" = None,
+        status: "StatusRegistry | None" = None,
     ):
         self._ps1 = ps1
         self._pastes = PasteStore()
@@ -168,6 +173,7 @@ class Input:
         self._keys = keys
         self._key_context = key_context
         self._middleware = middleware
+        self._status = status
         self._session = None
         self._confirm_armed = False
 
@@ -191,6 +197,7 @@ class Input:
                     self._handle_paste,
                     extra=[self._ctrl_c_binding(), *self._registered_bindings()],
                 ),
+                bottom_toolbar=self._toolbar if self._status is not None else None,
             )
             # PromptSession merges its own defaults BEFORE `key_bindings`, and
             # the first matching binding wins — prepend ours so a registered
@@ -218,6 +225,18 @@ class Input:
             event.app.invalidate()
 
         return ("c-c", _on_ctrl_c)
+
+    def _toolbar(self) -> str:
+        """The bottom bar: the registry's merged line plus the confirm hint."""
+        from shutil import get_terminal_size
+
+        width = get_terminal_size().columns
+        bar = self._status.toolbar()
+        if self._confirm_armed:
+            bar = f"{bar} · {self.CONFIRM_HINT}" if bar else self.CONFIRM_HINT
+        if len(bar) > width:
+            bar = bar[: max(width - 1, 0)] + ("…" if width > 1 else "")
+        return bar
 
     def _registered_bindings(self):
         """Idle key registrations adapted to raw prompt_toolkit handlers."""
