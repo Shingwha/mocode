@@ -165,6 +165,22 @@ def _stdio_client(config: McpServerConfig, errlog: "_StderrLog") -> Any:
     return stdio_client(parameters, errlog=errlog)
 
 
+def _build_target(config: McpServerConfig, errlog: "_StderrLog") -> Any:
+    """The SDK transport for *config*'s wire — the one place an entry
+    becomes a connection target (decision D7).
+
+    Wave W3a-2 lands the HTTP transports in its second step; until then an
+    entry naming one fails here, explicitly, instead of crashing inside
+    the stdio spawn (whose ``command`` is absent for those entries).
+    """
+    if config.transport != "stdio":
+        raise McpError(
+            f"the {config.transport!r} transport is not supported yet",
+            "mcp_transport",
+        )
+    return _stdio_client(config, errlog)
+
+
 def _implementation() -> Any:
     """The client identity sent to every server, as the SDK's model."""
     from mcp.types import Implementation
@@ -391,7 +407,7 @@ class McpSession:
             target = (
                 self._server
                 if self._server is not None
-                else _stdio_client(self.config, stderr)
+                else _build_target(self.config, stderr)
             )
             async with self._build_client(target) as client:
                 self._client = client

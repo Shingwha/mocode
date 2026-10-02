@@ -148,16 +148,18 @@ class TestLoadServers:
         for name in ("not-an-object", "no-command", "bad-args", "bad-env", "bad-type"):
             assert name in err
 
-    def test_sse_is_rejected_with_a_hint(self, tmp_path, capsys):
+    def test_sse_entries_parse_as_the_sse_transport(self, tmp_path):
         merged = load_servers(
-            mcp_config={"servers": {"old": {"type": "sse", "url": "http://x/sse"}}},
+            mcp_config={"servers": {"old": {"type": "sse", "url": "https://x/sse"}}},
             cwd=tmp_path,
             home=tmp_path / "home",
         )
-        assert merged == {}
-        assert "'/mcp'" in capsys.readouterr().err
+        cfg = merged["old"]
+        assert cfg.transport == "sse"
+        assert cfg.url == "https://x/sse"
+        assert cfg.headers == {}
 
-    def test_streamable_http_is_skipped_until_wave_w3(self, tmp_path, capsys):
+    def test_streamable_http_entries_parse(self, tmp_path):
         merged = load_servers(
             mcp_config={
                 "servers": {
@@ -168,16 +170,139 @@ class TestLoadServers:
             cwd=tmp_path,
             home=tmp_path / "home",
         )
-        assert merged == {}
-        assert "stdio only" in capsys.readouterr().err
+        assert list(merged) == ["web", "web2"]
+        for cfg in merged.values():
+            assert cfg.transport == "streamable-http"
+            assert cfg.url == "http://localhost/mcp"
+            assert cfg.headers == {}
 
     def test_type_is_optional_in_mocode_files_and_inferred(self, tmp_path):
         merged = load_servers(
-            mcp_config={"servers": {"a": {"command": "x"}, "b": {"url": "http://u"}}},
+            mcp_config={"servers": {"a": {"command": "x"}, "b": {"url": "https://u/mcp"}}},
             cwd=tmp_path,
             home=tmp_path / "home",
         )
-        assert list(merged) == ["a"]
+        assert list(merged) == ["a", "b"]
+        assert merged["a"].transport == "stdio"
+        assert merged["a"].command == "x"
+        assert merged["b"].transport == "streamable-http"
+        assert merged["b"].url == "https://u/mcp"
+        assert merged["b"].headers == {}
+
+    def test_http_is_the_streamable_http_transport(self, tmp_path):
+        merged = load_servers(
+            mcp_config={"servers": {"web": {"type": "http", "url": "https://u/mcp"}}},
+            cwd=tmp_path,
+            home=tmp_path / "home",
+        )
+        assert merged["web"].transport == "streamable-http"
+
+    def test_url_and_header_values_expand_in_mocode_files(self, tmp_path):
+        merged = load_servers(
+            mcp_config={
+                "servers": {
+                    "web": {
+                        "type": "streamable-http",
+                        "url": "https://${MCP_TEST_HOST}/mcp",
+                        "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+                    }
+                }
+            },
+            cwd=tmp_path,
+            home=tmp_path / "home",
+            environ={"MCP_TEST_HOST": "mcp.example", "MCP_TEST_TOKEN": "secret"},
+        )
+        cfg = merged["web"]
+        assert cfg.url == "https://mcp.example/mcp"
+        assert cfg.headers == {"Authorization": "Bearer secret"}
+
+    def test_a_missing_variable_in_a_header_value_reports_and_empties(self, tmp_path, capsys):
+        merged = load_servers(
+            mcp_config={
+                "servers": {
+                    "web": {
+                        "url": "https://h/mcp",
+                        "headers": {"X-Token": "${MCP_TEST_MISSING}"},
+                    }
+                }
+            },
+            cwd=tmp_path,
+            home=tmp_path / "home",
+            environ={},
+        )
+        assert merged["web"].headers == {"X-Token": ""}
+        assert "MCP_TEST_MISSING" in capsys.readouterr().err
+
+    def test_loopback_urls_may_stay_http(self, tmp_path):
+        merged = load_servers(
+            mcp_config={
+                "servers": {
+                    "v4": {"type": "sse", "url": "http://127.0.0.1:9000/sse"},
+                    "v6": {"type": "sse", "url": "http://[::1]:9000/sse"},
+                    "name": {"type": "sse", "url": "http://localhost/sse"},
+                }
+            },
+            cwd=tmp_path,
+            home=tmp_path / "home",
+        )
+        assert list(merged) == ["v4", "v6", "name"]
+        assert merged["v6"].url == "http://[::1]:9000/sse"
+
+    def test_http_extensions_apply_to_http_entries_too(self, tmp_path):
+        merged = load_servers(
+            mcp_config={
+                "servers": {
+                    "web": {
+                        "type": "streamable-http",
+                        "url": "https://u/mcp",
+                        "enabled": False,
+                        "timeout": 12,
+                        "exposure": "hidden",
+                        "description": "one line",
+                    }
+                }
+            },
+            cwd=tmp_path,
+            home=tmp_path / "home",
+        )
+        cfg = merged["web"]
+        assert cfg.enabled is False
+        assert cfg.timeout == 12.0
+        assert cfg.exposure == "hidden"
+        assert cfg.description == "one line"
+
+    def test_invalid_http_entries_are_skipped_without_hurting_valid_ones(self, tmp_path, capsys):
+        bad = {
+            "scheme": {"type": "streamable-http", "url": "ftp://u/mcp"},
+            "cleartext": {"type": "streamable-http", "url": "http://example.com/mcp"},
+            "userinfo": {"type": "streamable-http", "url": "https://user:pw@example.com/mcp"},
+            "fragment": {"type": "streamable-http", "url": "https://u/mcp#frag"},
+            "relative": {"type": "streamable-http", "url": "/mcp"},
+            "no-url": {"type": "streamable-http"},
+            "bad-url": {"type": "streamable-http", "url": 42},
+            "bad-headers": {"type": "streamable-http", "url": "https://u/mcp", "headers": {"X": 1}},
+            "headers-list": {"type": "streamable-http", "url": "https://u/mcp", "headers": ["X"]},
+            "case-clash": {
+                "type": "streamable-http",
+                "url": "https://u/mcp",
+                "headers": {"Authorization": "a", "authorization": "b"},
+            },
+            "expanded-name": {
+                "type": "streamable-http",
+                "url": "https://u/mcp",
+                "headers": {"X-${MCP_TEST_VAR}": "v"},
+            },
+            "sse-cleartext": {"type": "sse", "url": "http://example.com/sse"},
+            "good": {"type": "streamable-http", "url": "https://u/mcp"},
+        }
+        merged = load_servers(
+            mcp_config={"servers": bad}, cwd=tmp_path, home=tmp_path / "home"
+        )
+        assert list(merged) == ["good"]
+        err = capsys.readouterr().err
+        for name in bad:
+            if name != "good":
+                assert name in err
 
 
 class TestMocodeExtensions:
@@ -461,6 +586,62 @@ class TestPluginFileRules:
         )
         assert merged == {}
         assert "missing 'type'" in capsys.readouterr().err
+
+    def test_a_valid_http_entry_is_loaded(self, tmp_path):
+        plugin_dir = tmp_path / "plugins" / "acme"
+        write_mcp_json(
+            plugin_dir / "mcp.json",
+            self._plugin_mcp(
+                {
+                    "web": {
+                        "type": "streamable-http",
+                        "url": "http://127.0.0.1:8080/mcp",
+                        "headers": {"Authorization": "Bearer t"},
+                    },
+                    "feed": {"type": "sse", "url": "https://u/sse"},
+                }
+            ),
+        )
+        merged = load_servers(
+            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
+        )
+        assert list(merged) == ["web", "feed"]
+        assert merged["web"].transport == "streamable-http"
+        assert merged["web"].url == "http://127.0.0.1:8080/mcp"
+        assert merged["web"].headers == {"Authorization": "Bearer t"}
+        assert merged["feed"].transport == "sse"
+        assert merged["feed"].url == "https://u/sse"
+
+    def test_http_entries_expand_nothing_in_plugin_files(self, tmp_path, capsys):
+        plugin_dir = tmp_path / "plugins" / "acme"
+        write_mcp_json(
+            plugin_dir / "mcp.json",
+            self._plugin_mcp(
+                {
+                    "var-url": {"type": "streamable-http", "url": "https://${MCP_TEST_HOST}/mcp"},
+                    "bang-url": {"type": "streamable-http", "url": "!echo hi"},
+                    "var-value": {
+                        "type": "streamable-http",
+                        "url": "https://u/mcp",
+                        "headers": {"X": "${MCP_TEST_TOKEN}"},
+                    },
+                    "var-name": {
+                        "type": "streamable-http",
+                        "url": "https://u/mcp",
+                        "headers": {"X-${MCP_TEST_VAR}": "v"},
+                    },
+                    "plugin-token": {"type": "streamable-http", "url": "https://${PLUGIN_ROOT}/mcp"},
+                    "good": {"type": "streamable-http", "url": "https://u/mcp"},
+                }
+            ),
+        )
+        merged = load_servers(
+            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
+        )
+        assert list(merged) == ["good"]
+        err = capsys.readouterr().err
+        assert err.count("entry skipped") == 5
+        assert "${VAR}" in err
 
 
 class TestNormalize:
