@@ -3,8 +3,8 @@
 The file is organised by who owns each value::
 
     {
-      "active_provider": "intern",
-      "active_model": "Atria-Dawn-Preview",
+      "provider": "commandcode",               // the default for new conversations
+      "model": "deepseek/deepseek-v4.1-flash",
 
       "agent": {                      # loop execution policy — the core AgentConfig
         "tool_timeout": 240,          # seconds per tool call
@@ -15,21 +15,27 @@ The file is organised by who owns each value::
       },
 
       "providers": {
-        "intern": {
-          "name": "Intern Discovery",
-          "base_url": "https://discovery-api.intern-ai.org.cn/v1",
+        "commandcode": {
+          "type": "openai",           # optional; "openai" is the built-in default
+          "name": "Command Code",     # optional display name
+          "base_url": "https://api.commandcode.ai/provider/v1",
           "api_key": "sk-...",        # optional — see env_var_for()
-          "models": {                 # keyed by model name
-            "Atria-Dawn-Preview": {
-              "context_window": 200000,
-              "max_output": 32768,    # optional; no cap is sent when absent
-              "extra_body": { },      # provider-specific request fields
+          "models": [                 # ordered array; "id" is the unique key
+            {
+              "id": "deepseek/deepseek-v4.1-flash",
+              "name": "DeepSeek V4.1 Flash",  # optional display name
+              "context_window": 1000000,      # optional = unknown
+              "max_tokens": 65536,            # optional; no cap is sent when absent
+              "efforts": ["low", "high", "max"],  # optional level table; the
+                                                  # kernel default is low/medium/high
+              "effort": "high",               # optional level sent with the request;
+                                              # absent = the server decides
               "retry": {              # optional; RetryPolicy fields, unknown keys ignored
                 "max_attempts": 3,
                 "base_delay": 5.0
               }
             }
-          }
+          ]
         }
       },
 
@@ -48,7 +54,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from ..core.agent import AgentConfig
-from ..core.provider import ModelSpec, RetryPolicy
+from ..core.provider import EFFORTS, ModelSpec, RetryPolicy
 from .io import read_json, write_json
 
 DEFAULT_CONFIG_PATH = Path.home() / ".mocode" / "config.json"
@@ -85,11 +91,23 @@ def _opt_int(value: Any, default: int | None = None) -> int | None:
 
 @dataclass
 class ModelEntry:
-    """Per-model facts and provider-specific request fields."""
+    """Per-model facts: identity, limits, the effort table, a retry override.
 
+    ``efforts`` is the model's ordered reasoning-level table — ``None`` means
+    the file declares none and the kernel default (``EFFORTS``) stands at
+    resolve time. The series is open: any custom level names are allowed and
+    a provider sends the level verbatim. ``effort`` is the level sent with
+    the request — ``None`` means the request carries no such parameter and
+    the server decides entirely on its own.
+    """
+
+    id: str = ""
+    name: str = ""
     context_window: int | None = None
-    max_output: int | None = None
-    extra_body: dict[str, Any] | None = None
+    max_tokens: int | None = None
+    #: ``None`` = the file declares no custom table, not an empty one.
+    efforts: tuple[str, ...] | None = None
+    effort: str | None = None
     #: Per-model retry override — a dict of :class:`RetryPolicy
     #: <mocode.core.provider.RetryPolicy>` fields. Rate limits are knowledge
     #: about a backend, and two models behind one provider key can disagree;
@@ -99,12 +117,22 @@ class ModelEntry:
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> ModelEntry:
         data = data or {}
-        extra_body = data.get("extra_body")
         retry = data.get("retry")
+        efforts = data.get("efforts")
+        if isinstance(efforts, list):
+            # Item-wise str: a non-string entry is dropped, and a list that
+            # ends up empty means "not declared", exactly like a missing key.
+            efforts = tuple(e for e in efforts if isinstance(e, str)) or None
+        else:
+            efforts = None
+        effort = data.get("effort")
         return cls(
+            id=str(data.get("id") or ""),
+            name=str(data.get("name") or ""),
             context_window=_opt_int(data.get("context_window")),
-            max_output=_opt_int(data.get("max_output")),
-            extra_body=extra_body if isinstance(extra_body, dict) else None,
+            max_tokens=_opt_int(data.get("max_tokens")),
+            efforts=efforts,
+            effort=effort if isinstance(effort, str) else None,
             retry=(
                 {k: v for k, v in retry.items() if k in _RETRY_KEYS}
                 if isinstance(retry, dict) and retry
@@ -113,13 +141,17 @@ class ModelEntry:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {}
+        out: dict[str, Any] = {"id": self.id}
+        if self.name:
+            out["name"] = self.name
         if self.context_window is not None:
             out["context_window"] = self.context_window
-        if self.max_output is not None:
-            out["max_output"] = self.max_output
-        if self.extra_body is not None:
-            out["extra_body"] = self.extra_body
+        if self.max_tokens is not None:
+            out["max_tokens"] = self.max_tokens
+        if self.efforts is not None:
+            out["efforts"] = list(self.efforts)
+        if self.effort is not None:
+            out["effort"] = self.effort
         if self.retry:
             out["retry"] = dict(self.retry)
         return out
@@ -142,21 +174,34 @@ class ProviderEntry:
     runtime builds for it — ``"openai"`` ships built in; anything else must
     have been registered with ``MoCode.register_provider_type`` first. A
     missing ``type`` means ``"openai"``, so configurations written before the
-    field existed keep working.
+    field existed keep working. ``models`` is an ordered array — declaration
+    order is the order a frontend's selector shows.
     """
 
     type: str = "openai"
     name: str = ""
     api_key: str = ""
     base_url: str | None = None
-    models: dict[str, ModelEntry] = field(default_factory=dict)
+    models: list[ModelEntry] = field(default_factory=list)
 
     def label(self, key: str) -> str:
         """Display name, falling back to the provider key."""
         return self.name or key
 
+    def model_ids(self) -> list[str]:
+        """The declared model ids, in declaration order."""
+        return [m.id for m in self.models]
+
     def model_names(self) -> list[str]:
-        return list(self.models)
+        """Bridge for the pre-rename CLI call sites that W3 rewrites."""
+        return self.model_ids()
+
+    def model(self, model_id: str) -> ModelEntry | None:
+        """The entry declared for *model_id* — ``None`` when not declared."""
+        for m in self.models:
+            if m.id == model_id:
+                return m
+        return None
 
     def api_key_for(self, key: str) -> str:
         """The explicit key if set, otherwise the conventional env var."""
@@ -164,10 +209,16 @@ class ProviderEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProviderEntry:
-        models = {
-            str(name): ModelEntry.from_dict(raw)
-            for name, raw in (data.get("models") or {}).items()
-        }
+        models: list[ModelEntry] = []
+        raw_models = data.get("models")
+        if isinstance(raw_models, list):
+            for raw in raw_models:
+                if not isinstance(raw, dict):
+                    continue
+                model = ModelEntry.from_dict(raw)
+                if not model.id:
+                    continue  # an entry without an id cannot be addressed
+                models.append(model)
         return cls(
             type=str(data.get("type") or "openai"),
             name=str(data.get("name") or ""),
@@ -177,7 +228,7 @@ class ProviderEntry:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"models": {n: m.to_dict() for n, m in self.models.items()}}
+        out: dict[str, Any] = {"models": [m.to_dict() for m in self.models]}
         if self.type != "openai":
             out["type"] = self.type
         if self.name:
@@ -191,8 +242,8 @@ class ProviderEntry:
 
 @dataclass
 class Config:
-    active_provider: str = ""
-    active_model: str = ""
+    provider: str = ""
+    model: str = ""
     #: Loop execution policy — the *only* policy type, owned by core: the
     #: same AgentConfig the loop runs under, nested-(de)serialized here. One
     #: type means every field (the budgets, the result limit) is configurable
@@ -206,8 +257,8 @@ class Config:
     path: Path = field(default=DEFAULT_CONFIG_PATH, repr=False, compare=False)
 
     _OWNED_KEYS: ClassVar[tuple[str, ...]] = (
-        "active_provider",
-        "active_model",
+        "provider",
+        "model",
         "agent",
         "providers",
         "plugins",
@@ -217,33 +268,37 @@ class Config:
 
     @property
     def current(self) -> ProviderEntry | None:
-        return self.providers.get(self.active_provider)
+        return self.providers.get(self.provider)
 
     def model_spec(
         self, provider_key: str | None = None, model_name: str | None = None
     ) -> ModelSpec:
         """Resolve the facts of a provider/model pair into a ModelSpec.
 
-        Unknown models resolve to a bare spec — no invented limits.
+        Unknown models resolve to a bare spec — no invented limits. A model
+        without a declared ``efforts`` table gets the kernel default series;
+        a declared one passes through verbatim.
         """
-        key = self.active_provider if provider_key is None else provider_key
-        name = self.active_model if model_name is None else model_name
+        key = self.provider if provider_key is None else provider_key
+        name = self.model if model_name is None else model_name
         entry = self.providers.get(key)
-        model = entry.models.get(name) if entry else None
+        model = entry.model(name) if entry else None
         if model is None:
             return ModelSpec(name=name)
         return ModelSpec(
             name=name,
             context_window=model.context_window,
-            max_tokens=model.max_output,
+            max_tokens=model.max_tokens,
+            efforts=model.efforts or EFFORTS,
+            effort=model.effort,
         )
 
     # ── Serialization ──────────────────────────────────────
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
-            "active_provider": self.active_provider,
-            "active_model": self.active_model,
+            "provider": self.provider,
+            "model": self.model,
             "agent": asdict(self.agent),
             "providers": {key: entry.to_dict() for key, entry in self.providers.items()},
             "plugins": self.plugins,
@@ -268,8 +323,8 @@ class Config:
             }
         )
         return cls(
-            active_provider=str(data.get("active_provider") or ""),
-            active_model=str(data.get("active_model") or ""),
+            provider=str(data.get("provider") or ""),
+            model=str(data.get("model") or ""),
             agent=agent,
             providers={
                 str(key): ProviderEntry.from_dict(raw or {})
