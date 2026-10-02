@@ -660,7 +660,7 @@ class TestStopReasons:
             def is_retriable(self, exc: Exception) -> bool:
                 return isinstance(exc, rate)
 
-            async def stream(self, messages, system, tools, max_tokens):
+            async def stream(self, messages, system, tools, max_tokens, effort):
                 self.calls.append({"messages": list(messages)})
                 self._clock.now += self._burn
                 outcome = self.responses.pop(0)
