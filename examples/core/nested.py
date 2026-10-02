@@ -32,7 +32,7 @@ class ScriptedProvider:
     def is_retriable(self, exc: Exception) -> bool:
         return False
 
-    async def stream(self, messages, system, tools, max_tokens):
+    async def stream(self, messages, system, tools, max_tokens, effort):
         yield Chunk(text=self._reply, usage=Usage(3, 5), finish_reason="stop")
 
 

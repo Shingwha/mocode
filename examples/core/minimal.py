@@ -41,7 +41,7 @@ class EchoProvider:
     def is_retriable(self, exc: Exception) -> bool:
         return False  # nothing here fails transiently
 
-    async def stream(self, messages, system, tools, max_tokens):
+    async def stream(self, messages, system, tools, max_tokens, effort):
         half = len(self._reply) // 2
         yield Chunk(text=self._reply[:half])
         yield Chunk(text=self._reply[half:], usage=Usage(7, 11), finish_reason="stop")
