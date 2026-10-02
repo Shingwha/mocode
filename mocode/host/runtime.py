@@ -51,7 +51,7 @@ def _openai_factory(entry: "ProviderEntry", key: str, model: str) -> "Provider":
     """The built-in OpenAI-compatible implementation (lazy SDK import)."""
     from ..providers.openai import OpenAIProvider
 
-    model_entry = entry.models.get(model)
+    model_entry = entry.model(model)
     return OpenAIProvider(
         api_key=entry.api_key_for(key),
         model=model,
@@ -118,8 +118,8 @@ class MoCode:
         working directory, the system prompt — follows from those two.
         """
         project = Path(cwd) if cwd is not None else Path.cwd()
-        key = provider or (session.provider if session else "") or self.config.active_provider
-        name = model or (session.model if session else "") or self.config.active_model
+        key = provider or (session.provider if session else "") or self.config.provider
+        name = model or (session.model if session else "") or self.config.model
 
         commands = commands if commands is not None else CommandRegistry()
         loaded = self._loaded_for(project)
@@ -236,7 +236,7 @@ class MoCode:
         if entry is None:
             raise ValueError(
                 f"Provider {key!r} is not defined in {self.config.path} — add it "
-                "there, or point active_provider at an existing one."
+                "there, or point provider at an existing one."
             )
         factory = self._provider_types.get(entry.type)
         if factory is None:
@@ -257,6 +257,6 @@ class MoCode:
             raise ValueError(
                 f"Provider {key!r} is not defined in {self.config.path}"
             )
-        self.config.active_provider = key
-        self.config.active_model = model
+        self.config.provider = key
+        self.config.model = model
         self.config.save()
