@@ -88,6 +88,8 @@ from ..core.hook import (
 from ..core.prompt import Prompt, Section
 from ..core.provider import (
     Chunk,
+    EFFORTS,
+    Effort,
     ModelSpec,
     Provider,
     RetryDeadlineExceeded,
@@ -131,6 +133,8 @@ __all__ = [
     "CommandResult",
     "Conversation",
     "DispatchResult",
+    "EFFORTS",
+    "Effort",
     "EXIT",
     "Event",
     "EventChannel",
