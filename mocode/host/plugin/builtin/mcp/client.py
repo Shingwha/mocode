@@ -20,7 +20,10 @@ typed. What is left here is the seam towards mocode:
   ``env`` over a trimmed platform default (decision D8).
 
 A session never touches the registry: the runtime learns about a tool set
-through the ``on_connected`` / ``on_tools_changed`` callbacks.
+through the ``on_connected`` / ``on_tools_changed`` callbacks — the first
+from the connect, the second from a legacy ``tools/list_changed``
+notification, and, on a modern connection, from the same task that drives
+``subscriptions/listen`` (:mod:`.subscriptions`).
 
 The client is an async context manager, and **one that can only be left in
 the task that entered it**: exiting the SDK's session cancels its anyio task
@@ -40,11 +43,13 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ...loader import report
 from .config import McpServerConfig
 
 if TYPE_CHECKING:
@@ -81,6 +86,9 @@ _STDERR_TAIL_BYTES = 65536
 #: Bound on waiting for a connection task to unwind (the SDK's own shutdown
 #: is bounded too, but a stuck child must not hold the caller).
 _EXIT_BOUND = 15.0
+#: How often a subscription problem may be reported for one session — a
+#: flapping ``subscriptions/listen`` stream must not flood the chat.
+_SUBSCRIPTION_REPORT_INTERVAL = 60.0
 
 
 def _unwrap(error: BaseException) -> BaseException:
@@ -308,6 +316,11 @@ class McpSession:
         self._client: "SdkClient | None" = None
         self._stderr: _StderrLog | None = None
         self._notify_tasks: set[asyncio.Task] = set()
+        #: The modern tool-change subscription's task, while the connection
+        #: lives — started in ``_serve``, cancelled with it.
+        self._watch_task: asyncio.Task | None = None
+        #: When a subscription problem was last reported (monotonic).
+        self._sub_report_at: float = float("-inf")
 
     # ── introspection ───────────────────────────────────────
 
@@ -333,11 +346,13 @@ class McpSession:
     async def close(self) -> None:
         """Async teardown: ask the connection to stop and wait (bounded) for
         the client to be left — the SDK's shielded shutdown kills the child.
+        Its subscription, if it had one, goes down with the connection.
         """
         if self.state == STATE_CLOSED:
             return
         self.state = STATE_CLOSED
         await self._stop_connection()
+        self._cancel_watch_task()
 
     def shutdown(self) -> None:
         """Sync teardown for the plugin's ``close()`` — non-blocking.
@@ -345,11 +360,13 @@ class McpSession:
         The connection task unwinds the client itself (its ``async with``
         body ends), so all a sync path can do is ask and, when the attempt
         is still mid-connect, cancel it: the SDK's shielded teardown kills
-        the child either way.
+        the child either way. The subscription is cancelled here too — its
+        task leaves the listen stream on its own.
         """
         if self.state == STATE_CLOSED:
             return
         self.state = STATE_CLOSED
+        self._cancel_watch_task()
         conn, self._conn = self._conn, None
         if conn is None:
             return
@@ -481,7 +498,10 @@ class McpSession:
 
         Only the task that entered a client may leave it, and the teardown
         that kills the child runs on the way out — so this task is where
-        the client lives, for as long as the connection lives.
+        the client lives, for as long as the connection lives. The modern
+        tool-change subscription lives exactly as long with it: started
+        once the negotiated facts are in, and cancelled before the client
+        is left (its task unwinds the listen stream on its own).
         """
         stderr = _StderrLog()
         try:
@@ -498,7 +518,11 @@ class McpSession:
                 self.last_error = None
                 conn.serving = True
                 conn.ready.set()
-                await conn.stop.wait()
+                self._start_tools_subscription()
+                try:
+                    await conn.stop.wait()
+                finally:
+                    self._cancel_watch_task()
         except asyncio.CancelledError:
             conn.error = McpError("connection cancelled", "mcp_transport")
             conn.ready.set()
@@ -513,6 +537,7 @@ class McpSession:
             self._client = None
             self._stderr = None
             stderr.close()
+            self._cancel_watch_task()
             self._cancel_notify_tasks()
 
     async def _stop_connection(self) -> None:
@@ -636,6 +661,73 @@ class McpSession:
                 conn.stop.set()
             except RuntimeError:  # pragma: no cover - defensive
                 pass
+
+    # ── subscriptions ───────────────────────────────────────
+
+    def _start_tools_subscription(self) -> None:
+        """Watch this connection's tool-list changes, if it can have one:
+        the era negotiated 2026-07-28 and the server advertises tools, and
+        somebody is there to answer a change (the legacy notification path
+        no-ops the same way without a callback). The task lives exactly as
+        long as the connection — started by its task, cancelled by it —
+        and drives the same callback, so a change reconciles the registry
+        through ``McpRuntime.sync_tools`` either way.
+        """
+        if (
+            self._client is None
+            or self.on_tools_changed is None
+            or self.era != ERA_MODERN
+            or self.server_capabilities is None
+            or self.server_capabilities.tools is None
+        ):
+            return
+        task = asyncio.create_task(self._run_tools_subscription())
+        self._watch_task = task
+
+    async def _run_tools_subscription(self) -> None:
+        """One subscription task on the live client: the SDK driver, ended
+        quietly by the two diagnoses it cannot heal — a pre-2026 server is
+        reported once (and no retry), and a refused or dead-stream
+        ``MCPError`` was reported inside the driver before it was raised."""
+        from mcp.client.subscriptions import ListenNotSupportedError
+        from mcp.shared.exceptions import MCPError
+
+        from .subscriptions import watch_tools
+
+        client = self._client
+        assert client is not None  # started only with a live client
+        try:
+            await watch_tools(
+                client, self._notify_tools_changed, report=self._report
+            )
+        except ListenNotSupportedError as e:
+            self._report(f"tool-change subscription is not supported: {e}")
+        except MCPError:
+            pass  # already reported by the driver before it raised
+
+    async def _notify_tools_changed(self) -> None:
+        """One modern ``ToolsListChanged`` — the same callback the legacy
+        notification path drives, so the runtime re-lists and reconciles
+        through its own ``sync_tools``."""
+        if self.on_tools_changed is not None:
+            await self.on_tools_changed(self)
+
+    def _cancel_watch_task(self) -> None:
+        """End the subscription task; its task unwinds the listen stream by
+        itself, which is why this does not await it."""
+        task, self._watch_task = self._watch_task, None
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _report(self, message: str) -> None:
+        """A subscription problem, said at most once a minute per session —
+        a flapping stream must not flood the chat, and the stream is
+        self-healing by design."""
+        now = time.monotonic()
+        if now - self._sub_report_at < _SUBSCRIPTION_REPORT_INTERVAL:
+            return
+        self._sub_report_at = now
+        report(f"mcp: server {self.name!r}: {message}")
 
     # ── notifications ───────────────────────────────────────
 
