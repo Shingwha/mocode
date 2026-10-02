@@ -281,11 +281,30 @@ class TestRenderer:
         assert "✗ risky · denied (not allowed)" in out
 
 
-async def _run_parallel(display: Display, delays: dict[str, float]):
-    """One batch of parallel tool calls, each finishing on its own delay."""
+async def _run_parallel(display: Display, order: list[str]):
+    """One batch of parallel tool calls, finishing in a forced order.
+
+    The order is the subject — the rows must not follow it — so it is
+    established by events rather than by durations. Every call waits at a
+    shared gate until all of them are running (so no verdict can be written
+    before every row is claimed), and they are then released one at a time,
+    *order* first (so the completion order is exact rather than whatever the
+    timing happened to produce). A loop that ran the calls one at a time
+    would never open the gate.
+    """
+    gate = asyncio.Event()
+    finished = {name: asyncio.Event() for name in order}
+    in_flight = 0
 
     async def slow(args, ctx):
-        await asyncio.sleep(delays[args["tag"]])
+        nonlocal in_flight
+        in_flight += 1
+        if in_flight == len(order):
+            gate.set()  # every call is running; every row is claimed
+        await gate.wait()
+        for earlier in order[: order.index(args["tag"])]:
+            await finished[earlier].wait()
+        finished[args["tag"]].set()
         return args["tag"]
 
     schema = {
@@ -294,13 +313,13 @@ async def _run_parallel(display: Display, delays: dict[str, float]):
         "required": ["tag"],
     }
     registry = ToolRegistry()
-    for name, delay in delays.items():
+    for name in order:
         registry.register(Tool(name, "d", schema, slow, summary_key="tag", with_context=True))
     provider = MockProvider([
         Response(
             tool_calls=[
                 ToolCall(id=f"c{i}", name=name, arguments=f'{{"tag": "{name}"}}')
-                for i, name in enumerate(delays)
+                for i, name in enumerate(order)
             ],
             usage=Usage(1, 1),
             finish_reason="tool_calls",
@@ -314,8 +333,14 @@ async def _run_parallel(display: Display, delays: dict[str, float]):
         hooks=HookRunner(),
     )
     renderer = _renderer(display, registry)
-    async for event in agent.stream("hi"):
-        renderer.draw(event)
+
+    async def draw_the_run():
+        async for event in agent.stream("hi"):
+            renderer.draw(event)
+
+    # Bounded: a sequential dispatcher would hang on the gate above, and the
+    # bound is what turns that hang into a plain test failure.
+    await asyncio.wait_for(draw_the_run(), 5.0)
 
 
 #: One in-place rewrite: move up n rows, clear the row, write the line, come
@@ -333,7 +358,7 @@ class TestLiveBlock:
 
     async def test_a_batch_keeps_one_row_per_call_in_call_order(self, capsys):
         # 'a' finishes first and 'c' last — the rows must not follow that.
-        await _run_parallel(_make_display(live=True), {"a": 0.01, "b": 0.02, "c": 0.03})
+        await _run_parallel(_make_display(live=True), ["a", "b", "c"])
         out = capsys.readouterr().out
 
         # Every call claims its row before any of them finishes: that is the
@@ -382,7 +407,7 @@ class TestLiveBlock:
 
     async def test_a_redirected_run_prints_no_placeholders(self, capsys):
         """A log cannot be rewritten, and would keep the dim rows forever."""
-        await _run_parallel(_make_display(live=False), {"a": 0.01, "b": 0.02, "c": 0.03})
+        await _run_parallel(_make_display(live=False), ["a", "b", "c"])
 
         out = _plain(capsys.readouterr().out)
         assert not any(line.startswith("· ") for line in out.splitlines())
@@ -396,7 +421,7 @@ class TestLiveBlock:
         """Rows above the fold have scrolled away; their offsets mean nothing."""
         monkeypatch.setattr("mocode.cli.display.terminal_height", lambda: 3)
 
-        await _run_parallel(_make_display(live=True), {"a": 0.01, "b": 0.02, "c": 0.03})
+        await _run_parallel(_make_display(live=True), ["a", "b", "c"])
 
         out = capsys.readouterr().out
         assert len([l for l in _plain(out).splitlines() if l.startswith("· ")]) == 3 - 1

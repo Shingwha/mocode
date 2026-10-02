@@ -20,7 +20,7 @@ from mocode.core.provider import ModelSpec
 from mocode.host.events import ConversationChanged
 from mocode.host.runtime import MoCode
 from mocode.host.session import Session
-from mocode.testing import SlowProvider, collect, say, terminal, tool_call_response
+from mocode.testing import MockProvider, SlowProvider, collect, say, terminal, tool_call_response
 
 from .conftest import make_config, make_mc, project, wire, wired, write_plugin
 
@@ -129,8 +129,20 @@ class TestToolsWorkInTheConversationsProject:
 
 class TestConcurrency:
     async def test_two_conversations_run_at_the_same_time(self, wired, tmp_path: Path):
+        """Two turns genuinely overlap: the first conversation's tool holds
+        its call open until the second conversation's request actually goes
+        out — an observed event, not a duration the overlap is hoped to fit
+        inside."""
+        other_started = asyncio.Event()
+
+        class SecondStarted(MockProvider):
+            async def stream(self, *args):
+                other_started.set()
+                async for chunk in super().stream(*args):
+                    yield chunk
+
         async def slow(args, ctx):
-            await asyncio.sleep(0.05)
+            await other_started.wait()
             return "slept"
 
         from mocode.core.tool import Tool
@@ -138,6 +150,7 @@ class TestConcurrency:
         first, _ = wired(tool_call_response("wait"), "first done", cwd=project(tmp_path, "a"))
         second, _ = wired("second done", cwd=project(tmp_path, "b"))
         first.tools.register(Tool("wait", "d", {}, slow, with_context=True))
+        second.agent.provider = SecondStarted([say("second done")])
 
         first_turn = first.run("hello from a")
         second_turn = second.run("hello from b")
@@ -170,12 +183,20 @@ class TestConcurrency:
     async def test_stopping_one_conversation_leaves_the_other_alone(
         self, mc: MoCode, tmp_path: Path, wired
     ):
+        entered = asyncio.Event()
+
+        class Stopped(MockProvider):
+            async def stream(self, *args):
+                entered.set()  # the request is in flight — safe to cancel
+                await asyncio.sleep(30)
+                yield  # pragma: no cover - never reached
+
         stopped = mc.new_conversation(cwd=project(tmp_path, "a"))
-        stopped.agent.provider = SlowProvider()
+        stopped.agent.provider = Stopped()
         running, _ = wired("still here", cwd=project(tmp_path, "b"))
 
         turn = stopped.run("hi")
-        await asyncio.sleep(0.01)
+        await asyncio.wait_for(entered.wait(), 5)
         stopped.cancel()
 
         assert (await turn.wait()).cancelled

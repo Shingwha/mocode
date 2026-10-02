@@ -110,6 +110,9 @@ class TestInline:
 
         def _recorder():
             async def record(event) -> None:
+                # A single yield, not a wait: the point is that the publisher
+                # awaits even a subscriber that has to suspend once to finish
+                # its work. The synchronization is the publish contract here.
                 await asyncio.sleep(0)
                 seen.append(event.message)
 

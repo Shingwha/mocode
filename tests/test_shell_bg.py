@@ -22,6 +22,7 @@ import pytest
 from mocode.core.events import PluginMessage, ToolCallStarted, ToolOutput
 from mocode.core.tool import ToolError
 from mocode.host.plugin.builtin.shell import (
+    _NOTIFY_WINDOW,
     _Ring,
     _SIGKILL,
     _terminate,
@@ -51,26 +52,39 @@ async def _start(bash, command: str) -> str:
 
 
 async def _done(session: BashSession, shell_id: str) -> None:
+    """Wait for a job to end — on the job's own event, inside a bound."""
     job = session.jobs[shell_id]
-    await asyncio.wait_for(job.done.wait(), 10)
+    await asyncio.wait_for(job.done.wait(), 5)
 
 
 class TestBackgroundStart:
     async def test_returns_a_handle_immediately(self, tools, session):
-        bash, _, _ = tools
+        """The handle is in hand before the command has produced anything.
 
-        started = asyncio.get_event_loop().time()
-        result = await bash.run_async({"command": "sleep 1", **BG}, None)
-        elapsed = asyncio.get_event_loop().time() - started
+        Observed, not timed: the sink below fires from the job's collector,
+        which cannot have run yet when the start call returns — the task it
+        runs in is only created on the way out. A stopwatch could only ever
+        guess at that; the unset event is the fact.
+        """
+        said = asyncio.Event()
 
-        assert elapsed < 0.8
+        async def watch(text: str, stream: str) -> None:
+            said.set()
+
+        result = await session.start_background("echo up; sleep 5", on_output=watch)
+
+        assert not said.is_set()  # the call came back before the child spoke
         assert result.content == "started shell_1 (running in background)"
         assert result.details == {
             "shell_id": "shell_1",
-            "command": "sleep 1",
+            "command": "echo up; sleep 5",
             "status": "running",
         }
         assert "exit_code" not in result.details
+        # And the child really is running: the wait is on its first output,
+        # not on an assumed duration.
+        await asyncio.wait_for(said.wait(), 5)
+        assert session.jobs["shell_1"].running
         await session.kill("shell_1")
 
     async def test_the_job_runs_and_finishes(self, tools, session):
@@ -90,6 +104,8 @@ class TestBashOutput:
     ):
         bash, output, _ = tools
 
+        # The job outlives the read below by orders of magnitude, and the
+        # read's own claim ("no new output", "running") is observed state.
         shell_id = await _start(bash, "sleep 0.4; echo a; echo b")
 
         first = await output.run_async({"shell_id": shell_id}, None)
@@ -138,9 +154,17 @@ class TestBashOutput:
     async def test_wait_blocks_until_the_job_completes(self, tools, session):
         bash, output, _ = tools
 
-        shell_id = await _start(bash, "sleep 0.3; echo done")
+        shell_id = await _start(bash, "sleep 0.5; echo done")
+        # Issue the read first and give it one loop turn to reach its wait;
+        # the job is observed still running, so what the read returns below
+        # is a blocked-then-completed read, not a guess about durations.
+        waiter = asyncio.ensure_future(
+            output.run_async({"shell_id": shell_id, "wait": True}, None)
+        )
+        await asyncio.sleep(0)
+        assert session.jobs[shell_id].running
 
-        result = await output.run_async({"shell_id": shell_id, "wait": True}, None)
+        result = await waiter
         assert result.details["lines"] == ["done"]
         assert result.details["status"] == "completed"
 
@@ -149,10 +173,12 @@ class TestBashOutput:
     ):
         bash, output, _ = tools
 
+        # A job that outlives the wait fifty times over, so the wait's own
+        # bound — a tenth of a second — is the only thing that expires.
         shell_id = await _start(bash, "sleep 5")
 
         result = await output.run_async(
-            {"shell_id": shell_id, "wait": True, "timeout": 0.3}, None
+            {"shell_id": shell_id, "wait": True, "timeout": 0.1}, None
         )
         assert result.details["status"] == "running"
         await session.kill(shell_id)
@@ -271,11 +297,11 @@ class TestKillAndCleanup:
         assert session.jobs == {}
         assert all(job.status == "killed" for job in jobs)
         # The collectors mop up after the kills — a killed child's pipes get
-        # a short grace on Windows, so done arrives within a bound, not at once.
-        deadline = asyncio.get_event_loop().time() + 3.0
-        while not all(job.done.is_set() for job in jobs):
-            assert asyncio.get_event_loop().time() < deadline, "jobs never ended"
-            await asyncio.sleep(0.05)
+        # a short grace on Windows, so done arrives within a bound, not at
+        # once. Wait on the jobs' own events, not on a guessed grace period.
+        await asyncio.wait_for(
+            asyncio.gather(*(job.done.wait() for job in jobs)), 5.0
+        )
 
 
 class TestLimits:
@@ -308,17 +334,17 @@ class TestLimits:
         await session.kill("shell_1")
 
     async def test_a_background_deadline_times_the_job_out(self, tools, session):
-        bash, output, _ = tools
+        bash, _, _ = tools
 
-        shell_id = await _start(bash, "sleep 5")
-        # Re-start with a short explicit deadline instead: kill the first.
-        await session.kill(shell_id)
-        short = await bash.run_async(
-            {"command": "sleep 5", "timeout": 1, **BG}, None
+        # The deadline is the subject, so keep one real-time integration: the
+        # watchdog gets a tenth of a second to stop a job that could not
+        # otherwise end for five, and the wait is on the job's done event.
+        result = await bash.run_async(
+            {"command": "sleep 5", "timeout": 0.1, **BG}, None
         )
-        job = session.jobs[short.details["shell_id"]]
+        job = session.jobs[result.details["shell_id"]]
 
-        await asyncio.wait_for(job.done.wait(), 10)
+        await asyncio.wait_for(job.done.wait(), 5)
         assert job.status == "timed_out"
 
     async def test_configure_ignores_bad_values(self, session):
@@ -355,8 +381,8 @@ class TestEarlyOutput:
         of the call that started the job — and the ring keeps it too: the
         event is a report, not a consumption."""
         conversation, _ = wired(
-            call_tool("bash", {"command": "echo early; sleep 1", **BG}),
-            call_tool("bash", {"command": "sleep 0.3"}),
+            call_tool("bash", {"command": "echo early; sleep 5", **BG}),
+            call_tool("bash", {"command": "echo second"}, call_id="c2"),
             "done",
         )
 
@@ -405,21 +431,24 @@ class TestCompletionNotification:
         ]
 
     async def _messages(self, conversation, *, count: int, timeout: float = 5.0):
-        deadline = asyncio.get_event_loop().time() + timeout
-        while asyncio.get_event_loop().time() < deadline:
-            found = [
-                e
-                for e in conversation.agent.channel.history()
-                if isinstance(e, PluginMessage)
-            ]
-            if len(found) >= count:
-                return found
-            await asyncio.sleep(0.05)
-        return [
-            e
-            for e in conversation.agent.channel.history()
-            if isinstance(e, PluginMessage)
-        ]
+        """The next *count* completion announcements — read, not polled.
+
+        The channel replays its history to a fresh subscriber, so this is
+        correct whether the announcement already landed or is still inside
+        the coalescing window; each read either gets the entry or lets the
+        bound expire. Waiting beats polling the history: no sleep cadence,
+        no deadline arithmetic, no wall-clock cost while nothing happens.
+        """
+        reader = conversation.agent.channel.subscribe(
+            since=0, keep=lambda event: isinstance(event, PluginMessage)
+        )
+        found: list[PluginMessage] = []
+        for _ in range(count):
+            try:
+                found.append(await asyncio.wait_for(reader.get(), timeout))
+            except asyncio.TimeoutError:
+                break
+        return found
 
     async def test_jobs_finishing_together_announce_as_one(
         self, mc, tmp_path: Path
@@ -427,8 +456,12 @@ class TestCompletionNotification:
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
 
-        await bash.run_async({"command": "sleep 0.4; echo a", **BG}, None)
-        await bash.run_async({"command": "sleep 0.4; echo b", **BG}, None)
+        # The two jobs carry the same duration and are started back to back,
+        # so they finish inside one coalescing window; the assertion below
+        # (one announcement, listing both) is what makes that fail loudly if
+        # they ever drift apart instead of passing quietly.
+        await bash.run_async({"command": "sleep 0.5; echo a", **BG}, None)
+        await bash.run_async({"command": "sleep 0.5; echo b", **BG}, None)
 
         messages = await self._messages(conversation, count=1)
         assert len(messages) == 1, "two same-moment finishers, one announcement"
@@ -439,14 +472,17 @@ class TestCompletionNotification:
         assert [job["id"] for job in message.data["jobs"]] == ["shell_1", "shell_2"]
         assert all(job["status"] == "completed" for job in message.data["jobs"])
         assert all(job["exit_code"] == 0 for job in message.data["jobs"])
-        assert "sleep 0.4; echo a" in message.data["jobs"][0]["command"]
+        assert "echo a" in message.data["jobs"][0]["command"]
         conversation.close(save=False)
 
     async def test_each_burst_is_its_own_block(self, mc, tmp_path: Path):
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
 
-        first = await bash.run_async({"command": "sleep 0.3", **BG}, None)
+        # The bursts are separated by an observed event — the first
+        # announcement arrives before the second job even starts — not by a
+        # hoped-for gap between two sleeps.
+        await bash.run_async({"command": "sleep 0.3", **BG}, None)
         messages = await self._messages(conversation, count=1)
         assert len(messages) == 1 and messages[0].block_id == "shell-bg-1"
 
@@ -463,6 +499,9 @@ class TestCompletionNotification:
         )
         bash = conversation.tools.get("bash")
 
+        # The background job finishes inside the foreground call's running
+        # time — a three-times margin — so what is held back is the
+        # announcement, not the job.
         await bash.run_async({"command": "sleep 0.3", **BG}, None)
         await collect(conversation.stream("go"))
 
@@ -478,22 +517,31 @@ class TestCompletionNotification:
 
         shell_id = await _start(bash, "sleep 5")
         await kill.run_async({"shell_id": shell_id}, None)
-        await asyncio.sleep(3 * 0.3 + 0.2)  # past the coalescing window
+        # Nothing was ever queued for an announcement. Prove the silence on a
+        # reader that would have seen one: the bound is one coalescing window
+        # plus slack — by then an announcement, if it were coming, had landed.
+        reader = conversation.agent.channel.subscribe(
+            since=0, keep=lambda event: isinstance(event, PluginMessage)
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(reader.get(), _NOTIFY_WINDOW + 0.3)
 
-        messages = [
+        assert [
             e
             for e in conversation.agent.channel.history()
             if isinstance(e, PluginMessage)
-        ]
-        assert messages == []
+        ] == []
         conversation.close(save=False)
 
     async def test_a_timed_out_job_is_announced(self, mc, tmp_path: Path):
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
 
+        # The watchdog deadline is the subject: a tenth of a second is a real
+        # wait a real timer fires, and the job could not have ended any other
+        # way for five seconds.
         await bash.run_async(
-            {"command": "sleep 5", "timeout": 1, **BG}, None
+            {"command": "sleep 5", "timeout": 0.1, **BG}, None
         )
 
         messages = await self._messages(conversation, count=1, timeout=5.0)
@@ -515,7 +563,7 @@ class TestTerminate:
         shell_id = await _start(bash, "sleep 5")
         job = session.jobs[shell_id]
         _terminate(job.proc)
-        await asyncio.wait_for(job.proc.wait(), 10)
+        await asyncio.wait_for(job.proc.wait(), 5)
         assert job.proc.returncode is not None
 
     def test_posix_kills_the_whole_group(self, monkeypatch):
