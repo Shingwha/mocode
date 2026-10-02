@@ -72,7 +72,7 @@ The module map and the reasoning per layer are in
 9. Nothing writes config.json except `MoCode.set_default_model()` — a
    conversation switching models is a decision about that conversation.
 10. `import mocode` stays under a millisecond (PEP 562 `__getattr__`); heavy
-    imports (`openai`, `questionary`, `prompt_toolkit`) resolve on first use.
+    imports (`openai`, `mcp`, `questionary`, `prompt_toolkit`) resolve on first use.
 
 ## The plugin lifecycle
 
@@ -106,7 +106,7 @@ configurable the moment it exists — no mapping to keep in sync.
   composition root, `Conversation` is the unit an application holds.
 - Tool arguments are declared as a JSON Schema object node (`Tool(schema=...)`),
   validated by the built-in dependency-free checker (unknown keywords pass).
-- Standard library first; runtime deps are `openai`, `pyyaml`,
+- Standard library first; runtime deps are `openai`, `mcp`, `pyyaml`,
   `prompt-toolkit`, `questionary`, `pyperclip`, `wcwidth`.
 
 ## Adding a hook point
