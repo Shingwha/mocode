@@ -54,7 +54,7 @@ around it.
 | `TextDelta` / `ReasoningDelta` | `text` | a fragment of the answer / of the reasoning trace |
 | `ToolCallStarted` / `ToolOutput` / `ToolCallFinished` | `call_id`, `name`, `args`, `origin`, `parent_call_id` / `call_id`, `text`, `stream` / `call_id`, `name`, `status`, `result`, `error_code`, `duration`, `details`, `origin`, `parent_call_id` | a tool call's three moments, one identity |
 | `Notice` | `message`, `level` | a line a plugin or the host wants to say |
-| `PluginMessage` | `kind`, `data`, `block_id`, `sealed` | a structured plugin entry; `block_id` addresses a display block |
+| `PluginMessage` | `kind`, `data`, `block_id`, `sealed` | a structured plugin entry; `block_id` addresses a display block (`mocode.core.events`, and `mocode.plugins`) |
 | `StopReason` / `ToolStatus` | `"completed" \| "max_iterations" \| "max_tool_calls" \| "time_budget" \| "cancelled"` / `"ok" \| "error" \| "timeout" \| "denied" \| "not_found"` | the two closed vocabularies |
 | `TOOL_OK` … `TOOL_NOT_FOUND` | the five `status` constants, as names | no string parsing on either side |
 
@@ -198,13 +198,17 @@ means — is [README.md](../README.md#configuration).
 
 ### Plugin framework
 
+Everything in this table lives in `mocode.host.plugin` (the names an embedder
+uses most also sit on `mocode.host`); a plugin author imports `Plugin`,
+`BuildContext` and `HostContext` from the SDK instead.
+
 | Name | Purpose |
 |---|---|
 | `Plugin` | `name`, `description`, `build(ctx)`, `async prepare(ctx)`, `close(ctx)` — an instance is stateless, `build()` runs once per conversation |
 | `BuildContext` | `home`, `cwd`, `config`, `model`, `plugin_sources`, `register_provider_type`, `tools`, `commands`, `hooks`, `prompt_sections`, `plugin_config(name)`, `plugin_state(name)` |
 | `HostContext` | the same object with `agent` attached: `emit(event)`, `emit_message(kind, data, block_id="")`, `seal_message(block_id)`, `subscribe(since=None)`, `spawn(*system_prompt, tools, model, visible=True)` |
 | `PluginHost` | `build_all` / `prepare_all` / `materialize` / `rebuild` / `assemble(provider, config)` / `close`; `.failures` |
-| `load_plugins` | `load_plugins(*plugin_dirs, config, reserved=()) -> LoadedPlugins` — the per-project half, cached by `MoCode` |
+| `load_plugins` | `load_plugins(*, plugin_dirs, config, reserved=()) -> LoadedPlugins` — the per-project half, cached by `MoCode` |
 | `LoadedPlugins` | `plugins`, `sources`, `tool_sources` |
 | `builtin_plugins` | the eight plugins MoCode ships, in a fixed (prompt-stable) order |
 | `default_plugin_dirs(cwd, home)` | where a project's plugins are looked for, most specific first |
@@ -254,7 +258,7 @@ reaches into `mocode.core`:
 | hooks | `AgentHook`, `HookRunner`, `IterationContext`, `RequestContext`, `ResponseContext` |
 | prompt | `Prompt`, `Section` |
 | events | `Event`, `RunStarted`, `RunFinished`, `RunFailed`, `IterationStarted`, `IterationFinished`, `TextDelta`, `ReasoningDelta`, `ToolCallStarted`, `ToolOutput`, `ToolCallFinished`, `Notice`, `PluginMessage`, `TOOL_*`, `ToolStatus`, `RunState` |
-| loop | `AgentConfig`, `AgentLoop`, `Turn`, `LoopResult`, `IterationLimit`, `EventChannel`, `Subscription` |
+| loop | `AgentConfig`, `Turn`, `LoopResult`, `IterationLimit`, `EventChannel`, `Subscription` — the loop itself is the host's to assemble (`mocode.core` if you build one yourself) |
 | providers | `Provider`, `Chunk`, `Usage`, `ToolCall`, `ToolCallDelta`, `ModelSpec`, `Effort`, `EFFORTS`, `RetryPolicy`, `RetryDeadlineExceeded`, `StreamAccumulator` |
 | transcript | `IMAGE_PLACEHOLDER`, `assistant_message`, `tool_result`, `tool_call_dicts`, `text_of`, `reasoning_of`, `content_parts`, `is_user`, `is_assistant`, `is_tool_result`, `tool_calls_of`, `tool_call_id`, `tool_call_name`, `tool_call_arguments`, `tool_call_args`, `tool_call_by_id`, `answered_call_id` |
 
