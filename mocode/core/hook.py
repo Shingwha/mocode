@@ -217,9 +217,6 @@ class HookRunner:
     def add(self, hook: AgentHook) -> None:
         self._hooks.append(hook)
 
-    def all(self) -> list[AgentHook]:
-        return list(self._hooks)
-
     async def _dispatch(self, method: str, **kwargs) -> None:
         for h in self._hooks:
             try:

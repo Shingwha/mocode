@@ -170,17 +170,6 @@ class SessionStore:
         d = self._sessions_dir(_hash_workdir(workdir))
         write_json(d / f"{session.id}.json", session.to_dict())
 
-    def load(self, workdir: str, session_id: str) -> Session | None:
-        data = read_json(
-            self._base_dir / _hash_workdir(workdir) / f"{session_id}.json"
-        )
-        if data is None:
-            return None
-        try:
-            return Session.from_dict(data)
-        except KeyError:
-            return None
-
     def delete(self, workdir: str, session_id: str) -> bool:
         path = self._base_dir / _hash_workdir(workdir) / f"{session_id}.json"
         if not path.exists():
