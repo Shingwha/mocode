@@ -116,8 +116,6 @@ class CLIApp:
             # A display handed in from outside carries its own theme; the
             # context only gets a view when we can see it.
             self.theme = getattr(display, "_t", None)
-        if self.display is not None:
-            self.header.bind(self.display.print)
 
         self.runtime = MoCode(
             config=self.config, home=self.home, plugin_dirs=plugin_dirs
@@ -223,6 +221,16 @@ class CLIApp:
             usage=self.conversation.agent.last_usage,
             pending_approvals=0,
         )
+
+    def _flush_header(self) -> None:
+        """Print pending header lines above the next prompt — never into a pipe."""
+        if self.display is None or not self.header.dirty:
+            return
+        lines = self.header.flush()
+        if not self.display.live:
+            return
+        for line in lines:
+            self.display.print(line)
 
     # ── Dispatch ───────────────────────────────────────────
 
@@ -433,6 +441,7 @@ class CLIApp:
         try:
             while True:
                 self._drain(subscription)
+                self._flush_header()
                 try:
                     user_input = await self.display.prompt()
                 except (EOFError, KeyboardInterrupt):

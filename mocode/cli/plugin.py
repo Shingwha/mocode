@@ -540,28 +540,32 @@ class StatusRegistry:
 
 
 class HeaderRegistry:
-    """Lines printed above the prompt when set — print-style decoration.
+    """Lines the app prints above the next prompt — print-style decoration.
 
     There is no live header region (no Application, by decision): setting the
-    header prints the lines into the scroll-back above the prompt, once. The
-    sink is injected by the app; without one (a pipe) setting is remembered
-    but never printed.
+    header records the lines and raises a dirty flag, and the app prints them
+    into the scroll-back above the prompt before the next one, once. Off a
+    terminal the lines are remembered but never printed.
     """
 
-    def __init__(self, sink: Callable[[str], None] | None = None):
-        self._sink = sink
+    def __init__(self) -> None:
         self._lines: list[str] = []
-
-    def bind(self, sink: Callable[[str], None] | None) -> None:
-        """Where printed lines go; the app injects its printer at assembly."""
-        self._sink = sink
+        self._dirty = False
 
     def set(self, lines: list[str]) -> None:
-        """Print *lines* above the prompt; an empty list clears it."""
+        """Record *lines* for the prompt that comes next; an empty list clears."""
         self._lines = list(lines)
-        if self._sink is not None:
-            for line in self._lines:
-                self._sink(line)
+        self._dirty = True
+
+    @property
+    def dirty(self) -> bool:
+        """Whether set lines are still waiting for a prompt to print above."""
+        return self._dirty
+
+    def flush(self) -> list[str]:
+        """The pending lines and a clean flag — the app prints what it takes."""
+        self._dirty = False
+        return list(self._lines)
 
     @property
     def lines(self) -> list[str]:

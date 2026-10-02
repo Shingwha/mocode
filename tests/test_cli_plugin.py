@@ -345,6 +345,8 @@ class TestTheFullContext:
         app = _app(tmp_path, plugins)
 
         assert app.header.lines == ["banner line"]
+        app.display.live = True  # a terminal, not the test pipe: the banner prints
+        app._flush_header()
         assert "banner line" in capsys.readouterr().out
         assert app.status.toolbar().startswith("[chrome]")
 
