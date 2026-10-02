@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ cleanup/w1-dead-code
+
 # Spec W1-A · Dead-code removal (wave W1)
 
 > Branch `cleanup/w1-dead-code`; worktree `C:\Users\shifu\.worktrees\mocode\cleanup-w1-dead-code`.

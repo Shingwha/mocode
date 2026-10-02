@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ 526af9c (final merge into master)
+
 # Cleanup & Reorganization — Overview
 
 > Group: `specs/2026-10-02-cleanup-reorg/`

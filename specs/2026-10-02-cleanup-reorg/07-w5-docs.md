@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ cleanup/w5-docs
+
 # Spec W5-D · Documentation rewrite (wave W5)
 
 > Branch `cleanup/w5-docs`; worktree `C:\Users\shifu\.worktrees\mocode\cleanup-w5-docs`.

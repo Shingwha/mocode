@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ cleanup/w3-test-infra
+
 # Spec W3 · Test infrastructure consolidation (wave W3)
 
 > Branch `cleanup/w3-test-infra`; worktree `C:\Users\shifu\.worktrees\mocode\cleanup-w3-test-infra`.

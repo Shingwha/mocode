@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ cleanup/w2-transcript
+
 # Spec W2 · Transcript format unification (wave W2)
 
 > Branch `cleanup/w2-transcript`; worktree `C:\Users\shifu\.worktrees\mocode\cleanup-w2-transcript`.

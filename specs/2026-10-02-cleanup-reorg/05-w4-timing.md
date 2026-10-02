@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ cleanup/w4-timing
+
 # Spec W4-T · Timing-deterministic tests (wave W4)
 
 > Branch `cleanup/w4-timing`; worktree `C:\Users\shifu\.worktrees\mocode\cleanup-w4-timing`.

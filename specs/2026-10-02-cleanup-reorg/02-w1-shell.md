@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ cleanup/w1-shell
+
 # Spec W1-C · Shell plugin cleanup and split (wave W1)
 
 > Branch `cleanup/w1-shell`; worktree `C:\Users\shifu\.worktrees\mocode\cleanup-w1-shell`.

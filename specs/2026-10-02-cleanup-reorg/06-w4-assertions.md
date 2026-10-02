@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ cleanup/w4-assertions
+
 # Spec W4-A · Behavior-level assertions (wave W4)
 
 > Branch `cleanup/w4-assertions`; worktree `C:\Users\shifu\.worktrees\mocode\cleanup-w4-assertions`.
