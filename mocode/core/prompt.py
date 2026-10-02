@@ -90,16 +90,23 @@ class Prompt:
                 self._sections[s.name] = s
 
     def register(self, section: Section) -> Self:
+        """Add *section*, replacing one of the same name — last one wins.
+
+        Returns ``self`` so registrations chain. A new section starts enabled.
+        """
         self._sections[section.name] = section
         return self
 
     def unregister(self, name: str) -> Section | None:
+        """Remove *name*, returning the section that was there (``None`` if none)."""
         return self._sections.pop(name, None)
 
     def get(self, name: str) -> Section | None:
+        """The section named *name* — registered or not, enabled or not."""
         return self._sections.get(name)
 
     def all(self) -> list[Section]:
+        """Every registered section — the management view, enabled or not."""
         return list(self._sections.values())
 
     def names(self) -> list[str]:
@@ -107,12 +114,14 @@ class Prompt:
         return [s.name for s in self._sections.values() if s.enabled]
 
     def enable(self, name: str) -> Self:
+        """Render *name* again. An unknown name is ignored, not an error."""
         s = self.get(name)
         if s:
             s.enabled = True
         return self
 
     def disable(self, name: str) -> Self:
+        """Stop rendering *name*. It stays registered and ``get()``-able."""
         s = self.get(name)
         if s:
             s.enabled = False

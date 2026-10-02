@@ -344,6 +344,12 @@ class Tool:
     async def run_async(
         self, args: dict, ctx: "ToolCallContext | None" = None
     ) -> "str | ToolResult":
+        """Call the function, awaiting it if it is async.
+
+        The one entry point that is safe for a sync *or* async tool — the loop
+        and the dispatcher both go through it. ``run()`` is the sync shortcut:
+        an async tool must be awaited by the caller.
+        """
         result = self._invoke(self._validate_args(args), ctx)
         return await result if self.is_async else result
 
@@ -447,6 +453,11 @@ class ToolRegistry:
         return self
 
     def unregister(self, name: str) -> Tool | None:
+        """Remove *name*, returning the tool that was there (``None`` if none).
+
+        Re-enables along the way: registering removed the disable, so removing
+        the reason to be disabled undoes it.
+        """
         tool = self._tools.pop(name, None)
         self._disabled.discard(name)
         if tool is not None:
@@ -454,9 +465,11 @@ class ToolRegistry:
         return tool
 
     def get(self, name: str) -> Tool | None:
+        """The tool named *name* — registered or not, disabled or not."""
         return self._tools.get(name)
 
     def all(self) -> list[Tool]:
+        """Every registered tool — the management view, disabled or not."""
         return list(self._tools.values())
 
     def names(self, *, audience: Audience = "model") -> list[str]:
@@ -469,11 +482,15 @@ class ToolRegistry:
         ]
 
     def enable(self, name: str) -> "ToolRegistry":
+        """Offer *name* again. An unknown name is ignored, not an error."""
         self._disabled.discard(name)
         self._schema_cache = None
         return self
 
     def disable(self, name: str) -> "ToolRegistry":
+        """Stop offering *name*. It stays registered and ``get()``-able, and
+        still refuses to run while a freeze pins the offered interface.
+        """
         if name in self._tools:
             self._disabled.add(name)
             self._schema_cache = None
