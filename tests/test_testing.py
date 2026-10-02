@@ -10,10 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from mocode.core.agent import AgentLoop
 from mocode.core.events import RunFinished, TextDelta, ToolCallFinished
-from mocode.core.hook import HookRunner
-from mocode.core.tool import Tool, ToolRegistry
+from mocode.core.tool import ToolRegistry
 from mocode.testing import (
     ARG_FRAGMENT,
     MockProvider,
@@ -25,19 +23,12 @@ from mocode.testing import (
     terminal,
 )
 
-
-def _loop(provider: MockProvider, tools: ToolRegistry | None = None) -> AgentLoop:
-    return AgentLoop(
-        provider=provider,
-        system_prompt="t",
-        tools=tools or ToolRegistry(),
-        hooks=HookRunner(),
-    )
+from .conftest import echo_tool, make_agent
 
 
 def _echo_registry() -> ToolRegistry:
     registry = ToolRegistry()
-    registry.register(Tool("echo", "d", {"type": "object", "properties": {}}, lambda a: "ok"))
+    registry.register(echo_tool())
     return registry
 
 
@@ -65,16 +56,17 @@ class TestScriptConstructors:
 
 class TestReadingATurn:
     async def test_collect_and_terminal_read_a_whole_turn(self):
-        agent = _loop(MockProvider([say("done")]))
+        agent = make_agent(provider=MockProvider([say("done")]), system_prompt="t")
         events = await collect(agent.start("hi").subscribe())
         assert isinstance(terminal(events), RunFinished)
         assert terminal(events).content == "done"
         assert [e.text for e in events_of_type(events, TextDelta)] == ["done"]
 
     async def test_a_script_drives_a_tool_call_then_an_answer(self):
-        agent = _loop(
-            MockProvider([call_tool("echo", {"x": 1}), say("after")]),
+        agent = make_agent(
+            provider=MockProvider([call_tool("echo", {"value": "1"}), say("after")]),
             tools=_echo_registry(),
+            system_prompt="t",
         )
         events = await collect(agent.start("hi").subscribe())
         [finished] = events_of_type(events, ToolCallFinished)

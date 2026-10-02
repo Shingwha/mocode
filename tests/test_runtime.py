@@ -9,13 +9,13 @@ from unittest.mock import patch
 
 import pytest
 
-from mocode.core.events import RunFinished, TextDelta
+from mocode.core.events import TextDelta
 from mocode.core.provider import Response, Usage
 from mocode.host.config import Config, ModelEntry, ProviderEntry
 from mocode.host.runtime import MoCode
-from mocode.testing import MockProvider
+from mocode.testing import collect, events_of_type, terminal
 
-from .conftest import make_config, strip_ansi
+from .conftest import make_config, make_mc, strip_ansi, wire, write_plugin
 
 class TestThePackage:
     def test_importing_mocode_stays_lazy(self):
@@ -43,11 +43,11 @@ class TestTheRuntime:
     def test_a_missing_config_is_reported_clearly(self, tmp_path: Path):
         with patch("mocode.host.runtime.Config.load", return_value=None):
             with pytest.raises(ValueError, match="config.json"):
-                MoCode(home=tmp_path / "home", plugin_dirs=[])
+                MoCode(home=tmp_path / "home", plugin_dirs=[])  # the missing-config path
 
-    def test_everything_it_owns_lives_under_home(self, tmp_path: Path):
+    def test_everything_it_owns_lives_under_home(self, make_mc, tmp_path: Path):
         """Nothing the runtime writes escapes its home — not even sessions."""
-        mc = MoCode(config=make_config(), home=tmp_path / "home", plugin_dirs=[])
+        mc = make_mc()
         mc.config.save = lambda *a, **k: None
 
         assert mc.home == tmp_path / "home"
@@ -174,12 +174,7 @@ class TestPluginProviderTypes:
     @staticmethod
     def _plugged_runtime(make_mc, tmp_path: Path) -> MoCode:
         plugins_dir = tmp_path / "plugins"
-        plugin_dir = plugins_dir / "plugged" / "mocode"
-        plugin_dir.mkdir(parents=True)
-        (plugins_dir / "plugged" / "plugin.json").write_text(
-            json.dumps({"name": "plugged"}), encoding="utf-8"
-        )
-        (plugin_dir / "plugin.py").write_text(PLUGGED_CODE, encoding="utf-8")
+        write_plugin(plugins_dir, "plugged", PLUGGED_CODE)
 
         config = make_config()
         config.providers["local"] = ProviderEntry(
@@ -216,16 +211,17 @@ class TestPluginProviderTypes:
 class TestAConversation:
     async def test_streams_events_and_answers(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(cwd=tmp_path)
-        conversation.agent.provider = MockProvider(
-            [Response(content="hi there", usage=Usage(2, 3), finish_reason="stop")],
+        wire(
+            conversation,
+            Response(content="hi there", usage=Usage(2, 3), finish_reason="stop"),
             chunk_size=2,
         )
 
-        events = [event async for event in conversation.stream("hello")]
+        events = await collect(conversation.stream("hello"))
 
-        assert "".join(e.text for e in events if isinstance(e, TextDelta)) == "hi there"
-        final = events[-1]
-        assert isinstance(final, RunFinished) and final.content == "hi there"
+        texts = [e.text for e in events_of_type(events, TextDelta)]
+        assert "".join(texts) == "hi there"
+        assert terminal(events).content == "hi there"
         assert conversation.state.answer == "hi there"
         assert conversation.messages[0] == {"role": "user", "content": "hello"}
 
@@ -272,8 +268,9 @@ class TestTheTerminal:
         Everything here is reached only by running the REPL, which is exactly
         why a renamed display primitive can otherwise break the app silently.
         """
-        app.conversation.agent.provider = MockProvider(
-            [Response(content="pong", usage=Usage(1, 1), finish_reason="stop")]
+        wire(
+            app.conversation,
+            Response(content="pong", usage=Usage(1, 1), finish_reason="stop"),
         )
         typed = iter(["ping", "/quit"])
 
@@ -346,8 +343,9 @@ class TestTheTerminal:
         from mocode.cli import CLIApp
 
         app = CLIApp(config=make_config(), home=tmp_path / "home", interactive=False)
-        app.conversation.agent.provider = MockProvider(
-            [Response(content="answer", usage=Usage(1, 1), finish_reason="stop")]
+        wire(
+            app.conversation,
+            Response(content="answer", usage=Usage(1, 1), finish_reason="stop"),
         )
 
         app.run_oneshot("hello")
@@ -363,8 +361,9 @@ class TestTheTerminal:
             interactive=False, render=True,
         )
         app.display.clear_screen = lambda: None
-        app.conversation.agent.provider = MockProvider(
-            [Response(content="drawn", usage=Usage(1, 1), finish_reason="stop")]
+        wire(
+            app.conversation,
+            Response(content="drawn", usage=Usage(1, 1), finish_reason="stop"),
         )
 
         app.run_oneshot("hello")

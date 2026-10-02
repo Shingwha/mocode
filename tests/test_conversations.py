@@ -16,17 +16,13 @@ import pytest
 
 from mocode.core.agent import AgentConfig
 from mocode.core.events import Notice, PluginMessage, RunFinished, TextDelta
-from mocode.core.provider import ModelSpec, Response, Usage
+from mocode.core.provider import ModelSpec
 from mocode.host.events import ConversationChanged
 from mocode.host.runtime import MoCode
 from mocode.host.session import Session
-from mocode.testing import MockProvider, SlowProvider, tool_call_response
+from mocode.testing import SlowProvider, say, tool_call_response
 
-from .conftest import make_config
-
-
-def _answer(text: str = "done") -> Response:
-    return Response(content=text, usage=Usage(1, 1), finish_reason="stop")
+from .conftest import make_config, make_mc, project, wire, wired, write_plugin
 
 
 def _drain(subscription) -> list:
@@ -37,51 +33,37 @@ def _drain(subscription) -> list:
     return events
 
 
-def _project(tmp_path: Path, name: str) -> Path:
-    path = tmp_path / name
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
-def _conversation(mc: MoCode, cwd: Path, *responses: Response, chunk_size: int = 0):
-    conversation = mc.new_conversation(cwd=cwd)
-    conversation.agent.provider = MockProvider(
-        list(responses) or [_answer()], chunk_size=chunk_size
-    )
-    return conversation
-
-
 # ── the conversation as a unit ──────────────────────────────
 
 
 class TestAConversationIsItsOwn:
     def test_it_carries_its_own_project_and_identity(self, mc: MoCode, tmp_path: Path):
-        first = mc.new_conversation(cwd=_project(tmp_path, "a"))
-        second = mc.new_conversation(cwd=_project(tmp_path, "b"))
+        first = mc.new_conversation(cwd=project(tmp_path, "a"))
+        second = mc.new_conversation(cwd=project(tmp_path, "b"))
 
         assert first.cwd != second.cwd
         assert first.id != second.id
         assert first.id.startswith("session_")
 
     def test_histories_do_not_mix(self, mc: MoCode, tmp_path: Path):
-        first = mc.new_conversation(cwd=_project(tmp_path, "a"))
-        second = mc.new_conversation(cwd=_project(tmp_path, "b"))
+        first = mc.new_conversation(cwd=project(tmp_path, "a"))
+        second = mc.new_conversation(cwd=project(tmp_path, "b"))
 
         first.messages.append({"role": "user", "content": "hello from a"})
 
         assert second.messages == []
 
     async def test_the_system_prompt_names_the_project(self, mc: MoCode, tmp_path: Path):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
         await conversation.prepare()
 
-        assert f"cwd: {project}" in conversation.agent.system_prompt
+        assert f"cwd: {workdir}" in conversation.agent.system_prompt
 
     def test_tool_registries_are_not_shared(self, mc: MoCode, tmp_path: Path):
-        project = _project(tmp_path, "a")
-        first = mc.new_conversation(cwd=project)
-        second = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        first = mc.new_conversation(cwd=workdir)
+        second = mc.new_conversation(cwd=workdir)
 
         assert first.tools.get("bash") is not second.tools.get("bash")
         assert first.commands is not second.commands
@@ -89,24 +71,24 @@ class TestAConversationIsItsOwn:
 
 class TestToolsWorkInTheConversationsProject:
     async def test_bash_starts_in_the_project(self, mc: MoCode, tmp_path: Path):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
 
         result = await conversation.tools.get("bash").run_async(
             {"command": "pwd"}, None
         )
 
-        assert project.name in result.content
+        assert workdir.name in result.content
 
     async def test_bash_state_does_not_leak_between_conversations(
         self, mc: MoCode, tmp_path: Path
     ):
         # Distinct words: a shell reports its directory in its own notation
         # (MSYS form under Git Bash on Windows), so compare by name.
-        project = _project(tmp_path, "alpha")
-        elsewhere = _project(tmp_path, "beta")
-        first = mc.new_conversation(cwd=project)
-        second = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "alpha")
+        elsewhere = project(tmp_path, "beta")
+        first = mc.new_conversation(cwd=workdir)
+        second = mc.new_conversation(cwd=workdir)
         bash = first.tools.get("bash")
 
         await bash.run_async({"command": f"cd {elsewhere}"}, None)
@@ -120,24 +102,24 @@ class TestToolsWorkInTheConversationsProject:
         assert env.content == "(empty)"
 
     def test_relative_paths_resolve_into_the_project(self, mc: MoCode, tmp_path: Path):
-        project = _project(tmp_path, "a")
-        (project / "notes.txt").write_text("hello", encoding="utf-8")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        (workdir / "notes.txt").write_text("hello", encoding="utf-8")
+        conversation = mc.new_conversation(cwd=workdir)
 
         result = conversation.tools.get("read").run({"path": "notes.txt"})
 
         assert "hello" in result.content
 
     def test_skills_come_from_the_project(self, mc: MoCode, tmp_path: Path):
-        project = _project(tmp_path, "a")
-        skill = project / ".mocode" / "skills" / "deploy"
+        workdir = project(tmp_path, "a")
+        skill = workdir / ".mocode" / "skills" / "deploy"
         skill.mkdir(parents=True)
         (skill / "SKILL.md").write_text(
             "---\nname: deploy\ndescription: ship it\n---\n\nRun the deploy.",
             encoding="utf-8",
         )
 
-        conversation = mc.new_conversation(cwd=project)
+        conversation = mc.new_conversation(cwd=workdir)
 
         assert "/skill:deploy" in {c.name for c in conversation.commands.all()}
 
@@ -146,20 +128,15 @@ class TestToolsWorkInTheConversationsProject:
 
 
 class TestConcurrency:
-    async def test_two_conversations_run_at_the_same_time(self, mc: MoCode, tmp_path: Path):
+    async def test_two_conversations_run_at_the_same_time(self, wired, tmp_path: Path):
         async def slow(args, ctx):
             await asyncio.sleep(0.05)
             return "slept"
 
         from mocode.core.tool import Tool
 
-        first = _conversation(
-            mc,
-            _project(tmp_path, "a"),
-            tool_call_response("wait"),
-            _answer("first done"),
-        )
-        second = _conversation(mc, _project(tmp_path, "b"), _answer("second done"))
+        first, _ = wired(tool_call_response("wait"), "first done", cwd=project(tmp_path, "a"))
+        second, _ = wired("second done", cwd=project(tmp_path, "b"))
         first.tools.register(Tool("wait", "d", {}, slow, with_context=True))
 
         first_turn = first.run("hello from a")
@@ -179,7 +156,7 @@ class TestConcurrency:
     async def test_a_second_turn_in_one_conversation_is_refused(
         self, mc: MoCode, tmp_path: Path
     ):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         conversation.agent.provider = SlowProvider()
 
         turn = conversation.run("hi")
@@ -191,11 +168,11 @@ class TestConcurrency:
         assert (await turn.wait()).cancelled
 
     async def test_stopping_one_conversation_leaves_the_other_alone(
-        self, mc: MoCode, tmp_path: Path
+        self, mc: MoCode, tmp_path: Path, wired
     ):
-        stopped = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        stopped = mc.new_conversation(cwd=project(tmp_path, "a"))
         stopped.agent.provider = SlowProvider()
-        running = _conversation(mc, _project(tmp_path, "b"), _answer("still here"))
+        running, _ = wired("still here", cwd=project(tmp_path, "b"))
 
         turn = stopped.run("hi")
         await asyncio.sleep(0.01)
@@ -205,9 +182,9 @@ class TestConcurrency:
         assert await running.chat("hello") == "still here"
 
     async def test_a_reader_can_watch_a_conversation_it_did_not_start(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        conversation = _conversation(mc, _project(tmp_path, "a"), _answer("watched"))
+        conversation, _ = wired("watched", cwd=project(tmp_path, "a"))
         reader = conversation.subscribe()
 
         await conversation.chat("hi")
@@ -222,7 +199,7 @@ class TestConcurrency:
         assert seen[-1].content == "watched"
 
     async def test_a_notice_between_turns_reaches_readers(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         reader = conversation.subscribe()
 
         await conversation.notify("something happened", level="warn")
@@ -237,8 +214,8 @@ class TestConcurrency:
 
 class TestModel:
     def test_set_model_changes_only_this_conversation(self, mc: MoCode, tmp_path: Path):
-        first = mc.new_conversation(cwd=_project(tmp_path, "a"))
-        second = mc.new_conversation(cwd=_project(tmp_path, "b"))
+        first = mc.new_conversation(cwd=project(tmp_path, "a"))
+        second = mc.new_conversation(cwd=project(tmp_path, "b"))
 
         first.set_model("second", "second-model")
 
@@ -247,7 +224,7 @@ class TestModel:
         assert first.agent.provider is not second.agent.provider
 
     def test_set_model_does_not_touch_the_config(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         mc.config.save = lambda *a, **k: pytest.fail("switching a model is not a config write")
 
         conversation.set_model("second", "second-model")
@@ -258,7 +235,7 @@ class TestModel:
     def test_set_effort_switches_the_level_without_touching_the_config(
         self, mc: MoCode, tmp_path: Path
     ):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         mc.config.save = lambda *a, **k: pytest.fail("switching an effort is not a config write")
 
         conversation.set_effort("max")
@@ -269,20 +246,20 @@ class TestModel:
 
     def test_a_conversation_can_override_the_default(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(
-            cwd=_project(tmp_path, "a"), provider="second", model="second-model"
+            cwd=project(tmp_path, "a"), provider="second", model="second-model"
         )
         assert conversation.model_name == "second-model"
         assert conversation.model == mc.config.model_spec("second", "second-model")
 
     def test_an_unknown_provider_is_reported(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         with pytest.raises(ValueError, match="not defined"):
             conversation.set_model("nope", "m")
 
-    def test_setting_the_default_writes_the_config(self, tmp_path: Path):
+    def test_setting_the_default_writes_the_config(self, tmp_path: Path, make_mc):
         config = make_config()
         config.save = lambda *a, **k: None
-        mc = MoCode(config=config, home=tmp_path / "home", plugin_dirs=[])
+        mc = make_mc(config)
 
         mc.set_default_model("second", "second-model")
 
@@ -295,28 +272,28 @@ class TestModel:
 
 class TestSessions:
     def test_save_records_the_conversation(self, mc: MoCode, tmp_path: Path):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
         conversation.messages.append({"role": "user", "content": "hello"})
 
         session = conversation.save()
 
         assert session is not None
-        assert session.workdir == str(project)
+        assert session.workdir == str(workdir)
         assert session.provider == "test"
         assert session.title == "hello"
         assert mc.store.find(conversation.id).messages == conversation.messages
 
     def test_nothing_said_means_nothing_written(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         assert conversation.save() is None
         assert mc.store.list_all() == []
 
     async def test_start_begins_a_new_session_in_the_same_project(
         self, mc: MoCode, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
         conversation.messages.append({"role": "user", "content": "old"})
         previous = conversation.id
 
@@ -329,13 +306,13 @@ class TestSessions:
     async def test_resume_restores_the_history_and_the_model(
         self, mc: MoCode, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
         conversation.set_model("second", "second-model")
         conversation.messages.append({"role": "user", "content": "remember me"})
         stored = conversation.save()
 
-        fresh = mc.new_conversation(cwd=project)
+        fresh = mc.new_conversation(cwd=workdir)
         assert fresh.model_name == "test-model"
 
         await fresh.load_session(stored)
@@ -347,26 +324,26 @@ class TestSessions:
     async def test_a_resumed_session_keeps_its_model_even_if_the_provider_is_gone(
         self, mc: MoCode, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
+        workdir = project(tmp_path, "a")
         stored = Session(
             id="session_gone",
             created_at="2025-01-01T00:00:00",
             updated_at="2025-01-01T00:00:00",
-            workdir=str(project),
+            workdir=str(workdir),
             messages=[{"role": "user", "content": "hi"}],
             provider="retired",
             model="old-model",
         )
 
-        conversation = mc.new_conversation(cwd=project)
+        conversation = mc.new_conversation(cwd=workdir)
         await conversation.load_session(stored)
 
         assert conversation.model_name == "test-model"  # the current one stays
         assert conversation.messages == [{"role": "user", "content": "hi"}]
 
     def test_sessions_are_listed_per_project(self, mc: MoCode, tmp_path: Path):
-        first = mc.new_conversation(cwd=_project(tmp_path, "a"))
-        second = mc.new_conversation(cwd=_project(tmp_path, "b"))
+        first = mc.new_conversation(cwd=project(tmp_path, "a"))
+        second = mc.new_conversation(cwd=project(tmp_path, "b"))
         first.messages.append({"role": "user", "content": "a"})
         second.messages.append({"role": "user", "content": "b"})
         first.save()
@@ -380,15 +357,15 @@ class TestSessions:
     async def test_the_runtime_finds_a_session_by_id_alone(
         self, mc: MoCode, tmp_path: Path
     ):
-        project = _project(tmp_path, "deep-project")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "deep-project")
+        conversation = mc.new_conversation(cwd=workdir)
         conversation.messages.append({"role": "user", "content": "hello"})
         conversation.save()
 
         resumed = mc.resume(conversation.id)
 
         assert resumed is not None
-        assert resumed.cwd == project
+        assert resumed.cwd == workdir
         assert resumed.messages == conversation.messages
         assert mc.resume("session_nope") is None
 
@@ -399,8 +376,8 @@ class TestPluginMessageReplay:
     async def test_saved_messages_replay_in_order_on_resume(
         self, mc: MoCode, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
         conversation.messages.append({"role": "user", "content": "hi"})
         await conversation.ctx.emit_message(
             "rag/index", {"done": 12, "total": 40}, block_id="rag-1"
@@ -423,7 +400,7 @@ class TestPluginMessageReplay:
             ("shell/background-done", {"exit": 0}, "", False),
         ]
 
-        fresh = mc.new_conversation(cwd=project)
+        fresh = mc.new_conversation(cwd=workdir)
         subscription = fresh.subscribe()
         await fresh.load_session(stored)
 
@@ -442,13 +419,13 @@ class TestPluginMessageReplay:
     async def test_the_replay_is_not_re_captured_by_the_next_save(
         self, mc: MoCode, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
         conversation.messages.append({"role": "user", "content": "hi"})
         await conversation.ctx.emit_message("rag/index", {"done": 1})
         stored = conversation.save()
 
-        fresh = mc.new_conversation(cwd=project)
+        fresh = mc.new_conversation(cwd=workdir)
         await fresh.load_session(stored)
         # One new message lands on the resumed conversation; the replayed one
         # must not double the record.
@@ -470,12 +447,12 @@ class TestPluginMessageReplay:
     async def test_replay_keeps_the_stored_run_id_and_restmps_seq(
         self, mc: MoCode, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
+        workdir = project(tmp_path, "a")
         stored = Session(
             id="session_runid",
             created_at="2025-01-01T00:00:00",
             updated_at="2025-01-01T00:00:00",
-            workdir=str(project),
+            workdir=str(workdir),
             messages=[{"role": "user", "content": "hi"}],
             plugin_messages=[
                 {
@@ -490,7 +467,7 @@ class TestPluginMessageReplay:
             ],
         )
 
-        fresh = mc.new_conversation(cwd=project)
+        fresh = mc.new_conversation(cwd=workdir)
         subscription = fresh.subscribe()
         await fresh.load_session(stored)
 
@@ -503,8 +480,8 @@ class TestPluginMessageReplay:
     async def test_only_the_newest_200_messages_survive_and_replay(
         self, mc: MoCode, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
         conversation.messages.append({"role": "user", "content": "hi"})
         for i in range(250):
             await conversation.ctx.emit_message("progress", {"i": i})
@@ -514,7 +491,7 @@ class TestPluginMessageReplay:
         assert stored.plugin_messages[0]["data"] == {"i": 50}
         assert stored.plugin_messages[-1]["data"] == {"i": 249}
 
-        fresh = mc.new_conversation(cwd=project)
+        fresh = mc.new_conversation(cwd=workdir)
         subscription = fresh.subscribe()
         await fresh.load_session(stored)
         replayed = [
@@ -525,8 +502,8 @@ class TestPluginMessageReplay:
     async def test_a_new_session_starts_with_no_plugin_messages(
         self, mc: MoCode, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
         conversation.messages.append({"role": "user", "content": "old"})
         await conversation.ctx.emit_message("old/message", {})
         conversation.save()
@@ -541,8 +518,8 @@ class TestPluginMessageReplay:
 
 class TestLifecycle:
     def test_close_saves_and_ends_the_stream(self, mc: MoCode, tmp_path: Path):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
         conversation.messages.append({"role": "user", "content": "bye"})
 
         conversation.close()
@@ -551,7 +528,7 @@ class TestLifecycle:
         assert conversation.subscribe().take() is None
 
     def test_close_can_skip_saving(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         conversation.messages.append({"role": "user", "content": "not saved"})
 
         conversation.close(save=False)
@@ -559,18 +536,18 @@ class TestLifecycle:
         assert mc.store.list_all() == []
 
     def test_rebuild_prompt_re_reads_the_project(self, mc: MoCode, tmp_path: Path):
-        project = _project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=project)
+        workdir = project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=workdir)
         assert "Always use tabs." not in conversation.agent.system_prompt
 
-        (project / "AGENTS.md").write_text("Always use tabs.", encoding="utf-8")
+        (workdir / "AGENTS.md").write_text("Always use tabs.", encoding="utf-8")
 
         conversation.rebuild_prompt()
 
         assert "Always use tabs." in conversation.agent.system_prompt
 
     def test_an_imported_conversation_keeps_its_own_agent_config(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         assert conversation.agent.config == AgentConfig(
             tool_timeout=mc.config.agent.tool_timeout,
             max_iterations=mc.config.agent.max_iterations,
@@ -586,25 +563,27 @@ class TestPluginsAreLoadedOnce:
         real = runtime_module.load_plugins
 
         def counting(*, plugin_dirs, config, reserved=()):
-            calls.append(list(plugin_dirs)[0])
+            calls.append(list(plugin_dirs))
             return real(plugin_dirs=plugin_dirs, config=config, reserved=reserved)
 
         monkeypatch.setattr(runtime_module, "load_plugins", counting)
+        # the default dirs, not the fixture's empty list: this test is
+        # about what a project's own .mocode/plugins resolves to.
         mc = MoCode(config=make_config(), home=tmp_path / "home")
-        project = _project(tmp_path, "a")
+        workdir = project(tmp_path, "a")
 
-        mc.new_conversation(cwd=project)
-        mc.new_conversation(cwd=project)
+        mc.new_conversation(cwd=workdir)
+        mc.new_conversation(cwd=workdir)
 
         assert len(calls) == 1
 
     def test_different_projects_load_their_own(self, tmp_path: Path):
+        # the default dirs, not the fixture's empty list: this test is
+        # about what a project's own .mocode/plugins resolves to.
         mc = MoCode(config=make_config(), home=tmp_path / "home")
-        first = _project(tmp_path, "a")
-        second = _project(tmp_path, "b")
-        plugin = first / ".mocode" / "plugins" / "greet"
-        plugin.mkdir(parents=True)
-        (plugin / "plugin.json").write_text('{"name": "greet"}', encoding="utf-8")
+        first = project(tmp_path, "a")
+        second = project(tmp_path, "b")
+        plugin = write_plugin(first / ".mocode" / "plugins", "greet")
 
         assert mc.plugin_sources_for(first) == [plugin]
         assert mc.plugin_sources_for(second) == []
@@ -615,9 +594,9 @@ class TestPluginsAreLoadedOnce:
 
 class TestGracefulClose:
     async def test_a_new_session_is_refused_while_a_turn_runs(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        conversation = _conversation(mc, _project(tmp_path, "a"))
+        conversation, _ = wired(cwd=project(tmp_path, "a"))
         conversation.agent.provider = SlowProvider()
         turn = conversation.run("slow")
 
@@ -628,10 +607,10 @@ class TestGracefulClose:
         await turn.wait()
 
     async def test_aclose_delivers_the_ending_before_the_stream_closes(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
         """The full close: terminal event first, plugins released, then closed."""
-        conversation = _conversation(mc, _project(tmp_path, "a"))
+        conversation, _ = wired(cwd=project(tmp_path, "a"))
         conversation.agent.provider = SlowProvider()
         reader = conversation.subscribe()
         turn = conversation.run("slow")
@@ -656,13 +635,15 @@ class TestTheSurfaceMaterializes:
     a resume carries). These are the contract's own tests."""
 
     def test_construction_is_cheap_and_writes_no_surface(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
 
         assert conversation.agent.system_prompt == ""
         assert not conversation.tools.pinned
         assert "read" in conversation.tools.names()  # registrations still happen
 
-    async def test_prepare_runs_each_plugins_prepare_once(self, mc: MoCode, tmp_path: Path):
+    async def test_prepare_runs_each_plugins_prepare_once(
+        self, mc: MoCode, tmp_path: Path, wired
+    ):
         calls: list[str] = []
         from mocode.host.plugin.base import Plugin
 
@@ -682,7 +663,7 @@ class TestTheSurfaceMaterializes:
 
         mc._loaded_for = _with_counting  # type: ignore[method-assign]
         try:
-            conversation = _conversation(mc, _project(tmp_path, "a"), _answer("1"), _answer("2"))
+            conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"))
             await conversation.prepare()
             await conversation.prepare()  # idempotent
             await conversation.chat("hello")
@@ -694,9 +675,9 @@ class TestTheSurfaceMaterializes:
             mc._loaded_for = original  # type: ignore[method-assign]
 
     async def test_the_first_turn_carries_the_surface_with_no_notice(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        conversation = _conversation(mc, _project(tmp_path, "a"), _answer("one"), _answer("two"))
+        conversation, _ = wired("one", "two", cwd=project(tmp_path, "a"))
         await conversation.chat("first")
 
         provider = conversation.agent.provider
@@ -708,43 +689,42 @@ class TestTheSurfaceMaterializes:
             m for m in conversation.messages if "[context update" in str(m.get("content"))
         ]
 
-    async def test_a_resume_is_not_re_materialized(self, mc: MoCode, tmp_path: Path):
-        project = _project(tmp_path, "a")
-        first = _conversation(mc, project, _answer("one"))
+    async def test_a_resume_is_not_re_materialized(self, wired, tmp_path: Path):
+        workdir = project(tmp_path, "a")
+        first, _ = wired("one", cwd=workdir)
         await first.chat("hi")
         session = first.save()
         frozen = first.agent.system_prompt
 
-        second = _conversation(mc, project, _answer("two"))
+        second, _ = wired("two", cwd=workdir)
         await second.chat("again")
 
         assert second.agent.system_prompt == frozen
         assert session.system_prompt == frozen
 
     async def test_a_never_run_session_materializes_freshly_on_resume(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        conversation = _conversation(mc, project)
+        workdir = project(tmp_path, "a")
+        conversation, _ = wired(cwd=workdir)
         conversation.messages.append({"role": "user", "content": "hi"})
         stored = conversation.save()
 
         assert stored.system_prompt == ""  # it never ran; nothing to record
 
-        fresh = _conversation(mc, project)
+        fresh, _ = wired(cwd=workdir)
         await fresh.load_session(stored)
         # load_session restores the session's model, which replaces the
         # provider — the recorder goes back on afterwards.
-        fresh.agent.provider = MockProvider([_answer("two")])
+        wire(fresh, "two")
         await fresh.chat("again")
 
         assert fresh.agent.system_prompt != ""
 
-    async def test_an_unpinned_runtime_stays_live(self, tmp_path: Path):
-        mc = MoCode(config=make_config(), home=tmp_path / "home", freeze_interface=False,
-                    plugin_dirs=[])
-        conversation = _conversation(
-            mc, _project(tmp_path, "a"), _answer("one"), _answer("two")
+    async def test_an_unpinned_runtime_stays_live(self, tmp_path: Path, make_mc, wired):
+        mc = make_mc(freeze_interface=False)
+        conversation, _ = wired(
+            "one", "two", cwd=project(tmp_path, "a"), mc=mc
         )
         await conversation.chat("first")
         conversation.tools.disable("read")
@@ -760,24 +740,24 @@ class TestThePromptFreezesAcrossAResume:
     prefix cache survives — and tells the model what changed instead."""
 
     async def test_the_prompt_carries_time_and_os(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         await conversation.prepare()
 
         assert "today:" in conversation.agent.system_prompt
         assert "os:" in conversation.agent.system_prompt
 
     async def test_a_resume_keeps_the_prompt_and_notices_drift(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        (project / "AGENTS.md").write_text("version one", encoding="utf-8")
-        first = _conversation(mc, project)
+        workdir = project(tmp_path, "a")
+        (workdir / "AGENTS.md").write_text("version one", encoding="utf-8")
+        first, _ = wired(cwd=workdir)
         await first.prepare()  # the session must record the surface it ran on
         first.messages.append({"role": "user", "content": "hi"})
         session = first.save()
 
-        (project / "AGENTS.md").write_text("version two", encoding="utf-8")
-        second = _conversation(mc, project)
+        (workdir / "AGENTS.md").write_text("version two", encoding="utf-8")
+        second, _ = wired(cwd=workdir)
 
         await second.load_session(session)
 
@@ -793,54 +773,54 @@ class TestThePromptFreezesAcrossAResume:
         # plugin's own session state — and it says version two.
         assert "version two" in resumed.plugin_state["cache-protect"]["prompt"]
 
-    async def test_no_drift_means_no_notice(self, mc: MoCode, tmp_path: Path):
-        project = _project(tmp_path, "a")
-        first = _conversation(mc, project)
+    async def test_no_drift_means_no_notice(self, wired, tmp_path: Path):
+        workdir = project(tmp_path, "a")
+        first, _ = wired(cwd=workdir)
         await first.prepare()  # the session must record the surface it ran on
         first.messages.append({"role": "user", "content": "hi"})
         session = first.save()
-        second = _conversation(mc, project)
+        second, _ = wired(cwd=workdir)
 
         await second.load_session(session)
 
         assert second.messages == session.messages
 
     async def test_a_change_reverted_between_resumes_is_never_news(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        (project / "AGENTS.md").write_text("version one", encoding="utf-8")
-        first = _conversation(mc, project)
+        workdir = project(tmp_path, "a")
+        (workdir / "AGENTS.md").write_text("version one", encoding="utf-8")
+        first, _ = wired(cwd=workdir)
         await first.prepare()  # the session must record the surface it ran on
         first.messages.append({"role": "user", "content": "hi"})
         first.save()
 
         # Changed and reverted before any resume saw it: never announced.
-        (project / "AGENTS.md").write_text("version two", encoding="utf-8")
-        (project / "AGENTS.md").write_text("version one", encoding="utf-8")
-        second = _conversation(mc, project)
+        (workdir / "AGENTS.md").write_text("version two", encoding="utf-8")
+        (workdir / "AGENTS.md").write_text("version one", encoding="utf-8")
+        second, _ = wired(cwd=workdir)
         await second.load_session(second.list_sessions()[0])
 
         notices = [m for m in second.messages if "[context update" in str(m.get("content"))]
         assert notices == []
 
     async def test_a_revert_after_a_notice_is_news_again(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        (project / "AGENTS.md").write_text("version one", encoding="utf-8")
-        first = _conversation(mc, project)
+        workdir = project(tmp_path, "a")
+        (workdir / "AGENTS.md").write_text("version one", encoding="utf-8")
+        first, _ = wired(cwd=workdir)
         await first.prepare()  # the session must record the surface it ran on
         first.messages.append({"role": "user", "content": "hi"})
         first.save()
 
-        (project / "AGENTS.md").write_text("version two", encoding="utf-8")
-        second = _conversation(mc, project)
+        (workdir / "AGENTS.md").write_text("version two", encoding="utf-8")
+        second, _ = wired(cwd=workdir)
         await second.load_session(second.list_sessions()[0])
         resumed = second.save()
 
-        (project / "AGENTS.md").write_text("version one", encoding="utf-8")
-        third = _conversation(mc, project)
+        (workdir / "AGENTS.md").write_text("version one", encoding="utf-8")
+        third, _ = wired(cwd=workdir)
         await third.load_session(resumed)
 
         # The baseline is what the model was last told (version two), so the
@@ -850,10 +830,10 @@ class TestThePromptFreezesAcrossAResume:
         assert "version one" in still[-1]["content"]
 
     async def test_a_legacy_session_gets_the_current_prompt(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        project = _project(tmp_path, "a")
-        conversation = _conversation(mc, project)
+        workdir = project(tmp_path, "a")
+        conversation, _ = wired(cwd=workdir)
         conversation.messages.append({"role": "user", "content": "hi"})
         stored = conversation.save()
         legacy = Session(
@@ -866,7 +846,7 @@ class TestThePromptFreezesAcrossAResume:
             model=stored.model,
             provider=stored.provider,
         )
-        fresh = _conversation(mc, project)
+        fresh, _ = wired(cwd=workdir)
         await fresh.prepare()
         before = fresh.agent.system_prompt
 
@@ -881,7 +861,7 @@ class TestPluginStateTravels:
     the one thing a plugin could not do before: remember across a resume."""
 
     def test_it_is_written_on_save(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         conversation.messages.append({"role": "user", "content": "hi"})
         conversation.ctx.plugin_state("demo")["n"] = 1
 
@@ -892,7 +872,7 @@ class TestPluginStateTravels:
     async def test_a_resume_arrives_with_the_sessions_state(
         self, mc: MoCode, tmp_path: Path
     ):
-        first = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        first = mc.new_conversation(cwd=project(tmp_path, "a"))
         first.messages.append({"role": "user", "content": "hi"})
         first.ctx.plugin_state("demo")["n"] = 7
         session = first.save()
@@ -902,12 +882,12 @@ class TestPluginStateTravels:
         assert second.ctx.plugin_state("demo") == {"n": 7}
 
     async def test_load_session_swaps_the_state(self, mc: MoCode, tmp_path: Path):
-        first = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        first = mc.new_conversation(cwd=project(tmp_path, "a"))
         first.messages.append({"role": "user", "content": "hi"})
         first.ctx.plugin_state("demo")["n"] = 7
         session = first.save()
 
-        second = mc.new_conversation(cwd=_project(tmp_path, "b"))
+        second = mc.new_conversation(cwd=project(tmp_path, "b"))
         second.ctx.plugin_state("demo")["n"] = 1
 
         await second.load_session(session)
@@ -916,7 +896,7 @@ class TestPluginStateTravels:
 
     def test_a_rebuild_clears_it(self, mc: MoCode, tmp_path: Path):
         """The model was just re-told everything — no baseline survives it."""
-        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         conversation.ctx.plugin_state("demo")["n"] = 1
 
         conversation.rebuild_prompt()

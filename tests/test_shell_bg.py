@@ -30,7 +30,7 @@ from mocode.host.plugin.builtin.shell import (
     kill_shell_tool,
 )
 from mocode.host.plugin.builtin.shell import BashSession
-from mocode.testing import MockProvider, call_tool, collect, say
+from mocode.testing import call_tool, collect, say
 
 BG = {"run_in_background": True}
 
@@ -349,20 +349,15 @@ class TestSessionSemantics:
 
 class TestEarlyOutput:
     async def test_a_jobs_first_lines_reach_the_open_block_of_its_start_call(
-        self, mc, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
         """Early output rides the existing ToolOutput mechanism into the block
         of the call that started the job — and the ring keeps it too: the
         event is a report, not a consumption."""
-        conversation = mc.new_conversation(cwd=tmp_path)
-        conversation.agent.provider = MockProvider(
-            [
-                call_tool(
-                    "bash", {"command": "echo early; sleep 1", **BG}
-                ),
-                call_tool("bash", {"command": "sleep 0.3"}),
-                say("done"),
-            ]
+        conversation, _ = wired(
+            call_tool("bash", {"command": "echo early; sleep 1", **BG}),
+            call_tool("bash", {"command": "sleep 0.3"}),
+            "done",
         )
 
         events = await collect(conversation.stream("go"))
@@ -460,12 +455,11 @@ class TestCompletionNotification:
         assert [m.block_id for m in messages] == ["shell-bg-1", "shell-bg-2"]
         conversation.close(save=False)
 
-    async def test_no_announcement_while_a_turn_is_running(self, mc, tmp_path: Path):
+    async def test_no_announcement_while_a_turn_is_running(self, wired, tmp_path: Path):
         """The model reads what it started; the announcement waits for idle —
         its empty run_id proves it was said between turns."""
-        conversation = mc.new_conversation(cwd=tmp_path)
-        conversation.agent.provider = MockProvider(
-            [call_tool("bash", {"command": "sleep 1"}), say("done")]
+        conversation, _ = wired(
+            call_tool("bash", {"command": "sleep 1"}), "done"
         )
         bash = conversation.tools.get("bash")
 

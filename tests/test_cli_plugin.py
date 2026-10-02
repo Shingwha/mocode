@@ -13,12 +13,10 @@ never looks inside it; the terminal reads no other namespace.
 
 from __future__ import annotations
 
-import json
-import textwrap
 from pathlib import Path
 
 
-from .conftest import make_config
+from .conftest import make_config, write_plugin
 
 HOST_CODE = """
     from mocode.plugins import Plugin, Tool
@@ -53,32 +51,6 @@ CLI_CODE = """
 
 
 
-def _install(
-    root: Path,
-    name: str = "acme",
-    *,
-    host: str = "",
-    cli: str = "",
-    cli_package: dict[str, str] | None = None,
-) -> Path:
-    plugin = root / name
-    plugin.mkdir(parents=True, exist_ok=True)
-    (plugin / "plugin.json").write_text(json.dumps({"name": name}), encoding="utf-8")
-    if host:
-        module = plugin / "mocode" / "plugin.py"
-        module.parent.mkdir(parents=True, exist_ok=True)
-        module.write_text(textwrap.dedent(host), encoding="utf-8")
-    if cli:
-        module = plugin / "mocode.cli" / "plugin.py"
-        module.parent.mkdir(parents=True, exist_ok=True)
-        module.write_text(textwrap.dedent(cli), encoding="utf-8")
-    for filename, text in (cli_package or {}).items():
-        module = plugin / "mocode.cli" / "plugin" / filename
-        module.parent.mkdir(parents=True, exist_ok=True)
-        module.write_text(textwrap.dedent(text), encoding="utf-8")
-    return plugin
-
-
 def _app(tmp_path: Path, plugins: Path):
     from mocode.cli import CLIApp
 
@@ -93,7 +65,7 @@ def _app(tmp_path: Path, plugins: Path):
 class TestBothSurfacesInOneDirectory:
     def test_the_agent_gets_the_host_namespace(self, tmp_path: Path):
         plugins = tmp_path / "plugins"
-        _install(plugins, host=HOST_CODE, cli=CLI_CODE)
+        write_plugin(plugins, "acme", HOST_CODE, cli=CLI_CODE)
 
         app = _app(tmp_path, plugins)
 
@@ -101,7 +73,7 @@ class TestBothSurfacesInOneDirectory:
 
     def test_the_terminal_gets_its_own_namespace(self, tmp_path: Path):
         plugins = tmp_path / "plugins"
-        _install(plugins, host=HOST_CODE, cli=CLI_CODE)
+        write_plugin(plugins, "acme", HOST_CODE, cli=CLI_CODE)
 
         app = _app(tmp_path, plugins)
 
@@ -111,7 +83,7 @@ class TestBothSurfacesInOneDirectory:
     def test_a_cli_plugin_is_built_against_the_terminal(self, tmp_path: Path):
         """It can reach the commands, the screen and the conversation."""
         plugins = tmp_path / "plugins"
-        _install(plugins, cli=CLI_CODE)
+        write_plugin(plugins, "acme", cli=CLI_CODE)
 
         app = _app(tmp_path, plugins)
 
@@ -120,7 +92,7 @@ class TestBothSurfacesInOneDirectory:
     async def test_its_command_speaks_on_the_conversations_stream(self, tmp_path: Path):
 
         plugins = tmp_path / "plugins"
-        _install(plugins, cli=CLI_CODE)
+        write_plugin(plugins, "acme", cli=CLI_CODE)
         app = _app(tmp_path, plugins)
         reader = app.conversation.subscribe()
 
@@ -132,7 +104,7 @@ class TestBothSurfacesInOneDirectory:
     def test_only_the_terminal_reads_the_terminal_namespace(self, tmp_path: Path):
         """The host neither imports it nor knows what is in it."""
         plugins = tmp_path / "plugins"
-        _install(plugins, host=HOST_CODE, cli=CLI_CODE)
+        write_plugin(plugins, "acme", HOST_CODE, cli=CLI_CODE)
 
         app = _app(tmp_path, plugins)
 
@@ -147,7 +119,7 @@ class TestLoadingRules:
         from mocode.cli.plugin import load_cli_plugins
 
         plugins = tmp_path / "plugins"
-        _install(plugins, host=HOST_CODE)
+        write_plugin(plugins, "acme", HOST_CODE)
 
         assert load_cli_plugins([plugins / "acme"]) == []
 
@@ -155,8 +127,9 @@ class TestLoadingRules:
         from mocode.cli.plugin import load_cli_plugins
 
         plugins = tmp_path / "plugins"
-        _install(
+        write_plugin(
             plugins,
+            "acme",
             cli="""
             from mocode.cli import CLIPlugin
 
@@ -176,7 +149,7 @@ class TestLoadingRules:
         from mocode.cli.plugin import build_cli_plugins
 
         plugins = tmp_path / "plugins"
-        _install(plugins, cli="raise RuntimeError('boom')")
+        write_plugin(plugins, "acme", cli="raise RuntimeError('boom')")
         app = _app(tmp_path, plugins)
 
         assert "boom" in capsys.readouterr().err
@@ -206,7 +179,7 @@ class TestThePackageForm:
         from mocode.cli.plugin import load_cli_plugins
 
         plugins = tmp_path / "plugins"
-        _install(plugins, cli_package=self.CLI_PACKAGE)
+        write_plugin(plugins, "acme", cli_package=self.CLI_PACKAGE)
 
         loaded = load_cli_plugins([plugins / "acme"])
 
@@ -217,7 +190,7 @@ class TestThePackageForm:
         from mocode.cli.plugin import load_cli_plugins
 
         plugins = tmp_path / "plugins"
-        _install(plugins, cli=CLI_CODE, cli_package=self.CLI_PACKAGE)
+        write_plugin(plugins, "acme", CLI_CODE, cli=CLI_CODE, cli_package=self.CLI_PACKAGE)
 
         assert [p.name for p in load_cli_plugins([plugins / "acme"])] == ["acme.cli"]
 
@@ -227,7 +200,7 @@ class TestThePackageForm:
         from mocode.cli.plugin import load_cli_plugins
 
         plugins = tmp_path / "plugins"
-        _install(plugins, cli_package={"title.py": "TITLE = 'orphaned'\n"})
+        write_plugin(plugins, "acme", cli_package={"title.py": "TITLE = 'orphaned'\n"})
 
         assert load_cli_plugins([plugins / "acme"]) == []
         assert "plugin/__init__.py" in capsys.readouterr().err

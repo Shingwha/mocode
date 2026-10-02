@@ -122,11 +122,16 @@ def wired(mc: MoCode, tmp_path: Path):
     """A conversation with a MockProvider swapped in — (conversation, provider).
 
     Entries are script items (:func:`script`); ``cwd`` names the project the
-    conversation works in.
+    conversation works in, and ``mc=`` swaps in a runtime of the test's own
+    (an unpinned one, say).
     """
+    default_runtime = mc
 
-    def _wired(*entries, cwd: Path | None = None):
-        conversation = mc.new_conversation(cwd=cwd if cwd is not None else tmp_path)
+    def _wired(*entries, cwd: Path | None = None, mc: MoCode | None = None):
+        target = mc if mc is not None else default_runtime
+        conversation = target.new_conversation(
+            cwd=cwd if cwd is not None else tmp_path
+        )
         return conversation, wire(conversation, *entries)
 
     return _wired
@@ -337,19 +342,28 @@ def echo_tool(name: str = "echo", **kwargs) -> Tool:
     )
 
 
-def make_agent(*tools: Tool, **kwargs) -> AgentLoop:
-    """An AgentLoop with the obvious defaults filled in.
+def make_agent(
+    *tools: Tool,
+    hooks: "list[AgentHook] | HookRunner | None" = None,
+    config: AgentConfig | None = None,
+    provider: MockProvider | None = None,
+    **kwargs,
+) -> AgentLoop:
+    """An AgentLoop with a registry built from *tools* and a scripted model.
 
-    *tools* are registered into the loop's registry; every other keyword
-    (``model``, ``config``, ``provider``, …) passes straight to the loop.
+    *hooks* may be the raw list a hook-producing factory returns; anything a
+    caller states outright (``system_prompt``, ``model``) wins over the
+    defaults.
     """
-    kwargs.setdefault("provider", MockProvider())
+    registry = ToolRegistry()
+    for tool in tools:
+        registry.register(tool)
+    kwargs.setdefault("provider", provider or MockProvider())
     kwargs.setdefault("system_prompt", "sys")
     if "tools" not in kwargs:
-        registry = ToolRegistry()
-        for tool in tools:
-            registry.register(tool)
         kwargs["tools"] = registry
-    kwargs.setdefault("hooks", HookRunner())
-    kwargs.setdefault("config", AgentConfig())
+    if "hooks" not in kwargs:
+        kwargs["hooks"] = HookRunner(hooks) if hooks else HookRunner()
+    if "config" not in kwargs:
+        kwargs["config"] = config or AgentConfig()
     return AgentLoop(**kwargs)

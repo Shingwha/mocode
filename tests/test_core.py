@@ -20,40 +20,33 @@ from mocode.core import (
 )
 from mocode.testing import MockProvider
 
-
-def _loop(**kwargs) -> AgentLoop:
-    """An AgentLoop with the obvious defaults filled in."""
-    kwargs.setdefault("provider", MockProvider())
-    kwargs.setdefault("system_prompt", "t")
-    kwargs.setdefault("tools", ToolRegistry())
-    kwargs.setdefault("hooks", HookRunner())
-    return AgentLoop(**kwargs)
+from .conftest import make_agent
 
 
 class TestAgentLoopAssembly:
     def test_minimal_construction(self):
-        agent = _loop(system_prompt="Hello")
+        agent = make_agent(system_prompt="Hello")
         assert isinstance(agent, AgentLoop)
         assert agent.system_prompt == "Hello"
         assert agent.tool_registry.names() == []
 
     def test_config_and_model_are_passed_through(self):
         spec = ModelSpec(name="m", context_window=100_000, max_tokens=4096)
-        agent = _loop(config=AgentConfig(tool_result_limit=4096), model=spec)
+        agent = make_agent(config=AgentConfig(tool_result_limit=4096), model=spec)
         assert agent.config.tool_result_limit == 4096
         assert agent.model is spec
 
     def test_model_defaults_to_the_provider_name_with_no_invented_limits(self):
-        agent = _loop()
+        agent = make_agent()
         assert agent.model.name == "mock"
         assert (agent.model.context_window, agent.model.max_tokens) == (None, None)
 
     def test_two_loops_never_share_a_channel(self):
-        a, b = _loop(), _loop()
+        a, b = make_agent(), make_agent()
         assert a.channel is not b.channel
 
     def test_state_is_stable_before_the_first_turn(self):
-        agent = _loop()
+        agent = make_agent()
         assert agent.state is agent.state
         assert agent.state.status == "idle"
 

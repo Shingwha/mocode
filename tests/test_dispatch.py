@@ -26,21 +26,9 @@ from mocode.host.config import Config
 from mocode.host.plugin.base import Plugin
 from mocode.host.plugin.context import BuildContext, HostContext
 from mocode.host.plugin.host import PluginHost, load_plugins
-from mocode.testing import MockProvider, tool_call_response
+from mocode.testing import MockProvider, collect, say, tool_call_response
 
-
-def _echo_tool(name: str = "echo", **kwargs) -> Tool:
-    return Tool(
-        name=name,
-        description="echo",
-        schema={
-            "type": "object",
-            "properties": {"value": {"type": "string", "description": "v"}},
-            "required": ["value"],
-        },
-        func=lambda args: f"echo:{args['value']}",
-        **kwargs,
-    )
+from .conftest import echo_tool, make_agent, write_plugin
 
 
 def _failing(exc: Exception) -> Tool:
@@ -52,28 +40,6 @@ def _failing(exc: Exception) -> Tool:
 
 def _sleeper() -> Tool:
     return Tool("slow", "d", {}, lambda a: time.sleep(1))
-
-
-def _plain_answer(text: str = "done") -> Response:
-    return Response(content=text, usage=Usage(1, 1), finish_reason="stop")
-
-
-def _make_agent(
-    *tools: Tool,
-    hooks: list[AgentHook] | None = None,
-    config: AgentConfig | None = None,
-    provider: MockProvider | None = None,
-) -> AgentLoop:
-    registry = ToolRegistry()
-    for tool in tools:
-        registry.register(tool)
-    return AgentLoop(
-        provider=provider or MockProvider(),
-        system_prompt="sys",
-        tools=registry,
-        hooks=HookRunner(hooks or []),
-        config=config or AgentConfig(),
-    )
 
 
 def _sink(events: list[Event], folds: list[bool]):
@@ -115,7 +81,7 @@ class _Denier(AgentHook):
 
 class TestBareCoreDispatcher:
     async def test_a_call_runs_the_tool_and_publishes_its_events(self):
-        dispatcher, events, _ = _bare_dispatcher(_echo_tool())
+        dispatcher, events, _ = _bare_dispatcher(echo_tool())
 
         result = await dispatcher.run("echo", {"value": "x"}, call_id="c1")
 
@@ -126,7 +92,7 @@ class TestBareCoreDispatcher:
         assert events[1].status == "ok"
 
     async def test_model_origin_events_fold_program_origin_events_do_not(self):
-        tool = _echo_tool()
+        tool = echo_tool()
 
         model, _, model_folds = _bare_dispatcher(tool)
         await model.run("echo", {"value": "x"})
@@ -250,7 +216,7 @@ class TestToolPolicy:
 
 class TestCallIdentity:
     async def test_program_calls_nested_in_a_parent_are_numbered_per_parent(self):
-        dispatcher, events, _ = _bare_dispatcher(_echo_tool())
+        dispatcher, events, _ = _bare_dispatcher(echo_tool())
 
         await dispatcher.run("echo", {}, origin="program", parent_call_id="p9")
         await dispatcher.run("echo", {}, origin="program", parent_call_id="p9")
@@ -260,7 +226,7 @@ class TestCallIdentity:
         assert ids == ["p9:1", "p9:2", "other:1"]
 
     async def test_a_parentless_program_call_gets_a_pcall_id(self):
-        dispatcher, events, _ = _bare_dispatcher(_echo_tool())
+        dispatcher, events, _ = _bare_dispatcher(echo_tool())
 
         await dispatcher.run("echo", {}, origin="program")
         await dispatcher.run("echo", {}, origin="program")
@@ -269,7 +235,7 @@ class TestCallIdentity:
         assert ids == ["pcall_1", "pcall_2"]
 
     async def test_model_calls_keep_the_provider_id_or_get_one_made_up(self):
-        dispatcher, events, _ = _bare_dispatcher(_echo_tool())
+        dispatcher, events, _ = _bare_dispatcher(echo_tool())
 
         await dispatcher.run("echo", {}, call_id="from-provider")
         await dispatcher.run("echo", {})
@@ -301,13 +267,13 @@ class TestOutcomeParity:
             ),
             (
                 "echo",
-                _echo_tool(),
+                echo_tool(),
                 {"parse_error": "error: invalid JSON arguments (boom)"},
                 ("error", "error: invalid JSON arguments (boom)", None),
             ),
             (
                 "ghost",
-                _echo_tool(),
+                echo_tool(),
                 {},
                 ("not_found", "error: unknown tool 'ghost'", None),
             ),
@@ -325,7 +291,7 @@ class TestOutcomeParity:
 
     async def test_a_vetoed_call_is_denied_for_both_origins(self):
         for origin in ("model", "program"):
-            dispatcher, _, _ = _bare_dispatcher(_echo_tool(), hooks=[_Denier("no")])
+            dispatcher, _, _ = _bare_dispatcher(echo_tool(), hooks=[_Denier("no")])
             result = await dispatcher.run("echo", {"value": "x"}, origin=origin)
             assert (result.status, result.content) == ("denied", "denied: no")
 
@@ -340,7 +306,7 @@ class TestOutcomeParity:
 
     async def test_a_switched_off_tool_refuses_for_both_origins(self):
         for origin in ("model", "program"):
-            dispatcher, _, _ = _bare_dispatcher(_echo_tool())
+            dispatcher, _, _ = _bare_dispatcher(echo_tool())
             dispatcher.registry.disable("echo")
             result = await dispatcher.run("echo", {"value": "x"}, origin=origin)
             assert result.status == "denied"
@@ -453,7 +419,7 @@ class TestAvailability:
 
 class TestProvenance:
     async def test_events_say_who_asked_and_what_they_are_nested_in(self):
-        dispatcher, events, _ = _bare_dispatcher(_echo_tool())
+        dispatcher, events, _ = _bare_dispatcher(echo_tool())
         await dispatcher.run(
             "echo", {"value": "x"}, origin="program", parent_call_id="p1"
         )
@@ -463,7 +429,7 @@ class TestProvenance:
         assert (finished.origin, finished.parent_call_id) == ("program", "p1")
 
     async def test_model_origin_is_the_default_and_carries_no_parent(self):
-        dispatcher, events, _ = _bare_dispatcher(_echo_tool())
+        dispatcher, events, _ = _bare_dispatcher(echo_tool())
         await dispatcher.run("echo", {"value": "x"}, call_id="c1")
 
         started, finished = events
@@ -471,7 +437,7 @@ class TestProvenance:
         assert finished.origin == "model" and finished.parent_call_id is None
 
     async def test_provenance_crosses_a_process_boundary_as_plain_data(self):
-        dispatcher, events, _ = _bare_dispatcher(_echo_tool())
+        dispatcher, events, _ = _bare_dispatcher(echo_tool())
         await dispatcher.run("echo", {}, origin="program", parent_call_id="p1")
 
         data = events[0].to_dict()
@@ -491,7 +457,7 @@ class TestProvenance:
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
                 seen.append((ctx.origin, ctx.parent_call_id))
 
-        dispatcher, _, _ = _bare_dispatcher(_echo_tool(), hooks=[Recorder()])
+        dispatcher, _, _ = _bare_dispatcher(echo_tool(), hooks=[Recorder()])
         await dispatcher.run("echo", {}, call_id="c1")
         await dispatcher.run("echo", {}, origin="program", parent_call_id="c1")
 
@@ -516,18 +482,18 @@ class TestEmitAttribution:
             async def before_iteration(self, ctx: IterationContext) -> None:
                 await host_ctx.emit(Notice(message="mid-run"))
 
-        agent = _make_agent(provider=MockProvider([_plain_answer()]), hooks=[Talker()])
+        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Talker()])
         host_ctx = _host_context(tmp_path, agent)
 
         turn = agent.start("hi")
-        events = [event async for event in turn.subscribe()]
+        events = await collect(turn.subscribe())
 
         notice = next(event for event in events if isinstance(event, Notice))
         assert notice.message == "mid-run"
         assert notice.run_id == turn.id
 
     async def test_an_idle_emit_has_no_run_and_no_turn_claims_it(self, tmp_path):
-        agent = _make_agent()
+        agent = make_agent()
         host_ctx = _host_context(tmp_path, agent)
 
         reader = agent.channel.subscribe()
@@ -538,12 +504,12 @@ class TestEmitAttribution:
         assert [e.run_id for e in seen] == [""]
 
         # …and a later turn's view does not reach back for it.
-        agent.provider = MockProvider([_plain_answer()])
-        turn_events = [event async for event in agent.stream("go")]
+        agent.provider = MockProvider([say("done")])
+        turn_events = await collect(agent.stream("go"))
         assert not any(isinstance(event, Notice) for event in turn_events)
 
     async def test_a_publisher_may_claim_its_own_run_id(self, tmp_path):
-        agent = _make_agent()
+        agent = make_agent()
         host_ctx = _host_context(tmp_path, agent)
         claimed = Notice(message="mine", run_id="someone-elses")
 
@@ -556,7 +522,7 @@ class TestSpawn:
     """HostContext.spawn — derive() with the plugin-facing defaults fixed."""
 
     def _host(self, tmp_path, *tools) -> HostContext:
-        agent = _make_agent(*tools)
+        agent = make_agent(*tools)
         return _host_context(tmp_path, agent)
 
     def test_visible_by_default_and_shares_the_parents_channel(self, tmp_path):
@@ -587,7 +553,7 @@ class TestSpawn:
 
         host = self._host(tmp_path)
         host.agent.hooks.add(Marker())
-        host.agent.provider.responses = [_plain_answer("child ran")]
+        host.agent.provider.responses = [say("child ran")]
 
         # visible=False: the child runs on a private stream, so the only way
         # the parent's Marker could fire is through the child's own hook
@@ -599,7 +565,7 @@ class TestSpawn:
         assert seen == []
 
     def test_a_narrower_tool_set_and_a_model(self, tmp_path):
-        host = self._host(tmp_path, _echo_tool())
+        host = self._host(tmp_path, echo_tool())
         from mocode.core.provider import ModelSpec
 
         child = host.spawn(
@@ -642,8 +608,8 @@ def _host_context_for_tools() -> BuildContext:
 class TestToolSource:
     def test_bare_core_registration_stays_unattributed(self):
         registry = ToolRegistry()
-        registry.register(_echo_tool("echo"))
-        registry.register(_echo_tool("echo"))  # unattributed vs unattributed: overwrite
+        registry.register(echo_tool("echo"))
+        registry.register(echo_tool("echo"))  # unattributed vs unattributed: overwrite
 
         assert registry.get("echo").source == ""
 
@@ -668,11 +634,11 @@ class TestToolSource:
     def test_one_sided_attribution_still_overrides(self):
         registry = ToolRegistry()
         registry.register(_sourced_tool("echo", "plugin:acme"))
-        registry.register(_echo_tool("echo"))
+        registry.register(echo_tool("echo"))
         assert registry.get("echo").source == ""
 
         registry.register(_sourced_tool("echo", "plugin:acme"))
-        registry.register(_echo_tool("echo"))
+        registry.register(echo_tool("echo"))
         assert registry.get("echo").source == ""
 
     def test_replace_forces_the_takeover(self):
@@ -685,21 +651,20 @@ class TestToolSource:
 
 
 class TestSourceStamping:
-    def test_a_plugins_registrations_carry_its_channel_not_its_claim(self):
-        ctx = _host_context_for_tools()
+    def test_a_plugins_registrations_carry_its_channel_not_its_claim(
+        self, plugin_host
+    ):
         lying = _sourced_tool("greet", "builtin:shell")  # a fake identity
-        host = PluginHost(
-            ctx, [_Registering("acme", lying)], sources=["plugin:acme"]
+        host = plugin_host(
+            plugins=[_Registering("acme", lying)], sources=["plugin:acme"]
         )
 
-        host.build_all()
-
-        assert ctx.tools.get("greet").source == "plugin:acme"
+        assert host.ctx.tools.get("greet").source == "plugin:acme"
 
     def test_a_registration_outside_any_plugin_is_the_hosts(self):
         ctx = _host_context_for_tools()
 
-        ctx.tools.register(_echo_tool("manual"))
+        ctx.tools.register(echo_tool("manual"))
 
         assert ctx.tools.get("manual").source == "host"
 
@@ -712,64 +677,48 @@ class TestSourceStamping:
             tools=plain,
         )
 
-        ctx.tools.register(_echo_tool("mine"))
+        ctx.tools.register(echo_tool("mine"))
 
         assert ctx.tools is plain
         assert plain.get("mine").source == ""
 
-    def test_builtin_tools_get_their_builtin_identity(self, tmp_path):
-        ctx = BuildContext(
-            home=tmp_path / "home",
-            cwd=tmp_path,
-            config=Config(provider="p", model="m"),
-        )
-        loaded = load_plugins(plugin_dirs=[], config=ctx.config)
-        PluginHost(ctx, loaded.plugins, sources=loaded.tool_sources).build_all()
+    def test_builtin_tools_get_their_builtin_identity(self, tmp_path, plugin_host):
+        loaded = load_plugins(plugin_dirs=[], config=Config(provider="p", model="m"))
+        host = plugin_host(plugins=loaded.plugins, sources=loaded.tool_sources)
 
-        assert ctx.tools.get("bash").source == "builtin:shell"
-        assert ctx.tools.get("read").source == "builtin:filesystem"
+        assert host.ctx.tools.get("bash").source == "builtin:shell"
+        assert host.ctx.tools.get("read").source == "builtin:filesystem"
         assert all(
             source.startswith("builtin:")
             for source in loaded.tool_sources
         )
 
-    def test_a_discovered_plugin_gets_its_manifest_name(self, tmp_path):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        (plugin_dir / "mocode").mkdir(parents=True)
-        (plugin_dir / "plugin.json").write_text(
-            json.dumps({"name": "acme"}), encoding="utf-8"
-        )
-        (plugin_dir / "mocode" / "plugin.py").write_text(
-            textwrap.dedent(
-                """
-                from mocode.plugins import Plugin, Tool
+    def test_a_discovered_plugin_gets_its_manifest_name(self, tmp_path, plugin_host):
+        write_plugin(
+            tmp_path / "plugins",
+            "acme",
+            """
+            from mocode.plugins import Plugin, Tool
 
-                class AcmePlugin(Plugin):
-                    name = "acme"
+            class AcmePlugin(Plugin):
+                name = "acme"
 
-                    def build(self, ctx):
-                        ctx.tools.register(Tool(
-                            name="greet", description="g",
-                            schema={"type": "object", "properties": {}},
-                            func=lambda args: "hi",
-                            source="builtin:shell",  # a claim the path overrides
-                        ))
-                """
-            ),
-            encoding="utf-8",
-        )
-        ctx = BuildContext(
-            home=tmp_path / "home",
-            cwd=tmp_path,
-            config=Config(provider="p", model="m"),
+                def build(self, ctx):
+                    ctx.tools.register(Tool(
+                        name="greet", description="g",
+                        schema={"type": "object", "properties": {}},
+                        func=lambda args: "hi",
+                        source="builtin:shell",  # a claim the path overrides
+                    ))
+            """,
         )
         loaded = load_plugins(
-            plugin_dirs=[tmp_path / "plugins"], config=ctx.config
+            plugin_dirs=[tmp_path / "plugins"], config=Config(provider="p", model="m")
         )
-        PluginHost(ctx, loaded.plugins, sources=loaded.tool_sources).build_all()
+        host = plugin_host(plugins=loaded.plugins, sources=loaded.tool_sources)
 
         assert "plugin:acme" in loaded.tool_sources
-        assert ctx.tools.get("greet").source == "plugin:acme"
+        assert host.ctx.tools.get("greet").source == "plugin:acme"
 
 
 # ── program origin inside a real loop ────────────────────────
@@ -792,10 +741,10 @@ class TestProgramOriginInsideALoop:
             )
             return f"{first.content}+{second.content}"
 
-        agent = _make_agent(_echo_tool(), Tool("bridge", "b", {}, bridge, with_context=True))
-        agent.provider = MockProvider([tool_call_response("bridge"), _plain_answer()])
+        agent = make_agent(echo_tool(), Tool("bridge", "b", {}, bridge, with_context=True))
+        agent.provider = MockProvider([tool_call_response("bridge"), say("done")])
 
-        events = [event async for event in agent.stream("hi")]
+        events = await collect(agent.stream("hi"))
 
         # The nested calls are visible to the turn's readers, numbered per parent.
         started = {e.call_id: e.name for e in events if isinstance(e, ToolCallStarted)}

@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from mocode.core.agent import AgentConfig, AgentLoop, IterationLimit
+from mocode.core.agent import AgentConfig, IterationLimit
 from mocode.core.events import (
     Event,
     Notice,
@@ -23,7 +23,6 @@ from mocode.core.events import (
 )
 from mocode.core.hook import (
     AgentHook,
-    HookRunner,
     IterationContext,
     RequestContext,
     ResponseContext,
@@ -32,47 +31,11 @@ from mocode.core.hook import (
 from mocode.core.provider import Response, RetryPolicy, ToolCall, Usage
 from mocode.core.state import DONE, RUNNING, RunState
 from mocode.core.tool import ERROR_PREFIX, TIMEOUT_PREFIX, Tool, ToolError, ToolRegistry, ToolResult
-from mocode.testing import MockProvider, response_to_chunks, tool_call_response
+from mocode.testing import MockProvider, collect, response_to_chunks, say, tool_call_response
+
+from .conftest import echo_tool, make_agent
 
 
-def _echo_tool(name: str = "echo", **kwargs) -> Tool:
-    return Tool(
-        name=name,
-        description="echo",
-        schema={
-            "type": "object",
-            "properties": {"value": {"type": "string", "description": "v"}},
-            "required": ["value"],
-        },
-        func=lambda args: f"echo:{args['value']}",
-        **kwargs,
-    )
-
-
-def _make_agent(
-    *tools: Tool,
-    hooks: list[AgentHook] | None = None,
-    config: AgentConfig | None = None,
-    provider: MockProvider | None = None,
-) -> AgentLoop:
-    registry = ToolRegistry()
-    for tool in tools:
-        registry.register(tool)
-    return AgentLoop(
-        provider=provider or MockProvider(),
-        system_prompt="sys",
-        tools=registry,
-        hooks=HookRunner(hooks or []),
-        config=config or AgentConfig(),
-    )
-
-
-def _plain_answer(text: str = "done") -> Response:
-    return Response(content=text, usage=Usage(1, 1), finish_reason="stop")
-
-
-async def _events(agent: AgentLoop, prompt: str = "hi") -> list[Event]:
-    return [event async for event in agent.stream(prompt)]
 
 
 # ── the event stream ────────────────────────────────────────
@@ -80,9 +43,9 @@ async def _events(agent: AgentLoop, prompt: str = "hi") -> list[Event]:
 
 class TestEventStream:
     async def test_run_shape_without_tools(self):
-        agent = _make_agent(provider=MockProvider([_plain_answer("hello")]))
+        agent = make_agent(provider=MockProvider([say("hello")]))
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert [e.type for e in events] == [
             "run_started",
@@ -94,40 +57,40 @@ class TestEventStream:
         assert events[-1].content == "hello"
 
     async def test_text_arrives_incrementally(self):
-        agent = _make_agent(provider=MockProvider([_plain_answer("abc")], chunk_size=1))
+        agent = make_agent(provider=MockProvider([say("abc")], chunk_size=1))
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert [e.text for e in events if isinstance(e, TextDelta)] == ["a", "b", "c"]
 
     async def test_reasoning_deltas_are_separate_from_text(self):
-        agent = _make_agent(
+        agent = make_agent(
             provider=MockProvider(
                 [Response(content="a", reasoning_content="why", usage=Usage(1, 1))]
             )
         )
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert [e.text for e in events if isinstance(e, ReasoningDelta)] == ["why"]
         assert [e.text for e in events if isinstance(e, TextDelta)] == ["a"]
 
     async def test_run_id_and_seq_are_stamped(self):
-        agent = _make_agent(provider=MockProvider([_plain_answer()]))
+        agent = make_agent(provider=MockProvider([say("done")]))
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert len({e.run_id for e in events}) == 1
         assert [e.seq for e in events] == list(range(1, len(events) + 1))
 
     async def test_tool_events_share_a_call_id(self):
-        agent = _make_agent(_echo_tool())
+        agent = make_agent(echo_tool())
         agent.provider.responses = [
             tool_call_response("echo", '{"value": "x"}'),
-            _plain_answer(),
+            say("done"),
         ]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         started = [e for e in events if isinstance(e, ToolCallStarted)]
         finished = [e for e in events if isinstance(e, ToolCallFinished)]
@@ -137,13 +100,13 @@ class TestEventStream:
         assert finished[0].duration >= 0
 
     async def test_run_finished_summarises_the_turn(self):
-        agent = _make_agent(_echo_tool())
+        agent = make_agent(echo_tool())
         agent.provider.responses = [
             tool_call_response("echo", '{"value": "x"}'),
-            _plain_answer("final"),
+            say("final"),
         ]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         done = events[-1]
         assert isinstance(done, RunFinished)
@@ -151,9 +114,9 @@ class TestEventStream:
         assert done.usage.prompt_tokens == 2
 
     async def test_events_serialise_to_plain_data(self):
-        agent = _make_agent(provider=MockProvider([_plain_answer("hi")]))
+        agent = make_agent(provider=MockProvider([say("hi")]))
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         data = events[0].to_dict()
         assert data["type"] == "run_started"
@@ -164,8 +127,8 @@ class TestEventStream:
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
                 await asyncio.sleep(30)
 
-        agent = _make_agent(_echo_tool(), hooks=[Stuck()])
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), _plain_answer()]
+        agent = make_agent(echo_tool(), hooks=[Stuck()])
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
 
         async def consume():
             async for _ in agent.stream("hi"):
@@ -200,12 +163,12 @@ class TestRunState:
             seen.append([c.name for c in agent.state.tool_calls.values() if not c.done])
             return "slow done"
 
-        agent = _make_agent(
+        agent = make_agent(
             Tool("slow", "d", {}, _slow, summary_key="", with_context=True),
         )
-        agent.provider.responses = [tool_call_response("slow"), _plain_answer()]
+        agent.provider.responses = [tool_call_response("slow"), say("done")]
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert seen == [["slow"]]
         assert agent.state.status == DONE
@@ -213,8 +176,8 @@ class TestRunState:
         assert agent.state.tool_calls_made == 1
 
     async def test_state_folds_the_same_stream_a_consumer_sees(self):
-        agent = _make_agent(
-            _echo_tool(), provider=MockProvider([_plain_answer("hello")], chunk_size=1)
+        agent = make_agent(
+            echo_tool(), provider=MockProvider([say("hello")], chunk_size=1)
         )
 
         mirror = RunState()
@@ -227,19 +190,19 @@ class TestRunState:
         assert mirror.usage == agent.state.usage
 
     async def test_iteration_and_tool_count_track_the_run(self):
-        agent = _make_agent(_echo_tool())
+        agent = make_agent(echo_tool())
         agent.provider.responses = [
             tool_call_response("echo", '{"value": "x"}'),
-            _plain_answer(),
+            say("done"),
         ]
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert agent.state.iteration == 2
         assert agent.tool_call_count == 1
 
     def test_state_starts_idle(self):
-        agent = _make_agent()
+        agent = make_agent()
         assert agent.state.status != RUNNING
         assert agent.state.tool_calls_made == 0
 
@@ -271,37 +234,37 @@ class TestToolExecution:
                 if isinstance(event, ToolCallFinished):
                     seen.append(event.status)
 
-        agent = _make_agent(tool, hooks=[Recorder()], config=AgentConfig(tool_timeout=timeout))
-        agent.provider.responses = [tool_call_response(tool.name), _plain_answer()]
+        agent = make_agent(tool, hooks=[Recorder()], config=AgentConfig(tool_timeout=timeout))
+        agent.provider.responses = [tool_call_response(tool.name), say("done")]
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert seen == [expected]
 
     async def test_error_code_is_reported(self):
-        agent = _make_agent(_failing(ToolError("I am a teapot", "teapot_code")))
-        agent.provider.responses = [tool_call_response("boom"), _plain_answer()]
+        agent = make_agent(_failing(ToolError("I am a teapot", "teapot_code")))
+        agent.provider.responses = [tool_call_response("boom"), say("done")]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert (finished.status, finished.error_code) == ("error", "teapot_code")
 
     async def test_unknown_tool_is_reported_as_not_found(self):
-        agent = _make_agent(_echo_tool())
-        agent.provider.responses = [tool_call_response("ghost"), _plain_answer()]
+        agent = make_agent(echo_tool())
+        agent.provider.responses = [tool_call_response("ghost"), say("done")]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.status == "not_found"
         assert "unknown tool" in finished.result
 
     async def test_malformed_arguments_become_an_error_result(self):
-        agent = _make_agent(_echo_tool())
-        agent.provider.responses = [tool_call_response("echo", "{not json"), _plain_answer()]
+        agent = make_agent(echo_tool())
+        agent.provider.responses = [tool_call_response("echo", "{not json"), say("done")]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.status == "error"
@@ -313,8 +276,8 @@ class TestToolExecution:
             await asyncio.sleep(0.05)
             return args["value"]
 
-        agent = _make_agent(
-            _echo_tool(),
+        agent = make_agent(
+            echo_tool(),
             Tool("slow", "d", {"type": "object", "properties": {"value": {"type": "string"}}}, _slow, with_context=True),
         )
         agent.provider.responses = [
@@ -326,11 +289,11 @@ class TestToolExecution:
                 usage=Usage(1, 1),
                 finish_reason="tool_calls",
             ),
-            _plain_answer(),
+            say("done"),
         ]
 
         start = asyncio.get_running_loop().time()
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
         elapsed = asyncio.get_running_loop().time() - start
 
         assert elapsed < 0.1  # ran together, not back to back
@@ -345,22 +308,22 @@ class TestToolExecution:
             await ctx.emit(ToolOutput(call_id=ctx.tool_call_id, text="line 2\n"))
             return "line 1\nline 2\n"
 
-        agent = _make_agent(Tool("chatty", "d", {}, _chatty, with_context=True))
-        agent.provider.responses = [tool_call_response("chatty"), _plain_answer()]
+        agent = make_agent(Tool("chatty", "d", {}, _chatty, with_context=True))
+        agent.provider.responses = [tool_call_response("chatty"), say("done")]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         outputs = [e.text for e in events if isinstance(e, ToolOutput)]
         assert outputs == ["line 1\n", "line 2\n"]
         assert agent.state.tool_calls["c1"].output_text == "line 1\nline 2\n"
 
     async def test_a_tool_may_return_structured_details(self):
-        agent = _make_agent(
+        agent = make_agent(
             Tool("stats", "d", {}, lambda a: ToolResult("read it", {"lines": 412}))
         )
-        agent.provider.responses = [tool_call_response("stats"), _plain_answer()]
+        agent.provider.responses = [tool_call_response("stats"), say("done")]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.result == "read it"          # what the model reads
@@ -371,10 +334,10 @@ class TestToolExecution:
         assert tool_msg["content"] == "read it"
 
     async def test_a_plain_string_result_carries_no_details(self):
-        agent = _make_agent(_echo_tool())
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), _plain_answer()]
+        agent = make_agent(echo_tool())
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.details == {}
@@ -384,19 +347,19 @@ class TestToolExecution:
             async def on_tool_complete(self, ctx: ToolCallContext) -> None:
                 ctx.tool_details["audited"] = True
 
-        agent = _make_agent(_echo_tool(), hooks=[Enricher()])
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), _plain_answer()]
+        agent = make_agent(echo_tool(), hooks=[Enricher()])
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.details == {"audited": True}
 
     async def test_max_iterations_stops_a_tool_loop(self):
-        agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=2))
+        agent = make_agent(echo_tool(), config=AgentConfig(max_iterations=2))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert sum(1 for e in events if e.type == "iteration_started") == 2
 
@@ -414,10 +377,10 @@ class TestInterception:
 
         tool = Tool("risky", "d", {"type": "object", "properties": {"value": {"type": "string"}}},
                     lambda a: executed.append(a) or "ran")
-        agent = _make_agent(tool, hooks=[Denier()])
-        agent.provider.responses = [tool_call_response("risky", '{"value": "x"}'), _plain_answer()]
+        agent = make_agent(tool, hooks=[Denier()])
+        agent.provider.responses = [tool_call_response("risky", '{"value": "x"}'), say("done")]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert executed == []
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
@@ -432,13 +395,13 @@ class TestInterception:
             async def on_tool_complete(self, ctx: ToolCallContext) -> None:
                 ctx.tool_result = f"[{ctx.tool_result}]"
 
-        agent = _make_agent(_echo_tool(), hooks=[Rewriter()])
+        agent = make_agent(echo_tool(), hooks=[Rewriter()])
         agent.provider.responses = [
             tool_call_response("echo", '{"value": "original"}'),
-            _plain_answer(),
+            say("done"),
         ]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.result == "[echo:rewritten]"
@@ -451,10 +414,10 @@ class TestInterception:
             async def before_iteration(self, ctx: IterationContext) -> None:
                 ctx.system_prompt = "persona"
 
-        agent = _make_agent(_echo_tool(), hooks=[Persona()])
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), _plain_answer()]
+        agent = make_agent(echo_tool(), hooks=[Persona()])
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert [c["system"] for c in agent.provider.calls] == ["persona", "persona"]
         # The rewrite is scoped to the run: the conversation keeps its prompt.
@@ -472,15 +435,15 @@ class TestInterception:
                     ctx.system_prompt += " +injected"
                     self.done = True
 
-        agent = _make_agent(_echo_tool(), hooks=[Injects()])
+        agent = make_agent(echo_tool(), hooks=[Injects()])
         agent.provider.responses = [
             tool_call_response("echo", '{"value": "x"}'),
-            _plain_answer(),
-            _plain_answer(),
+            say("done"),
+            say("done"),
         ]
 
-        await _events(agent)
-        await _events(agent, prompt="again")
+        await collect(agent.stream("hi"))
+        await collect(agent.stream("again"))
 
         assert [c["system"] for c in agent.provider.calls] == [
             "sys +injected",
@@ -500,10 +463,10 @@ class TestInterception:
                     ctx.system_prompt += " +injected"
                     self.done = True
 
-        agent = _make_agent(_echo_tool(), hooks=[Once()])
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), _plain_answer()]
+        agent = make_agent(echo_tool(), hooks=[Once()])
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert [c["system"] for c in agent.provider.calls] == [
             "sys +injected",
@@ -519,10 +482,10 @@ class TestInterception:
                 if ctx.iteration == 2:
                     ctx.messages[:] = [ctx.messages[0]]
 
-        agent = _make_agent(_echo_tool(), hooks=[Trimmer()])
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), _plain_answer()]
+        agent = make_agent(echo_tool(), hooks=[Trimmer()])
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert seen == [1, 2]
         assert [m["role"] for m in agent.provider.calls[1]["messages"]] == ["user"]
@@ -535,16 +498,16 @@ class TestStopReasons:
     """Five endings, one distinguishable field — and a replayable history."""
 
     async def test_a_completed_turn_says_so(self):
-        agent = _make_agent(provider=MockProvider([_plain_answer("done")]))
-        events = await _events(agent)
+        agent = make_agent(provider=MockProvider([say("done")]))
+        events = await collect(agent.stream("hi"))
         assert events[-1].stop_reason == "completed"
         assert events[-1].cancelled is False
 
     async def test_max_iterations_reports_its_stop_reason(self):
-        agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=2))
+        agent = make_agent(echo_tool(), config=AgentConfig(max_iterations=2))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert events[-1].stop_reason == "max_iterations"
         assert events[-1].content == ""
@@ -552,10 +515,10 @@ class TestStopReasons:
         assert events[-1].to_dict()["stop_reason"] == "max_iterations"
 
     async def test_a_tool_call_budget_ends_the_turn(self):
-        agent = _make_agent(_echo_tool(), config=AgentConfig(max_tool_calls=1))
+        agent = make_agent(echo_tool(), config=AgentConfig(max_tool_calls=1))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert events[-1].stop_reason == "max_tool_calls"
         assert events[-1].iterations == 1
@@ -590,10 +553,10 @@ class TestStopReasons:
         # The deadline reaches the retry orchestrator, so it reads the same
         # clock the loop does.
         monkeypatch.setattr(provider_module, "time", clock)
-        agent = _make_agent(_echo_tool(), config=AgentConfig(max_turn_seconds=5))
+        agent = make_agent(echo_tool(), config=AgentConfig(max_turn_seconds=5))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert events[-1].stop_reason == "time_budget"
         assert events[-1].iterations == 1
@@ -641,16 +604,16 @@ class TestStopReasons:
         monkeypatch.setattr(agent_module, "time", clock)
         monkeypatch.setattr(provider_module, "time", clock)
         provider = BurningProvider(
-            [rate("429"), rate("429"), _plain_answer("late")], clock, burn=3.0
+            [rate("429"), rate("429"), say("late")], clock, burn=3.0
         )
         # Real (unpatched) sleeps, but milliseconds — the budget is burned by
         # the attempts, not the backoff.
         provider.retry_policy = RetryPolicy(base_delay=0.001, jitter=0.0)
-        agent = _make_agent(
+        agent = make_agent(
             provider=provider, config=AgentConfig(max_turn_seconds=5)
         )
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert events[-1].stop_reason == "time_budget"
         assert events[-1].iterations == 1
@@ -662,7 +625,7 @@ class TestStopReasons:
         assert agent.messages == [{"role": "user", "content": "hi"}]
 
     async def test_cancelled_is_a_stop_reason(self):
-        agent = _make_agent(provider=_slow_provider())
+        agent = make_agent(provider=_slow_provider())
         turn = agent.start("hi")
         await asyncio.sleep(0.01)
         turn.cancel()
@@ -673,7 +636,7 @@ class TestStopReasons:
         assert terminal.cancelled is True
 
     async def test_chat_raises_iteration_limit_instead_of_answering_empty(self):
-        agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=2))
+        agent = make_agent(echo_tool(), config=AgentConfig(max_iterations=2))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
         with pytest.raises(IterationLimit) as exc:
@@ -683,7 +646,7 @@ class TestStopReasons:
         assert agent.state.status == DONE  # a budget cut is an ending, not a failure
 
     async def test_run_with_messages_reports_the_limit_as_an_error_result(self):
-        agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=1))
+        agent = make_agent(echo_tool(), config=AgentConfig(max_iterations=1))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
         result = await agent.run_with_messages([{"role": "user", "content": "hi"}])
@@ -703,9 +666,9 @@ class TestRequestInterception:
                     {"role": "user", "content": "replaced before the wire"}
                 ]
 
-        agent = _make_agent(provider=MockProvider([_plain_answer()]), hooks=[Rewriter()])
+        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Rewriter()])
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert agent.provider.calls[0]["messages"] == [
             {"role": "user", "content": "replaced before the wire"}
@@ -716,9 +679,9 @@ class TestRequestInterception:
             async def before_request(self, ctx: RequestContext) -> None:
                 ctx.system_prompt = "on the wire"
 
-        agent = _make_agent(provider=MockProvider([_plain_answer()]), hooks=[Persona()])
+        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Persona()])
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert [c["system"] for c in agent.provider.calls] == ["on the wire"]
         assert agent.system_prompt == "sys"  # the conversation keeps its prompt
@@ -730,9 +693,9 @@ class TestRequestInterception:
             async def before_request(self, ctx: RequestContext) -> None:
                 seen.append(ctx.tools)
 
-        agent = _make_agent(_echo_tool(), provider=MockProvider([_plain_answer()]), hooks=[Watcher()])
+        agent = make_agent(echo_tool(), provider=MockProvider([say("done")]), hooks=[Watcher()])
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert seen == [agent.provider.calls[0]["tools"]]
         assert [s["function"]["name"] for s in seen[0]] == ["echo"]
@@ -742,9 +705,9 @@ class TestRequestInterception:
             async def before_request(self, ctx: RequestContext) -> None:
                 ctx.tools.append({"type": "function", "function": {"name": "ghost"}})
 
-        agent = _make_agent(_echo_tool(), provider=MockProvider([_plain_answer()]), hooks=[Injector()])
+        agent = make_agent(echo_tool(), provider=MockProvider([say("done")]), hooks=[Injector()])
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         sent = [s["function"]["name"] for s in agent.provider.calls[0]["tools"]]
         assert sent == ["echo", "ghost"]
@@ -756,9 +719,9 @@ class TestRequestInterception:
             async def after_response(self, ctx: ResponseContext) -> None:
                 ctx.usage = Usage(10, 20)
 
-        agent = _make_agent(provider=MockProvider([_plain_answer()]), hooks=[Auditor()])
+        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Auditor()])
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         iteration = next(e for e in events if e.type == "iteration_finished")
         assert (iteration.usage.prompt_tokens, iteration.usage.completion_tokens) == (10, 20)
@@ -771,13 +734,13 @@ class TestRequestInterception:
             async def after_response(self, ctx: ResponseContext) -> None:
                 seen.append((ctx.finish_reason, ctx.iteration))
 
-        agent = _make_agent(_echo_tool(), hooks=[Watcher()])
+        agent = make_agent(echo_tool(), hooks=[Watcher()])
         agent.provider.responses = [
             tool_call_response("echo", '{"value": "x"}'),
-            _plain_answer(),
+            say("done"),
         ]
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert seen == [("tool_calls", 1), ("stop", 2)]
 
@@ -789,9 +752,9 @@ class TestRequestInterception:
             async def after_response(self, ctx: ResponseContext) -> None:
                 raise RuntimeError("bam")
 
-        agent = _make_agent(provider=MockProvider([_plain_answer("still fine")]), hooks=[Bad()])
+        agent = make_agent(provider=MockProvider([say("still fine")]), hooks=[Bad()])
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert events[-1].content == "still fine"
 
@@ -805,9 +768,9 @@ class TestRequestInterception:
             async def before_request(self, ctx: RequestContext) -> None:
                 order.append("request")
 
-        agent = _make_agent(provider=MockProvider([_plain_answer()]), hooks=[Both()])
+        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Both()])
 
-        await _events(agent)
+        await collect(agent.stream("hi"))
 
         assert order == ["iteration", "request"]
 
@@ -826,9 +789,9 @@ class TestEventChannel:
                     seen.append(event.message)
 
         seen: list[str] = []
-        agent = _make_agent(provider=MockProvider([_plain_answer()]), hooks=[Plugin()])
+        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Plugin()])
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         assert seen == ["hello from a plugin"]
         assert [e.message for e in events if isinstance(e, Notice)] == [
@@ -840,10 +803,10 @@ class TestEventChannel:
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
                 await ctx.emit(Notice(message=f"tool {ctx.tool_name}"))
 
-        agent = _make_agent(_echo_tool(), hooks=[Emitter()])
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), _plain_answer()]
+        agent = make_agent(echo_tool(), hooks=[Emitter()])
+        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         notices = [e for e in events if isinstance(e, Notice)]
         assert [n.message for n in notices] == ["tool echo"]
@@ -858,7 +821,7 @@ class TestEventChannel:
 
 class TestDerive:
     def test_inherits_copies_not_shared_mutable_state(self):
-        parent = _make_agent(_echo_tool())
+        parent = make_agent(echo_tool())
         parent.messages.append({"role": "user", "content": "old"})
 
         child = parent.derive()
@@ -874,17 +837,17 @@ class TestDerive:
         assert child.config is not parent.config
 
     def test_child_registry_changes_do_not_reach_the_parent(self):
-        parent = _make_agent(_echo_tool("a"), _echo_tool("b"))
+        parent = make_agent(echo_tool("a"), echo_tool("b"))
 
         child = parent.derive()
         child.tool_registry.disable("a")
-        child.tool_registry.register(_echo_tool("c"))
+        child.tool_registry.register(echo_tool("c"))
 
         assert child.tool_registry.names() == ["b", "c"]
         assert parent.tool_registry.names() == ["a", "b"]
 
     def test_provider_override(self):
-        parent = _make_agent(_echo_tool())
+        parent = make_agent(echo_tool())
 
         replacement = MockProvider([], model="cheap-model")
         child = parent.derive(provider=replacement)
@@ -893,7 +856,7 @@ class TestDerive:
         assert parent.provider is not replacement
 
     def test_overrides_are_independent(self):
-        parent = _make_agent(_echo_tool("a"), _echo_tool("b"))
+        parent = make_agent(echo_tool("a"), echo_tool("b"))
 
         child = parent.derive(
             system_prompt="child",
@@ -909,7 +872,7 @@ class TestDerive:
         assert parent.tool_registry.names() == ["a", "b"]
 
     async def test_child_runs_without_touching_the_parent(self):
-        parent = _make_agent(_echo_tool(), provider=MockProvider([_plain_answer("child answer")]))
+        parent = make_agent(echo_tool(), provider=MockProvider([say("child answer")]))
 
         result = await parent.derive().run_with_messages(
             [{"role": "user", "content": "hi"}]
@@ -925,7 +888,7 @@ class TestDerive:
 
 class TestChat:
     async def test_returns_the_final_answer_and_records_history(self):
-        agent = _make_agent(provider=MockProvider([_plain_answer("Hi!")]))
+        agent = make_agent(provider=MockProvider([say("Hi!")]))
 
         assert await agent.chat("hello") == "Hi!"
         assert [m["role"] for m in agent.messages] == ["user", "assistant"]
@@ -936,7 +899,7 @@ class TestChat:
                 raise RuntimeError("upstream is down")
                 yield  # pragma: no cover — makes this a generator
 
-        agent = _make_agent(provider=Dead())
+        agent = make_agent(provider=Dead())
 
         with pytest.raises(RuntimeError, match="upstream is down"):
             await agent.chat("hello")
@@ -949,7 +912,7 @@ class TestChat:
                 raise RuntimeError("nope")
                 yield  # pragma: no cover
 
-        agent = _make_agent(provider=Dead())
+        agent = make_agent(provider=Dead())
 
         result = await agent.run_with_messages([{"role": "user", "content": "hi"}])
 
@@ -957,15 +920,15 @@ class TestChat:
         assert "nope" in result.content
 
     async def test_unknown_tool_metadata(self):
-        tool = _echo_tool(tags={"fs", "demo"}, summary_key="value")
+        tool = echo_tool(tags={"fs", "demo"}, summary_key="value")
         assert tool.tags == frozenset({"fs", "demo"})
         assert tool.summary_key == "value"
 
     def test_select_filters_and_shares_instances(self):
         registry = ToolRegistry()
-        registry.register(_echo_tool("a", tags={"fs"}))
-        registry.register(_echo_tool("b", tags={"shell"}))
-        registry.register(_echo_tool("c"))
+        registry.register(echo_tool("a", tags={"fs"}))
+        registry.register(echo_tool("b", tags={"shell"}))
+        registry.register(echo_tool("c"))
 
         assert registry.select(include_tags={"fs"}).names() == ["a"]
         assert registry.select(exclude_tags={"fs"}).names() == ["b", "c"]
@@ -996,7 +959,7 @@ def _slow_provider() -> MockProvider:
 
 class TestTurns:
     async def test_a_turn_refuses_to_start_while_one_is_running(self):
-        agent = _make_agent(provider=_slow_provider())
+        agent = make_agent(provider=_slow_provider())
 
         # No await needed: start() is a plain call, so the refusal is immediate
         # rather than surfacing on the first read of a stream.
@@ -1009,7 +972,7 @@ class TestTurns:
         await turn.wait()
 
     async def test_a_turn_can_be_watched_after_it_started(self):
-        agent = _make_agent(provider=MockProvider([_plain_answer("hello")]))
+        agent = make_agent(provider=MockProvider([say("hello")]))
 
         turn = agent.start("hi")
         events = [event async for event in turn.subscribe()]
@@ -1019,7 +982,7 @@ class TestTurns:
         assert all(event.run_id == turn.id for event in events)
 
     async def test_two_readers_see_the_same_run(self):
-        agent = _make_agent(provider=MockProvider([_plain_answer("hello")], chunk_size=1))
+        agent = make_agent(provider=MockProvider([say("hello")], chunk_size=1))
 
         turn = agent.start("hi")
         first = turn.subscribe()
@@ -1032,7 +995,7 @@ class TestTurns:
         assert mirrored[-1].content == "hello"
 
     async def test_the_run_outlives_a_reader_that_walks_away(self):
-        agent = _make_agent(provider=MockProvider([_plain_answer("hello")]))
+        agent = make_agent(provider=MockProvider([say("hello")]))
 
         turn = agent.start("hi")
         sub = turn.subscribe()
@@ -1044,7 +1007,7 @@ class TestTurns:
         assert not terminal.cancelled
 
     async def test_giving_up_on_the_wait_does_not_stop_the_turn(self):
-        agent = _make_agent(provider=_slow_provider())
+        agent = make_agent(provider=_slow_provider())
         turn = agent.start("hi")
 
         waiter = asyncio.ensure_future(turn.wait())
@@ -1058,7 +1021,7 @@ class TestTurns:
         assert (await turn.wait()).cancelled
 
     async def test_cancelling_ends_the_turn_and_the_agent_runs_again(self):
-        agent = _make_agent(provider=_slow_provider())
+        agent = make_agent(provider=_slow_provider())
 
         turn = agent.start("hi")
         await asyncio.sleep(0.01)
@@ -1070,11 +1033,11 @@ class TestTurns:
         assert agent.state.status == "cancelled"
         assert not agent.busy
 
-        agent.provider = MockProvider([_plain_answer("second")])
+        agent.provider = MockProvider([say("second")])
         assert await agent.chat("again") == "second"
 
     async def test_a_derived_agent_can_report_into_the_parents_channel(self):
-        parent = _make_agent(provider=MockProvider([_plain_answer("from the child")]))
+        parent = make_agent(provider=MockProvider([say("from the child")]))
         child = parent.derive(channel=parent.channel)
         reader = parent.channel.subscribe()
 
@@ -1106,7 +1069,7 @@ class TestTerminalEventGuarantee:
                 raise KeyboardInterrupt  # a BaseException, not an Exception
                 yield  # pragma: no cover — makes this a generator
 
-        agent = _make_agent(provider=Exploding())
+        agent = make_agent(provider=Exploding())
         turn = agent.start("hi")
         reader = turn.subscribe()
 
@@ -1150,14 +1113,14 @@ class TestSyncToolCancellation:
     async def test_a_timed_out_sync_tool_sees_the_cancel_signal(self):
         noticed: list = []
         started = threading.Event()
-        agent = _make_agent(
+        agent = make_agent(
             _patient_tool(noticed, started), config=AgentConfig(tool_timeout=1)
         )
         agent.provider = MockProvider(
-            [tool_call_response("patient"), _plain_answer("given up waiting")]
+            [tool_call_response("patient"), say("given up waiting")]
         )
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.status == "timeout"
@@ -1168,7 +1131,7 @@ class TestSyncToolCancellation:
     async def test_cancelling_the_turn_signals_a_running_sync_tool(self):
         noticed: list = []
         started = threading.Event()
-        agent = _make_agent(
+        agent = make_agent(
             _patient_tool(noticed, started),
             provider=MockProvider([tool_call_response("patient")]),
         )
@@ -1196,12 +1159,12 @@ class TestErrorPrefixes:
         def broken(args):
             raise ToolError("it broke", "custom_code")
 
-        agent = _make_agent(Tool("boom", "b", {}, broken))
+        agent = make_agent(Tool("boom", "b", {}, broken))
         agent.provider = MockProvider(
-            [tool_call_response("boom"), _plain_answer("moved on")]
+            [tool_call_response("boom"), say("moved on")]
         )
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.status == "error"
@@ -1211,12 +1174,12 @@ class TestErrorPrefixes:
         assert tool_message["content"].startswith(ERROR_PREFIX)
 
     async def test_an_unknown_tool_result_carries_the_error_prefix(self):
-        agent = _make_agent()
+        agent = make_agent()
         agent.provider = MockProvider(
-            [tool_call_response("nope"), _plain_answer("moved on")]
+            [tool_call_response("nope"), say("moved on")]
         )
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.status == "not_found"
@@ -1225,14 +1188,14 @@ class TestErrorPrefixes:
     async def test_a_timeout_result_carries_the_timeout_prefix(self):
         noticed: list = []
         started = threading.Event()
-        agent = _make_agent(
+        agent = make_agent(
             _patient_tool(noticed, started), config=AgentConfig(tool_timeout=1)
         )
         agent.provider = MockProvider(
-            [tool_call_response("patient"), _plain_answer("given up waiting")]
+            [tool_call_response("patient"), say("given up waiting")]
         )
 
-        events = await _events(agent)
+        events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.status == "timeout"

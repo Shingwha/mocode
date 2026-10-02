@@ -15,12 +15,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from mocode.cli.commands import COMMANDS
-from mocode.core.events import Notice
 from mocode.host.command import (
     CONTINUE,
     EXIT,
     Command,
-    CommandContext,
     CommandRegistry,
     CommandResult,
     Kind,
@@ -29,7 +27,8 @@ from mocode.host.config import Config, ModelEntry, ProviderEntry
 from mocode.host.conversation import Conversation
 from mocode.host.events import ConversationChanged
 from mocode.host.plugin.builtin.skills import make_skill_command
-from mocode.host.runtime import MoCode
+
+from .conftest import notices, run_command
 
 BUILTIN_COMMANDS = COMMANDS
 
@@ -37,28 +36,6 @@ BUILTIN_COMMANDS = COMMANDS
 @pytest.fixture
 def conversation(mc) -> Conversation:
     return mc.new_conversation(cwd=mc.home.parent)
-
-
-async def _run(
-    command: Command,
-    conversation: Conversation,
-    *,
-    args: str = "",
-    commands: CommandRegistry | None = None,
-) -> tuple[CommandResult, list]:
-    """Run a command and collect what it published — what the user saw."""
-    reader = conversation.subscribe()
-    result = await command.handler(
-        CommandContext(conversation=conversation, args=args, commands=commands)
-    )
-    seen = []
-    while (event := reader.take()) is not None:
-        seen.append(event)
-    return result, seen
-
-
-def _notices(events: list) -> list[Notice]:
-    return [e for e in events if isinstance(e, Notice)]
 
 
 def _get_builtin_cmd(name: str) -> Command:
@@ -144,7 +121,7 @@ class TestDispatch:
 
 class TestQuitCommand:
     async def test_returns_exit(self, conversation: Conversation):
-        result, _events = await _run(_get_builtin_cmd("/quit"), conversation)
+        result, _events = await run_command(_get_builtin_cmd("/quit"), conversation)
         assert result is EXIT
 
 
@@ -160,7 +137,7 @@ class TestResumeCommand:
         path = Path(conversation.cwd) / "session_test.json"
         path.write_text(json.dumps(export_data), encoding="utf-8")
 
-        result, events = await _run(_get_builtin_cmd("/resume"), conversation, args=str(path))
+        result, events = await run_command(_get_builtin_cmd("/resume"), conversation, args=str(path))
 
         assert result is CONTINUE
         assert conversation.messages == export_data["messages"]
@@ -170,17 +147,17 @@ class TestResumeCommand:
         path = Path(conversation.cwd) / "old.json"
         path.write_text(json.dumps([{"role": "user", "content": "hi"}]), encoding="utf-8")
 
-        _result, events = await _run(_get_builtin_cmd("/resume"), conversation, args=str(path))
+        _result, events = await run_command(_get_builtin_cmd("/resume"), conversation, args=str(path))
 
         assert conversation.messages == []
-        assert [n.level for n in _notices(events)] == ["warn"]
+        assert [n.level for n in notices(events)] == ["warn"]
 
     async def test_a_bare_resume_says_so_when_there_is_nothing_to_resume(
         self, conversation: Conversation
     ):
-        _result, events = await _run(_get_builtin_cmd("/resume"), conversation)
+        _result, events = await run_command(_get_builtin_cmd("/resume"), conversation)
 
-        assert [n.message for n in _notices(events)] == ["No sessions found."]
+        assert [n.message for n in notices(events)] == ["No sessions found."]
 
     async def test_a_bare_resume_without_a_terminal_does_nothing(
         self, conversation: Conversation
@@ -193,7 +170,7 @@ class TestResumeCommand:
         conversation.messages.append({"role": "user", "content": "current"})
         before = conversation.id
 
-        result, events = await _run(_get_builtin_cmd("/resume"), conversation)
+        result, events = await run_command(_get_builtin_cmd("/resume"), conversation)
 
         assert result is CONTINUE
         assert conversation.id == before
@@ -205,7 +182,7 @@ class TestModelCommand:
     async def test_without_a_terminal_it_leaves_the_model_alone(
         self, conversation: Conversation
     ):
-        _result, events = await _run(_get_builtin_cmd("/model"), conversation)
+        _result, events = await run_command(_get_builtin_cmd("/model"), conversation)
 
         assert conversation.model_name == "test-model"
         assert events == []
@@ -238,7 +215,7 @@ class TestModelCommand:
 
         monkeypatch.setattr("mocode.cli.dialogs.select", fake_select)
 
-        result, events = await _run(_get_builtin_cmd("/model"), conversation)
+        result, events = await run_command(_get_builtin_cmd("/model"), conversation)
 
         assert result is CONTINUE
         assert conversation.model_name == "b"
@@ -254,7 +231,7 @@ class TestModelCommand:
             ("b", "b", None),
         ]
         assert model_default == "a"
-        assert [n.message for n in _notices(events)] == ["Switched to P / b"]
+        assert [n.message for n in notices(events)] == ["Switched to P / b"]
 
 
 class TestSkillCommand:
@@ -265,7 +242,7 @@ class TestSkillCommand:
         assert cmd.name == "/skill:workflow"
         assert cmd.description == "DAG orchestration"
 
-        result, _events = await _run(cmd, conversation)
+        result, _events = await run_command(cmd, conversation)
 
         assert result.kind is Kind.PROMPT
         assert "[Skill:workflow" in result.prompt
@@ -276,15 +253,15 @@ class TestSkillCommand:
     async def test_with_user_request(self, conversation: Conversation):
         cmd = make_skill_command(_skill("kami", "PDF typesetting", "typeset instructions"))
 
-        result, _events = await _run(cmd, conversation, args="帮我做一份简历")
+        result, _events = await run_command(cmd, conversation, args="帮我做一份简历")
 
         assert "User request: 帮我做一份简历" in result.prompt
         assert "typeset instructions" in result.prompt
 
     async def test_an_empty_skill_says_so(self, conversation: Conversation):
-        _result, events = await _run(make_skill_command(_skill("empty", "d", "")), conversation)
+        _result, events = await run_command(make_skill_command(_skill("empty", "d", "")), conversation)
 
-        assert [n.level for n in _notices(events)] == ["warn"]
+        assert [n.level for n in notices(events)] == ["warn"]
 
 
 def _skill(name: str, description: str, content: str) -> MagicMock:

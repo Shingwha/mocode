@@ -17,6 +17,8 @@ from mocode.host.plugin.builtin.skills import (
 from mocode.host.plugin.builtin.skills import parse_frontmatter
 from mocode.core import ToolError, ToolRegistry
 
+from .conftest import skill_dir
+
 
 class TestBashSession:
     async def test_runs_a_command(self, tmp_path: Path):
@@ -176,27 +178,18 @@ class TestReadTool:
         assert read_tool(tmp_path).run({"path": str(tmp_path)}).details == {}
 
 
-def _make_skill_dir(base: Path, name: str, description: str, body: str = "") -> Path:
-    skill_dir = base / name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: {description}\n---\n{body}", encoding="utf-8"
-    )
-    return skill_dir
-
-
 class TestSkills:
     def test_metadata_keeps_unknown_frontmatter_keys(self):
         meta = SkillMetadata.from_dict({"name": "x", "description": "d", "version": "1"})
         assert (meta.name, meta.description, meta.attrs) == ("x", "d", {"version": "1"})
 
     def test_a_skill_loads_its_body_without_frontmatter(self, tmp_path: Path):
-        skill_dir = _make_skill_dir(tmp_path, "my-skill", "test", "Hello world\n")
+        path = skill_dir(tmp_path, "my-skill", "test", "Hello world\n")
 
-        skill = Skill.from_dir(skill_dir)
+        skill = Skill.from_dir(path)
 
         assert skill.load_content() == "Hello world"
-        assert skill.base_dir == str(skill_dir)
+        assert skill.base_dir == str(path)
 
     def test_a_skill_without_a_name_is_skipped(self, tmp_path: Path):
         skill_dir = tmp_path / "nameless"
@@ -205,7 +198,7 @@ class TestSkills:
         assert Skill.from_dir(skill_dir) is None
 
     def test_discovery_prefers_the_directory_over_a_registered_skill(self, tmp_path: Path):
-        _make_skill_dir(tmp_path, "fastapi", "on disk")
+        skill_dir(tmp_path, "fastapi", "on disk")
 
         manager = SkillManager([tmp_path])
         manager.register(
@@ -219,12 +212,12 @@ class TestSkills:
         assert SkillManager([tmp_path / "nope"]).all() == []
 
     def test_the_tool_returns_content_and_where_to_find_it(self, tmp_path: Path):
-        skill_dir = _make_skill_dir(tmp_path, "fastapi", "FastAPI tips", "Use dependency injection.")
+        path = skill_dir(tmp_path, "fastapi", "FastAPI tips", "Use dependency injection.")
 
         result = skill_tool(SkillManager([tmp_path])).run({"name": "fastapi"})
 
         assert "Base directory:" in result
-        assert str(skill_dir) in result
+        assert str(path) in result
         assert "Use dependency injection." in result
 
     def test_an_unknown_skill_is_not_found(self, tmp_path: Path):

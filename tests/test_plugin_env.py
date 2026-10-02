@@ -11,7 +11,7 @@ from mocode.host.plugin.env import PluginVenv
 from mocode.host.plugin.host import load_plugins
 from mocode.host.config import Config
 
-from .test_plugins import _write_plugin
+from .conftest import write_plugin
 
 
 @pytest.fixture(autouse=True)
@@ -81,7 +81,7 @@ class TestTheBridge:
     def test_a_plugin_imports_from_its_own_environment(self, tmp_path: Path):
         """Attach happens before the import — the module resolves from .venv."""
         plugins_dir = tmp_path / "plugins"
-        plugin_dir = _write_plugin(
+        plugin_dir = write_plugin(
             plugins_dir,
             "venvuser",
             """
@@ -100,7 +100,7 @@ class TestTheBridge:
         assert [p.name for p in loaded.plugins if p.name == "venvuser"] == ["venvuser"]
 
     def test_a_missing_dependency_says_what_to_do(self, tmp_path: Path, capsys):
-        _write_plugin(
+        write_plugin(
             tmp_path,
             "needful",
             """
