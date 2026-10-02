@@ -568,3 +568,422 @@ class TestResolveExposure:
         assert availability_for("codemode") == ("program", False)
         assert availability_for("deferred") == ("program", False)
         assert availability_for("hidden") == ("both", True)
+
+
+# ── fake stdio MCP servers ──────────────────────────────────
+
+import asyncio
+import textwrap
+
+import pytest_asyncio
+
+from mocode.host.plugin.builtin.mcp.session import (
+    ERA_LEGACY,
+    ERA_MODERN,
+    STATE_CLOSED,
+    STATE_CONNECTED,
+    STATE_DISCONNECTED,
+    STATE_ERROR,
+    McpError,
+    StdioSession,
+)
+
+MODERN_SERVER = r'''
+import json, sys, time
+
+def send(msg):
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+sys.stderr.write("modern server starting\n")
+sys.stderr.flush()
+
+PAGE_1 = [
+    {"name": "search", "description": "Search things",
+     "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}},
+    {"name": "fail", "description": "Always fails",
+     "inputSchema": {"type": "object", "properties": {}}},
+]
+PAGE_2 = [
+    {"name": "ask", "description": "Needs user input",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "pic", "description": "Returns an image",
+     "inputSchema": {"type": "object", "properties": {}}},
+]
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    method, rid = req.get("method"), req.get("id")
+    params = req.get("params") or {}
+    if method == "server/discover":
+        send({"jsonrpc": "2.0", "id": rid, "result": {
+            "resultType": "complete",
+            "supportedVersions": ["2026-07-28", "2025-11-25"],
+            "capabilities": {"tools": {}},
+            "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "modern-srv", "version": "2.0"}},
+            "instructions": "Modern server instructions."}})
+    elif method == "tools/list":
+        if "_meta" not in params:
+            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": "missing _meta"}})
+        elif params.get("cursor") == "page-2":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "tools": PAGE_2}})
+        else:
+            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "tools": PAGE_1, "nextCursor": "page-2"}})
+    elif method == "tools/call":
+        name = params.get("name")
+        if "_meta" not in params:
+            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": "missing _meta"}})
+        elif name == "fail":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text": "boom"}], "isError": True}})
+        elif name == "ask":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "input_required", "inputRequests": {"login": {"method": "elicitation/create", "params": {}}}, "requestState": "opaque"}})
+        elif name == "sleep":
+            time.sleep(3)
+            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text": "woke up"}]}})
+        elif name == "pic":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [
+                {"type": "text", "text": "here:"},
+                {"type": "image", "data": "QUJD", "mimeType": "image/png"}],
+                "structuredContent": {"n": 1}}})
+        else:
+            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text": "hello"}], "structuredContent": {"ok": True}}})
+    else:
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}})
+'''
+
+LEGACY_SERVER = r'''
+import json, sys
+
+def send(msg):
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+sys.stderr.write("legacy server starting\n")
+sys.stderr.flush()
+
+TOOLS = [
+    {"name": "echo", "description": "Echo arguments",
+     "inputSchema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]}},
+]
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    method, rid = req.get("method"), req.get("id")
+    params = req.get("params") or {}
+    if method == "notifications/initialized":
+        continue
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": rid, "result": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "legacy-srv", "version": "1.0"},
+            "instructions": "Legacy server instructions."}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}})
+    elif method == "tools/call":
+        if "_meta" in params:
+            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": "legacy servers reject _meta"}})
+        else:
+            name = params.get("name")
+            if name == "add_tool":
+                TOOLS.append({"name": "late", "description": "Arrived later",
+                              "inputSchema": {"type": "object", "properties": {}}})
+                send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+                send({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "added"}]}})
+            elif name == "remove_tool":
+                TOOLS[:] = [t for t in TOOLS if t["name"] != "late"]
+                send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+                send({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "removed"}]}})
+            else:
+                send({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "echo:" + str(params.get("arguments"))}], "structuredContent": {"legacy": True}}})
+    else:
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}})
+'''
+
+NEGOTIATING_SERVER = r'''
+import json, sys
+
+def send(msg):
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    method, rid = req.get("method"), req.get("id")
+    meta = (req.get("params") or {}).get("_meta") or {}
+    if method == "server/discover":
+        version = meta.get("io.modelcontextprotocol/protocolVersion")
+        if version == "2026-07-28":
+            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32022, "message": "unsupported version", "data": {"supported": ["2026-08-30", "2025-11-25"]}}})
+        elif version == "2026-08-30":
+            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "supportedVersions": ["2026-08-30"], "capabilities": {"tools": {}}, "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "negotiated", "version": "3"}}}})
+        else:
+            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32022, "message": "unsupported version", "data": {"supported": ["2026-08-30"]}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "tools": [{"name": "probe", "description": "d", "inputSchema": {"type": "object", "properties": {}}}]}})
+    else:
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown"}})
+'''
+
+HYBRID_SERVER = r'''
+import json, sys
+
+def send(msg):
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    method, rid = req.get("method"), req.get("id")
+    if method == "server/discover":
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32022, "message": "unsupported version", "data": {"supported": ["2025-11-25"]}}})
+    elif method == "notifications/initialized":
+        continue
+    elif method == "initialize":
+        send({"jsonrpc": "2.0", "id": rid, "result": {
+            "protocolVersion": "2025-11-25",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "hybrid-srv", "version": "1.0"}}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"tools": []}})
+    else:
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}})
+'''
+
+SILENT_SERVER = r'''
+import sys
+for line in sys.stdin:
+    pass
+'''
+
+BOUND = 15  # seconds — every session operation in this file stays bounded
+
+
+def write_server(tmp_path: Path, name: str, code: str) -> Path:
+    path = tmp_path / name
+    path.write_text(textwrap.dedent(code), encoding="utf-8")
+    return path
+
+
+def server_config(
+    script: Path, *, name: str = "demo", timeout: float = 30.0, **kwargs
+) -> McpServerConfig:
+    kwargs.setdefault("source", "test")
+    return McpServerConfig(
+        name=name, command=sys.executable, args=[str(script)], timeout=timeout, **kwargs
+    )
+
+
+@pytest_asyncio.fixture
+async def session_factory(tmp_path):
+    """Build StdioSessions over fake scripts; close them all on teardown."""
+    created: list[StdioSession] = []
+
+    def factory(code: str, *, name: str = "demo", timeout: float = 30.0,
+                discover_timeout: float = 5.0, **kwargs) -> StdioSession:
+        script = write_server(tmp_path, f"server_{len(created)}.py", code)
+        session = StdioSession(
+            server_config(script, name=name, timeout=timeout),
+            discover_timeout=discover_timeout,
+            **kwargs,
+        )
+        created.append(session)
+        return session
+
+    yield factory
+    for session in created:
+        try:
+            await asyncio.wait_for(session.close(), BOUND)
+        except Exception:
+            session.shutdown()
+
+
+class TestModernSession:
+    async def test_era_is_modern_with_server_info_and_instructions(self, session_factory):
+        session = session_factory(MODERN_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        assert session.era == ERA_MODERN
+        assert session.protocol_version == "2026-07-28"
+        assert session.server_info == {"name": "modern-srv", "version": "2.0"}
+        assert session.instructions == "Modern server instructions."
+        assert session.state == STATE_CONNECTED
+
+    async def test_every_modern_request_carries_meta(self, session_factory):
+        """The fake server errors any tools/* call missing _meta."""
+        session = session_factory(MODERN_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        tools = await asyncio.wait_for(session.list_tools(), BOUND)
+        assert [t["name"] for t in tools] == ["search", "fail", "ask", "pic"]
+        result = await asyncio.wait_for(session.call_tool("search", {"q": "x"}), BOUND)
+        assert result["structuredContent"] == {"ok": True}
+
+    async def test_is_error_results_come_back_untouched(self, session_factory):
+        session = session_factory(MODERN_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        result = await asyncio.wait_for(session.call_tool("fail"), BOUND)
+        assert result["isError"] is True
+        assert result["content"][0]["text"] == "boom"
+
+    async def test_input_required_raises(self, session_factory):
+        session = session_factory(MODERN_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        with pytest.raises(McpError) as err:
+            await asyncio.wait_for(session.call_tool("ask"), BOUND)
+        assert err.value.code == "mcp_input_required"
+        assert "elicitation is not supported" in str(err.value)
+
+    async def test_non_text_content_blocks_pass_through(self, session_factory):
+        session = session_factory(MODERN_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        result = await asyncio.wait_for(session.call_tool("pic"), BOUND)
+        assert result["content"][1]["type"] == "image"
+        assert result["structuredContent"] == {"n": 1}
+
+    async def test_a_slow_call_times_out(self, session_factory):
+        session = session_factory(MODERN_SERVER, timeout=0.4)
+        await asyncio.wait_for(session.connect(), BOUND)
+        with pytest.raises(McpError) as err:
+            await asyncio.wait_for(session.call_tool("sleep"), BOUND)
+        assert err.value.code == "mcp_timeout"
+        assert session.last_error and "timed out" in session.last_error
+
+    async def test_stderr_is_collected_into_a_tail(self, session_factory):
+        session = session_factory(MODERN_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        await asyncio.wait_for(session.list_tools(), BOUND)
+        assert "modern server starting" in session.stderr_tail
+
+    async def test_a_dropped_server_disconnects_pending_calls(self, session_factory):
+        session = session_factory(MODERN_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        proc = session._proc
+        # a request in flight when the child dies must fail, not hang
+        task = asyncio.create_task(session.call_tool("sleep"))
+        await asyncio.sleep(0.3)
+        if sys.platform == "win32":
+            proc.kill()
+        else:
+            proc.terminate()
+        with pytest.raises(McpError) as err:
+            await asyncio.wait_for(task, BOUND)
+        assert "disconnected" in str(err.value)
+        assert session.state == STATE_DISCONNECTED
+
+    async def test_reconnect_after_a_drop_keeps_the_cached_era(self, session_factory):
+        session = session_factory(MODERN_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        proc = session._proc
+        if sys.platform == "win32":
+            proc.kill()
+        else:
+            proc.terminate()
+        await asyncio.wait_for(proc.wait(), BOUND)
+        tools = await asyncio.wait_for(session.list_tools(), BOUND)
+        assert session.era == ERA_MODERN
+        assert len(tools) == 4
+        assert session._proc is not proc
+
+    async def test_close_terminates_the_child(self, session_factory):
+        session = session_factory(MODERN_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        proc = session._proc
+        await asyncio.wait_for(session.close(), BOUND)
+        await asyncio.wait_for(proc.wait(), BOUND)
+        assert proc.returncode is not None  # the direct child is gone
+        assert session.state == STATE_CLOSED
+
+    async def test_an_unstartable_command_is_an_error(self, tmp_path):
+        cfg = server_config(tmp_path / "missing.py")
+        cfg.command = "definitely-not-a-real-binary-mocode"
+        session = StdioSession(cfg)
+        try:
+            with pytest.raises(McpError) as err:
+                await asyncio.wait_for(session.connect(), BOUND)
+            assert "failed to start" in str(err.value)
+            assert session.state == STATE_ERROR
+            assert session.last_error
+        finally:
+            session.shutdown()
+
+
+class TestLegacySession:
+    async def test_era_is_legacy_after_the_handshake(self, session_factory):
+        session = session_factory(LEGACY_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        assert session.era == ERA_LEGACY
+        assert session.protocol_version == "2025-11-25"
+        assert session.server_info == {"name": "legacy-srv", "version": "1.0"}
+        assert session.instructions == "Legacy server instructions."
+        assert session.state == STATE_CONNECTED
+
+    async def test_legacy_requests_carry_no_meta(self, session_factory):
+        """The fake server errors any call that smuggles _meta in."""
+        session = session_factory(LEGACY_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        tools = await asyncio.wait_for(session.list_tools(), BOUND)
+        assert [t["name"] for t in tools] == ["echo"]
+        result = await asyncio.wait_for(session.call_tool("echo", {"x": "1"}), BOUND)
+        assert result["structuredContent"] == {"legacy": True}
+
+    async def test_the_list_changed_notification_fires_the_callback(self, session_factory):
+        seen: list[str] = []
+
+        async def on_tools_changed(session: StdioSession) -> None:
+            tools = await session.list_tools()
+            seen.extend(t["name"] for t in tools)
+
+        session = session_factory(LEGACY_SERVER, on_tools_changed=on_tools_changed)
+        await asyncio.wait_for(session.connect(), BOUND)
+        await asyncio.wait_for(session.call_tool("echo", {"x": "1"}), BOUND)
+        await asyncio.wait_for(session.call_tool("add_tool"), BOUND)
+        await asyncio.sleep(0.2)
+        assert "late" in seen
+
+
+class TestEraNegotiation:
+    async def test_a_negotiating_modern_server_retries_at_a_supported_version(self, session_factory):
+        session = session_factory(NEGOTIATING_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        assert session.era == ERA_MODERN
+        assert session.protocol_version == "2026-08-30"
+        assert session.server_info == {"name": "negotiated", "version": "3"}
+
+    async def test_no_newer_supported_version_falls_back_to_legacy(self, session_factory):
+        session = session_factory(HYBRID_SERVER)
+        await asyncio.wait_for(session.connect(), BOUND)
+        assert session.era == ERA_LEGACY
+        assert session.protocol_version == "2025-11-25"
+        assert session.server_info == {"name": "hybrid-srv", "version": "1.0"}
+
+    async def test_a_silent_server_times_out_the_probe_and_errors(self, session_factory):
+        session = session_factory(SILENT_SERVER, timeout=0.4, discover_timeout=0.3)
+        with pytest.raises(McpError):
+            await asyncio.wait_for(session.connect(), BOUND)
+        # discover timed out → treated as legacy → initialize timed out → error
+        assert session.era == ERA_LEGACY
+        assert session.state == STATE_ERROR
+        assert session.last_error
