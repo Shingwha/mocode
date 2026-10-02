@@ -19,12 +19,13 @@ It owns four things and delegates the rest:
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from ..core.agent import AgentLoop
 from ..core.channel import Subscription
-from ..core.events import Event, Notice
+from ..core.events import Event, Notice, PluginMessage
 from ..core.tool import ToolRegistry
 from .events import ConversationChanged
 from .plugin.context import HostContext
@@ -42,6 +43,11 @@ if TYPE_CHECKING:
     from ..core.state import RunState
     from .command import CommandRegistry
     from .runtime import MoCode
+
+#: How many plugin-authored messages a conversation keeps for the session
+#: record. The deque is the whole story: older messages fall off the end,
+#: and a resume replays at most the newest this many.
+PLUGIN_MESSAGE_CAP = 200
 
 
 class Conversation:
@@ -78,6 +84,17 @@ class Conversation:
         self.id = session_id
         self.created_at = created_at
         self._saved_at = ""
+        #: Bounded capture of plugin-authored messages, serialized — the
+        #: payload that makes them survive a save/resume round trip. The
+        #: deque holds dicts, never event objects, so nothing here owes its
+        #: life to a run that has already ended.
+        self._plugin_messages: deque[dict[str, Any]] = deque(maxlen=PLUGIN_MESSAGE_CAP)
+        #: True while a resume republishes the stored messages — the capture
+        #: stays off for those, or the next save would persist them twice.
+        self._replaying = False
+        self._unwatch_plugin_messages = self.agent.channel.inline(
+            self._capture_plugin_message
+        )
 
     # ── Running ────────────────────────────────────────────
 
@@ -209,6 +226,7 @@ class Conversation:
         self.id = new_session_id()
         self.created_at = timestamp()
         self.adopt(messages or [])
+        self._plugin_messages.clear()
         await self.changed()
         return self.id
 
@@ -238,7 +256,14 @@ class Conversation:
         # baselines they diff against become that session's, before anything
         # is announced.
         self.ctx.plugin_states = dict(session.plugin_state)
+        # Plugin-authored messages travel the same way: the session's record
+        # becomes this conversation's capture, so the next save writes back
+        # exactly what was stored plus whatever is new.
+        stored = [m for m in session.plugin_messages if isinstance(m, dict)]
+        self._plugin_messages.clear()
+        self._plugin_messages.extend(stored)
         await self.changed()
+        await self._replay_plugin_messages(stored)
 
     def rebuild_prompt(self) -> None:
         """Re-render and re-freeze the system prompt — the explicit escape hatch.
@@ -285,6 +310,7 @@ class Conversation:
     def _teardown(self, *, save: bool) -> None:
         if save:
             self.save()
+        self._unwatch_plugin_messages()
         self.host.close()
         self.agent.close()
         self.agent.channel.close(reason=f"conversation {self.id} closed")
@@ -311,6 +337,48 @@ class Conversation:
 
     # ── Internals ──────────────────────────────────────────
 
+    async def _capture_plugin_message(self, event: Event) -> None:
+        """Record a plugin-authored message for the next save.
+
+        Inline, not a buffered subscription, on purpose: a subscription
+        filters at read time, and a reader that never reads would never
+        capture anything — while the replay exclusion needs the capture to
+        happen at publish time, inside the replay window. The work is one
+        isinstance check and a small serialization.
+        """
+        if self._replaying or not isinstance(event, PluginMessage):
+            return
+        self._plugin_messages.append(event.to_dict())
+
+    async def _replay_plugin_messages(self, stored: list[dict[str, Any]]) -> None:
+        """Republish the session's plugin-authored messages, in order.
+
+        Runs after :meth:`changed` because that event's readers clear and
+        repour the document first — a replay into a not-yet-cleared
+        transcript would be wiped. The channel re-stamps ``seq``, as it does
+        for every publish; ``run_id`` keeps the stored value, and no consumer
+        depends on it. The capture is switched off for the replay, so the
+        republished messages are not re-ingested and a later save does not
+        double them. Outside a resume nothing republishes: ``adopt`` only
+        replaces the history.
+        """
+        if not stored:
+            return
+        self._replaying = True
+        try:
+            for raw in stored:
+                await self.agent.channel.publish(
+                    PluginMessage(
+                        run_id=raw.get("run_id", ""),
+                        kind=raw.get("kind", ""),
+                        data=raw.get("data", {}),
+                        block_id=raw.get("block_id", ""),
+                        sealed=bool(raw.get("sealed", False)),
+                    )
+                )
+        finally:
+            self._replaying = False
+
     def _as_session(self, *, updated_at: str, title: str) -> Session:
         """The same fields both ``save()`` and ``session()`` report."""
         return Session(
@@ -325,6 +393,7 @@ class Conversation:
             system_prompt=self.agent.system_prompt,
             tool_schemas=self.ctx.tools.all_schemas(),
             plugin_state=self.ctx.plugin_states,
+            plugin_messages=list(self._plugin_messages),
         )
 
     def adopt(self, messages: list[dict]) -> None:

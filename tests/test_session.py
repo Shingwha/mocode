@@ -208,6 +208,72 @@ class TestPortability:
         assert "## Turn" not in md
 
 
+class TestPluginMessagesField:
+    def test_round_trip(self):
+        messages = [
+            {
+                "type": "plugin_message",
+                "run_id": "run_1",
+                "seq": 3,
+                "kind": "rag/index",
+                "data": {"done": 12, "total": 40},
+                "block_id": "rag-1",
+                "sealed": False,
+            },
+            {
+                "type": "plugin_message",
+                "run_id": "run_1",
+                "seq": 4,
+                "kind": "",
+                "data": {},
+                "block_id": "rag-1",
+                "sealed": True,
+            },
+        ]
+        session = _session(plugin_messages=messages)
+
+        assert Session.from_dict(session.to_dict()) == session
+        assert Session.from_dict(session.to_dict()).plugin_messages == messages
+
+    def test_absent_for_legacy_files(self):
+        legacy = Session.from_dict(
+            {
+                "id": "session_old",
+                "created_at": "t",
+                "updated_at": "t",
+                "workdir": "/project",
+                "messages": [],
+            }
+        )
+        assert legacy.plugin_messages == []
+
+    def test_bad_entries_are_dropped(self):
+        session = Session.from_dict(
+            {
+                "id": "session_x",
+                "created_at": "t",
+                "updated_at": "t",
+                "workdir": "/project",
+                "messages": [],
+                "plugin_messages": [{"kind": "kept"}, "junk", 42, None, ["x"]],
+            }
+        )
+        assert session.plugin_messages == [{"kind": "kept"}]
+
+    def test_a_wrong_shaped_field_is_dropped(self):
+        session = Session.from_dict(
+            {
+                "id": "session_x",
+                "created_at": "t",
+                "updated_at": "t",
+                "workdir": "/project",
+                "messages": [],
+                "plugin_messages": {"kind": "not-a-list"},
+            }
+        )
+        assert session.plugin_messages == []
+
+
 class TestFrozenRequestFields:
     def test_round_trip_and_optional_for_legacy_files(self):
         session = _session(
