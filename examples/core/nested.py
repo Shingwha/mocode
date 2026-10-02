@@ -45,7 +45,13 @@ async def main() -> None:
         Tool(
             "lookup",
             "Look a fact up.",
-            {"query": {"type": "string", "description": "what to look up"}},
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "what to look up"}
+                },
+                "required": ["query"],
+            },
             lookup,
             tags=frozenset({"research"}),
         )

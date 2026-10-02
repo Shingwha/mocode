@@ -63,7 +63,13 @@ async def main() -> None:
         Tool(
             "word_count",
             "Count the words in a text.",
-            {"text": {"type": "string", "description": "the text to count"}},
+            {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "the text to count"}
+                },
+                "required": ["text"],
+            },
             word_count,
             tags=frozenset({"text"}),
         )
