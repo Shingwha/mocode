@@ -37,6 +37,18 @@ from ..core.events import (
     ToolCallFinished,
 )
 from ..core.tool import DENIED_PREFIX, ERROR_PREFIX, TIMEOUT_PREFIX, ToolRegistry
+from ..core.transcript import (
+    answered_call_id,
+    is_assistant,
+    is_tool_result,
+    is_user,
+    reasoning_of,
+    text_of,
+    tool_call_args,
+    tool_call_id,
+    tool_call_name,
+    tool_calls_of,
+)
 from .text import ellipsize_middle, ellipsize_tail, terminal_width
 from .theme import FAIL, OK, PENDING, RULE, USER
 
@@ -240,16 +252,18 @@ def conversation(messages: list[dict], tools: ToolRegistry | None = None) -> lis
     """
     out: list[Line] = []
     for msg, results in _grouped(messages):
-        role = msg.get("role")
-        if role == "user":
-            out.extend(prompt(_flatten(msg.get("content", ""))))
-        elif role == "assistant":
-            if msg.get("reasoning_content"):
-                out.extend(reasoning(msg["reasoning_content"]))
-            if msg.get("content"):
-                out.extend(answer(msg["content"]))
-            if msg.get("tool_calls"):
-                out.extend(_replay_calls(msg["tool_calls"], results, tools))
+        if is_user(msg):
+            out.extend(prompt(text_of(msg)))
+        elif is_assistant(msg):
+            thinking = reasoning_of(msg)
+            if thinking:
+                out.extend(reasoning(thinking))
+            content = text_of(msg)
+            if content:
+                out.extend(answer(content))
+            calls = tool_calls_of(msg)
+            if calls:
+                out.extend(_replay_calls(calls, results, tools))
             else:
                 # An assistant message with no tool calls is where a turn ended,
                 # so it carries the rule — same as the live path.
@@ -267,16 +281,14 @@ def _grouped(messages: list[dict]) -> Iterator[tuple[dict, dict[str, str]]]:
     i = 0
     while i < len(messages):
         msg = messages[i]
-        if msg.get("role") == "tool":
+        if is_tool_result(msg):
             i += 1  # an orphaned result (its assistant is gone) draws nothing
             continue
         results: dict[str, str] = {}
         j = i + 1
-        if msg.get("role") == "assistant" and msg.get("tool_calls"):
-            while j < len(messages) and messages[j].get("role") == "tool":
-                results[messages[j].get("tool_call_id", "")] = messages[j].get(
-                    "content", ""
-                )
+        if is_assistant(msg) and tool_calls_of(msg):
+            while j < len(messages) and is_tool_result(messages[j]):
+                results[answered_call_id(messages[j])] = text_of(messages[j])
                 j += 1
         yield msg, results
         i = j
@@ -288,45 +300,21 @@ def _replay_calls(
     """One assistant message's tool calls, against the results that answered them."""
     out: list[Line] = []
     for call in calls:
-        function = call.get("function", {})
-        name = function.get("name", "?")
-        args = _load_args(function.get("arguments"))
-        result = results.get(call.get("id", ""), "")
+        result = results.get(tool_call_id(call), "")
         out.append(
             tool_close(
                 ToolCallFinished(
-                    call_id=call.get("id", ""),
-                    name=name,
+                    call_id=tool_call_id(call),
+                    name=tool_call_name(call, "?"),
                     status=_STATUS_BY_PREFIX.get(result.split(":")[0] + ":", TOOL_OK),
                     result=result,
                     duration=-1.0,  # history does not carry timings
                 ),
-                args,
+                tool_call_args(call),
                 tools,
             )
         )
     return out
-
-
-def _load_args(arguments: object) -> dict:
-    """Tool arguments as stored in a message: a JSON string, or already a dict."""
-    if isinstance(arguments, str):
-        import json
-
-        try:
-            return json.loads(arguments)
-        except json.JSONDecodeError:
-            return {}
-    return arguments or {}
-
-
-def _flatten(content: object) -> str:
-    """A user message's content as text — multimodal parts become placeholders."""
-    if isinstance(content, list):
-        return " ".join(
-            part.get("text", "[image]") for part in content if isinstance(part, dict)
-        )
-    return str(content)
 
 
 __all__ = [

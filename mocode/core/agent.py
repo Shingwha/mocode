@@ -52,6 +52,7 @@ from .provider import (
 )
 from .state import RunState
 from .tool import ERROR_PREFIX, ToolRegistry
+from .transcript import assistant_message, tool_call_dicts, tool_result
 from .turn import Turn
 
 
@@ -337,7 +338,7 @@ class AgentLoop:
                 raise asyncio.CancelledError()
             terminal = await self._iterate(user_input)
         except asyncio.CancelledError:
-            self.messages.append({"role": "assistant", "content": self.INTERRUPT_MSG})
+            self.messages.append(assistant_message(self.INTERRUPT_MSG))
             if turn is not None:
                 turn.cancelled = True
             terminal = await self._publish(
@@ -506,8 +507,10 @@ class AgentLoop:
             )
 
             if response.tool_calls:
-                assistant = self._assistant_msg(
-                    response, self._tool_call_dicts(response.tool_calls)
+                assistant = assistant_message(
+                    response.content or "",
+                    tool_calls=tool_call_dicts(response.tool_calls),
+                    reasoning=response.reasoning_content,
                 )
                 results: list[dict] = []
                 try:
@@ -522,7 +525,12 @@ class AgentLoop:
                 self.messages.append(assistant)
                 self.messages.extend(results)
             else:
-                self.messages.append(self._assistant_msg(response))
+                self.messages.append(
+                    assistant_message(
+                        response.content or "",
+                        reasoning=response.reasoning_content,
+                    )
+                )
                 answer = response.content or ""
                 break
 
@@ -555,13 +563,7 @@ class AgentLoop:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for call, result in zip(tool_calls, results):
                 if isinstance(result, BaseException):
-                    out.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": call.id,
-                            "content": f"{ERROR_PREFIX} {result}",
-                        }
-                    )
+                    out.append(tool_result(call.id, f"{ERROR_PREFIX} {result}"))
                 else:
                     out.append(result)
         finally:
@@ -576,7 +578,7 @@ class AgentLoop:
         result = await self.dispatcher.run(
             call.name, args, call_id=call.id, parse_error=parse_error
         )
-        return {"role": "tool", "tool_call_id": call.id, "content": result.content}
+        return tool_result(call.id, result.content)
 
     @staticmethod
     def _parse_args(call: ToolCall) -> tuple[dict, str | None]:
@@ -619,35 +621,8 @@ class AgentLoop:
         await self._dispatch_publish(event, fold=True)
         return event
 
-    @staticmethod
-    def _tool_call_dicts(tool_calls: list[ToolCall]) -> list[dict]:
-        return [
-            {
-                "id": t.id,
-                "type": "function",
-                "function": {"name": t.name, "arguments": t.arguments},
-            }
-            for t in tool_calls
-        ]
-
     def _interrupt_results(self, tool_calls: list[ToolCall]) -> list[dict]:
-        return [
-            {
-                "role": "tool",
-                "tool_call_id": t.id,
-                "content": self.INTERRUPT_TOOL_MSG,
-            }
-            for t in tool_calls
-        ]
-
-    @staticmethod
-    def _assistant_msg(response, tool_calls=None) -> dict:
-        msg: dict = {"role": "assistant", "content": response.content or ""}
-        if response.reasoning_content:
-            msg["reasoning_content"] = response.reasoning_content
-        if tool_calls:
-            msg["tool_calls"] = tool_calls
-        return msg
+        return [tool_result(t.id, self.INTERRUPT_TOOL_MSG) for t in tool_calls]
 
     # ---- State ----
 

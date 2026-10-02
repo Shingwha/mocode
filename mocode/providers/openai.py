@@ -9,6 +9,13 @@ from functools import cache
 from typing import Any, AsyncIterator
 
 from ..core.provider import Chunk, RetryPolicy, ToolCallDelta, Usage
+from ..core.transcript import (
+    answered_call_id,
+    is_assistant,
+    is_tool_result,
+    tool_call_id,
+    tool_calls_of,
+)
 
 
 @cache
@@ -153,17 +160,17 @@ class OpenAIProvider:
         left with no calls at all loses the field.
         """
         answered = {
-            m["tool_call_id"]
+            answered_call_id(m)
             for m in messages
-            if m.get("role") == "tool" and m.get("tool_call_id")
+            if is_tool_result(m) and answered_call_id(m)
         }
         result = []
         for msg in messages:
-            calls = msg.get("tool_calls") if msg.get("role") == "assistant" else None
+            calls = tool_calls_of(msg) if is_assistant(msg) else None
             if calls is None:
                 result.append(msg)
                 continue
-            valid = [tc for tc in calls if tc.get("id") in answered]
+            valid = [tc for tc in calls if tool_call_id(tc) in answered]
             if len(valid) == len(calls):
                 result.append(msg)
             elif valid:
