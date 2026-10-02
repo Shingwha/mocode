@@ -59,10 +59,12 @@ def builtin_plugins() -> list[Plugin]:
     """The plugins MoCode ships, in a fixed (prompt-stable) order."""
     from .builtin import (
         cache_protect,
+        codemode,
         default_prompts,
         effort,
         filesystem,
         help,
+        mcp,
         session,
         shell,
         skills,
@@ -72,6 +74,11 @@ def builtin_plugins() -> list[Plugin]:
         filesystem.PLUGIN,
         shell.PLUGIN,
         skills.PLUGIN,
+        # mcp (a tool source) precedes codemode (orchestration); the order is
+        # about contribution order, not the mcp plugin's exposure decision,
+        # which reads plugins.codemode.enabled from the config itself.
+        mcp.PLUGIN,
+        codemode.PLUGIN,
         default_prompts.PLUGIN,
         session.PLUGIN,
         help.PLUGIN,
