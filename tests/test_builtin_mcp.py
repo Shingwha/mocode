@@ -83,7 +83,7 @@ class TestLoadServers:
         # whole-entry replacement: nothing bleeds through from the loser
         assert cfg.args == ["a"]
         assert cfg.env == {}
-        assert cfg.timeout == 60.0
+        assert cfg.timeout is None
 
     def test_inline_beats_project_beats_home_beats_plugin(self, tmp_path):
         home = tmp_path / "home"
@@ -266,7 +266,7 @@ class TestMocodeExtensions:
         )
         cfg = merged["demo"]
         assert cfg.enabled is True
-        assert cfg.timeout == 60.0
+        assert cfg.timeout is None
         assert cfg.exposure is None
         assert cfg.tool_exposure == {}
         assert cfg.description == ""
@@ -439,7 +439,7 @@ class TestPluginFileRules:
         )
         cfg = merged["srv"]
         assert cfg.exposure is None
-        assert cfg.timeout == 60.0
+        assert cfg.timeout is None
         assert cfg.description == ""
         assert "unknown field(s)" in capsys.readouterr().err
 
@@ -987,3 +987,250 @@ class TestEraNegotiation:
         assert session.era == ERA_LEGACY
         assert session.state == STATE_ERROR
         assert session.last_error
+
+
+# ── runtime + tool registration ─────────────────────────────
+
+from mocode.core.events import Notice
+from mocode.core.tool import ToolError
+from mocode.host.config import Config
+from mocode.host.plugin.builtin.mcp.runtime import McpRuntime
+from mocode.host.plugin.builtin.mcp.tools import mcp_status_tool, mcp_tool
+from mocode.host.plugin.context import BuildContext
+
+
+def make_runtime(
+    tmp_path: Path,
+    servers: dict,
+    *,
+    mcp_extra: dict | None = None,
+    codemode_enabled: bool = False,
+) -> McpRuntime:
+    plugins = {"mcp": {"servers": servers, **(mcp_extra or {})}}
+    if codemode_enabled:
+        plugins["codemode"] = {"enabled": True}
+    config = Config(provider="p", model="m", plugins=plugins)
+    ctx = BuildContext(home=tmp_path / "home", cwd=tmp_path, config=config)
+    return McpRuntime(ctx)
+
+
+def script_entry(script: Path, **extra) -> dict:
+    return {"command": sys.executable, "args": [str(script)], **extra}
+
+
+@pytest_asyncio.fixture
+async def runtime_factory(tmp_path):
+    """Build runtimes over fake servers; shut them down on teardown."""
+    created: list[McpRuntime] = []
+
+    def factory(servers: dict, *, mcp_extra: dict | None = None,
+                codemode_enabled: bool = False) -> McpRuntime:
+        runtime = make_runtime(
+            tmp_path, servers, mcp_extra=mcp_extra, codemode_enabled=codemode_enabled
+        )
+        created.append(runtime)
+        return runtime
+
+    yield factory
+    for runtime in created:
+        for session in runtime.sessions.values():
+            try:
+                await asyncio.wait_for(session.close(), BOUND)
+            except Exception:
+                session.shutdown()
+        runtime.shutdown()
+
+
+class TestToolMapping:
+    async def test_tools_register_with_full_names_and_schemas(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_modern.py", MODERN_SERVER)
+        runtime = runtime_factory({"demo": script_entry(script)})
+        await asyncio.wait_for(runtime.start(), BOUND)
+
+        registry = runtime._ctx.tools
+        assert "mcp__demo__search" in registry
+        tool = registry.get("mcp__demo__search")
+        assert tool.availability == "both"  # default exposure: auto → direct (no codemode)
+        assert tool.schema["required"] == ["q"]
+        assert tool.tags == frozenset({"mcp", "mcp:demo"})
+        assert tool.mcp == {"server": "demo", "tool": "search"}
+        assert tool.mcp_raw_name == "search"
+        assert tool.source == "host"  # a bare BuildContext stamps nothing
+
+    async def test_a_successful_call_maps_into_content_and_details(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_call.py", MODERN_SERVER)
+        runtime = runtime_factory({"demo": script_entry(script)})
+        await asyncio.wait_for(runtime.start(), BOUND)
+        tool = runtime._ctx.tools.get("mcp__demo__search")
+
+        result = await asyncio.wait_for(tool.run_async({"q": "hi"}), BOUND)
+        assert result.content == "hello"
+        assert result.details["server"] == "demo"
+        assert result.details["tool"] == "search"
+        assert result.details["structured_content"] == {"ok": True}
+        assert result.details["is_error"] is False
+
+    async def test_an_is_error_result_raises_mcp_error(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_fail.py", MODERN_SERVER)
+        runtime = runtime_factory({"demo": script_entry(script)})
+        await asyncio.wait_for(runtime.start(), BOUND)
+        tool = runtime._ctx.tools.get("mcp__demo__fail")
+        with pytest.raises(ToolError) as err:
+            await asyncio.wait_for(tool.run_async({}), BOUND)
+        assert err.value.code == "mcp_error"
+        assert "boom" in err.value.message
+
+    async def test_input_required_raises_its_own_code(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_ask.py", MODERN_SERVER)
+        runtime = runtime_factory({"demo": script_entry(script)})
+        await asyncio.wait_for(runtime.start(), BOUND)
+        tool = runtime._ctx.tools.get("mcp__demo__ask")
+        with pytest.raises(ToolError) as err:
+            await asyncio.wait_for(tool.run_async({}), BOUND)
+        assert err.value.code == "mcp_input_required"
+
+    async def test_image_blocks_land_in_details_with_a_placeholder(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_pic.py", MODERN_SERVER)
+        runtime = runtime_factory({"demo": script_entry(script)})
+        await asyncio.wait_for(runtime.start(), BOUND)
+        tool = runtime._ctx.tools.get("mcp__demo__pic")
+        result = await asyncio.wait_for(tool.run_async({}), BOUND)
+        assert result.content == "here:\n[image: image/png]"
+        assert result.details["images"][0]["data"] == "QUJD"
+
+    async def test_missing_schema_and_description_fall_back(self, runtime_factory, tmp_path):
+        runtime = runtime_factory({})
+        session = StdioSession(server_config(tmp_path / "x.py"))
+        tool = mcp_tool(runtime, session, "demo", {"name": "raw"}, "both", False)
+        assert tool.schema == {"type": "object", "properties": {}}
+        assert tool.description == "MCP tool raw from demo"
+
+    async def test_collision_gets_the_hash_suffix_and_raw_name(self, runtime_factory, tmp_path):
+        import hashlib
+
+        runtime = runtime_factory({})
+        session = StdioSession(server_config(tmp_path / "x.py"))
+        runtime.assignments["demo"] = assign_tool_names("demo", ["a-b", "a_b"])
+        raw = {"name": "a_b"}
+        tool = mcp_tool(runtime, session, "demo", raw, "both", False)
+        assert tool.name == "mcp__demo__a_b_" + hashlib.sha1(b"a_b").hexdigest()[:6]
+        assert tool.mcp_raw_name == "a_b"
+
+    def test_mcp_status_tool_holds_the_runtime(self, runtime_factory):
+        runtime = runtime_factory({"off": script_entry("whatever", enabled=False)})
+        tool = mcp_status_tool(runtime)
+        assert tool.name == "mcp_status"
+        assert tool.availability == "program"
+        assert tool.mcp_runtime is runtime
+        assert tool.schema == {"type": "object", "properties": {}}
+
+    async def test_mcp_status_reports_every_server(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_status.py", MODERN_SERVER)
+        runtime = runtime_factory(
+            {
+                "demo": script_entry(script),
+                "off": script_entry(script, enabled=False),
+                "broken": script_entry(script, command="no-such-binary-mocode"),
+            }
+        )
+        await asyncio.wait_for(runtime.start(), BOUND)
+        tool = mcp_status_tool(runtime)
+        result = await asyncio.wait_for(tool.run_async({}), BOUND)
+        servers = {s["name"]: s for s in result.details["servers"]}
+        assert servers["demo"]["state"] == "connected"
+        assert servers["demo"]["tools"] == 4
+        assert servers["off"]["state"] == "disabled"
+        assert servers["broken"]["state"] == "error"
+        assert servers["broken"]["error"]
+        assert "demo: connected (4 tools)" in result.content
+
+
+class TestExposureMapping:
+    async def test_codemode_exposure_is_program_only(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_exp_cm.py", MODERN_SERVER)
+        runtime = runtime_factory({"demo": script_entry(script, exposure="codemode")})
+        await asyncio.wait_for(runtime.start(), BOUND)
+        registry = runtime._ctx.tools
+        assert "mcp__demo__search" in registry
+        assert "mcp__demo__search" not in registry.names(audience="model")
+        assert "mcp__demo__search" in registry.names(audience="program")
+
+    async def test_hidden_exposure_registers_then_disables(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_exp_hd.py", MODERN_SERVER)
+        runtime = runtime_factory({"demo": script_entry(script, exposure="hidden")})
+        await asyncio.wait_for(runtime.start(), BOUND)
+        registry = runtime._ctx.tools
+        assert registry.get("mcp__demo__search") is not None  # registered
+        assert "mcp__demo__search" not in registry.names(audience="model")
+        assert "mcp__demo__search" not in registry.names(audience="program")
+
+    async def test_tool_exposure_overrides_per_tool(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_exp_te.py", MODERN_SERVER)
+        runtime = runtime_factory(
+            {
+                "demo": script_entry(
+                    script,
+                    exposure="codemode",
+                    toolExposure={"search": "direct", "pic": "hidden"},
+                )
+            }
+        )
+        await asyncio.wait_for(runtime.start(), BOUND)
+        registry = runtime._ctx.tools
+        assert "mcp__demo__search" in registry.names(audience="model")
+        assert "mcp__demo__ask" not in registry.names(audience="model")
+        assert registry.get("mcp__demo__pic") is not None
+        assert "mcp__demo__pic" not in registry.names(audience="model")
+
+    async def test_default_exposure_auto_follows_codemode(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_exp_auto.py", MODERN_SERVER)
+        runtime = runtime_factory(
+            {"demo": script_entry(script)}, codemode_enabled=True
+        )
+        await asyncio.wait_for(runtime.start(), BOUND)
+        registry = runtime._ctx.tools
+        assert runtime.default_exposure == "codemode"
+        assert "mcp__demo__search" not in registry.names(audience="model")
+
+
+class TestSyncTools:
+    async def test_list_changed_adds_and_removes_tools(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_sync.py", LEGACY_SERVER)
+        runtime = runtime_factory({"demo": script_entry(script)})
+        await asyncio.wait_for(runtime.start(), BOUND)
+        registry = runtime._ctx.tools
+        assert "mcp__demo__late" not in registry
+
+        session = runtime.sessions["demo"]
+        await asyncio.wait_for(session.call_tool("add_tool"), BOUND)
+        await asyncio.sleep(0.3)
+        assert "mcp__demo__late" in registry
+
+        await asyncio.wait_for(session.call_tool("remove_tool"), BOUND)
+        await asyncio.sleep(0.3)
+        assert "mcp__demo__late" not in registry
+
+    async def test_a_failing_direct_server_marks_error_without_raising(self, runtime_factory, tmp_path):
+        runtime = runtime_factory({"bad": script_entry("x", command="no-such-binary-mocode")})
+        await asyncio.wait_for(runtime.start(), BOUND)  # must not raise
+        status = {s["name"]: s for s in runtime.status()}
+        assert status["bad"]["state"] == "error"
+        assert status["bad"]["error"]
+
+    async def test_codemode_disabled_marks_warning_sent(self, runtime_factory, tmp_path):
+        """With program-only tools and codemode off, the one-shot warning is
+        marked (a bare context has no agent to emit to — T6 covers the real
+        Notice through a conversation)."""
+        script = write_server(tmp_path, "rt_warn.py", MODERN_SERVER)
+        runtime = runtime_factory({"demo": script_entry(script, exposure="codemode")})
+        await asyncio.wait_for(runtime.start(), BOUND)
+        assert runtime._codemode_warned is True
+
+    async def test_codemode_enabled_suppresses_the_warning(self, runtime_factory, tmp_path):
+        script = write_server(tmp_path, "rt_warn2.py", MODERN_SERVER)
+        runtime = runtime_factory(
+            {"demo": script_entry(script, exposure="codemode")},
+            codemode_enabled=True,
+        )
+        await asyncio.wait_for(runtime.start(), BOUND)
+        assert runtime._codemode_warned is False

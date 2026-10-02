@@ -100,7 +100,9 @@ class McpServerConfig:
     env: dict[str, str] = field(default_factory=dict)
     cwd: str | None = None
     enabled: bool = True
-    timeout: float = 60.0
+    #: Per-request timeout in seconds — ``None`` means "not set", and the
+    #: session falls back to the runtime default (itself 60).
+    timeout: float | None = None
     exposure: str | None = None
     tool_exposure: dict[str, str] = field(default_factory=dict)
     description: str = ""

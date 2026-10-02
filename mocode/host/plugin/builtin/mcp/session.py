@@ -56,6 +56,8 @@ _MODERN_ERROR_CODES = frozenset({-32020, -32021, -32022})
 _DISCOVER_TIMEOUT = 5.0
 #: Lines of server logging kept for error reports.
 _STDERR_TAIL_LINES = 50
+#: The per-request default when neither the call nor the config sets one.
+_DEFAULT_REQUEST_TIMEOUT = 60.0
 #: close(): stdin close → SIGTERM grace → SIGKILL grace.
 _STDIN_CLOSE_GRACE = 1.0
 _TERM_GRACE = 2.0
@@ -386,7 +388,12 @@ class StdioSession:
         except Exception as e:
             self._pending.pop(rid, None)
             raise McpError(f"failed to send {method}: {e}")
-        deadline = timeout if timeout is not None else self.config.timeout
+        if timeout is not None:
+            deadline = timeout
+        elif self.config.timeout is not None:
+            deadline = self.config.timeout
+        else:
+            deadline = _DEFAULT_REQUEST_TIMEOUT
         try:
             return await asyncio.wait_for(fut, deadline)
         except asyncio.TimeoutError:
