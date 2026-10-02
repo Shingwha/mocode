@@ -738,3 +738,150 @@ class TestOptions:
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
         policy = host.ctx.tools.get("codemode").policy
         assert policy({"script": "pass"}).timeout is None
+
+
+# ── T5: end to end through a real turn ──────────────────────
+
+
+from mocode.testing import call_tool, say, terminal
+
+
+class TestEndToEnd:
+    """A scripted model calls codemode inside a real turn — the
+    program-origin contract is what the model-visible history must show."""
+
+    async def _turn(self, plugin_host, script: str):
+        host = plugin_host(
+            plugins=[PLUGIN],
+            tools=_echo_registry(),
+            responses=[
+                call_tool("codemode", {"script": script}, call_id="cm1"),
+                say("done"),
+            ],
+        )
+        reader = host.ctx.subscribe()
+        try:
+            answer = await host.ctx.agent.chat("run it")
+            seen = []
+            while (event := reader.take()) is not None:
+                seen.append(event)
+        finally:
+            reader.close()
+        return host, answer, seen
+
+    async def test_script_calls_are_program_origin(self, plugin_host):
+        script = (
+            "outcomes = await asyncio.gather("
+            "tools.echo({'value': 'one'}), tools.echo({'value': 'two'}))\n"
+            "for o in outcomes:\n"
+            "    text(o.content)\n"
+            "store('last', [o.content for o in outcomes])"
+        )
+        host, answer, seen = await self._turn(plugin_host, script)
+        assert answer == "done"
+
+        # The script's calls were observable on the channel, as program
+        # origin nested under the codemode call — the audit trail exists.
+        echo_finished = [
+            e
+            for e in seen
+            if e.type == "tool_call_finished" and e.name == "echo"
+        ]
+        assert len(echo_finished) == 2
+        assert all(e.origin == "program" for e in echo_finished)
+        assert all(e.parent_call_id == "cm1" for e in echo_finished)
+        assert [e.call_id for e in echo_finished] == ["cm1:1", "cm1:2"]
+        echo_started = [
+            e for e in seen if e.type == "tool_call_started" and e.name == "echo"
+        ]
+        assert [e.call_id for e in echo_started] == ["cm1:1", "cm1:2"]
+
+        # codemode's own call is ordinary model origin.
+        cm_finished = [
+            e
+            for e in seen
+            if e.type == "tool_call_finished" and e.name == "codemode"
+        ]
+        assert len(cm_finished) == 1
+        assert cm_finished[0].origin == "model"
+
+        # The turn's terminal state counts only the model's call.
+        end = terminal(seen)
+        assert end.tool_calls_made == 1
+        assert host.ctx.agent.tool_call_count == 1
+
+        # messages carry exactly one tool result — codemode's. The echo
+        # calls never entered the conversation.
+        tool_messages = [
+            m for m in host.ctx.agent.messages if m["role"] == "tool"
+        ]
+        assert len(tool_messages) == 1
+        content = str(tool_messages[0]["content"])
+        assert content.startswith("Script completed in ")
+        assert "echo:one" in content and "echo:two" in content
+        assert "cm1:1" not in content  # nested ids stay out of the model's view
+
+        # The store slot holds what the script committed.
+        assert host.ctx.plugin_state("codemode") == {"last": ["echo:one", "echo:two"]}
+
+    async def test_failing_script_in_turn(self, plugin_host):
+        script = 'text("partial")\nraise ValueError("broken")'
+        host, answer, seen = await self._turn(plugin_host, script)
+        assert answer == "done"
+        cm_finished = [
+            e
+            for e in seen
+            if e.type == "tool_call_finished" and e.name == "codemode"
+        ]
+        assert cm_finished[0].status == "ok"  # the tool itself ran fine
+        tool_messages = [
+            m for m in host.ctx.agent.messages if m["role"] == "tool"
+        ]
+        content = str(tool_messages[0]["content"])
+        assert content.startswith("Script failed in ")
+        assert "partial" in content
+        assert content.endswith("Script error: ValueError: broken")
+        assert host.ctx.plugin_state("codemode") == {}
+
+    async def test_denied_visibility_never_reaches_messages(self, plugin_host):
+        # A model-only companion tool is invisible to the script's audience:
+        # its denial is a program-origin event, not a message.
+        registry = _echo_registry()
+        registry.register(
+            Tool(
+                name="model_only",
+                description="not for programs",
+                schema={"type": "object", "properties": {}},
+                func=lambda args: "nope",
+                availability="model",
+            )
+        )
+        host = plugin_host(
+            plugins=[PLUGIN],
+            tools=registry,
+            responses=[
+                call_tool(
+                    "codemode",
+                    {"script": "return (await asyncio.gather("
+                     "tools.echo({'value': 'a'}), "
+                     "tools.model_only({}), "
+                     "return_exceptions=True))[1]"},
+                    call_id="cm1",
+                ),
+                say("done"),
+            ],
+        )
+        answer = await host.ctx.agent.chat("go")
+        assert answer == "done"
+        denied = [
+            e
+            for e in host.ctx.agent.channel.history()
+            if e.type == "tool_call_finished" and e.status == "denied"
+        ]
+        assert len(denied) == 1 and denied[0].origin == "program"
+        assert host.ctx.agent.tool_call_count == 1
+        tool_messages = [
+            m for m in host.ctx.agent.messages if m["role"] == "tool"
+        ]
+        assert len(tool_messages) == 1  # only codemode's result, denial included
+        assert "denied" in str(tool_messages[0]["content"])
