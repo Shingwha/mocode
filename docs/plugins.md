@@ -624,6 +624,95 @@ do: register a renderer. The event describes itself — that is what `summary()`
 is for — so a terminal, a web UI and a log all display it without the plugin
 knowing any of them exist.
 
+## Approvals — asking the user at run time
+
+The one thing a plugin legitimately changes about execution is *whether a tool
+call runs*. The split of labour is the same as everywhere else: **the policy —
+whether to ask — is host territory and runs in every frontend; the asking —
+how the question reaches a human — is frontend territory.** A web UI answers
+`ui.confirm` with a page dialog; the terminal answers it inline while the turn
+runs. One hook, unchanged, drives both.
+
+```python
+# mocode/plugin.py — the policy half, in the host namespace.
+from mocode.plugins import AgentHook, Plugin, ToolCallContext
+
+SAFE = frozenset({"read"})   # calls that never need a human
+
+
+class ApprovalHook(AgentHook):
+    """Trust by channel: built-ins run free, a plugin's tools ask one by one."""
+
+    approval_ask = True   # how the terminal half recognises this hook
+
+    def __init__(self, tools, *, deny_by_default: bool = False):
+        self._tools = tools
+        self._deny_by_default = deny_by_default
+        self.ui = None      # the terminal half plugs its channel in — below
+
+    async def on_tool_start(self, ctx: ToolCallContext) -> None:
+        if self.ui is None or ctx.origin == "program":
+            return   # nobody built an asker, or we called this ourselves
+        if ctx.tool_name in SAFE:
+            return
+        tool = self._tools.get(ctx.tool_name)
+        channel = tool.source.split(":", 1)[0] if tool else ""
+        if channel == "builtin":
+            return   # the host's own tools run free — trust by channel
+        if not self.ui.is_interactive:
+            # A pipe cannot answer; the policy falls back to its configured
+            # default instead of asking. This check is host-side: every
+            # frontend degrades the same way.
+            if self._deny_by_default:
+                ctx.deny = "no interactive frontend; denied by configuration"
+            return
+        ok = await self.ui.confirm(
+            f"[{channel or '?'}] allow {ctx.tool_name}?", danger=True
+        )
+        if not ok:
+            ctx.deny = "user declined"   # the model reads this as the tool result
+
+
+class Approvals(Plugin):
+    name = "approvals"
+
+    def build(self, ctx):
+        ctx.hooks.append(ApprovalHook(ctx.tools))
+
+
+approvals = Approvals()
+```
+
+```python
+# mocode.cli/plugin.py — the presentation half. Only a terminal can ask,
+# so this half only exists in the terminal namespace.
+from mocode.cli import CLIPlugin
+
+
+class ApprovalUI(CLIPlugin):
+    name = "approvals.ui"
+
+    def build(self, ctx):
+        # The two namespaces never import each other; the conversation is the
+        # one thing they share, and the hook registered on its agent is the
+        # asker that needs the ui channel.
+        for hook in ctx.conversation.agent.hooks.all():
+            if getattr(hook, "approval_ask", False):
+                hook.ui = ctx.ui
+```
+
+`ctx.origin == "program"` is the other half of the trust decision: calls the
+agent made because *your code* asked for them (`ToolRegistry.call`, a
+sub-agent) are not re-approved — a program calling its own tools is doing its
+job. Only calls the *model* invented go through the gate. `Tool.source` is the
+first half: every tool is stamped `builtin:<name>` or `plugin:<name>` by the
+host, so "built-ins run free" is a channel check, not a name list.
+
+`ui.confirm` mid-turn draws the question inline and takes the answer from the
+terminal's raw key loop — that is what makes an approval possible while the
+tool is already waiting. Decline with Esc or `n` and the call never runs; the
+model simply reads `denied: user declined` as its result.
+
 ## Changing the harness after assembly
 
 `build()` is the one *contribution* pass, but it is not the only moment the
@@ -693,8 +782,9 @@ class GitHelperCLI(CLIPlugin):
 
 A terminal plugin builds against a `CLIContext` — never the application. The
 context carries what a plugin may contribute through (commands, drawers,
-keys, input middleware, status and header) plus read-only views (the theme,
-the conversation, the runtime UI channel), and nothing it should not touch:
+keys, input middleware, status, header), the channel it may ask through
+(`ui`), plus read-only views (the theme, the conversation), and nothing it
+should not touch:
 there is deliberately no `ctx.app`, `ctx.display` or `ctx.renderer`. A plugin
 that needs a lower ability gets it by that ability being promoted into the
 context, not by a hole.
@@ -752,8 +842,53 @@ the terminal's theme; registering new style names is deliberately not v1.
 callbacks run in reverse registration order, each in isolation, so one
 failing callback never costs another plugin its release.
 
-All of this is terminal chrome: in a pipe (`ui.is_interactive` is `False`)
-status and header contributions are ignored and the key channels never start.
+### The runtime UI channel
+
+`ctx.ui` is how a plugin asks the person watching something — mid-turn, not
+just at the prompt:
+
+- `await ctx.ui.message(text)` — one line on the conversation's stream, the
+  same channel everything else a frontend shows comes from. It reaches every
+  frontend; the data stays with the host.
+- `await ctx.ui.confirm(message, danger=False)` — yes/no, `danger` marks a
+  destructive question in red. Esc declines.
+- `await ctx.ui.select(title, [Option(label, value, description), ...])` —
+  arrow-key choice; returns the chosen `Option` or `None` when cancelled.
+- `await ctx.ui.input(message, default="")` — one line of free text; Enter on
+  an empty answer takes the default; `None` when cancelled.
+
+The channel picks its path by state. **While a turn runs**, the question is
+drawn inline — printed above the live region, answered by the raw key loop the
+terminal already runs over the TTY (`y`/`n`, arrows + Enter, printable text,
+Esc to cancel) — which is what makes an approval hook possible at all. **While
+the prompt is idle**, questionary owns the cursor and draws its usual picker.
+**One question at a time**: a dialog that arrives while another is open waits
+its turn, and answers come back in the order the questions were asked.
+
+The first thing to check is always `ctx.ui.is_interactive`. It is the one
+switch every degradation hangs off, and the decline answers below are the
+whole contract.
+
+### When there is no terminal
+
+A pipe has no one to ask and no screen to decorate. The contract, per
+capability:
+
+| Capability                          | Terminal (TTY)                          | Pipe (non-TTY)                              |
+| ----------------------------------- | --------------------------------------- | ------------------------------------------- |
+| `ui.message` / plugin-message blocks | drawn as the registered drawer renders | plain appended stdout text                  |
+| `status` bar / `header`             | bottom toolbar / printed above prompt   | ignored — set lines are remembered, not shown |
+| `ui.confirm`                        | inline dialog mid-turn, picker idle     | `False`                                     |
+| `ui.select` / `ui.input`            | same two paths                          | `None`                                      |
+| `ctx.keys` (idle and running)       | dispatched as registered                | the key channels never start                |
+
+Two consequences worth stating plainly. First, `confirm`/`select`/`input`
+never raise and never block waiting for input that cannot arrive — a caller
+that wants different behaviour checks `is_interactive` first and picks its own
+fallback. Second, policy that would ask a human degrades to a configured
+default: the check belongs host-side (see
+[Approvals](#approvals-asking-the-user-at-run-time)), so every frontend —
+terminal, web UI, a pytest double — behaves identically in a pipe.
 
 ## Rules of the road
 

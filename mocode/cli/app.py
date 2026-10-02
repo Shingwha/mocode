@@ -33,7 +33,7 @@ from ..host.command import (
 )
 from ..host.config import Config
 from ..host.runtime import MoCode
-from .plugin import KeyContext
+from .plugin import KeyContext, Option
 
 _log = logging.getLogger(__name__)
 
@@ -116,8 +116,6 @@ class CLIApp:
             # A display handed in from outside carries its own theme; the
             # context only gets a view when we can see it.
             self.theme = getattr(display, "_t", None)
-        if self.display is not None:
-            self.header.bind(self.display.print)
 
         self.runtime = MoCode(
             config=self.config, home=self.home, plugin_dirs=plugin_dirs
@@ -153,6 +151,8 @@ class CLIApp:
             is_interactive=bool(
                 self.interactive and self.display is not None and self.display.live
             ),
+            chrome=self.display.render if self.display is not None else None,
+            running=lambda: self._running,
         )
         self.ctx = CLIContext(
             commands=self.commands,
@@ -170,6 +170,7 @@ class CLIApp:
         )
         self._register_builtin_keys()
         self._register_builtin_status()
+        self._prefill = ""
 
     def _register_builtin_status(self) -> None:
         """The bar the terminal always shows: model, tokens, cwd."""
@@ -222,15 +223,47 @@ class CLIApp:
             pending_approvals=0,
         )
 
+    def _flush_header(self) -> None:
+        """Print pending header lines above the next prompt — never into a pipe."""
+        if self.display is None or not self.header.dirty:
+            return
+        lines = self.header.flush()
+        if not self.display.live:
+            return
+        for line in lines:
+            self.display.print(line)
+
     # ── Dispatch ───────────────────────────────────────────
 
     async def _dispatch(self, text: str) -> CommandResult:
         """Resolve input: run a command if slash-prefixed, else send it to the agent."""
+        if text in ("/", "/?"):
+            return await self._command_menu()
         head = text.split(None, 1)[0].lower()
         if text.startswith("/") and head not in self.commands:
             self._suggest_command(head)
             return CONTINUE
         return await self.commands.dispatch(text, conversation=self.conversation)
+
+    async def _command_menu(self) -> CommandResult:
+        """The bare-/ menu: every command in the registry, the pick refilled.
+
+        The chosen name goes back into the prompt, not to the dispatcher —
+        picking a command is a shortcut for typing it, never its execution.
+        """
+        options = [
+            Option(cmd.name, cmd.name, cmd.description)
+            for cmd in self.commands.all()
+        ]
+        chosen = await self.ui.select("Select a command:", options)
+        if chosen is not None:
+            self._prefill = str(chosen.value)
+        return CONTINUE
+
+    def _take_prefill(self) -> str:
+        """What the menu left in the prompt, once — the next prompt starts empty."""
+        prefill, self._prefill = self._prefill, ""
+        return prefill
 
     def _suggest_command(self, cmd_text: str) -> None:
         if self.display is None:
@@ -360,7 +393,10 @@ class CLIApp:
             )
 
     async def _dispatch_running_key(self, name: str, turn: "Turn") -> None:
-        """One key while a turn runs: Esc and Ctrl-C cancel it, the rest dispatch."""
+        """One key while a turn runs: an open dialog answers first; Esc and
+        Ctrl-C cancel the turn; the rest dispatch to running bindings."""
+        if self.ui.feed_key(name):
+            return
         if name in ("escape", "c-c"):
             turn.cancel()
             return
@@ -428,8 +464,13 @@ class CLIApp:
         try:
             while True:
                 self._drain(subscription)
+                self._flush_header()
                 try:
-                    user_input = await self.display.prompt()
+                    prefill = self._take_prefill()
+                    if prefill:
+                        user_input = await self.display.prompt(default=prefill)
+                    else:
+                        user_input = await self.display.prompt()
                 except (EOFError, KeyboardInterrupt):
                     self.display.print()
                     break

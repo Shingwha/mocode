@@ -16,8 +16,8 @@ written for the terminal still travels to a web frontend that simply does not
 read ``mocode.cli``.
 
 A terminal plugin is built against a :class:`CLIContext`, never the
-application: the context carries the three things a plugin may contribute
-through (commands, drawers, the runtime UI channel) and nothing it should not
+application: the context carries the things a plugin may contribute
+through (commands, drawers, keys, chrome) and nothing it should not
 touch. That narrowness is the contract — the internals it keeps out are the
 ones a TUI rewrite needs freedom in.
 
@@ -27,6 +27,7 @@ The terminal's own commands are the first implementation of this interface
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from dataclasses import dataclass, field
@@ -41,6 +42,7 @@ from ..host.plugin.loader import (
     resolve_plugin,
     slugify,
 )
+from . import lines as L
 
 if TYPE_CHECKING:
     from ..core.agent import Turn
@@ -48,7 +50,6 @@ if TYPE_CHECKING:
     from ..core.provider import Usage
     from ..host.command import CommandRegistry
     from ..host.conversation import Conversation
-    from . import lines as L
     from .theme import Theme
 
 _log = logging.getLogger(__name__)
@@ -58,6 +59,14 @@ NAMESPACE = "mocode.cli"
 
 #: What a drawer is: an event in, the lines it should draw as out.
 Drawer = Callable[["Event"], list["L.Line"]]
+
+#: The decline answers every dialog falls back to when it cannot ask.
+_DECLINED: dict[str, object] = {"confirm": False, "select": None, "input": None}
+
+#: Keys the raw running-time loop may report, named for what they do here.
+_CONFIRM_KEYS = ("y", "n")
+_ENTER_KEYS = ("c-m", "c-j", "enter")
+_BACKSPACE_KEYS = ("c-h", "backspace")
 
 
 class DrawerRegistry:
@@ -78,8 +87,6 @@ class DrawerRegistry:
     def __init__(self) -> None:
         self._by_type: dict[type, Drawer] = {}
         self._by_kind: dict[str, Drawer] = {}
-        from . import lines as L
-
         self.register(Notice, lambda e: [L.notice(e.message, e.level)])
         # The kind ``ui.message`` speaks, reserved for message events riding
         # the conversation: text in, one line out.
@@ -103,21 +110,181 @@ class DrawerRegistry:
         return drawer(event) if drawer is not None else None
 
 
+@dataclass
+class Option:
+    """One entry of a select dialog — what it says and what choosing it returns."""
+
+    label: str
+    value: object
+    description: str = ""
+
+
+class _InlineDialog:
+    """One question drawn on screen and answered by raw keys, append-only.
+
+    Drawn while a turn runs, when there is no prompt to hand the question to.
+    The dialog owns no screen region — nothing but the painter may rewrite
+    committed rows — so every state change is printed afresh below the last
+    output and the newest lines on screen are always the live state. Keys
+    arrive from the app's raw running-time loop through :meth:`feed`, which
+    swallows everything until the question is answered: an open dialog owns
+    the keyboard.
+    """
+
+    def __init__(
+        self,
+        kind: str,
+        chrome: Callable[[L.Line], None],
+        payload: dict,
+    ) -> None:
+        self.kind = kind
+        self._chrome = chrome
+        self._payload = payload
+        self._index = 0
+        self._buffer = ""
+        self.future = asyncio.get_running_loop().create_future()
+        self._paint_initial()
+
+    # ── answering ─────────────────────────────────────────
+
+    def feed(self, key: str) -> bool:
+        """One raw key name (``"y"``, ``"up"``, ``"c-m"``, …). Always consumed."""
+        if self.future.done():
+            return False
+        if self.kind == "confirm":
+            if key in ("y", "Y"):
+                self._resolve(True, "yes")
+            elif key in ("n", "N"):
+                self._resolve(False, "no")
+            elif key == "escape":
+                self._resolve(False, "cancelled")
+        elif self.kind == "select":
+            options = self._payload["options"]
+            if key == "up":
+                self._index = (self._index - 1) % len(options)
+                self._paint_cursor()
+            elif key == "down":
+                self._index = (self._index + 1) % len(options)
+                self._paint_cursor()
+            elif key in _ENTER_KEYS:
+                chosen = options[self._index]
+                self._chrome(_decided(f"{self._payload['title']}: {chosen.label}"))
+                self.future.set_result(chosen)
+            elif key == "escape":
+                self._chrome(_cancelled(self._payload["title"]))
+                self.future.set_result(None)
+        elif self.kind == "input":
+            if len(key) == 1 and key.isprintable():
+                self._buffer += key
+                self._paint_buffer()
+            elif key in _BACKSPACE_KEYS:
+                self._buffer = self._buffer[:-1]
+                self._paint_buffer()
+            elif key in _ENTER_KEYS:
+                answer = self._buffer or self._payload.get("default", "")
+                self._chrome(_decided(f"{self._payload['message']}: {answer}"))
+                self.future.set_result(answer)
+            elif key == "escape":
+                self._chrome(_cancelled(self._payload["message"]))
+                self.future.set_result(None)
+        return True
+
+    def _resolve(self, answer: bool, verdict: str) -> None:
+        message = self._payload["message"]
+        self._chrome(_decided(f"{message} — {verdict}"))
+        self.future.set_result(answer)
+
+    # ── painting ──────────────────────────────────────────
+
+    def _paint(self, line: L.Line) -> None:
+        self._chrome(line)
+
+    def _paint_initial(self) -> None:
+        if self.kind == "confirm":
+            message = self._payload["message"]
+            if self._payload.get("danger"):
+                self._paint(
+                    L.Line(
+                        text=f"? {message} [y/n]",
+                        icon="!",
+                        style="error",
+                        icon_style="error",
+                    )
+                )
+            else:
+                self._paint(L.Line(text=f"? {message} [y/n]", style="info"))
+        elif self.kind == "select":
+            title, options = self._payload["title"], self._payload["options"]
+            self._paint(L.Line(text=f"? {title}", style="info"))
+            for option in options:
+                note = f" {option.description}" if option.description else ""
+                self._paint(L.Line(text=f"  {option.label}", note=note, style="muted"))
+            self._paint(L.Line(text="↑↓ navigate · Enter confirm · Esc cancel", style="muted"))
+            self._paint_cursor()
+        elif self.kind == "input":
+            message = self._payload["message"]
+            default = self._payload.get("default", "")
+            note = f"default: {default}" if default else ""
+            self._paint(L.Line(text=f"? {message}", note=note, style="info"))
+
+    def _paint_cursor(self) -> None:
+        chosen = self._payload["options"][self._index]
+        self._paint(L.Line(text=f"❯ {chosen.label}", style="accent"))
+
+    def _paint_buffer(self) -> None:
+        self._paint(
+            L.Line(text=f"? {self._payload['message']}: {self._buffer}", style="info")
+        )
+
+
+def _decided(text: str) -> L.Line:
+    """The resolved answer, in the user's own marker."""
+    return L.Line(text=text, icon=L.USER, style="user")
+
+
+def _cancelled(subject: str) -> L.Line:
+    return L.Line(text=f"? {subject} — cancelled", style="muted")
+
+
 class UI:
     """The runtime channel — what a plugin may ask of whoever is watching.
 
-    The skeleton of the surface the interactive line grows: ``is_interactive``
-    is the switch every degradation hangs off (a pipe has no one to ask), and
-    ``message`` is the one thing that works everywhere. Dialogs — confirm,
-    select — arrive with the interactive work and are deliberately absent
-    here rather than stubbed.
+    Three questions, one contract:
+
+    * ``is_interactive`` is the switch every degradation hangs off (a pipe has
+      no one to ask): when it is false, confirm declines and select/input come
+      back empty — a caller that wants different behaviour checks the flag
+      first and picks its own fallback.
+    * While a turn runs, the question is drawn inline and answered by the raw
+      key loop the terminal already runs over the TTY — that is what makes
+      approval hooks possible mid-run.
+    * While the prompt is idle, the question goes through questionary, which
+      owns the cursor for the duration.
+
+    One question at a time: a dialog that arrives while another is open waits
+    its turn, and the answers come back in the order the questions were asked.
     """
 
-    def __init__(self, conversation: "Conversation", *, is_interactive: bool):
+    def __init__(
+        self,
+        conversation: "Conversation",
+        *,
+        is_interactive: bool,
+        chrome: "Callable[[L.Line], None] | None" = None,
+        running: "Callable[[], bool] | None" = None,
+    ):
         self._conversation = conversation
-        #: Whether this frontend can ask the user something mid-run. A plugin
-        #: decides its fallbacks on this; a pipe answers no.
+        #: Whether this frontend can ask the user something. A pipe answers no,
+        #: and every dialog degrades to its decline answer without drawing.
         self.is_interactive = is_interactive
+        #: Where dialog lines go — the display's line renderer. Only ever set
+        #: together with interactivity; without it the inline path cannot draw.
+        self._chrome = chrome
+        #: Whether a turn is in flight; the app injects this. None means the
+        #: dual-path question cannot be answered, and the idle path is used.
+        self._running = running
+        self._dialog: _InlineDialog | None = None
+        self._lock = asyncio.Lock()
 
     async def message(self, text: str) -> None:
         """One line for whoever is watching — said on the stream, not printed.
@@ -129,6 +296,72 @@ class UI:
         drawer without the signature changing.
         """
         await self._conversation.notify(text)
+
+    async def confirm(self, message: str, *, danger: bool = False) -> bool:
+        """Ask yes/no. ``danger`` marks the question as destructive (red). Esc
+        declines; a non-interactive frontend declines without drawing anything.
+        """
+        if not self.is_interactive:
+            return False
+        if self._mid_turn():
+            return await self._inline("confirm", message=message, danger=danger)
+        from . import dialogs
+
+        return await dialogs.confirm(message, danger=danger)
+
+    async def select(self, title: str, options: list[Option]) -> Option | None:
+        """Pick one of *options*; None when cancelled. Empty options pick None."""
+        if not options:
+            return None
+        if not self.is_interactive:
+            return None
+        if self._mid_turn():
+            return await self._inline("select", title=title, options=options)
+        from . import dialogs
+
+        choices = [
+            dialogs.Choice(
+                title=o.label, value=o, description=o.description or None
+            )
+            for o in options
+        ]
+        chosen = await dialogs.select(title, choices)
+        return chosen  # the Option rides the choice as its value
+
+    async def input(self, message: str, *, default: str = "") -> str | None:
+        """Ask for one line of text; None when cancelled. Enter on an empty
+        answer takes *default*.
+        """
+        if not self.is_interactive:
+            return None
+        if self._mid_turn():
+            return await self._inline("input", message=message, default=default)
+        from . import dialogs
+
+        return await dialogs.text(message, default=default)
+
+    def feed_key(self, key: str) -> bool:
+        """Hand one raw key to an open inline dialog. True when a dialog took it —
+        the running-time key loop calls this before every other routing, so an
+        open dialog owns the keyboard until it answers."""
+        dialog = self._dialog
+        return dialog.feed(key) if dialog is not None else False
+
+    # ── internals ─────────────────────────────────────────
+
+    def _mid_turn(self) -> bool:
+        return self._running is not None and self._running()
+
+    async def _inline(self, kind: str, **payload: object) -> object:
+        if self._chrome is None:
+            return _DECLINED[kind]
+        async with self._lock:
+            dialog = _InlineDialog(kind, self._chrome, payload)
+            self._dialog = dialog
+            try:
+                return await dialog.future
+            finally:
+                self._dialog = None
 
 
 # ── Keys ─────────────────────────────────────────────────
@@ -307,28 +540,32 @@ class StatusRegistry:
 
 
 class HeaderRegistry:
-    """Lines printed above the prompt when set — print-style decoration.
+    """Lines the app prints above the next prompt — print-style decoration.
 
     There is no live header region (no Application, by decision): setting the
-    header prints the lines into the scroll-back above the prompt, once. The
-    sink is injected by the app; without one (a pipe) setting is remembered
-    but never printed.
+    header records the lines and raises a dirty flag, and the app prints them
+    into the scroll-back above the prompt before the next one, once. Off a
+    terminal the lines are remembered but never printed.
     """
 
-    def __init__(self, sink: Callable[[str], None] | None = None):
-        self._sink = sink
+    def __init__(self) -> None:
         self._lines: list[str] = []
-
-    def bind(self, sink: Callable[[str], None] | None) -> None:
-        """Where printed lines go; the app injects its printer at assembly."""
-        self._sink = sink
+        self._dirty = False
 
     def set(self, lines: list[str]) -> None:
-        """Print *lines* above the prompt; an empty list clears it."""
+        """Record *lines* for the prompt that comes next; an empty list clears."""
         self._lines = list(lines)
-        if self._sink is not None:
-            for line in self._lines:
-                self._sink(line)
+        self._dirty = True
+
+    @property
+    def dirty(self) -> bool:
+        """Whether set lines are still waiting for a prompt to print above."""
+        return self._dirty
+
+    def flush(self) -> list[str]:
+        """The pending lines and a clean flag — the app prints what it takes."""
+        self._dirty = False
+        return list(self._lines)
 
     @property
     def lines(self) -> list[str]:
@@ -459,6 +696,7 @@ __all__ = [
     "KeyBinding",
     "KeyContext",
     "KeyRegistry",
+    "Option",
     "Segment",
     "StatusRegistry",
     "StatusState",

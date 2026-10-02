@@ -345,6 +345,8 @@ class TestTheFullContext:
         app = _app(tmp_path, plugins)
 
         assert app.header.lines == ["banner line"]
+        app.display.live = True  # a terminal, not the test pipe: the banner prints
+        app._flush_header()
         assert "banner line" in capsys.readouterr().out
         assert app.status.toolbar().startswith("[chrome]")
 
@@ -459,7 +461,7 @@ class TestDrawers:
 
 
 class TestUI:
-    """The runtime channel — one method, said on the stream."""
+    """The runtime channel — said on the stream, asked through the context."""
 
     @pytest.mark.asyncio
     async def test_ui_message_is_a_notice_on_the_conversation(self, tmp_path, capsys):
@@ -473,3 +475,43 @@ class TestUI:
         assert notice is not None and notice.message == "hello there"
         app.renderer.draw(notice)   # the frontend's half: render what arrived
         assert strip_ansi(capsys.readouterr().out) == "hello there\n"
+
+    def test_the_contexts_ui_is_the_apps_own(self, tmp_path):
+        plugins = tmp_path / "plugins"
+        app = _app(tmp_path, plugins)
+
+        assert app.ctx.ui is app.ui
+        assert app._key_context().ui is app.ui   # key handlers ask through the same one
+
+    @pytest.mark.asyncio
+    async def test_the_dialogs_decline_under_the_test_pipe(self, tmp_path):
+        """The pipe contract, through the context a plugin actually builds against."""
+        plugins = tmp_path / "plugins"
+        app = _app(tmp_path, plugins)
+
+        assert app.ctx.ui.is_interactive is False
+        assert await app.ctx.ui.confirm("allow?") is False
+        assert await app.ctx.ui.select("pick", []) is None
+        assert await app.ctx.ui.input("name?") is None
+
+    def test_a_cli_plugin_reaches_the_dialogs_through_the_context(self, tmp_path):
+        """The channel a plugin builds against carries the full surface."""
+        plugins = tmp_path / "plugins"
+        _install(
+            plugins,
+            cli="""
+            from mocode.cli import CLIPlugin
+
+            class AskingPlugin(CLIPlugin):
+                name = "asking.cli"
+
+                def build(self, ctx):
+                    self.ui = ctx.ui
+        """,
+        )
+        app = _app(tmp_path, plugins)
+        plugin = next(p for p in app.plugins if p.name == "asking.cli")
+
+        for method in ("message", "confirm", "select", "input"):
+            assert callable(getattr(plugin.ui, method))
+        assert plugin.ui.is_interactive is False
