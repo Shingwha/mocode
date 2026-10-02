@@ -1,4 +1,4 @@
-✅ 2026-10-03 @ feat/mcp-sdk-resources（已派工，进行中；与 `07` 并行）
+✅ 2026-10-03 @ feat/mcp-sdk-resources（已合并 master `4c2a4e9`；分支 948 passed，合并后 W3b+W3c 组合门禁 960 passed，lead 复核；hidden 语义经 lead 裁决对齐 `mcp_tool` 管线；遗留：变更订阅、prompts、模板展开、`on_disconnected` 即时注销）
 
 # Spec 08 · W3c：resources 只读工具（波次 W3c）
 

@@ -772,7 +772,7 @@ in `-`/`_` are the same name.
 {
   "mcpServers": {
     "demo": {
-      "type": "stdio",                     // stdio only, for now
+      "type": "stdio",
       "command": "uvx",
       "args": ["demo-mcp"],
       "env": { "TOKEN": "${DEMO_TOKEN}" }, // ${VAR} expands from the environment
@@ -781,6 +781,11 @@ in `-`/`_` are the same name.
       "exposure": "codemode",              // see the table below
       "toolExposure": { "search_*": "direct", "delete_*": "hidden" },
       "description": "one line for the prompt's mcp_servers section"
+    },
+    "web": {
+      "type": "streamable-http",           // or "sse" (2024-11-05 HTTP+SSE)
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${WEB_TOKEN}" }
     }
   }
 }
@@ -789,9 +794,26 @@ in `-`/`_` are the same name.
 Mocode's own files accept the extensions above. A plugin directory's
 `mcp.json` is the portable Agent Plugins 1.0.0 form instead — `$schema` plus
 `mcpServers` carrying only the standard fields (`{type, command, args, env,
-cwd}` for stdio; `{type, url, headers}` for streamable HTTP, which is **not
-yet** served), `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` expansion, and mocode
-extensions like `exposure` reported and ignored.
+cwd}` for stdio; `{type, url, headers}` for the HTTP transports),
+`${PLUGIN_ROOT}` / `${PLUGIN_DATA}` expansion, and mocode extensions like
+`exposure` reported and ignored.
+
+Which transport an entry uses comes from its `type`, or from its shape in
+mocode's own files (a `command` means stdio, a `url` means `streamable-http`).
+An HTTP entry's URL must be absolute, must not carry userinfo or a fragment,
+and must be HTTPS unless it points at the loopback interface; header names are
+compared case-insensitively and a repeated name makes the entry invalid. In
+mocode's own files the URL and header values may expand `${VAR}`; in a plugin
+directory's file they stay literal, since that file is portable data other
+clients read. HTTP connections honor the system proxy configuration.
+
+Connections run on the official [`mcp`](https://py.sdk.modelcontextprotocol.io)
+Python SDK. The protocol version is negotiated per connection — a
+`server/discover` probe against current servers, the `initialize` handshake
+against older ones — and a modern server's `tools/list_changed`, delivered
+over a `subscriptions/listen` stream beside the connection, re-syncs the tool
+set without restarting the conversation. Legacy servers, which cannot listen,
+are reported once and left alone.
 
 Every server tool becomes `mcp__<server>__<tool>` — characters outside
 `[A-Za-z0-9_]` fold to `_`, and colliding names gain a stable short hash.
@@ -814,10 +836,23 @@ Servers whose tools may reach the model connect under a bounded wait
 the background and register when they arrive, so a slow server never stalls a
 conversation. The program-only `mcp_status` tool reports each server's state,
 the `mcp_servers` prompt section lists every reachable server with how its
-tools are reached, and closing the conversation kills every server child. If
-program-only tools exist while codemode is disabled, one warning says so per
-conversation. Not yet, by design: streamable HTTP transport, OAuth,
-`!command`, the legacy `sse` transport, and MCP resources/prompts/sampling.
+tools are reached, and closing the conversation ends every connection, server
+children included. If program-only tools exist while codemode is disabled, one
+warning says so per conversation.
+
+A server that declares the `resources` capability also gains three read-only
+tools — `list_mcp_resources`, `list_mcp_resource_templates` and
+`read_mcp_resource` — registered together, with the widest exposure the
+resource-declaring servers have (so a hidden server's resources are switched
+off for everyone, exactly like its tools). Text comes back in the tool result,
+images in its details, and any other binary in a temporary file the result
+points at.
+
+Not yet, by design: OAuth and authenticated flows beyond configured headers,
+`!command` expansion, MCP prompts and sampling, interactive elicitation (a
+server that asks for input gets an `mcp_input_required` tool error), the
+`tool_search` built-in that `deferred` waits on, and subscriptions to
+resource changes.
 
 ### `codemode` — a Python script that calls tools
 

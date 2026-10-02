@@ -1,4 +1,4 @@
-✅ 2026-10-03 @ feat/mcp-sdk-subs（已派工，进行中；与 `08` 并行）
+✅ 2026-10-03 @ feat/mcp-sdk-subs（已合并 master `c425cbc`；925 passed exit 0，lead 合并前后各复核一次；遗留：resources 变更通知、多过滤器、listen 流经代理的长连接行为）
 
 # Spec 07 · W3b：modern 工具变更订阅（subscriptions/listen）（波次 W3b）
 
