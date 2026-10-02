@@ -1,4 +1,4 @@
-✅ 2026-10-03 @ feat/mcp-sdk-stdio（已派工，进行中）
+✅ 2026-10-03 @ feat/mcp-sdk-stdio（T1 done @ `45f4ca6`；lead 修订写范围后 T2 重派 —— W2 集成测试是重构消费者，见 §3/§5）
 
 # Spec 05 · W3a-1：MCP stdio 客户端改用官方 SDK（波次 W3a-1）
 
@@ -76,24 +76,37 @@ server 时工具名、availability、事件、错误码、超时行为与 W1a �
 | W3a-1-D9 | runtime：`start()` 构造 `McpSession`（当前 config 只产 stdio，无需分支；`06` 再按 `cfg.transport` 分派）；注解 `StdioSession` → `McpSession`；`shutdown()` 同步取消 + best-effort；新增 `async aclose()` 供 `plugin.close()` await（`McpPlugin.close` 已是 async——如实测；同步 `shutdown()` 若无调用方则删） |
 | W3a-1-D10 | 测试 seam：**协议形态类测试用进程内 `MCPServer`**（`from mcp.server import MCPServer`，官方测试用法，实测 2026-07-28 + tools/call 可用）；**stdio 集成测试沿用 `tmp_path` + `sys.executable` 子进程假 server**（换行 JSON-RPC  wire 不变，`tests/_mcp_fake.py` 的脚本与新写的脚本都行）；`TestModernSession/TestLegacySession/TestEraNegotiation` 三个内部机制类**按新 seam 重写为结果断言**（协商出的 protocol_version、工具注册结果、错误映射、超时），不再断言内部探测细节 |
 
-## 3. 工单（一个原子 commit——删旧实现与其测试必须同 commit）
+## 3. 工单（T1 原子 commit；T2 为 lead 修订写范围后的范围外消费者修复）
 
 ### T1 SDK stdio 客户端
 - 按 §1/§2 实现；删 `session.py`/`rpc.py`；`tools.py` 按 D6/D7 对齐；`runtime.py` 按 D9；`__init__.py` 导出更新；`mcp/README.md`（插件目录内设计文档）同步更新。
 - 测试：`tests/test_builtin_mcp.py` 的 session 三类重写（进程内 + 子进程假 server）；`TestSyncTools/TestToolMapping/TestExposureMapping/TestPluginLifecycle/TestEndToEnd` 与配置/命名类**尽量原样保留**（它们断言对外行为，正是行为保持的护栏）；`tests/test_builtin_mcp_codemode.py` 不动也应全绿。
 - commit：`refactor(mcp): rebuild the stdio client on the official sdk`
 
+### T2 W2 集成测试适配（lead 修订，2026-10-03）
+- **背景**：`tests/test_builtin_mcp_codemode.py`（W2 交付）是重构的**范围外消费者**——它
+  `import ...mcp.session`（D1 已删该模块）、依赖 `session._proc`（SDK 不暴露进程句柄）、
+  其 ECHO fake 的 `tools/list` 缺 2026-07-28 强制的 `ttlMs`/`cacheScope`。三处不修则
+  全量门禁收集期即红。worker 已验证修复补丁（896 passed, exit 0，未提交）。
+- **做什么**：把已验证补丁落为本分支第二个 commit——仅限三处耦合：
+  ① `_mcp_fake.py`：ECHO fake 的 `tools/list` 补 `ttlMs`/`cacheScope` + pidfile 辅助；
+  ② `test_builtin_mcp_codemode.py`：`STATE_CLOSED` import 改 `...mcp.client`；
+  ③ 同文件 `TestClose`：`session._proc` 观测改 pidfile + 平台感知存活探测
+  （Windows `OpenProcess(SYNCHRONIZE)`，POSIX `os.kill(pid, 0)`）。
+  **两文件其余部分逐字节不变。**
+- commit：`test(mcp): rewire the codemode integration tests onto the sdk client`
+
 ## 4. 验收（完成前自测，报告给真实结论）
 
 1. `uv run pytest -q` 全绿、退出码独立确认（`; echo $?`，禁管道吞）、数量 ≥ 891。
 2. `uv run pytest tests/test_builtin_mcp.py tests/test_builtin_mcp_codemode.py -q` 全绿。
 3. `uv run python -X importtime -c "import mocode"` 输出无 `mcp`；`uv run python -c "import time, mocode"` 计时 <1ms（连续 3 次）。
-4. `git diff --stat <fda301f>` 只含 `mocode/host/plugin/builtin/mcp/**`、`tests/test_builtin_mcp.py`；`git diff fda301f -- mocode/core mocode/host/plugin/host.py pyproject.toml uv.lock README.md docs` 为空。
+4. `git diff --stat e778b2d` 只含 `mocode/host/plugin/builtin/mcp/**`、`tests/test_builtin_mcp.py`，外加 T2 授权的 `tests/_mcp_fake.py`、`tests/test_builtin_mcp_codemode.py`（仅三处耦合）；`git diff e778b2d -- mocode/core mocode/host/plugin/host.py pyproject.toml uv.lock README.md docs specs` 为空。
 5. Windows 平台分支处按 `sys.platform` 处理（SDK 已内建 Job Object 语义；你的测试只断言"直接子进程被终止"这类跨平台事实）。
 
 ## 5. 禁触清单
 
-`mocode/core/**`；`mocode/host/**` 除 `builtin/mcp/**` 外的一切（含 `host.py`）；`README.md`；`docs/**`；其它测试文件；`pyproject.toml`/`uv.lock`（依赖已由 lead 落在 master）；spec 文件。
+`mocode/core/**`；`mocode/host/**` 除 `builtin/mcp/**` 外的一切（含 `host.py`）；`README.md`；`docs/**`；其它测试文件（**唯一例外**：`tests/_mcp_fake.py` 与 `tests/test_builtin_mcp_codemode.py` 仅允许 T2 所列三处耦合修改，其余部分逐字节不变）；`pyproject.toml`/`uv.lock`（依赖已由 lead 落在 master）；spec 文件。
 
 ## 6. 最终报告格式
 
