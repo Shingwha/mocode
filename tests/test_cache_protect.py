@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from mocode.core.provider import Response, Usage
 from mocode.host.runtime import MoCode
@@ -39,7 +38,6 @@ def _tool_names(payload: list[dict]) -> set[str]:
 
 
 class TestThePayloadIsPinned:
-    @pytest.mark.asyncio
     async def test_a_switch_costs_no_request_change(self, mc: MoCode, tmp_path: Path):
         conversation = _conversation(
             mc, _project(tmp_path, "a"), _answer("one"), _answer("two")
@@ -53,7 +51,6 @@ class TestThePayloadIsPinned:
         assert provider.calls[0]["tools"] == provider.calls[1]["tools"]
         assert "read" in _tool_names(provider.calls[1]["tools"])
 
-    @pytest.mark.asyncio
     async def test_a_disabled_tool_refuses_to_run(self, mc: MoCode, tmp_path: Path):
         conversation = _conversation(
             mc,
@@ -68,7 +65,6 @@ class TestThePayloadIsPinned:
         results = [m for m in conversation.messages if m.get("role") == "tool"]
         assert results[0]["content"].startswith("denied:")
 
-    @pytest.mark.asyncio
     async def test_a_rebuild_refreshes_the_payload_and_says_nothing(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -88,7 +84,6 @@ class TestThePayloadIsPinned:
 
 
 class TestTheWorldIsAnnounced:
-    @pytest.mark.asyncio
     async def test_a_switch_off_is_one_line(self, mc: MoCode, tmp_path: Path):
         conversation = _conversation(
             mc, _project(tmp_path, "a"), _answer("one"), _answer("two")
@@ -100,7 +95,6 @@ class TestTheWorldIsAnnounced:
 
         assert "tool 'read' is now disabled" in _notices(conversation)[-1]["content"]
 
-    @pytest.mark.asyncio
     async def test_a_pinned_derived_section_holds_the_prompt_and_announces_itself(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -131,7 +125,6 @@ class TestTheWorldIsAnnounced:
         assert "-callable tools: bash, bash_output, edit, kill_shell, read, skill, write" in notice
         assert "+callable tools: bash, bash_output, edit, kill_shell, skill, write" in notice
 
-    @pytest.mark.asyncio
     async def test_a_rebuild_re_renders_the_pinned_section(self, mc: MoCode, tmp_path: Path):
         from mocode.core.prompt import Section
 
@@ -155,7 +148,6 @@ class TestTheWorldIsAnnounced:
         assert "callable tools: bash, bash_output, edit, kill_shell, skill, write" in conversation.agent.system_prompt
         assert _notices(conversation) == []
 
-    @pytest.mark.asyncio
     async def test_a_switch_back_on_is_news_again(self, mc: MoCode, tmp_path: Path):
         conversation = _conversation(
             mc, _project(tmp_path, "a"), _answer("1"), _answer("2"), _answer("3")
@@ -169,7 +161,6 @@ class TestTheWorldIsAnnounced:
 
         assert "tool 'read' is now available" in _notices(conversation)[-1]["content"]
 
-    @pytest.mark.asyncio
     async def test_a_change_reverted_between_turns_is_never_news(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -184,7 +175,6 @@ class TestTheWorldIsAnnounced:
 
         assert _notices(conversation) == []
 
-    @pytest.mark.asyncio
     async def test_an_in_place_edit_is_seen_and_diffed(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -203,7 +193,6 @@ class TestTheWorldIsAnnounced:
         assert '-    "description": "Read a file and return' in notice
         assert '+    "description": "Read a file, with line numbers"' in notice
 
-    @pytest.mark.asyncio
     async def test_a_tool_registered_late_is_announced_with_its_schema(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -223,7 +212,6 @@ class TestTheWorldIsAnnounced:
         assert "tool 'grep' is now available:" in notice
         assert '+    "name": "grep"' in notice
 
-    @pytest.mark.asyncio
     async def test_the_notice_lands_before_the_users_message(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -240,7 +228,6 @@ class TestTheWorldIsAnnounced:
 
 
 class TestAResume:
-    @pytest.mark.asyncio
     async def test_the_interface_comes_back_and_the_change_is_announced(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -262,7 +249,6 @@ class TestAResume:
         assert "read" in _tool_names(provider.calls[0]["tools"])
         assert "tool 'read' is now disabled" in _notices(second)[-1]["content"]
 
-    @pytest.mark.asyncio
     async def test_a_resume_with_no_change_says_nothing(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -280,7 +266,6 @@ class TestAResume:
 
 
 class TestTheHostsSwitch:
-    @pytest.mark.asyncio
     async def test_an_unpinned_runtime_keeps_the_payload_live(
         self, tmp_path: Path
     ):
@@ -298,7 +283,6 @@ class TestTheHostsSwitch:
         provider = conversation.agent.provider
         assert "read" not in _tool_names(provider.calls[1]["tools"])
 
-    @pytest.mark.asyncio
     async def test_disabling_the_plugin_silences_the_notices(
         self, mc: MoCode, tmp_path: Path
     ):

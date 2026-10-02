@@ -106,14 +106,12 @@ class TestCommandResults:
 
 
 class TestDispatch:
-    @pytest.mark.asyncio
     async def test_a_named_command_runs(self, conversation: Conversation):
         registry = CommandRegistry()
         registry.register(_get_builtin_cmd("/quit"))
 
         assert (await registry.dispatch("/quit", conversation=conversation)) is EXIT
 
-    @pytest.mark.asyncio
     async def test_a_command_gets_its_arguments(self, conversation: Conversation):
         seen: list[str] = []
 
@@ -127,7 +125,6 @@ class TestDispatch:
         await registry.dispatch("/say hello  world", conversation=conversation)
         assert seen == ["hello  world"]
 
-    @pytest.mark.asyncio
     async def test_anything_else_is_a_prompt(self, conversation: Conversation):
         result = await CommandRegistry().dispatch(
             "what is in this project?", conversation=conversation
@@ -136,7 +133,6 @@ class TestDispatch:
         assert result.kind is Kind.PROMPT
         assert result.prompt == "what is in this project?"
 
-    @pytest.mark.asyncio
     async def test_an_unknown_slash_word_is_a_prompt_too(self, conversation: Conversation):
         """The frontend decides what to say about it; the host does not guess."""
         result = await CommandRegistry().dispatch(
@@ -147,14 +143,12 @@ class TestDispatch:
 
 
 class TestQuitCommand:
-    @pytest.mark.asyncio
     async def test_returns_exit(self, conversation: Conversation):
         result, _events = await _run(_get_builtin_cmd("/quit"), conversation)
         assert result is EXIT
 
 
 class TestResumeCommand:
-    @pytest.mark.asyncio
     async def test_resume_from_an_exported_file(self, conversation: Conversation):
         export_data = {
             "system_prompt": "You are a coder.",
@@ -172,7 +166,6 @@ class TestResumeCommand:
         assert conversation.messages == export_data["messages"]
         assert any(isinstance(e, ConversationChanged) for e in events)
 
-    @pytest.mark.asyncio
     async def test_resume_rejects_an_invalid_file(self, conversation: Conversation):
         path = Path(conversation.cwd) / "old.json"
         path.write_text(json.dumps([{"role": "user", "content": "hi"}]), encoding="utf-8")
@@ -182,7 +175,6 @@ class TestResumeCommand:
         assert conversation.messages == []
         assert [n.level for n in _notices(events)] == ["warn"]
 
-    @pytest.mark.asyncio
     async def test_a_bare_resume_says_so_when_there_is_nothing_to_resume(
         self, conversation: Conversation
     ):
@@ -190,7 +182,6 @@ class TestResumeCommand:
 
         assert [n.message for n in _notices(events)] == ["No sessions found."]
 
-    @pytest.mark.asyncio
     async def test_a_bare_resume_without_a_terminal_does_nothing(
         self, conversation: Conversation
     ):
@@ -211,7 +202,6 @@ class TestResumeCommand:
 
 
 class TestModelCommand:
-    @pytest.mark.asyncio
     async def test_without_a_terminal_it_leaves_the_model_alone(
         self, conversation: Conversation
     ):
@@ -220,7 +210,6 @@ class TestModelCommand:
         assert conversation.model_name == "test-model"
         assert events == []
 
-    @pytest.mark.asyncio
     async def test_the_picker_shows_ids_and_falls_back_to_them_for_titles(
         self, make_mc, tmp_path: Path, monkeypatch
     ):
@@ -271,7 +260,6 @@ class TestModelCommand:
 class TestSkillCommand:
     """`/skill:<name>` is contributed by a *host* plugin, so it works headless."""
 
-    @pytest.mark.asyncio
     async def test_basic_load(self, conversation: Conversation):
         cmd = make_skill_command(_skill("workflow", "DAG orchestration", "instructions here"))
         assert cmd.name == "/skill:workflow"
@@ -285,7 +273,6 @@ class TestSkillCommand:
         assert "instructions here" in result.prompt
         assert "User request:" not in result.prompt
 
-    @pytest.mark.asyncio
     async def test_with_user_request(self, conversation: Conversation):
         cmd = make_skill_command(_skill("kami", "PDF typesetting", "typeset instructions"))
 
@@ -294,7 +281,6 @@ class TestSkillCommand:
         assert "User request: 帮我做一份简历" in result.prompt
         assert "typeset instructions" in result.prompt
 
-    @pytest.mark.asyncio
     async def test_an_empty_skill_says_so(self, conversation: Conversation):
         _result, events = await _run(make_skill_command(_skill("empty", "d", "")), conversation)
 

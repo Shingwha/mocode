@@ -114,7 +114,6 @@ class _Denier(AgentHook):
 
 
 class TestBareCoreDispatcher:
-    @pytest.mark.asyncio
     async def test_a_call_runs_the_tool_and_publishes_its_events(self):
         dispatcher, events, _ = _bare_dispatcher(_echo_tool())
 
@@ -126,7 +125,6 @@ class TestBareCoreDispatcher:
         assert events[0].args == {"value": "x"}
         assert events[1].status == "ok"
 
-    @pytest.mark.asyncio
     async def test_model_origin_events_fold_program_origin_events_do_not(self):
         tool = _echo_tool()
 
@@ -138,7 +136,6 @@ class TestBareCoreDispatcher:
         await program.run("echo", {"value": "x"}, origin="program")
         assert program_folds == [False, False]
 
-    @pytest.mark.asyncio
     async def test_structured_details_travel_on_the_result(self):
         tool = Tool("stats", "d", {}, lambda a: ToolResult("read it", {"lines": 412}))
 
@@ -149,7 +146,6 @@ class TestBareCoreDispatcher:
         assert events[1].details == {"lines": 412}
         assert result.content == "read it"
 
-    @pytest.mark.asyncio
     async def test_results_are_truncated_to_the_configured_limit(self):
         tool = Tool("big", "d", {}, lambda a: "x" * 100)
 
@@ -160,7 +156,6 @@ class TestBareCoreDispatcher:
 
         assert result.content == "x" * 10 + "\n... [truncated]"
 
-    @pytest.mark.asyncio
     async def test_a_per_call_timeout_overrides_the_config(self):
         dispatcher, _, _ = _bare_dispatcher(_sleeper(), config=AgentConfig(tool_timeout=30))
         result = await dispatcher.run("slow", {}, timeout=0.05)
@@ -173,7 +168,6 @@ class TestBareCoreDispatcher:
 
 
 class TestToolPolicy:
-    @pytest.mark.asyncio
     async def test_a_tool_policy_overrides_the_config_timeout(self):
         slow = Tool("slow", "d", {}, lambda a: time.sleep(1), policy=ToolPolicy(timeout=0.05))
         dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=30))
@@ -183,7 +177,6 @@ class TestToolPolicy:
         assert result.status == "timeout"
         assert "0.05" in result.content
 
-    @pytest.mark.asyncio
     async def test_a_call_level_timeout_wins_over_the_tool_policy(self):
         slow = Tool("slow", "d", {}, lambda a: time.sleep(1), policy=ToolPolicy(timeout=30))
         dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=30))
@@ -193,7 +186,6 @@ class TestToolPolicy:
         assert result.status == "timeout"
         assert "0.05" in result.content
 
-    @pytest.mark.asyncio
     async def test_a_policy_without_an_opinion_falls_through_to_the_config(self):
         slow = Tool("slow", "d", {}, lambda a: time.sleep(1), policy=ToolPolicy(result_limit=5))
         dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=0.05))
@@ -202,7 +194,6 @@ class TestToolPolicy:
 
         assert result.status == "timeout"  # the config's 0.05s applied
 
-    @pytest.mark.asyncio
     async def test_a_policy_result_limit_overrides_the_config(self):
         big = Tool("big", "d", {}, lambda a: "x" * 100, policy=ToolPolicy(result_limit=10))
         dispatcher, _, _ = _bare_dispatcher(big, config=AgentConfig(tool_result_limit=50))
@@ -211,7 +202,6 @@ class TestToolPolicy:
 
         assert result.content == "x" * 10 + "\n... [truncated]"
 
-    @pytest.mark.asyncio
     async def test_a_callable_policy_reads_the_call_arguments(self):
         seen: list[dict] = []
 
@@ -231,7 +221,6 @@ class TestToolPolicy:
         assert result.status == "timeout"
         assert seen == [{"t": 0.05}]
 
-    @pytest.mark.asyncio
     async def test_the_effective_values_land_on_the_context(self):
         seen: dict = {}
 
@@ -260,7 +249,6 @@ class TestToolPolicy:
 
 
 class TestCallIdentity:
-    @pytest.mark.asyncio
     async def test_program_calls_nested_in_a_parent_are_numbered_per_parent(self):
         dispatcher, events, _ = _bare_dispatcher(_echo_tool())
 
@@ -271,7 +259,6 @@ class TestCallIdentity:
         ids = [e.call_id for e in events if isinstance(e, ToolCallStarted)]
         assert ids == ["p9:1", "p9:2", "other:1"]
 
-    @pytest.mark.asyncio
     async def test_a_parentless_program_call_gets_a_pcall_id(self):
         dispatcher, events, _ = _bare_dispatcher(_echo_tool())
 
@@ -281,7 +268,6 @@ class TestCallIdentity:
         ids = [e.call_id for e in events if isinstance(e, ToolCallStarted)]
         assert ids == ["pcall_1", "pcall_2"]
 
-    @pytest.mark.asyncio
     async def test_model_calls_keep_the_provider_id_or_get_one_made_up(self):
         dispatcher, events, _ = _bare_dispatcher(_echo_tool())
 
@@ -298,7 +284,6 @@ class TestCallIdentity:
 class TestOutcomeParity:
     """Deny, timeout and every error mean the same thing whatever the origin."""
 
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "name,tool,kwargs,expected",
         [
@@ -338,14 +323,12 @@ class TestOutcomeParity:
             outcomes[origin] = (result.status, result.content, result.error_code)
         assert outcomes["model"] == outcomes["program"] == expected
 
-    @pytest.mark.asyncio
     async def test_a_vetoed_call_is_denied_for_both_origins(self):
         for origin in ("model", "program"):
             dispatcher, _, _ = _bare_dispatcher(_echo_tool(), hooks=[_Denier("no")])
             result = await dispatcher.run("echo", {"value": "x"}, origin=origin)
             assert (result.status, result.content) == ("denied", "denied: no")
 
-    @pytest.mark.asyncio
     async def test_a_timeout_is_a_timeout_whatever_the_origin(self):
         for origin in ("model", "program"):
             dispatcher, _, _ = _bare_dispatcher(
@@ -355,7 +338,6 @@ class TestOutcomeParity:
             assert result.status == "timeout"
             assert result.content.startswith("timeout:")
 
-    @pytest.mark.asyncio
     async def test_a_switched_off_tool_refuses_for_both_origins(self):
         for origin in ("model", "program"):
             dispatcher, _, _ = _bare_dispatcher(_echo_tool())
@@ -447,7 +429,6 @@ class TestAvailability:
         with pytest.raises(ValueError, match="availability"):
             self._tool("typo", "modle")
 
-    @pytest.mark.asyncio
     async def test_execution_permission_follows_the_origin(self):
         dispatcher, _, _ = _bare_dispatcher(
             self._tool("plain"),
@@ -471,7 +452,6 @@ class TestAvailability:
 
 
 class TestProvenance:
-    @pytest.mark.asyncio
     async def test_events_say_who_asked_and_what_they_are_nested_in(self):
         dispatcher, events, _ = _bare_dispatcher(_echo_tool())
         await dispatcher.run(
@@ -482,7 +462,6 @@ class TestProvenance:
         assert (started.origin, started.parent_call_id) == ("program", "p1")
         assert (finished.origin, finished.parent_call_id) == ("program", "p1")
 
-    @pytest.mark.asyncio
     async def test_model_origin_is_the_default_and_carries_no_parent(self):
         dispatcher, events, _ = _bare_dispatcher(_echo_tool())
         await dispatcher.run("echo", {"value": "x"}, call_id="c1")
@@ -491,7 +470,6 @@ class TestProvenance:
         assert started.origin == "model" and started.parent_call_id is None
         assert finished.origin == "model" and finished.parent_call_id is None
 
-    @pytest.mark.asyncio
     async def test_provenance_crosses_a_process_boundary_as_plain_data(self):
         dispatcher, events, _ = _bare_dispatcher(_echo_tool())
         await dispatcher.run("echo", {}, origin="program", parent_call_id="p1")
@@ -506,7 +484,6 @@ class TestProvenance:
         legacy = ToolCallFinished(call_id="c1", name="echo")
         assert (legacy.origin, legacy.parent_call_id) == ("model", None)
 
-    @pytest.mark.asyncio
     async def test_hooks_see_provenance_on_the_context(self):
         seen: list[tuple[str, str | None]] = []
 
@@ -534,7 +511,6 @@ def _host_context(tmp_path, agent: AgentLoop) -> HostContext:
 
 
 class TestEmitAttribution:
-    @pytest.mark.asyncio
     async def test_an_emit_during_a_run_belongs_to_the_turn(self, tmp_path):
         class Talker(AgentHook):
             async def before_iteration(self, ctx: IterationContext) -> None:
@@ -550,7 +526,6 @@ class TestEmitAttribution:
         assert notice.message == "mid-run"
         assert notice.run_id == turn.id
 
-    @pytest.mark.asyncio
     async def test_an_idle_emit_has_no_run_and_no_turn_claims_it(self, tmp_path):
         agent = _make_agent()
         host_ctx = _host_context(tmp_path, agent)
@@ -567,7 +542,6 @@ class TestEmitAttribution:
         turn_events = [event async for event in agent.stream("go")]
         assert not any(isinstance(event, Notice) for event in turn_events)
 
-    @pytest.mark.asyncio
     async def test_a_publisher_may_claim_its_own_run_id(self, tmp_path):
         agent = _make_agent()
         host_ctx = _host_context(tmp_path, agent)
@@ -604,7 +578,6 @@ class TestSpawn:
 
         assert child.channel is not host.agent.channel
 
-    @pytest.mark.asyncio
     async def test_hooks_are_not_inherited(self, tmp_path):
         seen: list[Event] = []
 
@@ -803,7 +776,6 @@ class TestSourceStamping:
 
 
 class TestProgramOriginInsideALoop:
-    @pytest.mark.asyncio
     async def test_a_nested_call_is_observable_but_not_conversation(self):
         async def bridge(args, ctx):
             first = await agent.dispatcher.run(

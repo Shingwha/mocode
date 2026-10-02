@@ -214,7 +214,6 @@ class TestPluginProviderTypes:
 
 
 class TestAConversation:
-    @pytest.mark.asyncio
     async def test_streams_events_and_answers(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(cwd=tmp_path)
         conversation.agent.provider = MockProvider(
@@ -267,7 +266,6 @@ class TestTheTerminal:
         assert (tmp_path / "home" / "sessions").is_dir()
         assert app.runtime.store.list_all() != []
 
-    @pytest.mark.asyncio
     async def test_a_turn_is_echoed_and_answered(self, app, capsys):
         """The interactive path end to end — the one a user actually walks into.
 
@@ -291,7 +289,6 @@ class TestTheTerminal:
         assert rendered[2] == "↑1 ↓1 tokens"   # what the turn cost
         assert set(rendered[3]) == {"─"}       # the rule closes it before the next prompt
 
-    @pytest.mark.asyncio
     async def test_a_command_speaks_through_the_same_stream(self, app, capsys):
         """`/help` publishes a notice; the renderer draws it like anything else."""
         app.display.clear_screen = lambda: None

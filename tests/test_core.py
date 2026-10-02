@@ -226,7 +226,6 @@ class TestTool:
         assert tool.is_async is True
         assert tool.wants_context is False
 
-    @pytest.mark.asyncio
     async def test_async_tool_runs(self):
         async def run(args):
             return f"async:{args['v']}"
@@ -243,7 +242,6 @@ class TestTool:
         )
         assert await tool.run_async({"v": "x"}) == "async:x"
 
-    @pytest.mark.asyncio
     async def test_a_sync_tool_runs_through_run_async_too(self):
         def run(args):
             return f"sync:{args['v']}"
@@ -568,7 +566,6 @@ class TestSchemaChecker:
 
 
 class TestHookRunner:
-    @pytest.mark.asyncio
     async def test_hooks_fan_out_in_order(self):
         calls = []
 
@@ -583,7 +580,6 @@ class TestHookRunner:
         await HookRunner([H1(), H2()]).before_iteration(IterationContext())
         assert calls == ["h1", "h2"]
 
-    @pytest.mark.asyncio
     async def test_a_failing_hook_does_not_break_the_others(self):
         calls = []
 
@@ -598,7 +594,6 @@ class TestHookRunner:
         await HookRunner([Bad(), Good()]).before_iteration(IterationContext())
         assert calls == ["good"]
 
-    @pytest.mark.asyncio
     async def test_tool_hooks_see_args_and_result(self):
         seen = []
 
@@ -620,7 +615,6 @@ class TestHookRunner:
             ("complete", "ok", "file1\nfile2"),
         ]
 
-    @pytest.mark.asyncio
     async def test_a_hook_added_later_is_dispatched(self):
         calls = []
         runner = HookRunner()

@@ -71,7 +71,6 @@ class TestAConversationIsItsOwn:
 
         assert second.messages == []
 
-    @pytest.mark.asyncio
     async def test_the_system_prompt_names_the_project(self, mc: MoCode, tmp_path: Path):
         project = _project(tmp_path, "a")
         conversation = mc.new_conversation(cwd=project)
@@ -89,7 +88,6 @@ class TestAConversationIsItsOwn:
 
 
 class TestToolsWorkInTheConversationsProject:
-    @pytest.mark.asyncio
     async def test_bash_starts_in_the_project(self, mc: MoCode, tmp_path: Path):
         project = _project(tmp_path, "a")
         conversation = mc.new_conversation(cwd=project)
@@ -100,7 +98,6 @@ class TestToolsWorkInTheConversationsProject:
 
         assert project.name in result.content
 
-    @pytest.mark.asyncio
     async def test_bash_state_does_not_leak_between_conversations(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -149,7 +146,6 @@ class TestToolsWorkInTheConversationsProject:
 
 
 class TestConcurrency:
-    @pytest.mark.asyncio
     async def test_two_conversations_run_at_the_same_time(self, mc: MoCode, tmp_path: Path):
         async def slow(args, ctx):
             await asyncio.sleep(0.05)
@@ -180,7 +176,6 @@ class TestConcurrency:
         assert first.messages[0]["content"] == "hello from a"
         assert [m["content"] for m in second.messages][0] == "hello from b"
 
-    @pytest.mark.asyncio
     async def test_a_second_turn_in_one_conversation_is_refused(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -195,7 +190,6 @@ class TestConcurrency:
         conversation.cancel()
         assert (await turn.wait()).cancelled
 
-    @pytest.mark.asyncio
     async def test_stopping_one_conversation_leaves_the_other_alone(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -210,7 +204,6 @@ class TestConcurrency:
         assert (await turn.wait()).cancelled
         assert await running.chat("hello") == "still here"
 
-    @pytest.mark.asyncio
     async def test_a_reader_can_watch_a_conversation_it_did_not_start(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -228,7 +221,6 @@ class TestConcurrency:
         assert isinstance(seen[-1], RunFinished)
         assert seen[-1].content == "watched"
 
-    @pytest.mark.asyncio
     async def test_a_notice_between_turns_reaches_readers(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
         reader = conversation.subscribe()
@@ -320,7 +312,6 @@ class TestSessions:
         assert conversation.save() is None
         assert mc.store.list_all() == []
 
-    @pytest.mark.asyncio
     async def test_start_begins_a_new_session_in_the_same_project(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -335,7 +326,6 @@ class TestSessions:
         assert conversation.messages == []
         assert [s.id for s in conversation.list_sessions()] == [previous]
 
-    @pytest.mark.asyncio
     async def test_resume_restores_the_history_and_the_model(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -354,7 +344,6 @@ class TestSessions:
         assert (fresh.provider_key, fresh.model_name) == ("second", "second-model")
         assert fresh.id == stored.id
 
-    @pytest.mark.asyncio
     async def test_a_resumed_session_keeps_its_model_even_if_the_provider_is_gone(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -388,7 +377,6 @@ class TestSessions:
             s.title for s in mc.store.list_all()
         ) == ["a", "b"]
 
-    @pytest.mark.asyncio
     async def test_the_runtime_finds_a_session_by_id_alone(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -408,7 +396,6 @@ class TestSessions:
 class TestPluginMessageReplay:
     """emit → save → resume → replay: the §5.4 promise, end to end."""
 
-    @pytest.mark.asyncio
     async def test_saved_messages_replay_in_order_on_resume(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -452,7 +439,6 @@ class TestPluginMessageReplay:
             ("shell/background-done", {"exit": 0}, "", False),
         ]
 
-    @pytest.mark.asyncio
     async def test_the_replay_is_not_re_captured_by_the_next_save(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -481,7 +467,6 @@ class TestPluginMessageReplay:
             },
         ]
 
-    @pytest.mark.asyncio
     async def test_replay_keeps_the_stored_run_id_and_restmps_seq(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -515,7 +500,6 @@ class TestPluginMessageReplay:
         assert replayed.seq != 7
         assert replayed.seq > events[0].seq  # re-stamped, after the redraw
 
-    @pytest.mark.asyncio
     async def test_only_the_newest_200_messages_survive_and_replay(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -538,7 +522,6 @@ class TestPluginMessageReplay:
         ]
         assert [e.data["i"] for e in replayed] == list(range(50, 250))
 
-    @pytest.mark.asyncio
     async def test_a_new_session_starts_with_no_plugin_messages(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -631,7 +614,6 @@ class TestPluginsAreLoadedOnce:
 
 
 class TestGracefulClose:
-    @pytest.mark.asyncio
     async def test_a_new_session_is_refused_while_a_turn_runs(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -645,7 +627,6 @@ class TestGracefulClose:
         turn.cancel()
         await turn.wait()
 
-    @pytest.mark.asyncio
     async def test_aclose_delivers_the_ending_before_the_stream_closes(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -681,7 +662,6 @@ class TestTheSurfaceMaterializes:
         assert not conversation.tools.pinned
         assert "read" in conversation.tools.names()  # registrations still happen
 
-    @pytest.mark.asyncio
     async def test_prepare_runs_each_plugins_prepare_once(self, mc: MoCode, tmp_path: Path):
         calls: list[str] = []
         from mocode.host.plugin.base import Plugin
@@ -713,7 +693,6 @@ class TestTheSurfaceMaterializes:
         finally:
             mc._loaded_for = original  # type: ignore[method-assign]
 
-    @pytest.mark.asyncio
     async def test_the_first_turn_carries_the_surface_with_no_notice(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -729,7 +708,6 @@ class TestTheSurfaceMaterializes:
             m for m in conversation.messages if "[context update" in str(m.get("content"))
         ]
 
-    @pytest.mark.asyncio
     async def test_a_resume_is_not_re_materialized(self, mc: MoCode, tmp_path: Path):
         project = _project(tmp_path, "a")
         first = _conversation(mc, project, _answer("one"))
@@ -743,7 +721,6 @@ class TestTheSurfaceMaterializes:
         assert second.agent.system_prompt == frozen
         assert session.system_prompt == frozen
 
-    @pytest.mark.asyncio
     async def test_a_never_run_session_materializes_freshly_on_resume(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -763,7 +740,6 @@ class TestTheSurfaceMaterializes:
 
         assert fresh.agent.system_prompt != ""
 
-    @pytest.mark.asyncio
     async def test_an_unpinned_runtime_stays_live(self, tmp_path: Path):
         mc = MoCode(config=make_config(), home=tmp_path / "home", freeze_interface=False,
                     plugin_dirs=[])
@@ -783,7 +759,6 @@ class TestThePromptFreezesAcrossAResume:
     """A resume keeps the session's prompt byte-identical — the provider's
     prefix cache survives — and tells the model what changed instead."""
 
-    @pytest.mark.asyncio
     async def test_the_prompt_carries_time_and_os(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
         await conversation.prepare()
@@ -791,7 +766,6 @@ class TestThePromptFreezesAcrossAResume:
         assert "today:" in conversation.agent.system_prompt
         assert "os:" in conversation.agent.system_prompt
 
-    @pytest.mark.asyncio
     async def test_a_resume_keeps_the_prompt_and_notices_drift(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -819,7 +793,6 @@ class TestThePromptFreezesAcrossAResume:
         # plugin's own session state — and it says version two.
         assert "version two" in resumed.plugin_state["cache-protect"]["prompt"]
 
-    @pytest.mark.asyncio
     async def test_no_drift_means_no_notice(self, mc: MoCode, tmp_path: Path):
         project = _project(tmp_path, "a")
         first = _conversation(mc, project)
@@ -832,7 +805,6 @@ class TestThePromptFreezesAcrossAResume:
 
         assert second.messages == session.messages
 
-    @pytest.mark.asyncio
     async def test_a_change_reverted_between_resumes_is_never_news(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -852,7 +824,6 @@ class TestThePromptFreezesAcrossAResume:
         notices = [m for m in second.messages if "[context update" in str(m.get("content"))]
         assert notices == []
 
-    @pytest.mark.asyncio
     async def test_a_revert_after_a_notice_is_news_again(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -878,7 +849,6 @@ class TestThePromptFreezesAcrossAResume:
         assert len(still) == 2
         assert "version one" in still[-1]["content"]
 
-    @pytest.mark.asyncio
     async def test_a_legacy_session_gets_the_current_prompt(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -919,7 +889,6 @@ class TestPluginStateTravels:
 
         assert session.plugin_state["demo"]["n"] == 1
 
-    @pytest.mark.asyncio
     async def test_a_resume_arrives_with_the_sessions_state(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -932,7 +901,6 @@ class TestPluginStateTravels:
 
         assert second.ctx.plugin_state("demo") == {"n": 7}
 
-    @pytest.mark.asyncio
     async def test_load_session_swaps_the_state(self, mc: MoCode, tmp_path: Path):
         first = mc.new_conversation(cwd=_project(tmp_path, "a"))
         first.messages.append({"role": "user", "content": "hi"})

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 
 from mocode.core.provider import StreamAccumulator
 from mocode.providers.openai import OpenAIProvider
@@ -67,26 +66,22 @@ async def _stream(provider, messages=None, system="sys", tools=None, max_tokens=
 
 
 class TestRequestShape:
-    @pytest.mark.asyncio
     async def test_no_cap_means_no_max_tokens_field(self):
         """An unset cap must not be turned into a made-up number."""
         sent: list[dict] = []
         await _stream(_provider(sent), max_tokens=None)
         assert "max_tokens" not in sent[0]
 
-    @pytest.mark.asyncio
     async def test_explicit_cap_is_sent(self):
         sent: list[dict] = []
         await _stream(_provider(sent), max_tokens=4096)
         assert sent[0]["max_tokens"] == 4096
 
-    @pytest.mark.asyncio
     async def test_system_prompt_is_prepended(self):
         sent: list[dict] = []
         await _stream(_provider(sent), messages=[{"role": "user", "content": "hi"}], system="SYS")
         assert sent[0]["messages"][0] == {"role": "system", "content": "SYS"}
 
-    @pytest.mark.asyncio
     async def test_empty_tools_become_none_and_streaming_is_requested(self):
         sent: list[dict] = []
         await _stream(_provider(sent))
@@ -95,14 +90,12 @@ class TestRequestShape:
         assert sent[0]["stream_options"] == {"include_usage": True}
         assert sent[0]["model"] == "test-model"
 
-    @pytest.mark.asyncio
     async def test_effort_is_sent_as_reasoning_effort(self):
         """A level name travels verbatim, custom names included."""
         sent: list[dict] = []
         await _stream(_provider(sent), effort="high")
         assert sent[0]["reasoning_effort"] == "high"
 
-    @pytest.mark.asyncio
     async def test_no_effort_means_no_reasoning_effort_field(self):
         """Absent level — the server decides on its own."""
         sent: list[dict] = []
@@ -111,7 +104,6 @@ class TestRequestShape:
 
 
 class TestChunkMapping:
-    @pytest.mark.asyncio
     async def test_text_and_reasoning(self):
         sent: list[dict] = []
         provider = _provider(sent, [_delta("a"), _delta(reasoning="why"), _delta(finish="stop")])
@@ -122,13 +114,11 @@ class TestChunkMapping:
         assert "".join(c.reasoning for c in chunks) == "why"
         assert chunks[-1].finish_reason == "stop"
 
-    @pytest.mark.asyncio
     async def test_empty_deltas_are_dropped(self):
         sent: list[dict] = []
         provider = _provider(sent, [_delta(), _delta("real")])
         assert [c.text for c in await _stream(provider)] == ["real"]
 
-    @pytest.mark.asyncio
     async def test_usage_only_chunk_is_kept(self):
         sent: list[dict] = []
         usage = SimpleNamespace(prompt_tokens=3, completion_tokens=4)
@@ -139,7 +129,6 @@ class TestChunkMapping:
         assert chunks[-1].usage.prompt_tokens == 3
         assert chunks[-1].usage.completion_tokens == 4
 
-    @pytest.mark.asyncio
     async def test_tool_call_fragments_are_mapped(self):
         sent: list[dict] = []
         provider = _provider(
@@ -224,13 +213,11 @@ class TestUnansweredToolCalls:
     """An endpoint refuses a tool call whose answer is gone from the history,
     so the outgoing payload is cleaned of them — assert on what is sent."""
 
-    @pytest.mark.asyncio
     async def test_a_history_nothing_is_missing_from_travels_unchanged(self):
         sent: list[dict] = []
         await _stream(_provider(sent), messages=[{"role": "user", "content": "hi"}])
         assert sent[0]["messages"][1:] == [{"role": "user", "content": "hi"}]
 
-    @pytest.mark.asyncio
     async def test_an_orphaned_tool_call_loses_its_field(self):
         """The answer vanished, so the call goes with it — a field, not a message."""
         sent: list[dict] = []
@@ -248,7 +235,6 @@ class TestUnansweredToolCalls:
         assert sent[0]["messages"][1] == {"role": "assistant", "content": ""}
         assert sent[0]["messages"][2] == {"role": "user", "content": "next"}
 
-    @pytest.mark.asyncio
     async def test_only_the_unanswered_call_is_dropped(self):
         """One answered call keeps its partner sent; only the orphan goes."""
         sent: list[dict] = []

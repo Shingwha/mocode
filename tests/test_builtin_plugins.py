@@ -13,7 +13,6 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
-import pytest
 import pytest_asyncio
 
 from mocode.host.command import CONTINUE
@@ -42,7 +41,6 @@ def _cmd(conversation: Conversation, name: str):
 
 
 class TestDefaultPrompts:
-    @pytest.mark.asyncio
     async def test_the_four_sections_render(self, conversation: Conversation):
         prompt = conversation.agent.system_prompt
 
@@ -54,12 +52,10 @@ class TestDefaultPrompts:
         assert "today:" in prompt
         assert "os:" in prompt
 
-    @pytest.mark.asyncio
     async def test_the_prompt_does_not_repeat_the_tools(self, conversation: Conversation):
         """Tool schemas travel with every request; the prompt must not list them."""
         assert "<tool" not in conversation.agent.system_prompt
 
-    @pytest.mark.asyncio
     async def test_agents_md_merges_global_and_project(self, mc: MoCode):
         mc.home.mkdir(parents=True, exist_ok=True)
         (mc.home / "AGENTS.md").write_text("user-wide rule", encoding="utf-8")
@@ -72,11 +68,9 @@ class TestDefaultPrompts:
         assert "user-wide rule" in conversation.agent.system_prompt
         assert "project rule" in conversation.agent.system_prompt
 
-    @pytest.mark.asyncio
     async def test_no_agents_md_renders_a_hint(self, conversation: Conversation):
         assert "No AGENTS.md files found yet." in conversation.agent.system_prompt
 
-    @pytest.mark.asyncio
     async def test_a_rebuild_re_reads_agents_md(self, mc: MoCode):
         project = mc.home.parent
         conversation = mc.new_conversation(cwd=project)
@@ -88,7 +82,6 @@ class TestDefaultPrompts:
 
         assert "Always use tabs." in conversation.agent.system_prompt
 
-    @pytest.mark.asyncio
     async def test_a_rebuild_refreshes_the_date(self, mc: MoCode, monkeypatch):
         from mocode.host.plugin.builtin import default_prompts
 
@@ -103,7 +96,6 @@ class TestDefaultPrompts:
 
         assert "today: 2026-09-20 (Sunday)" in conversation.agent.system_prompt
 
-    @pytest.mark.asyncio
     async def test_disabling_the_plugin_removes_its_sections(self, mc: MoCode):
         mc.config.plugins["default-prompts"] = {"enabled": False}
 
@@ -119,7 +111,6 @@ class TestDefaultPrompts:
 
 
 class TestSessionPlugin:
-    @pytest.mark.asyncio
     async def test_exports_json_into_the_project(self, conversation: Conversation):
         conversation.messages.append({"role": "user", "content": "hi"})
 
@@ -130,7 +121,6 @@ class TestSessionPlugin:
         assert len(written) == 1
         assert "Exported 1 msgs" in _notices(events)[0].message
 
-    @pytest.mark.asyncio
     async def test_export_md_format(self, conversation: Conversation):
         conversation.messages.append({"role": "user", "content": "hi"})
 
@@ -138,14 +128,12 @@ class TestSessionPlugin:
 
         assert len(list(Path(conversation.cwd).glob("session_*.md"))) == 1
 
-    @pytest.mark.asyncio
     async def test_nothing_to_export(self, conversation: Conversation):
         _result, events = await _run(_cmd(conversation, "/export"), conversation)
 
         assert [n.level for n in _notices(events)] == ["warn"]
         assert list(Path(conversation.cwd).glob("session_*")) == []
 
-    @pytest.mark.asyncio
     async def test_clear_starts_a_new_session_and_says_so(
         self, conversation: Conversation
     ):
@@ -159,7 +147,6 @@ class TestSessionPlugin:
         assert conversation.messages == []
         assert any(isinstance(e, ConversationChanged) for e in events)
 
-    @pytest.mark.asyncio
     async def test_the_previous_session_survives_on_disk(
         self, conversation: Conversation
     ):
@@ -176,7 +163,6 @@ class TestEffortPlugin:
     conversation, and never writes config.json — the same contract the
     session and help commands are held to."""
 
-    @pytest.mark.asyncio
     async def test_no_arg_reports_current_level_and_the_table(
         self, conversation: Conversation
     ):
@@ -188,7 +174,6 @@ class TestEffortPlugin:
             "Reasoning effort: (server default) — available: low, medium, high"
         ]
 
-    @pytest.mark.asyncio
     async def test_a_level_arg_switches_it_for_this_conversation(
         self, conversation: Conversation
     ):
@@ -201,7 +186,6 @@ class TestEffortPlugin:
         assert conversation.ctx.model.effort == "high"
         assert [n.message for n in _notices(events)] == ["Reasoning effort: high"]
 
-    @pytest.mark.asyncio
     async def test_an_unknown_level_warns_and_changes_nothing(
         self, conversation: Conversation
     ):
@@ -217,7 +201,6 @@ class TestEffortPlugin:
         assert "Unknown effort 'ultra'" in notices[0].message
         assert "available: low, medium, high" in notices[0].message
 
-    @pytest.mark.asyncio
     async def test_switching_never_writes_config(
         self, conversation: Conversation, monkeypatch
     ):
@@ -233,7 +216,6 @@ class TestEffortPlugin:
 
 
 class TestHelpPlugin:
-    @pytest.mark.asyncio
     async def test_lists_registered_commands(self, conversation: Conversation):
         from mocode.host.command import Command, CommandRegistry
 

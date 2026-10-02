@@ -7,7 +7,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
 
 from mocode.core.agent import AgentConfig
 from mocode.core.provider import ModelSpec
@@ -413,7 +412,6 @@ class TestTheMultiFileExample:
 
 
 class TestPluginHost:
-    @pytest.mark.asyncio
     async def test_builtins_are_loaded_and_contributing(self, tmp_path: Path):
         ctx = _ctx(tmp_path)
         host = _load(ctx, [])
@@ -655,7 +653,6 @@ class TestHostContext:
         ctx.commands.register(Command("/x", "test", handler=_noop))
         assert [c.name for c in ctx.commands.all()] == ["/x"]
 
-    @pytest.mark.asyncio
     async def test_subscribe_reads_a_turn_out_of_band(self, tmp_path: Path):
         """The plugin-facing observation path: everything a turn published."""
         ctx = _ctx(tmp_path)

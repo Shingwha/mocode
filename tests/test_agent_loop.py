@@ -79,7 +79,6 @@ async def _events(agent: AgentLoop, prompt: str = "hi") -> list[Event]:
 
 
 class TestEventStream:
-    @pytest.mark.asyncio
     async def test_run_shape_without_tools(self):
         agent = _make_agent(provider=MockProvider([_plain_answer("hello")]))
 
@@ -94,7 +93,6 @@ class TestEventStream:
         ]
         assert events[-1].content == "hello"
 
-    @pytest.mark.asyncio
     async def test_text_arrives_incrementally(self):
         agent = _make_agent(provider=MockProvider([_plain_answer("abc")], chunk_size=1))
 
@@ -102,7 +100,6 @@ class TestEventStream:
 
         assert [e.text for e in events if isinstance(e, TextDelta)] == ["a", "b", "c"]
 
-    @pytest.mark.asyncio
     async def test_reasoning_deltas_are_separate_from_text(self):
         agent = _make_agent(
             provider=MockProvider(
@@ -115,7 +112,6 @@ class TestEventStream:
         assert [e.text for e in events if isinstance(e, ReasoningDelta)] == ["why"]
         assert [e.text for e in events if isinstance(e, TextDelta)] == ["a"]
 
-    @pytest.mark.asyncio
     async def test_run_id_and_seq_are_stamped(self):
         agent = _make_agent(provider=MockProvider([_plain_answer()]))
 
@@ -124,7 +120,6 @@ class TestEventStream:
         assert len({e.run_id for e in events}) == 1
         assert [e.seq for e in events] == list(range(1, len(events) + 1))
 
-    @pytest.mark.asyncio
     async def test_tool_events_share_a_call_id(self):
         agent = _make_agent(_echo_tool())
         agent.provider.responses = [
@@ -141,7 +136,6 @@ class TestEventStream:
         assert finished[0].status == "ok"
         assert finished[0].duration >= 0
 
-    @pytest.mark.asyncio
     async def test_run_finished_summarises_the_turn(self):
         agent = _make_agent(_echo_tool())
         agent.provider.responses = [
@@ -156,7 +150,6 @@ class TestEventStream:
         assert (done.content, done.iterations, done.tool_calls_made) == ("final", 2, 1)
         assert done.usage.prompt_tokens == 2
 
-    @pytest.mark.asyncio
     async def test_events_serialise_to_plain_data(self):
         agent = _make_agent(provider=MockProvider([_plain_answer("hi")]))
 
@@ -166,7 +159,6 @@ class TestEventStream:
         assert data["type"] == "run_started"
         assert set(data) == {"type", "run_id", "seq", "model", "tools"}
 
-    @pytest.mark.asyncio
     async def test_cancellation_leaves_the_history_answerable(self):
         class Stuck(AgentHook):
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
@@ -201,7 +193,6 @@ class TestEventStream:
 
 
 class TestRunState:
-    @pytest.mark.asyncio
     async def test_state_is_queryable_while_a_tool_runs(self):
         seen: list[list[str]] = []
 
@@ -221,7 +212,6 @@ class TestRunState:
         assert [c for c in agent.state.tool_calls.values() if not c.done] == []
         assert agent.state.tool_calls_made == 1
 
-    @pytest.mark.asyncio
     async def test_state_folds_the_same_stream_a_consumer_sees(self):
         agent = _make_agent(
             _echo_tool(), provider=MockProvider([_plain_answer("hello")], chunk_size=1)
@@ -236,7 +226,6 @@ class TestRunState:
         assert mirror.content == agent.state.content
         assert mirror.usage == agent.state.usage
 
-    @pytest.mark.asyncio
     async def test_iteration_and_tool_count_track_the_run(self):
         agent = _make_agent(_echo_tool())
         agent.provider.responses = [
@@ -266,7 +255,6 @@ def _failing(exc: Exception) -> Tool:
 
 
 class TestToolExecution:
-    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "tool,timeout,expected",
         [
@@ -290,7 +278,6 @@ class TestToolExecution:
 
         assert seen == [expected]
 
-    @pytest.mark.asyncio
     async def test_error_code_is_reported(self):
         agent = _make_agent(_failing(ToolError("I am a teapot", "teapot_code")))
         agent.provider.responses = [tool_call_response("boom"), _plain_answer()]
@@ -300,7 +287,6 @@ class TestToolExecution:
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert (finished.status, finished.error_code) == ("error", "teapot_code")
 
-    @pytest.mark.asyncio
     async def test_unknown_tool_is_reported_as_not_found(self):
         agent = _make_agent(_echo_tool())
         agent.provider.responses = [tool_call_response("ghost"), _plain_answer()]
@@ -311,7 +297,6 @@ class TestToolExecution:
         assert finished.status == "not_found"
         assert "unknown tool" in finished.result
 
-    @pytest.mark.asyncio
     async def test_malformed_arguments_become_an_error_result(self):
         agent = _make_agent(_echo_tool())
         agent.provider.responses = [tool_call_response("echo", "{not json"), _plain_answer()]
@@ -323,7 +308,6 @@ class TestToolExecution:
         assert finished.result.startswith("error:")
         assert "invalid JSON" in finished.result
 
-    @pytest.mark.asyncio
     async def test_a_batch_runs_concurrently_and_reports_each_call(self):
         async def _slow(args, ctx):
             await asyncio.sleep(0.05)
@@ -355,7 +339,6 @@ class TestToolExecution:
         }
         assert results == {"c1": "a", "c2": "echo:b"}
 
-    @pytest.mark.asyncio
     async def test_a_streaming_tool_reports_output(self):
         async def _chatty(args, ctx):
             await ctx.emit(ToolOutput(call_id=ctx.tool_call_id, text="line 1\n"))
@@ -371,7 +354,6 @@ class TestToolExecution:
         assert outputs == ["line 1\n", "line 2\n"]
         assert agent.state.tool_calls["c1"].output_text == "line 1\nline 2\n"
 
-    @pytest.mark.asyncio
     async def test_a_tool_may_return_structured_details(self):
         agent = _make_agent(
             Tool("stats", "d", {}, lambda a: ToolResult("read it", {"lines": 412}))
@@ -388,7 +370,6 @@ class TestToolExecution:
         tool_msg = next(m for m in agent.messages if m["role"] == "tool")
         assert tool_msg["content"] == "read it"
 
-    @pytest.mark.asyncio
     async def test_a_plain_string_result_carries_no_details(self):
         agent = _make_agent(_echo_tool())
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), _plain_answer()]
@@ -398,7 +379,6 @@ class TestToolExecution:
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.details == {}
 
-    @pytest.mark.asyncio
     async def test_a_hook_may_enrich_details(self):
         class Enricher(AgentHook):
             async def on_tool_complete(self, ctx: ToolCallContext) -> None:
@@ -412,7 +392,6 @@ class TestToolExecution:
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.details == {"audited": True}
 
-    @pytest.mark.asyncio
     async def test_max_iterations_stops_a_tool_loop(self):
         agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=2))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
@@ -426,7 +405,6 @@ class TestToolExecution:
 
 
 class TestInterception:
-    @pytest.mark.asyncio
     async def test_deny_vetoes_execution(self):
         executed = []
 
@@ -446,7 +424,6 @@ class TestInterception:
         assert finished.status == "denied"
         assert finished.result.startswith("denied:")
 
-    @pytest.mark.asyncio
     async def test_hooks_may_rewrite_args_and_results(self):
         class Rewriter(AgentHook):
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
@@ -469,7 +446,6 @@ class TestInterception:
         started = next(e for e in events if isinstance(e, ToolCallStarted))
         assert started.args == {"value": "rewritten"}
 
-    @pytest.mark.asyncio
     async def test_before_iteration_may_rewrite_the_system_prompt(self):
         class Persona(AgentHook):
             async def before_iteration(self, ctx: IterationContext) -> None:
@@ -484,7 +460,6 @@ class TestInterception:
         # The rewrite is scoped to the run: the conversation keeps its prompt.
         assert agent.system_prompt == "sys"
 
-    @pytest.mark.asyncio
     async def test_a_system_prompt_rewrite_does_not_leak_into_the_next_turn(self):
         """What before_iteration changed lasts the run, not the conversation."""
 
@@ -513,7 +488,6 @@ class TestInterception:
             "sys",  # the second turn starts from the prompt as it stood
         ]
 
-    @pytest.mark.asyncio
     async def test_a_system_prompt_rewrite_sticks_for_the_rest_of_the_run(self):
         """A hook may inject once rather than recompute every iteration."""
 
@@ -536,7 +510,6 @@ class TestInterception:
             "sys +injected",
         ]
 
-    @pytest.mark.asyncio
     async def test_before_iteration_may_rewrite_messages(self):
         seen: list[int] = []
 
@@ -561,14 +534,12 @@ class TestInterception:
 class TestStopReasons:
     """Five endings, one distinguishable field — and a replayable history."""
 
-    @pytest.mark.asyncio
     async def test_a_completed_turn_says_so(self):
         agent = _make_agent(provider=MockProvider([_plain_answer("done")]))
         events = await _events(agent)
         assert events[-1].stop_reason == "completed"
         assert events[-1].cancelled is False
 
-    @pytest.mark.asyncio
     async def test_max_iterations_reports_its_stop_reason(self):
         agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=2))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
@@ -580,7 +551,6 @@ class TestStopReasons:
         assert events[-1].iterations == 2
         assert events[-1].to_dict()["stop_reason"] == "max_iterations"
 
-    @pytest.mark.asyncio
     async def test_a_tool_call_budget_ends_the_turn(self):
         agent = _make_agent(_echo_tool(), config=AgentConfig(max_tool_calls=1))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
@@ -595,7 +565,6 @@ class TestStopReasons:
         answers = [m for m in agent.messages if m["role"] == "tool"]
         assert len(answers) == len(assistant["tool_calls"])
 
-    @pytest.mark.asyncio
     async def test_a_wall_clock_budget_ends_the_turn(self, monkeypatch):
         import mocode.core.agent as agent_module
         import mocode.core.provider as provider_module
@@ -629,7 +598,6 @@ class TestStopReasons:
         assert events[-1].stop_reason == "time_budget"
         assert events[-1].iterations == 1
 
-    @pytest.mark.asyncio
     async def test_a_budget_cut_inside_retry_backoff_is_not_a_failure(
         self, monkeypatch
     ):
@@ -693,7 +661,6 @@ class TestStopReasons:
         # entered the history mid-iteration.
         assert agent.messages == [{"role": "user", "content": "hi"}]
 
-    @pytest.mark.asyncio
     async def test_cancelled_is_a_stop_reason(self):
         agent = _make_agent(provider=_slow_provider())
         turn = agent.start("hi")
@@ -705,7 +672,6 @@ class TestStopReasons:
         assert terminal.stop_reason == "cancelled"
         assert terminal.cancelled is True
 
-    @pytest.mark.asyncio
     async def test_chat_raises_iteration_limit_instead_of_answering_empty(self):
         agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=2))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
@@ -716,7 +682,6 @@ class TestStopReasons:
         assert exc.value.iterations == 2
         assert agent.state.status == DONE  # a budget cut is an ending, not a failure
 
-    @pytest.mark.asyncio
     async def test_run_with_messages_reports_the_limit_as_an_error_result(self):
         agent = _make_agent(_echo_tool(), config=AgentConfig(max_iterations=1))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
@@ -731,7 +696,6 @@ class TestStopReasons:
 
 
 class TestRequestInterception:
-    @pytest.mark.asyncio
     async def test_before_request_may_rewrite_the_messages(self):
         class Rewriter(AgentHook):
             async def before_request(self, ctx: RequestContext) -> None:
@@ -747,7 +711,6 @@ class TestRequestInterception:
             {"role": "user", "content": "replaced before the wire"}
         ]
 
-    @pytest.mark.asyncio
     async def test_before_request_prompt_rewrite_is_scoped_to_the_run(self):
         class Persona(AgentHook):
             async def before_request(self, ctx: RequestContext) -> None:
@@ -760,7 +723,6 @@ class TestRequestInterception:
         assert [c["system"] for c in agent.provider.calls] == ["on the wire"]
         assert agent.system_prompt == "sys"  # the conversation keeps its prompt
 
-    @pytest.mark.asyncio
     async def test_the_tools_snapshot_is_what_the_request_carries(self):
         seen: list[dict] = []
 
@@ -775,7 +737,6 @@ class TestRequestInterception:
         assert seen == [agent.provider.calls[0]["tools"]]
         assert [s["function"]["name"] for s in seen[0]] == ["echo"]
 
-    @pytest.mark.asyncio
     async def test_an_in_place_tools_edit_reaches_this_request_alone(self):
         class Injector(AgentHook):
             async def before_request(self, ctx: RequestContext) -> None:
@@ -790,7 +751,6 @@ class TestRequestInterception:
         # The registry — including anything frozen — never saw the ghost.
         assert [s["function"]["name"] for s in agent.tool_registry.all_schemas()] == ["echo"]
 
-    @pytest.mark.asyncio
     async def test_after_response_may_correct_the_usage(self):
         class Auditor(AgentHook):
             async def after_response(self, ctx: ResponseContext) -> None:
@@ -804,7 +764,6 @@ class TestRequestInterception:
         assert (iteration.usage.prompt_tokens, iteration.usage.completion_tokens) == (10, 20)
         assert events[-1].usage.prompt_tokens == 10  # the turn's totals add up
 
-    @pytest.mark.asyncio
     async def test_after_response_sees_the_finish_reason_and_iteration(self):
         seen: list[tuple[str | None, int]] = []
 
@@ -822,7 +781,6 @@ class TestRequestInterception:
 
         assert seen == [("tool_calls", 1), ("stop", 2)]
 
-    @pytest.mark.asyncio
     async def test_a_raising_interception_hook_does_not_break_the_turn(self):
         class Bad(AgentHook):
             async def before_request(self, ctx: RequestContext) -> None:
@@ -837,7 +795,6 @@ class TestRequestInterception:
 
         assert events[-1].content == "still fine"
 
-    @pytest.mark.asyncio
     async def test_before_request_runs_after_before_iteration(self):
         order: list[str] = []
 
@@ -859,7 +816,6 @@ class TestRequestInterception:
 
 
 class TestEventChannel:
-    @pytest.mark.asyncio
     async def test_plugin_events_reach_both_hooks_and_the_stream(self):
         class Plugin(AgentHook):
             async def before_iteration(self, ctx: IterationContext) -> None:
@@ -879,7 +835,6 @@ class TestEventChannel:
             "hello from a plugin"
         ]
 
-    @pytest.mark.asyncio
     async def test_tool_hooks_can_emit(self):
         class Emitter(AgentHook):
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
@@ -953,7 +908,6 @@ class TestDerive:
         assert parent.system_prompt == "sys"
         assert parent.tool_registry.names() == ["a", "b"]
 
-    @pytest.mark.asyncio
     async def test_child_runs_without_touching_the_parent(self):
         parent = _make_agent(_echo_tool(), provider=MockProvider([_plain_answer("child answer")]))
 
@@ -970,14 +924,12 @@ class TestDerive:
 
 
 class TestChat:
-    @pytest.mark.asyncio
     async def test_returns_the_final_answer_and_records_history(self):
         agent = _make_agent(provider=MockProvider([_plain_answer("Hi!")]))
 
         assert await agent.chat("hello") == "Hi!"
         assert [m["role"] for m in agent.messages] == ["user", "assistant"]
 
-    @pytest.mark.asyncio
     async def test_provider_failure_raises(self):
         class Dead(MockProvider):
             async def stream(self, *args):
@@ -991,7 +943,6 @@ class TestChat:
 
         assert agent.state.status == "failed"
 
-    @pytest.mark.asyncio
     async def test_run_with_messages_reports_errors_instead_of_raising(self):
         class Dead(MockProvider):
             async def stream(self, *args):
@@ -1005,7 +956,6 @@ class TestChat:
         assert result.had_error is True
         assert "nope" in result.content
 
-    @pytest.mark.asyncio
     async def test_unknown_tool_metadata(self):
         tool = _echo_tool(tags={"fs", "demo"}, summary_key="value")
         assert tool.tags == frozenset({"fs", "demo"})
@@ -1045,7 +995,6 @@ def _slow_provider() -> MockProvider:
 
 
 class TestTurns:
-    @pytest.mark.asyncio
     async def test_a_turn_refuses_to_start_while_one_is_running(self):
         agent = _make_agent(provider=_slow_provider())
 
@@ -1059,7 +1008,6 @@ class TestTurns:
         turn.cancel()
         await turn.wait()
 
-    @pytest.mark.asyncio
     async def test_a_turn_can_be_watched_after_it_started(self):
         agent = _make_agent(provider=MockProvider([_plain_answer("hello")]))
 
@@ -1070,7 +1018,6 @@ class TestTurns:
         assert isinstance(events[-1], RunFinished)
         assert all(event.run_id == turn.id for event in events)
 
-    @pytest.mark.asyncio
     async def test_two_readers_see_the_same_run(self):
         agent = _make_agent(provider=MockProvider([_plain_answer("hello")], chunk_size=1))
 
@@ -1084,7 +1031,6 @@ class TestTurns:
         assert [e.seq for e in watched] == [e.seq for e in mirrored]
         assert mirrored[-1].content == "hello"
 
-    @pytest.mark.asyncio
     async def test_the_run_outlives_a_reader_that_walks_away(self):
         agent = _make_agent(provider=MockProvider([_plain_answer("hello")]))
 
@@ -1097,7 +1043,6 @@ class TestTurns:
         assert terminal.content == "hello"
         assert not terminal.cancelled
 
-    @pytest.mark.asyncio
     async def test_giving_up_on_the_wait_does_not_stop_the_turn(self):
         agent = _make_agent(provider=_slow_provider())
         turn = agent.start("hi")
@@ -1112,7 +1057,6 @@ class TestTurns:
         turn.cancel()
         assert (await turn.wait()).cancelled
 
-    @pytest.mark.asyncio
     async def test_cancelling_ends_the_turn_and_the_agent_runs_again(self):
         agent = _make_agent(provider=_slow_provider())
 
@@ -1129,7 +1073,6 @@ class TestTurns:
         agent.provider = MockProvider([_plain_answer("second")])
         assert await agent.chat("again") == "second"
 
-    @pytest.mark.asyncio
     async def test_a_derived_agent_can_report_into_the_parents_channel(self):
         parent = _make_agent(provider=MockProvider([_plain_answer("from the child")]))
         child = parent.derive(channel=parent.channel)
@@ -1150,7 +1093,6 @@ class TestTurns:
 
 
 class TestTerminalEventGuarantee:
-    @pytest.mark.asyncio
     async def test_a_base_exception_still_ends_the_turn_for_readers(self):
         """SystemExit/KeyboardInterrupt must not leave subscribers hanging.
 
@@ -1205,7 +1147,6 @@ async def _thread_started(started: threading.Event, timeout: float = 5.0) -> Non
 
 
 class TestSyncToolCancellation:
-    @pytest.mark.asyncio
     async def test_a_timed_out_sync_tool_sees_the_cancel_signal(self):
         noticed: list = []
         started = threading.Event()
@@ -1224,7 +1165,6 @@ class TestSyncToolCancellation:
         await _until(lambda: bool(noticed))
         assert noticed == [True]  # the worker noticed it was abandoned
 
-    @pytest.mark.asyncio
     async def test_cancelling_the_turn_signals_a_running_sync_tool(self):
         noticed: list = []
         started = threading.Event()
@@ -1252,7 +1192,6 @@ class TestErrorPrefixes:
     outcome survives for whoever replays it (see core/tool.py).
     """
 
-    @pytest.mark.asyncio
     async def test_a_tool_error_result_carries_the_error_prefix(self):
         def broken(args):
             raise ToolError("it broke", "custom_code")
@@ -1271,7 +1210,6 @@ class TestErrorPrefixes:
         tool_message = next(m for m in agent.messages if m["role"] == "tool")
         assert tool_message["content"].startswith(ERROR_PREFIX)
 
-    @pytest.mark.asyncio
     async def test_an_unknown_tool_result_carries_the_error_prefix(self):
         agent = _make_agent()
         agent.provider = MockProvider(
@@ -1284,7 +1222,6 @@ class TestErrorPrefixes:
         assert finished.status == "not_found"
         assert finished.result.startswith(f"{ERROR_PREFIX} unknown tool")
 
-    @pytest.mark.asyncio
     async def test_a_timeout_result_carries_the_timeout_prefix(self):
         noticed: list = []
         started = threading.Event()

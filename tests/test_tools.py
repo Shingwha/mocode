@@ -19,38 +19,32 @@ from mocode.core import ToolError, ToolRegistry
 
 
 class TestBashSession:
-    @pytest.mark.asyncio
     async def test_runs_a_command(self, tmp_path: Path):
         result = await BashSession(tmp_path).execute("echo hello", timeout=10)
         assert result.content == "hello"
 
-    @pytest.mark.asyncio
     async def test_the_exit_code_travels_as_a_detail(self, tmp_path: Path):
         session = BashSession(tmp_path)
         assert (await session.execute("true", timeout=10)).details == {"exit_code": 0}
         assert (await session.execute("exit 3", timeout=10)).details == {"exit_code": 3}
 
-    @pytest.mark.asyncio
     async def test_cd_persists(self, tmp_path: Path):
         session = BashSession(tmp_path)
         result = await session.execute(f"cd {tmp_path}", timeout=10)
         assert str(tmp_path) in result.content
         assert session.cwd == str(tmp_path)
 
-    @pytest.mark.asyncio
     async def test_env_vars_persist_across_commands(self, tmp_path: Path):
         session = BashSession(tmp_path)
         await session.execute("export MY_TEST_VAR=world", timeout=10)
         assert (await session.execute("echo $MY_TEST_VAR", timeout=10)).content == "world"
 
-    @pytest.mark.asyncio
     async def test_restart_clears_state(self, tmp_path: Path):
         session = BashSession(tmp_path)
         await session.execute("export MY_TEST_VAR=hello", timeout=10)
         session.restart()
         assert (await session.execute("echo $MY_TEST_VAR", timeout=10)).content == "(empty)"
 
-    @pytest.mark.asyncio
     async def test_env_values_are_never_executed_as_shell_code(self, tmp_path: Path):
         """Env vars are passed through ``env=``, never interpolated into a script."""
         session = BashSession(tmp_path)
@@ -60,7 +54,6 @@ class TestBashSession:
         assert (await session.execute("echo $EVIL", timeout=10)).content == "$(echo INJECTED)"
         assert (await session.execute("echo $TICK", timeout=10)).content == "`echo INJECTED`"
 
-    @pytest.mark.asyncio
     async def test_output_is_reported_line_by_line_as_it_arrives(self, tmp_path: Path):
         seen: list[tuple[str, str]] = []
 
@@ -78,7 +71,6 @@ class TestBashSession:
         ]
         assert "one" in result.content and "oops" in result.content
 
-    @pytest.mark.asyncio
     async def test_timeout_kills_the_command(self, tmp_path: Path):
         result = await BashSession(tmp_path).execute("sleep 5", timeout=1)
         assert result.content == "(timed out after 1s)"
@@ -101,7 +93,6 @@ class TestBashTool:
         assert tool.policy({"timeout": 7}) == ToolPolicy(timeout=7)
         assert tool.policy({}) == ToolPolicy(timeout=None)  # fall to config
 
-    @pytest.mark.asyncio
     async def test_the_model_timeout_argument_reaches_the_dispatcher(self, tmp_path: Path):
         from mocode.core.agent import AgentConfig
         from mocode.core.dispatch import ToolDispatcher
@@ -123,7 +114,6 @@ class TestBashTool:
         assert result.status == "timeout"
         assert result.content.startswith("timeout:")
 
-    @pytest.mark.asyncio
     async def test_restart_resets_the_session(self, tmp_path: Path):
         tool = bash_tool(tmp_path)
         await tool.run_async({"command": "export V=1"}, None)

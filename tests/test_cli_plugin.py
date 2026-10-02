@@ -17,7 +17,6 @@ import json
 import textwrap
 from pathlib import Path
 
-import pytest
 
 from .conftest import make_config
 
@@ -118,7 +117,6 @@ class TestBothSurfacesInOneDirectory:
 
         assert app.seen_conversation is True
 
-    @pytest.mark.asyncio
     async def test_its_command_speaks_on_the_conversations_stream(self, tmp_path: Path):
 
         plugins = tmp_path / "plugins"

@@ -13,7 +13,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import pytest
 
 from mocode.core.agent import AgentConfig
 from mocode.core.events import PluginMessage
@@ -104,7 +103,6 @@ class TestRunIdAttribution:
     """A PluginMessage published through ``HostContext.emit`` during a turn is
     attributed to it — the turn's readers see what plugins said while it ran."""
 
-    @pytest.mark.asyncio
     async def test_a_message_during_a_turn_is_stamped_with_its_run_id(
         self, tmp_path: Path
     ):
@@ -134,7 +132,6 @@ class TestRunIdAttribution:
 class TestEmitMessage:
     """The two HostContext conveniences — plain PluginMessage publishing."""
 
-    @pytest.mark.asyncio
     async def test_publishes_a_plugin_message_between_turns(self, tmp_path: Path):
         host = _host(tmp_path)
 
@@ -153,7 +150,6 @@ class TestEmitMessage:
         # Between turns the entry belongs to the conversation stream alone.
         assert message.run_id == ""
 
-    @pytest.mark.asyncio
     async def test_seal_message_publishes_a_sealed_marker(self, tmp_path: Path):
         host = _host(tmp_path)
 
@@ -163,7 +159,6 @@ class TestEmitMessage:
         assert isinstance(message, PluginMessage)
         assert (message.block_id, message.sealed, message.kind) == ("rag-1", True, "")
 
-    @pytest.mark.asyncio
     async def test_the_payload_is_copied_not_shared(self, tmp_path: Path):
         host = _host(tmp_path)
 
@@ -174,7 +169,6 @@ class TestEmitMessage:
         message = host.ctx.agent.channel.history()[-1]
         assert message.data == {"done": 1}
 
-    @pytest.mark.asyncio
     async def test_during_a_turn_it_is_stamped_like_any_emit(self, tmp_path: Path):
         class EmitViaConvenience(AgentHook):
             def __init__(self, ctx):

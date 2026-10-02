@@ -64,7 +64,6 @@ class TestScriptConstructors:
 
 
 class TestReadingATurn:
-    @pytest.mark.asyncio
     async def test_collect_and_terminal_read_a_whole_turn(self):
         agent = _loop(MockProvider([say("done")]))
         events = await collect(agent.start("hi").subscribe())
@@ -72,7 +71,6 @@ class TestReadingATurn:
         assert terminal(events).content == "done"
         assert [e.text for e in events_of_type(events, TextDelta)] == ["done"]
 
-    @pytest.mark.asyncio
     async def test_a_script_drives_a_tool_call_then_an_answer(self):
         agent = _loop(
             MockProvider([call_tool("echo", {"x": 1}), say("after")]),

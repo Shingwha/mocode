@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock
 
-import pytest
 import re
 
 from mocode.cli import lines
@@ -191,7 +190,6 @@ class TestRenderer:
             renderer.draw(event)
         return display
 
-    @pytest.mark.asyncio
     async def test_text_and_a_silent_tool(self, capsys):
         await self._run(
             MockProvider([
@@ -214,7 +212,6 @@ class TestRenderer:
         assert rendered[3] == "↑3 ↓3 tokens"   # what the turn cost, all iterations
         assert set(rendered[4]) == {"─"}       # the rule that closes the turn
 
-    @pytest.mark.asyncio
     async def test_a_provider_that_reports_no_usage_gets_no_line(self, capsys):
         await self._run(
             MockProvider([
@@ -224,7 +221,6 @@ class TestRenderer:
 
         assert "tokens" not in _plain(capsys.readouterr().out)
 
-    @pytest.mark.asyncio
     async def test_a_talkative_tool_is_still_one_line(self, capsys):
         """What a call printed is the model's to read, not the terminal's."""
 
@@ -245,7 +241,6 @@ class TestRenderer:
         assert [line for line in out.splitlines() if line[:1] in "·✓✗"] == ["✓ make"]
         assert "building" not in out
 
-    @pytest.mark.asyncio
     async def test_a_result_detail_joins_the_verdict(self, capsys):
         await self._run(
             MockProvider([
@@ -259,7 +254,6 @@ class TestRenderer:
 
         assert "✓ run  ls · exit_code=3" in _plain(capsys.readouterr().out)
 
-    @pytest.mark.asyncio
     async def test_a_denied_call_is_a_failure(self, capsys):
         from mocode.core import AgentHook, ToolCallContext
 
@@ -337,7 +331,6 @@ class TestLiveBlock:
     are the whole mechanism: an offset one row off corrupts the screen.
     """
 
-    @pytest.mark.asyncio
     async def test_a_batch_keeps_one_row_per_call_in_call_order(self, capsys):
         # 'a' finishes first and 'c' last — the rows must not follow that.
         await _run_parallel(_make_display(live=True), {"a": 0.01, "b": 0.02, "c": 0.03})
@@ -358,7 +351,6 @@ class TestLiveBlock:
             ("1", "✓ c  c"),
         ]
 
-    @pytest.mark.asyncio
     async def test_output_that_is_not_a_verdict_freezes_the_block(self, capsys):
         """A row is only rewritable while nothing else has been printed."""
 
@@ -388,7 +380,6 @@ class TestLiveBlock:
         assert not REWRITE.search(out)            # so the verdict is appended
         assert "✓ noisy" in _plain(out)
 
-    @pytest.mark.asyncio
     async def test_a_redirected_run_prints_no_placeholders(self, capsys):
         """A log cannot be rewritten, and would keep the dim rows forever."""
         await _run_parallel(_make_display(live=False), {"a": 0.01, "b": 0.02, "c": 0.03})
@@ -399,7 +390,6 @@ class TestLiveBlock:
             "✓ a  a", "✓ b  b", "✓ c  c",
         }
 
-    @pytest.mark.asyncio
     async def test_a_block_taller_than_the_screen_stops_claiming_rows(
         self, capsys, monkeypatch
     ):
