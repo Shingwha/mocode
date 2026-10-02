@@ -4,6 +4,7 @@ plugin and the end-to-end contract."""
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -333,3 +334,183 @@ class TestStore:
         store = Store({})
         assert store._max_value_chars == 262144
         assert store._max_total_chars == 1048576
+
+
+# ── T3: output + rank ───────────────────────────────────────
+
+
+from mocode.host.plugin.builtin.codemode.output import (
+    Output,
+    build_result,
+    compose,
+    truncate_body,
+)
+from mocode.host.plugin.builtin.codemode.search import normalize, rank
+
+
+class TestOutput:
+    def test_text_keeps_strings_and_jsonifies_rest(self):
+        out = Output()
+        out.text("plain")
+        out.text({"a": 1})
+        out.text([1, "x"])
+        assert out.items == ['plain', '{"a": 1}', '[1, "x"]']
+
+    def test_image_block_and_marker(self):
+        out = Output()
+        block = {"type": "image", "data": "AAAA", "mimeType": "image/png"}
+        out.image(block)
+        assert out.images == [block]
+        assert out.items == ["[image: image/png]"]
+
+    def test_image_data_url_and_object(self):
+        out = Output()
+        out.image("data:image/jpeg;base64,/9j/4AAQ")
+        out.image({"image_url": "data:image/gif;base64,R0lGOD"})
+        out.image({"image_url": "https://example.invalid/x.png"})
+        assert out.items == [
+            "[image: image/jpeg]",
+            "[image: image/gif]",
+            "[image: image]",
+        ]
+
+    def test_render_body_joins_items(self):
+        out = Output()
+        out.text("a")
+        out.text("b")
+        assert out.render_body() == "a\nb"
+        assert Output().render_body() == ""
+
+
+class TestTruncateBody:
+    def test_short_body_untouched(self):
+        assert truncate_body("hello", 12000) == ("hello", None)
+
+    def test_nonpositive_limit_means_unlimited(self):
+        assert truncate_body("hello", 0) == ("hello", None)
+        assert truncate_body("hello", -5) == ("hello", None)
+
+    def test_long_body_head_tail_marker_and_file(self):
+        body = "".join(str(i % 10) for i in range(1000))
+        text, path = truncate_body(body, 100)
+        assert path is not None
+        head, tail = body[:50], body[-50:]
+        assert text == head + "\n…900 chars truncated…\n" + tail
+        full = Path(path)
+        assert full.name.startswith("mocode-codemode-") and full.suffix == ".txt"
+        assert full.read_text(encoding="utf-8") == body
+        full.unlink()
+
+    def test_odd_limit_keeps_max_minus_one(self):
+        text, _ = truncate_body("x" * 10, 7)
+        # head 3 + marker + tail 3 → 3 + 4 + 3 with "…4 chars truncated…"
+        assert text.startswith("xxx")
+        assert text.endswith("xxx")
+
+
+class TestCompose:
+    def test_success_with_body(self):
+        assert compose(True, 12, "line", None, None) == "Script completed in 12ms\nline"
+
+    def test_success_empty_body_is_just_the_status_line(self):
+        assert compose(True, 12, "", None, None) == "Script completed in 12ms"
+
+    def test_failure_keeps_partial_output_then_error(self):
+        text = compose(False, 5, "partial", ValueError("boom"), None)
+        assert text == "Script failed in 5ms\npartial\nScript error: ValueError: boom"
+
+    def test_failure_empty_body_has_no_blank_line(self):
+        assert (
+            compose(False, 5, "", ValueError("boom"), None)
+            == "Script failed in 5ms\nScript error: ValueError: boom"
+        )
+
+    def test_full_output_path_appended_last(self):
+        text = compose(True, 1, "b", None, "/tmp/full.txt")
+        assert text.endswith("\nFull output: /tmp/full.txt")
+
+
+class TestBuildResult:
+    def test_success_details(self):
+        out = Output()
+        out.text("hi")
+        result = build_result(ok=True, ms=3, output=out, error=None, tool_calls=2, max_chars=100)
+        assert result.content == "Script completed in 3ms\nhi"
+        assert result.details == {
+            "ok": True,
+            "images": [],
+            "truncated": False,
+            "full_output_path": None,
+            "tool_calls": 2,
+        }
+
+    def test_failure_details(self):
+        out = Output()
+        result = build_result(
+            ok=False, ms=3, output=out, error=CodemodeError("empty"), tool_calls=0, max_chars=100
+        )
+        assert result.content == "Script failed in 3ms\nScript error: CodemodeError: empty"
+        assert result.details["ok"] is False
+
+    def test_truncation_flows_into_result(self):
+        out = Output()
+        out.text("x" * 500)
+        result = build_result(ok=True, ms=1, output=out, error=None, tool_calls=0, max_chars=100)
+        assert result.details["truncated"] is True
+        assert result.details["full_output_path"] is not None
+        assert "…400 chars truncated…" in result.content
+        assert "\nFull output: " in result.content
+        Path(result.details["full_output_path"]).unlink()
+
+
+class TestRank:
+    def _entries(self):
+        # Registered MCP names are normalized per the naming decision, so
+        # the server segment carries underscores, never hyphens.
+        return [
+            {"name": "read_file", "description": "read a file from disk"},
+            {"name": "bash", "description": "run a shell command"},
+            {"name": "mcp__git__search", "description": "search github code"},
+            {"name": "mcp__git_ops__search_things", "description": "search ops"},
+        ]
+
+    def test_empty_query_returns_registration_order(self):
+        assert [t["name"] for t in rank("", self._entries())] == [
+            "read_file",
+            "bash",
+            "mcp__git__search",
+            "mcp__git_ops__search_things",
+        ]
+
+    def test_empty_query_respects_limit(self):
+        assert len(rank("", self._entries(), limit=2)) == 2
+
+    def test_name_hit_outranks_description_hit(self):
+        hits = rank("bash", self._entries())
+        assert hits[0]["name"] == "bash"
+
+    def test_all_tokens_matched_gets_bonus_and_drives_order(self):
+        # "search" hits two names; "code" hits one description — that one
+        # matches every token and takes the top slot.
+        hits = rank("search code", self._entries())
+        assert hits[0]["name"] == "mcp__git__search"
+
+    def test_unmatched_tools_drop_out(self):
+        hits = rank("read file", self._entries())
+        assert [t["name"] for t in hits] == ["read_file"]
+
+    def test_ties_sort_by_name(self):
+        hits = rank("search", self._entries())
+        assert [t["name"] for t in hits] == [
+            "mcp__git__search",
+            "mcp__git_ops__search_things",
+        ]
+
+    def test_namespace_filter_uses_normalized_prefix(self):
+        hits = rank("search", self._entries(), namespace="git-ops")
+        assert [t["name"] for t in hits] == ["mcp__git_ops__search_things"]
+        assert rank("search", self._entries(), namespace="nope") == []
+
+    def test_normalize_replaces_invalid_identifier_chars(self):
+        assert normalize("mcp__dev-radius__search") == "mcp__dev_radius__search"
+        assert normalize("a b.c-d") == "a_b_c_d"
