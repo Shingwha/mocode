@@ -114,6 +114,12 @@ failures, rate limits and auth errors all surface when the request is made.
 A failure mid-stream propagates; the caller handles it, because it already
 received partial output. `CancelledError` is never retried.
 
+A `deadline=` argument (a `time.monotonic` moment; `None` — the default —
+means unlimited) bounds the orchestration itself: checked at the top of every
+attempt and before every backoff sleep, past it nothing is slept or retried
+and `RetryDeadlineExceeded` is raised — a budget endgame for the caller to
+treat as such, never an error. A pending `Retry-After` never overrides it.
+
 ### Retry policy
 
 The orchestration — when a retry is safe — is the kernel's, because only the

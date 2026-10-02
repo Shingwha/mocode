@@ -45,6 +45,7 @@ from .hook import (
 from .provider import (
     ModelSpec,
     Provider,
+    RetryDeadlineExceeded,
     StreamAccumulator,
     ToolCall,
     Usage,
@@ -60,7 +61,8 @@ class AgentConfig:
     """Loop execution policy. Facts about the model live in :class:`ModelSpec`.
 
     The budget fields are per turn and 0 means unlimited. All three are
-    checked before each provider call: a turn a budget cuts ends with the
+    checked before each provider call, and the wall clock additionally
+    bounds the retry backoff itself: a turn a budget cuts ends with the
     matching ``RunFinished.stop_reason`` and a replayable history — every
     issued tool call keeps its answer.
     """
@@ -384,6 +386,14 @@ class AgentLoop:
         iteration = 0
         stop_reason: StopReason = "completed"
         started = time.monotonic()
+        # The wall clock the provider calls answer to: handed to the retry
+        # orchestrator so a budget cut cannot be delayed by a backoff sleep.
+        # None means unlimited — no deadline reaches the orchestrator at all.
+        deadline = (
+            started + self.config.max_turn_seconds
+            if self.config.max_turn_seconds > 0
+            else None
+        )
 
         await self._publish(
             RunStarted(model=self.model.name, tools=self._tools.names())
@@ -394,8 +404,10 @@ class AgentLoop:
             # budget cuts ends like any other: its terminal event says why,
             # and the history stays replayable — every issued tool call keeps
             # its answer; the call that would have finished a reply never
-            # happens. The wall clock is not checked inside retry backoff (a
-            # turn mid-backoff may overshoot the budget by one interval).
+            # happens. The wall clock is enforced inside retry backoff too:
+            # the deadline handed to with_retry_stream stops any sleep or
+            # retry past it (RetryDeadlineExceeded lands on the same
+            # time_budget path below).
             if (
                 self.config.max_iterations > 0
                 and iteration >= self.config.max_iterations
@@ -443,23 +455,36 @@ class AgentLoop:
             self.system_prompt = request.system_prompt
 
             acc = StreamAccumulator()
-            async for chunk in with_retry_stream(
-                self.provider,
-                self.messages,
-                self.system_prompt,
-                request_tools,
-                self.model.max_output,
-            ):
-                acc.feed(chunk)
-                # Reasoning before text. An endpoint switching a model from
-                # thinking to answering sometimes puts the last reasoning
-                # fragment and the first answer fragment in the *same* delta;
-                # emitting them the other way round makes a renderer bounce
-                # between the two blocks mid-sentence.
-                if chunk.reasoning:
-                    await self._publish(ReasoningDelta(text=chunk.reasoning))
-                if chunk.text:
-                    await self._publish(TextDelta(text=chunk.text))
+            try:
+                async for chunk in with_retry_stream(
+                    self.provider,
+                    self.messages,
+                    self.system_prompt,
+                    request_tools,
+                    self.model.max_output,
+                    deadline=deadline,
+                ):
+                    acc.feed(chunk)
+                    # Reasoning before text. An endpoint switching a model from
+                    # thinking to answering sometimes puts the last reasoning
+                    # fragment and the first answer fragment in the *same* delta;
+                    # emitting them the other way round makes a renderer bounce
+                    # between the two blocks mid-sentence.
+                    if chunk.reasoning:
+                        await self._publish(ReasoningDelta(text=chunk.reasoning))
+                    if chunk.text:
+                        await self._publish(TextDelta(text=chunk.text))
+            except RetryDeadlineExceeded:
+                # The budget ran out inside retry backoff — the same budget
+                # endgame as the checkpoints above, not a provider failure
+                # and not a cancellation. The history needs nothing from
+                # this iteration: the orchestrator raises only before the
+                # first chunk (the retry window closes there), so no
+                # response took shape, no assistant message enters the
+                # history, and every earlier tool call keeps its answer —
+                # the transcript replays untouched.
+                stop_reason = "time_budget"
+                break
 
             response = acc.build()
 

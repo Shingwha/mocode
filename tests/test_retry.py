@@ -9,7 +9,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from mocode.core.provider import Chunk, RetryPolicy, _compute_delay, with_retry_stream
+import mocode.core.provider as provider_module
+from mocode.core.provider import (
+    Chunk,
+    RetryDeadlineExceeded,
+    RetryPolicy,
+    _compute_delay,
+    with_retry_stream,
+)
 
 _rate = type("RateLimitError", (Exception,), {})
 _auth = type("AuthenticationError", (Exception,), {})
@@ -49,6 +56,33 @@ def _rate_limited(retry_after):
     exc = _rate("429")
     exc.response = SimpleNamespace(headers={"Retry-After": retry_after})
     return exc
+
+
+class _Clock:
+    """A fake monotonic clock the test advances by hand."""
+
+    def __init__(self, start: float = 0.0):
+        self.now = start
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+class _BurningProvider(_MockProvider):
+    """A provider whose attempts consume simulated wall clock before failing."""
+
+    def __init__(self, attempts: list, clock: _Clock, cost: float = 0.0):
+        super().__init__(attempts)
+        self._clock = clock
+        self._cost = cost
+
+    async def stream(self, *args, **kwargs):
+        self._clock.now += self._cost  # the attempt itself takes time
+        outcome = self._remaining.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        for text in outcome:
+            yield Chunk(text=text)
 
 
 @pytest.fixture(autouse=True)
@@ -231,3 +265,78 @@ class TestComputeDelay:
         assert _compute_delay(0) < _compute_delay(1) < _compute_delay(2)
         assert 1.0 <= _compute_delay(0) <= 1.5  # base plus at most the jitter
         assert _compute_delay(20) <= 60.0
+
+
+class TestDeadline:
+    """The wall clock bounds the orchestration itself — no sleep or retry
+    past it, and a Retry-After never overrides the budget."""
+
+    @pytest.mark.asyncio
+    async def test_no_deadline_ignores_the_clock(self, monkeypatch, _patch_sleep):
+        # Without a deadline the clock is never consulted, however late it
+        # reads — the default behavior is exactly as it was.
+        clock = _Clock(start=10**9)
+        monkeypatch.setattr(provider_module, "time", clock)
+        provider = _MockProvider([_rate("429"), ["ok"]])
+        assert await _collect(provider) == ["ok"]
+        assert _patch_sleep.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_deadline_already_gone_stops_before_the_first_attempt(
+        self, monkeypatch, _patch_sleep
+    ):
+        clock = _Clock(start=100.0)
+        monkeypatch.setattr(provider_module, "time", clock)
+        provider = _MockProvider([["ok"]])  # would have succeeded
+        with pytest.raises(RetryDeadlineExceeded) as caught:
+            await _collect(provider, deadline=99.0)
+        assert provider._remaining == [["ok"]]  # no attempt was even made
+        assert _patch_sleep.call_count == 0
+        assert caught.value.provider == "mock"
+        assert caught.value.last_error is None
+
+    @pytest.mark.asyncio
+    async def test_deadline_passing_during_the_sleep_stops_the_next_attempt(
+        self, monkeypatch, _patch_sleep
+    ):
+        # The backoff sleep is what consumes the rest of the budget; the
+        # next attempt top finds the deadline behind it and stops.
+        clock = _Clock()
+        monkeypatch.setattr(provider_module, "time", clock)
+        _patch_sleep.side_effect = lambda seconds: setattr(
+            clock, "now", clock.now + seconds
+        )
+        provider = _MockProvider([_rate("429"), ["ok"]])
+        policy = RetryPolicy(base_delay=2.0, jitter=0.0)
+        with pytest.raises(RetryDeadlineExceeded):
+            await _collect(provider, deadline=2.0, policy=policy)
+        assert _patch_sleep.call_count == 1  # slept once, never retried
+        assert provider._remaining == [["ok"]]
+
+    @pytest.mark.asyncio
+    async def test_retry_after_yields_to_the_deadline(
+        self, monkeypatch, _patch_sleep
+    ):
+        """The budget is the hard boundary: a server-stated wait cannot buy
+        a sleep past it."""
+        clock = _Clock()
+        monkeypatch.setattr(provider_module, "time", clock)
+        # The failing attempt itself burns the last of the budget.
+        provider = _BurningProvider([_rate_limited("30.0"), ["ok"]], clock, cost=1.0)
+        with pytest.raises(RetryDeadlineExceeded) as caught:
+            await _collect(provider, deadline=1.0)
+        assert _patch_sleep.call_count == 0  # the 30s wait never slept
+        assert caught.value.provider == "mock"
+        assert isinstance(caught.value.last_error, _rate)
+
+    @pytest.mark.asyncio
+    async def test_deadline_still_future_allows_the_retry(
+        self, monkeypatch, _patch_sleep
+    ):
+        # A deadline that has not passed changes nothing about the attempt
+        # it still covers — the burn lands inside the budget, the retry runs.
+        clock = _Clock()
+        monkeypatch.setattr(provider_module, "time", clock)
+        provider = _BurningProvider([_rate_limited("0.3"), ["ok"]], clock, cost=1.0)
+        assert await _collect(provider, deadline=10.0) == ["ok"]
+        assert _patch_sleep.call_args_list[0].args == (0.3,)  # Retry-After honored

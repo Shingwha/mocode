@@ -29,10 +29,10 @@ from mocode.core.hook import (
     ResponseContext,
     ToolCallContext,
 )
-from mocode.core.provider import Response, ToolCall, Usage
+from mocode.core.provider import Response, RetryPolicy, ToolCall, Usage
 from mocode.core.state import DONE, RUNNING, RunState
 from mocode.core.tool import ERROR_PREFIX, TIMEOUT_PREFIX, Tool, ToolError, ToolRegistry, ToolResult
-from mocode.testing import MockProvider, tool_call_response
+from mocode.testing import MockProvider, response_to_chunks, tool_call_response
 
 
 def _echo_tool(name: str = "echo", **kwargs) -> Tool:
@@ -598,11 +598,13 @@ class TestStopReasons:
     @pytest.mark.asyncio
     async def test_a_wall_clock_budget_ends_the_turn(self, monkeypatch):
         import mocode.core.agent as agent_module
+        import mocode.core.provider as provider_module
 
         class FastClock:
-            """Ten seconds pass between every *pair* of reads: the turn-start
-            read and the first checkpoint agree (within budget, iteration one
-            runs), the second checkpoint is already past it — no sleeping."""
+            """Ten seconds pass after the third read: the turn-start read,
+            the first checkpoint and the orchestrator's attempt-top check all
+            agree (within budget, the provider call goes out), and the next
+            checkpoint — iteration two's top — is already past it."""
 
             def __init__(self) -> None:
                 self.now = 1000.0
@@ -610,12 +612,15 @@ class TestStopReasons:
 
             def monotonic(self) -> float:
                 self.reads += 1
-                if self.reads > 2:
+                if self.reads > 3:
                     self.now += 10.0
                 return self.now
 
         clock = FastClock()
         monkeypatch.setattr(agent_module, "time", clock)
+        # The deadline reaches the retry orchestrator, so it reads the same
+        # clock the loop does.
+        monkeypatch.setattr(provider_module, "time", clock)
         agent = _make_agent(_echo_tool(), config=AgentConfig(max_turn_seconds=5))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
@@ -623,6 +628,70 @@ class TestStopReasons:
 
         assert events[-1].stop_reason == "time_budget"
         assert events[-1].iterations == 1
+
+    @pytest.mark.asyncio
+    async def test_a_budget_cut_inside_retry_backoff_is_not_a_failure(
+        self, monkeypatch
+    ):
+        """The wall clock bounds the backoff itself: two retriable failures
+        burn the budget, and the turn ends time_budget — not failed, not
+        cancelled — even though the provider would have answered next."""
+
+        import mocode.core.agent as agent_module
+        import mocode.core.provider as provider_module
+
+        class Clock:
+            def __init__(self) -> None:
+                self.now = 0.0
+
+            def monotonic(self) -> float:
+                return self.now
+
+        rate = type("RateLimitError", (Exception,), {})
+
+        class BurningProvider(MockProvider):
+            """Each attempt consumes simulated wall clock before failing."""
+
+            def __init__(self, responses, clock, burn: float):
+                super().__init__(responses)
+                self._clock = clock
+                self._burn = burn
+
+            def is_retriable(self, exc: Exception) -> bool:
+                return isinstance(exc, rate)
+
+            async def stream(self, messages, system, tools, max_tokens):
+                self.calls.append({"messages": list(messages)})
+                self._clock.now += self._burn
+                outcome = self.responses.pop(0)
+                if isinstance(outcome, BaseException):
+                    raise outcome
+                async for chunk in response_to_chunks(outcome):
+                    yield chunk
+
+        clock = Clock()
+        monkeypatch.setattr(agent_module, "time", clock)
+        monkeypatch.setattr(provider_module, "time", clock)
+        provider = BurningProvider(
+            [rate("429"), rate("429"), _plain_answer("late")], clock, burn=3.0
+        )
+        # Real (unpatched) sleeps, but milliseconds — the budget is burned by
+        # the attempts, not the backoff.
+        provider.retry_policy = RetryPolicy(base_delay=0.001, jitter=0.0)
+        agent = _make_agent(
+            provider=provider, config=AgentConfig(max_turn_seconds=5)
+        )
+
+        events = await _events(agent)
+
+        assert events[-1].stop_reason == "time_budget"
+        assert events[-1].iterations == 1
+        assert not any(isinstance(e, RunFailed) for e in events)
+        assert len(provider.calls) == 2  # the third attempt never happened
+        # The cut history is replayable: the orchestrator raises before the
+        # first chunk, so no response took shape and no assistant message
+        # entered the history mid-iteration.
+        assert agent.messages == [{"role": "user", "content": "hi"}]
 
     @pytest.mark.asyncio
     async def test_cancelled_is_a_stop_reason(self):
