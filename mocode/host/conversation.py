@@ -19,6 +19,7 @@ It owns four things and delegates the rest:
 
 from __future__ import annotations
 
+import dataclasses
 from collections import deque
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
@@ -190,6 +191,17 @@ class Conversation:
         self.ctx.model = spec
         self.provider_key = key
         self.model_name = model
+
+    def set_effort(self, level: str) -> None:
+        """Switch the reasoning-effort level this conversation sends.
+
+        A decision about this conversation only — nothing is written to
+        config.json, same semantics as :meth:`set_model`: persisting a default
+        is a deliberate act, not a side effect of switching. The new level
+        rides the next provider request.
+        """
+        self.agent.model = dataclasses.replace(self.agent.model, effort=level)
+        self.ctx.model = self.agent.model
 
     # ── Lifecycle ──────────────────────────────────────────
 
