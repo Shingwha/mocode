@@ -16,6 +16,9 @@ config.json）；全仓文档（README、docs、AGENTS.md）与新 schema 对齐
 ## 写入范围（仅此清单内的文件）
 
 - `mocode/cli/commands.py`
+- `mocode/host/config.py` —— **仅允许**：T1 完成、cli 不再调用后，删除
+  `ProviderEntry.model_names()` 桥接方法（lead 已批准的 variance，
+  W2 为保门禁暂留）
 - `tests/test_commands.py`
 - `README.md`
 - `docs/providers.md`
@@ -34,6 +37,8 @@ config.json）；全仓文档（README、docs、AGENTS.md）与新 schema 对齐
   现有（model_name 在 id 列表中则选它，否则第一项）。
 - 文案 `f"Switched to {entry.label(chosen_key)} / {chosen_model}"` 不变
   （chosen_model 现在是 id）。
+- T1 收尾：确认 `mocode/cli` 与 `tests/` 无任何 `model_names` 调用后，
+  删除 `host/config.py` 中的 `model_names()` 桥接方法（含其注释）。
 
 ### T2 /effort 新命令 — mocode/cli/commands.py
 - 实现 `_effort(ctx)`：
