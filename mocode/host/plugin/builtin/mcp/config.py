@@ -35,21 +35,26 @@ Two rule sets apply, kept deliberately separate (decision D14):
   ``${PLUGIN_ROOT}`` / ``${PLUGIN_DATA}`` as meaningless — an entry using
   them is skipped.
 
-v1 speaks stdio only. ``sse`` entries are rejected with a hint to use the
-streamable HTTP endpoint (commonly ``/mcp``); ``http`` / ``streamable-http``
-entries are reported and skipped (wave W3 implements that transport).
-A broken file, a wrong shape or an invalid single entry is reported and
-skipped — never fatal to the other servers.
+Three transports parse: ``stdio``, ``streamable-http`` (``http`` is its
+first name) and the legacy ``sse`` (2024-11-05 HTTP+SSE). An HTTP entry
+follows the standard in both rule sets — an absolute ``url``, https unless
+the host is loopback, no userinfo or fragment, case-unique header names,
+and no expansion of ``url``, header names or header values in a
+plugin-directory file; mocode's own files expand ``${VAR}`` in the ``url``
+and the header values only. A broken file, a wrong shape or an invalid
+single entry is reported and skipped — never fatal to the other servers.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlsplit
 
 from ...loader import report
 from .naming import fold_server_name
@@ -69,10 +74,13 @@ _MOCODE_EXTRA_KEYS = frozenset(
     {"enabled", "timeout", "exposure", "toolExposure", "description"}
 )
 _TOP_LEVEL_KEYS = frozenset({"$schema", "mcpServers"})
-_TRANSPORT_TYPES = frozenset({"stdio", "http", "streamable-http"})
+#: Every accepted ``type``; ``http`` and ``streamable-http`` are one transport.
+_TRANSPORT_TYPES = frozenset({"stdio", "http", "streamable-http", "sse"})
 
 #: ${VAR} — expanded from the environment in mocode's own files.
 _VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+#: Any ${...} token — what a plugin file's url/headers may not carry.
+_ANY_TOKEN_RE = re.compile(r"\$\{[^{}]*\}")
 #: ${PLUGIN_ROOT} / ${PLUGIN_DATA} — expanded only in plugin files.
 _PLUGIN_TOKEN_RE = re.compile(r"\$\{(PLUGIN_ROOT|PLUGIN_DATA)\}")
 #: cwd shapes a plugin stdio entry may use (standard §7.2.1).
@@ -85,8 +93,12 @@ _PLUGIN_CWD_RE = re.compile(
 class McpServerConfig:
     """One resolved MCP server entry.
 
-    v1 keeps stdio entries only — transport validation happens at parse
-    time, so ``command`` is always present. ``env`` is the overlay merged
+    ``transport`` selects the wire — ``"stdio"``, ``"streamable-http"``
+    (the current Streamable HTTP) or ``"sse"`` (the legacy 2024-11-05
+    HTTP+SSE) — and the session builds the connection target from it: a
+    stdio entry spawns ``command`` (always present for that transport) with
+    ``args`` / ``env`` / ``cwd``, an HTTP entry talks to ``url`` with its
+    fixed ``headers`` and has no command. ``env`` is the overlay merged
     over the process environment at spawn time (``PLUGIN_ROOT`` /
     ``PLUGIN_DATA`` are added by the session for plugin-sourced entries).
     ``cwd`` is already resolved to a path at parse time, or ``None`` to
@@ -95,10 +107,17 @@ class McpServerConfig:
     """
 
     name: str
-    command: str
+    #: The wire this entry speaks — "stdio", "streamable-http" or "sse".
+    transport: str = "stdio"
+    #: The executable to spawn — the stdio transport only.
+    command: str | None = None
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     cwd: str | None = None
+    #: The endpoint URL — the HTTP transports only, absolute http(s).
+    url: str | None = None
+    #: Fixed request headers — the HTTP transports only; may be empty.
+    headers: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     #: Per-request timeout in seconds — ``None`` means "not set", and the
     #: session falls back to the runtime default (itself 60).
@@ -146,6 +165,178 @@ def _check_no_bang(value: str, source: str, name: str, field_name: str) -> str:
     return value
 
 
+def _is_loopback(host: str) -> bool:
+    """Whether *host* names the loopback interface — ``localhost`` (any
+    casing, the RFC 6761 suffix included) or a loopback IP literal."""
+    lowered = host.lower()
+    if lowered == "localhost" or lowered.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(lowered).is_loopback
+    except ValueError:
+        return False
+
+
+def _url_problem(url: str, *, source: str, name: str) -> str | None:
+    """Why *url* is unusable, or ``None`` when it is fine: absolute http(s),
+    https unless the host is loopback, no userinfo, no fragment."""
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return f"{source}: server {name!r}: 'url' is not a valid URL — entry skipped"
+    if parsed.scheme not in ("http", "https"):
+        return (
+            f"{source}: server {name!r}: 'url' must be an http(s) URL "
+            f"({parsed.scheme!r} is not) — entry skipped"
+        )
+    if parsed.username is not None or parsed.password is not None or "@" in (parsed.netloc or ""):
+        return (
+            f"{source}: server {name!r}: 'url' must not embed userinfo "
+            "(user:password@host) — entry skipped"
+        )
+    if parsed.fragment:
+        return (
+            f"{source}: server {name!r}: 'url' must not carry a fragment "
+            f"('#{parsed.fragment}') — entry skipped"
+        )
+    if not parsed.hostname:
+        return f"{source}: server {name!r}: 'url' must be absolute — entry skipped"
+    if parsed.scheme == "http" and not _is_loopback(parsed.hostname):
+        return (
+            f"{source}: server {name!r}: 'url' must use https for the "
+            f"non-loopback host {parsed.hostname!r} — entry skipped"
+        )
+    return None
+
+
+def _forbids_expansion(value: str, *, source: str, name: str, field_name: str) -> bool:
+    """Whether *value* asks for an expansion the standard forbids in a
+    plugin-directory file — a ``${...}`` token anywhere, or a leading
+    ``!command``. Reported when it does."""
+    if _ANY_TOKEN_RE.search(value) or value.startswith("!"):
+        report(
+            f"{source}: server {name!r}: {field_name} must not use ${{VAR}} "
+            "or '!command' expansion (the Agent Plugins standard forbids "
+            "both for url and headers) — entry skipped"
+        )
+        return True
+    return False
+
+
+def _headers_shape(raw: object, *, source: str, name: str) -> dict[str, str] | None:
+    """The entry's ``headers`` as a string map — ``None`` (reported) when it
+    is not one, or when two names differ only in case."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in raw.items()
+    ):
+        report(
+            f"{source}: server {name!r}: 'headers' must be an object of "
+            "strings — entry skipped"
+        )
+        return None
+    seen: dict[str, str] = {}
+    for key in raw:
+        folded = key.lower()
+        if folded in seen:
+            report(
+                f"{source}: server {name!r}: headers {seen[folded]!r} and "
+                f"{key!r} differ only in case — entry skipped"
+            )
+            return None
+        seen[folded] = key
+    return dict(raw)
+
+
+def _strict_headers(
+    raw: object, *, source: str, name: str
+) -> dict[str, str] | None:
+    """A plugin-directory entry's headers, used exactly as written."""
+    headers = _headers_shape(raw, source=source, name=name)
+    if headers is None:
+        return None
+    for key, value in headers.items():
+        if _forbids_expansion(key, source=source, name=name, field_name=f"header name {key!r}"):
+            return None
+        if _forbids_expansion(value, source=source, name=name, field_name=f"header {key!r} value"):
+            return None
+    return headers
+
+
+def _mocode_headers(
+    raw: object, *, source: str, name: str, environ: Mapping[str, str]
+) -> dict[str, str] | None:
+    """mocode's own files expand ``${VAR}`` in header *values* only — names
+    are used as written, so one asking for expansion is refused."""
+    headers = _headers_shape(raw, source=source, name=name)
+    if headers is None:
+        return None
+    out: dict[str, str] = {}
+    for key, value in headers.items():
+        if _ANY_TOKEN_RE.search(key) or key.startswith("!"):
+            report(
+                f"{source}: server {name!r}: header name {key!r} cannot be "
+                "expanded — entry skipped"
+            )
+            return None
+        out[key] = _check_no_bang(
+            _expand_vars(value, environ, source), source, name, f"header {key!r}"
+        )
+    return out
+
+
+def _http_config(
+    name: str,
+    entry: Mapping[str, object],
+    *,
+    transport: str,
+    source: str,
+    strict: bool,
+    plugin_root: Path | None,
+    plugin_data: Path | None,
+    environ: Mapping[str, str],
+) -> McpServerConfig | None:
+    """The HTTP-transport half of :func:`_parse_entry`: ``url`` plus
+    ``headers``, validated per :data:`_url_problem` and the rule set's
+    expansion rules. ``None`` means the entry was reported and skipped."""
+    raw_url = entry.get("url")
+    if not isinstance(raw_url, str) or not raw_url.strip():
+        report(
+            f"{source}: server {name!r}: 'url' must be a non-empty string "
+            "— entry skipped"
+        )
+        return None
+    if strict:
+        if _forbids_expansion(raw_url, source=source, name=name, field_name="'url'"):
+            return None
+        url = raw_url
+        headers = _strict_headers(entry.get("headers"), source=source, name=name)
+    else:
+        url = _expand_vars(raw_url, environ, source)
+        headers = _mocode_headers(
+            entry.get("headers"), source=source, name=name, environ=environ
+        )
+    if headers is None:
+        return None
+    problem = _url_problem(url, source=source, name=name)
+    if problem is not None:
+        report(problem)
+        return None
+    cfg = McpServerConfig(
+        name=name,
+        transport=transport,
+        url=url,
+        headers=headers,
+        source=source,
+        plugin_root=plugin_root if strict else None,
+        plugin_data=plugin_data if strict else None,
+    )
+    if not strict:
+        _apply_mocode_extensions(cfg, entry, source=source, name=name)
+    return cfg
+
+
 def _parse_entry(
     name: str,
     entry: object,
@@ -186,32 +377,34 @@ def _parse_entry(
     if not isinstance(entry_type, str):
         report(f"{source}: server {name!r}: 'type' must be a string — entry skipped")
         return None
-
-    if entry_type == "sse":
-        report(
-            f"{source}: server {name!r}: the legacy 'sse' transport is not "
-            "supported — use the streamable HTTP endpoint (commonly '/mcp') instead; entry skipped"
-        )
-        return None
-    if entry_type in ("http", "streamable-http"):
-        report(
-            f"{source}: server {name!r}: the streamable HTTP transport is not "
-            "implemented (v1: stdio only; see wave W3); entry skipped"
-        )
-        return None
-    if entry_type != "stdio":
+    if entry_type not in _TRANSPORT_TYPES:
         report(
             f"{source}: server {name!r}: unknown type {entry_type!r} "
-            "(expected 'stdio', 'http' or 'streamable-http') — entry skipped"
+            "(expected 'stdio', 'http', 'streamable-http' or 'sse') — entry skipped"
         )
         return None
+    # 'http' is the streamable-HTTP transport's first name.
+    transport = "streamable-http" if entry_type == "http" else entry_type
 
-    allowed = _STDIO_KEYS if strict else _STDIO_KEYS | _MOCODE_EXTRA_KEYS
+    base_keys = _STDIO_KEYS if transport == "stdio" else _HTTP_KEYS
+    allowed = base_keys if strict else base_keys | _MOCODE_EXTRA_KEYS
     extra = sorted(set(entry) - allowed)
     if extra:
         report(
             f"{source}: server {name!r}: unknown field(s) {', '.join(extra)} "
             "(ignored)"
+        )
+
+    if transport != "stdio":
+        return _http_config(
+            name,
+            entry,
+            transport=transport,
+            source=source,
+            strict=strict,
+            plugin_root=plugin_root,
+            plugin_data=plugin_data,
+            environ=environ,
         )
 
     command = entry.get("command")
@@ -324,6 +517,7 @@ def _parse_entry(
 
     cfg = McpServerConfig(
         name=name,
+        transport="stdio",
         command=command,
         args=args,
         env=env,
@@ -334,50 +528,58 @@ def _parse_entry(
     )
 
     if not strict:
-        enabled = entry.get("enabled", True)
-        if isinstance(enabled, bool):
-            cfg.enabled = enabled
-        elif "enabled" in entry:
-            report(
-                f"{source}: server {name!r}: 'enabled' must be true or false — ignored"
-            )
-        timeout = entry.get("timeout")
-        if timeout is not None:
-            if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
-                cfg.timeout = float(timeout)
-            else:
-                report(
-                    f"{source}: server {name!r}: 'timeout' must be a positive "
-                    "number of seconds — the default (60) is used"
-                )
-        exposure = entry.get("exposure")
-        if exposure is not None:
-            if isinstance(exposure, str):
-                cfg.exposure = exposure
-            else:
-                report(
-                    f"{source}: server {name!r}: 'exposure' must be a string — ignored"
-                )
-        tool_exposure = entry.get("toolExposure")
-        if tool_exposure is not None:
-            if isinstance(tool_exposure, dict) and all(
-                isinstance(k, str) and isinstance(v, str) for k, v in tool_exposure.items()
-            ):
-                cfg.tool_exposure = dict(tool_exposure)
-            else:
-                report(
-                    f"{source}: server {name!r}: 'toolExposure' must be an "
-                    "object of strings — ignored"
-                )
-        description = entry.get("description")
-        if description is not None:
-            if isinstance(description, str):
-                cfg.description = description
-            else:
-                report(
-                    f"{source}: server {name!r}: 'description' must be a string — ignored"
-                )
+        _apply_mocode_extensions(cfg, entry, source=source, name=name)
     return cfg
+
+
+def _apply_mocode_extensions(
+    cfg: McpServerConfig, entry: Mapping[str, object], *, source: str, name: str
+) -> None:
+    """Read mocode's own extension fields off *entry* onto *cfg* — every
+    transport, every rule-set check already done at the call site."""
+    enabled = entry.get("enabled", True)
+    if isinstance(enabled, bool):
+        cfg.enabled = enabled
+    elif "enabled" in entry:
+        report(
+            f"{source}: server {name!r}: 'enabled' must be true or false — ignored"
+        )
+    timeout = entry.get("timeout")
+    if timeout is not None:
+        if isinstance(timeout, (int, float)) and not isinstance(timeout, bool) and timeout > 0:
+            cfg.timeout = float(timeout)
+        else:
+            report(
+                f"{source}: server {name!r}: 'timeout' must be a positive "
+                "number of seconds — the default (60) is used"
+            )
+    exposure = entry.get("exposure")
+    if exposure is not None:
+        if isinstance(exposure, str):
+            cfg.exposure = exposure
+        else:
+            report(
+                f"{source}: server {name!r}: 'exposure' must be a string — ignored"
+            )
+    tool_exposure = entry.get("toolExposure")
+    if tool_exposure is not None:
+        if isinstance(tool_exposure, dict) and all(
+            isinstance(k, str) and isinstance(v, str) for k, v in tool_exposure.items()
+        ):
+            cfg.tool_exposure = dict(tool_exposure)
+        else:
+            report(
+                f"{source}: server {name!r}: 'toolExposure' must be an "
+                "object of strings — ignored"
+            )
+    description = entry.get("description")
+    if description is not None:
+        if isinstance(description, str):
+            cfg.description = description
+        else:
+            report(
+                f"{source}: server {name!r}: 'description' must be a string — ignored"
+            )
 
 
 def _read_json_file(path: Path) -> dict | None:

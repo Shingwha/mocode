@@ -1,7 +1,8 @@
 # mcp — the MCP builtin plugin
 
 Connects MoCode to [MCP](https://modelcontextprotocol.io) servers over
-**stdio** (v1; streamable HTTP is a later wave) and exposes their tools as
+**stdio**, **streamable HTTP** (`http` / `streamable-http`) and the
+**legacy `sse`** transport, and exposes their tools as
 `mcp__<server>__<tool>` — with a name fold, an exposure model, and a
 dual-era protocol client built on the official `mcp` SDK (v2).
 
@@ -24,6 +25,15 @@ dual-era protocol client built on the official `mcp` SDK (v2).
   `${PLUGIN_ROOT}`/`${PLUGIN_DATA}` (the child always gets both; `env` may
   not set them; an expanded `cwd` must stay inside its root), and unknown
   fields (like `exposure`) are reported and ignored.
+- HTTP entries (`url` + `headers`) follow the standard in both rule sets:
+  absolute http(s), https unless the host is loopback, no userinfo or
+  fragment, header names unique up to case, and no expansion of `url`,
+  header names or header values in a plugin file — mocode's own files
+  expand `${VAR}` in the `url` and the header values only. Streamable
+  HTTP carries the entry's headers and the per-request budget on a
+  pre-configured `httpx2` client (the SDK's transport takes neither);
+  the `sse` transport receives them as its own parameters. A `url` with
+  no `type` in a mocode file infers `streamable-http`.
 - Protocol: **dual-era**, carried by the official SDK's `Client(mode="auto")`
   — it probes `server/discover` for the current era (2026-07-28) and falls
   back to the `initialize` handshake for everything else (≤2025-11-25). The
@@ -49,7 +59,8 @@ dual-era protocol client built on the official `mcp` SDK (v2).
   servers whose tools the model may see under a bounded wait (default 10 s)
   and the rest in the background, then adds the `mcp_servers` prompt
   section; `close()` unwinds every session — the SDK's bounded shutdown
-  kills each child (stdin close, grace, then the whole process tree). If
+  kills each child (stdin close, grace, then the whole process tree;
+  HTTP transports have no child and are simply closed). If
   program-only tools exist while the codemode plugin is disabled, one
   warning Notice is emitted per conversation.
 - The child's stderr is a bounded tail kept in a temporary file for status
@@ -59,9 +70,8 @@ dual-era protocol client built on the official `mcp` SDK (v2).
   full environment is passed explicitly. Error codes are stable:
   `mcp_transport`, `mcp_timeout`, `mcp_input_required`, `mcp_closed`,
   `mcp_error`.
-- Not implemented on purpose (v1): OAuth, `!command`, the legacy `sse`
-  transport (skipped with a hint to use the streamable HTTP endpoint),
-  streamable HTTP, modern `subscriptions/listen`.
+- Not implemented on purpose (v1): OAuth, `!command`, modern
+  `subscriptions/listen`.
 
 ## Not a sandbox
 
