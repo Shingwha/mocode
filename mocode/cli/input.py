@@ -193,18 +193,18 @@ class Input:
             self._session = PromptSession(
                 completer=SlashCompleter(self._registry),
                 complete_while_typing=False,
-                key_bindings=build_keybindings(
-                    self._handle_paste,
-                    extra=[self._ctrl_c_binding(), *self._registered_bindings()],
-                ),
                 bottom_toolbar=self._toolbar if self._status is not None else None,
             )
-            # PromptSession merges its own defaults BEFORE `key_bindings`, and
-            # the first matching binding wins — prepend ours so a registered
-            # key that collides with a prompt default (c-c, once wired) goes
-            # to the handler, not to the default abort.
+            # The keybindings carry our Ctrl-C policy and every registered
+            # idle key. They are prepended, not passed as `key_bindings`:
+            # PromptSession merges its own defaults BEFORE those, the first
+            # match wins, and ours must beat the default abort on c-c.
+            ours = build_keybindings(
+                self._handle_paste,
+                extra=[self._ctrl_c_binding(), *self._registered_bindings()],
+            )
             self._session.app.key_bindings = merge_key_bindings(
-                [self._session.key_bindings, self._session.app.key_bindings]
+                [ours, self._session.app.key_bindings]
             )
 
     def _ctrl_c_binding(self):

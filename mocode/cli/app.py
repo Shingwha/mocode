@@ -222,9 +222,6 @@ class CLIApp:
             pending_approvals=0,
         )
 
-    def _register_builtin_keys(self) -> None:
-        """The terminal's own running-time keys — the flagships of the API."""
-
     # ── Dispatch ───────────────────────────────────────────
 
     async def _dispatch(self, text: str) -> CommandResult:
@@ -283,22 +280,40 @@ class CLIApp:
             return None
         return asyncio.ensure_future(self._running_keys(turn))
 
-    async def _running_keys(self, turn: "Turn") -> None:
+    #: How long a bare escape may sit unparsed before it counts as Escape.
+    #: The raw reader has no KeyProcessor to flush partial sequences, so the
+    #: loop arms this timer after every batch — Vim's `timeoutlen`, minus the app.
+    _ESCAPE_FLUSH_SECONDS = 0.5
+
+    async def _running_keys(self, turn: "Turn", source=None) -> None:
         """Read the terminal raw while a turn runs and dispatch running keys.
 
         Started by :meth:`_start_running_keys`; cancelled by ``_run_chat`` the
         moment the turn ends. A failure here costs the key channel, never the
         turn — the SIGINT fallback still cancels a run the keys cannot.
+        *source* overrides where keys are read from (the tests inject a pipe).
         """
         from prompt_toolkit.input import create_input
         from prompt_toolkit.keys import Keys
 
         try:
-            source = create_input(sys.stdin)
+            source = source or create_input(sys.stdin)
         except Exception:
             return
         loop = asyncio.get_running_loop()
         ready = asyncio.Event()
+        flush_timer: asyncio.TimerHandle | None = None
+
+        def _press_name(press) -> str:
+            return press.key.value if isinstance(press.key, Keys) else press.key
+
+        def _flush_later() -> None:
+            """Turn a lone escape (or any partial sequence) into real keys."""
+            flush = getattr(source, "flush_keys", None)
+            if flush is None:
+                return
+            for press in flush():
+                self._dispatch_soon(_press_name(press), turn)
 
         def _wake() -> None:
             loop.call_soon_threadsafe(ready.set)
@@ -308,11 +323,16 @@ class CLIApp:
                 while True:
                     await ready.wait()
                     ready.clear()
+                    if flush_timer is not None:
+                        flush_timer.cancel()
+                        flush_timer = None
                     for press in source.read_keys():
-                        name = (
-                            press.key.value if isinstance(press.key, Keys) else press.key
-                        )
-                        await self._dispatch_running_key(name, turn)
+                        await self._dispatch_running_key(_press_name(press), turn)
+                    # What just arrived may be the start of a sequence (Escape
+                    # especially) — give the rest of it a moment to land.
+                    flush_timer = loop.call_later(
+                        self._ESCAPE_FLUSH_SECONDS, _flush_later
+                    )
         except asyncio.CancelledError:
             raise
         except (EOFError, OSError):
@@ -320,10 +340,24 @@ class CLIApp:
         except Exception:
             _log.exception("the running-key loop died")
         finally:
+            if flush_timer is not None:
+                flush_timer.cancel()
             try:
                 source.close()
             except Exception:
                 pass
+
+    def _dispatch_soon(self, name: str, turn: "Turn") -> None:
+        """Dispatch from a timer callback, where awaiting is not an option."""
+        task = asyncio.ensure_future(self._dispatch_running_key(name, turn))
+        task.add_done_callback(self._report_key_error)
+
+    @staticmethod
+    def _report_key_error(task: asyncio.Task) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            _log.exception(
+                "a running key handler failed", exc_info=task.exception()
+            )
 
     async def _dispatch_running_key(self, name: str, turn: "Turn") -> None:
         """One key while a turn runs: Esc and Ctrl-C cancel it, the rest dispatch."""
