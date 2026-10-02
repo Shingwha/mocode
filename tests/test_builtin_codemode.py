@@ -514,3 +514,227 @@ class TestRank:
     def test_normalize_replaces_invalid_identifier_chars(self):
         assert normalize("mcp__dev-radius__search") == "mcp__dev_radius__search"
         assert normalize("a b.c-d") == "a_b_c_d"
+
+
+# ── T4: plugin + description ────────────────────────────────
+
+
+from mocode.core.hook import ToolCallContext
+from mocode.host.plugin.builtin.codemode import PLUGIN, CodemodePlugin
+from mocode.host.plugin.builtin.codemode.description import DESCRIPTION
+from mocode.host.plugin.builtin.codemode.plugin import codemode_tool, effective_options
+
+
+def _echo_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(echo_tool())
+    return registry
+
+
+class TestPlugin:
+    def test_metadata(self):
+        assert PLUGIN.name == "codemode"
+        assert PLUGIN.description == "Run a Python script that calls other tools"
+        assert isinstance(PLUGIN, CodemodePlugin)
+
+    def test_package_init_exports(self):
+        import mocode.host.plugin.builtin.codemode as package
+
+        assert package.PLUGIN is PLUGIN
+        assert package.CodemodePlugin is CodemodePlugin
+
+    def test_description_teaches_python_dsl(self):
+        assert "Python" in DESCRIPTION
+        assert "tools.<name>(args)" in DESCRIPTION
+        assert 'tools["exact-name"]' in DESCRIPTION
+        assert "return_exceptions=True" in DESCRIPTION
+        assert "store(key, value)" in DESCRIPTION
+        assert "ALL_TOOLS" in DESCRIPTION
+        assert "exit()" in DESCRIPTION
+        assert "@options" in DESCRIPTION
+        assert "cannot call itself" in DESCRIPTION
+
+    def test_build_registers_model_only_tool(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        tool = host.ctx.tools.get("codemode")
+        assert tool is not None
+        assert tool.availability == "model"
+        assert tool.tags == frozenset({"codemode"})
+        assert tool.wants_context
+        assert tool.schema["required"] == ["script"]
+        assert "codemode" in host.ctx.tools.names(audience="model")
+        assert "codemode" not in host.ctx.tools.names(audience="program")
+
+    def test_build_does_not_self_report_source(self, plugin_host):
+        # Stamping is the loader's job (tested in test_plugins.py) — the
+        # plugin must only not claim one itself.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        assert host.ctx.tools.get("codemode").source == ""
+
+
+class TestRunTool:
+    async def _run(self, host, script: str, options: dict | None = None):
+        tool = host.ctx.tools.get("codemode")
+        args = {"script": script}
+        if options:
+            args["options"] = options
+        ctx = ToolCallContext(
+            tool_name="codemode", tool_args=args, tool_call_id="call_cm_1"
+        )
+        return await tool.run_async(args, ctx)
+
+    async def test_successful_script(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(
+            host, 'r = await tools.echo({"value": "hi"})\nreturn r.content'
+        )
+        assert result.content.startswith("Script completed in ")
+        assert result.content.endswith("echo:hi")
+        assert result.details == {
+            "ok": True,
+            "images": [],
+            "truncated": False,
+            "full_output_path": None,
+            "tool_calls": 1,
+        }
+
+    async def test_parallel_gather_in_script(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(
+            host,
+            "outcomes = await asyncio.gather("
+            "tools.echo({'value': 'a'}), tools.echo({'value': 'b'}))"
+            "\nreturn [o.content for o in outcomes]",
+        )
+        assert result.content.endswith('["echo:a", "echo:b"]')
+        assert result.details["tool_calls"] == 2
+
+    async def test_failed_script_keeps_partial_output(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, 'text("before")\nraise ValueError("boom")')
+        assert result.content.startswith("Script failed in ")
+        assert "\nbefore\n" in result.content
+        assert result.content.endswith("Script error: ValueError: boom")
+        assert result.details["ok"] is False
+
+    async def test_failing_tool_call_fails_script(self, plugin_host):
+        registry = ToolRegistry()
+        registry.register(_failing_tool())
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await self._run(host, 'await tools.fail({})')
+        assert result.content.startswith("Script failed in ")
+        assert "Script error: ToolCallError: fail: error: execution_error: nope" in result.content
+
+    async def test_empty_script_error(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, "   ")
+        assert "Script error: CodemodeError: script is empty" in result.content
+        assert result.details["ok"] is False
+
+    async def test_exit_ends_successfully(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, 'text("a")\nexit()\ntext("b")')
+        assert result.details["ok"] is True
+        assert result.content.endswith("\na")
+
+    async def test_top_level_return_appended(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, "return {'n': 1}")
+        assert result.content.endswith("\n{\"n\": 1}")
+
+    async def test_image_block_in_details(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(
+            host, 'image({"type": "image", "data": "AAAA", "mimeType": "image/png"})'
+        )
+        assert result.details["images"] == [
+            {"type": "image", "data": "AAAA", "mimeType": "image/png"}
+        ]
+        assert "[image: image/png]" in result.content
+
+    async def test_store_commits_on_success_and_persists(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, 'store("k", {"v": 1})\ntext("saved")')
+        assert result.details["ok"] is True
+        assert host.ctx.plugin_state("codemode") == {"k": {"v": 1}}
+        # a later call in the same conversation sees it
+        result = await self._run(host, 'return load("k")')
+        assert result.content.endswith('{"v": 1}')
+
+    async def test_store_discarded_on_failure(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, 'store("k", 1)\nraise ValueError("x")')
+        assert result.details["ok"] is False
+        assert host.ctx.plugin_state("codemode") == {}
+
+    async def test_store_limit_fails_without_applying(self, plugin_host):
+        registry = _echo_registry()
+        host = plugin_host(
+            plugins=[PLUGIN],
+            tools=registry,
+            config_kwargs={"plugins": {"codemode": {"store_max_value_chars": 5}}},
+        )
+        result = await self._run(host, 'store("k", "way too big")\ntext("done")')
+        assert result.details["ok"] is False
+        assert "CodemodeError" in result.content
+        assert host.ctx.plugin_state("codemode") == {}
+
+    async def test_max_output_chars_truncates(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(
+            host, 'text("x" * 500)', options={"max_output_chars": 100}
+        )
+        assert result.details["truncated"] is True
+        path = Path(result.details["full_output_path"])
+        assert path.read_text(encoding="utf-8") == "x" * 500
+        path.unlink()
+        assert "\nFull output: " in result.content
+
+    async def test_recursion_guard_in_script(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, 'await tools["codemode"]({"script": "pass"})')
+        assert result.details["ok"] is False
+        assert "codemode cannot be called from a script" in result.content
+        result = await self._run(host, "return [t['name'] for t in ALL_TOOLS]")
+        assert "codemode" not in result.content
+
+
+class TestOptions:
+    def test_effective_options_merges_comment_and_args(self):
+        script = '# @options: {"timeout_ms": 5000, "max_output_chars": 100}\ntext("x")'
+        merged = effective_options(script, {"timeout_ms": 9000})
+        assert merged == {"timeout_ms": 9000, "max_output_chars": 100}
+
+    def test_effective_options_ignores_bad_comment(self):
+        script = "# @options: {not json}\n"
+        assert effective_options(script, {"timeout_ms": 1}) == {"timeout_ms": 1}
+
+    def test_effective_options_empty(self):
+        assert effective_options("", None) == {}
+
+    def test_policy_from_options_ms(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        policy = host.ctx.tools.get("codemode").policy
+        assert policy({"script": "pass", "options": {"timeout_ms": 1500}}).timeout == 2
+        assert policy({"script": "pass", "options": {"timeout_ms": 2000}}).timeout == 2
+        assert policy({"script": "pass", "options": {"timeout_ms": 1}}).timeout == 1
+
+    def test_policy_from_comment_line(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        policy = host.ctx.tools.get("codemode").policy
+        args = {"script": '# @options: {"timeout_ms": 61000}\npass'}
+        assert policy(args).timeout == 61
+
+    def test_policy_from_config_timeout_s(self, plugin_host):
+        host = plugin_host(
+            plugins=[PLUGIN],
+            tools=_echo_registry(),
+            config_kwargs={"plugins": {"codemode": {"timeout_s": 30}}},
+        )
+        policy = host.ctx.tools.get("codemode").policy
+        assert policy({"script": "pass"}).timeout == 30
+
+    def test_policy_falls_back_to_none(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        policy = host.ctx.tools.get("codemode").policy
+        assert policy({"script": "pass"}).timeout is None
