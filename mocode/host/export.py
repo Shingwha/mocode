@@ -13,14 +13,15 @@ from ..core.transcript import (
     is_user,
     reasoning_of,
     text_of,
+    tool_call_arguments,
     tool_call_by_id,
     tool_call_id,
     tool_call_name,
-    tool_call_arguments,
     tool_calls_of,
 )
 from .io import write_json
 from .session import Session, extract_title, timestamp
+from .text import one_line
 
 
 def export_session(path: Path, session: Session, system_prompt: str = "") -> None:
@@ -163,8 +164,5 @@ def _short_args(arguments: str, max_len: int = 60) -> str:
         return arguments[:max_len]
     if isinstance(args, dict) and args:
         key, value = next(iter(args.items()))
-        text = str(value)
-        if len(text) > 30:
-            text = text[:27] + "..."
-        return f"{key}={text}"
+        return f"{key}={one_line(str(value), 30, ellipsis='...')}"
     return arguments[:max_len]

@@ -22,6 +22,7 @@ from pathlib import Path
 from ....core.prompt import Section
 from ....core.tool import Tool, ToolError
 from ...command import CONTINUE, Command, CommandContext, CommandResult
+from ...text import one_line
 from ..base import Plugin
 from ..context import BuildContext
 
@@ -182,7 +183,7 @@ def skill_tool(manager: SkillManager, *, name: str = "skill") -> Tool:
 def _one_line(text: str, limit: int = 100) -> str:
     """Collapse a skill description to a single readable line for /help."""
     first = text.strip().splitlines()[0].strip() if text.strip() else ""
-    return first[: limit - 1] + "…" if len(first) > limit else first
+    return one_line(first, limit)
 
 
 def make_skill_command(skill: Skill) -> Command:
