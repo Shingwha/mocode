@@ -1,4 +1,5 @@
 # Spec 04 · T3 输入层与状态栏：键位 / 中断语义 / 中间件 / CLIContext 全量（波次 B）
+> ✅ 2026-10-02 @ merge（`spec/t3-input-status`）—— T1-T6 全部完成并合并；合并后 747 passed。
 
 > 分支 `spec/t3-input-status`；worktree `C:\Users\shifu\.worktrees\mocode\spec-t3-input-status`；
 > 前置：波 A 全部合并（02 号的 `promote()` API 已在；01 号的实时区/spinner/verbose 标志已就位）；深读：总纲（裁决 #1/#3/#4）+ `ref/cli-tui-api.md` §4.1/§4.2/§5.1/§5.6/§5.7。

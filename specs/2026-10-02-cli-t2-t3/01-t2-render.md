@@ -1,4 +1,5 @@
 # Spec 01 · T2 渲染泛化：实时区管理器（波次 A）
+> ✅ 2026-10-02 @ merge（`spec/t2-render`）—— T1-T5 全部完成并合并；合并后 716 passed。
 
 > 分支 `spec/t2-render`；worktree `C:\Users\shifu\.worktrees\mocode\spec-t2-render`；
 > 前置：W0；深读：总纲 + `ref/cli-tui-api.md` §2/§3（以 §3.4 修正架构为准）/§3.5/§6 T2 行/§7。

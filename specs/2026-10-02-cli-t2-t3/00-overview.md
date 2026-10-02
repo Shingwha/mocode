@@ -1,6 +1,6 @@
 # Spec 组 · CLI T2/T3 + 内核收尾（2026-10-02）
 
-> 状态：进行中（2026-10-02 暂停于 Wave A，待新对话定范围后续作）。spec 是定义、不是看板——分支被合并 = 工单完成，git 是唯一进度权威。
+> 状态：✅ 完成（2026-10-02）。七份工单全部合并；终态 **802 passed, 2 skipped**（exit 0，哈希见 git log）。spec 是定义、不是看板——分支被合并 = 工单完成，git 是唯一进度权威。
 > worker agent 不改任何 spec、不写状态；完成信号 = 最终报告 + 分支 commit。
 > 上一组：`specs/2026-10-01-kernel-plugin-refactor/`（内核线 + T1 已全部合并，终态 686 passed）。
 > 当前 master：`e45b44d`，全量门禁 704 passed。**新对话入口 = 文末「跨会话交接快照」**。
@@ -77,13 +77,15 @@ spec 中文；代码/注释/仓库文档/commit 英文（仓库惯例：小写�
 
 | 工单 | 分支 | 状态 |
 |---|---|---|
-| 01-t2-render | spec/t2-render | 🔶 进行中：T1-T3 已提交（`ba2bb1c`/`d68ef1a`/`3a554ee`），**提交态门禁实测 714 passed**（47.12s，exit 0）；T4 半成品未提交（工作区 WIP，带 WIP 门禁红：7 failed golden）；T5 未动；**分支未合并** |
+| 01-t2-render | spec/t2-render | ✅ 2026-10-02 @ merge（T1-T5 全提交；合并后 716 passed） |
 | 02-bash-promote | spec/bash-promote | ✅ 2026-10-02 @ merge（promote() API + 12 测试，合并后 698 passed） |
 | 03-k8-deadline | spec/k8-deadline | ✅ 2026-10-02 @ merge（deadline 进编排器 + RetryDeadlineExceeded，合并后 704 passed） |
-| 04-t3-input-status | spec/t3-input-status | ⬜ |
-| 05-t3-content | spec/t3-content | ⬜ |
-| 06-session-replay | spec/session-replay | ⬜ |
-| 07-t3-ui | spec/t3-ui | ⬜ |
+| 04-t3-input-status | spec/t3-input-status | ✅ 2026-10-02 @ merge（CLIContext 全量 + 键位两态 + 中断语义 + 中间件 + 状态栏；合并后 747；跨模块小修 `dbc7fbc`） |
+| 05-t3-content | spec/t3-content | ✅ 2026-10-02 @ merge（围栏着色 + rich 可选落定渲染 + diff drawer 范例；双环境门禁绿） |
+| 06-session-replay | spec/session-replay | ✅ 2026-10-02 @ merge（PluginMessage 持久化 + resume 回放 +9 测试；文档欠账 `660dd9a` 清零） |
+| 07-t3-ui | spec/t3-ui | ✅ 2026-10-02 @ merge（UI 三对话框双路径 + header 接线 + 命令菜单 + 审批配方；终态 802 passed） |
+
+> lead 收尾提交：`dbc7fbc`（05 测试适配 04 的 CLIContext 全量签名——波内并行唯一的跨模块接缝）、`660dd9a`（翻案后的两处过时"not persisted"表述改写：plugins.md 限制段 + host/plugin/context.py docstring）、AGENTS.md examples 表补 message-drawers 行。
 
 ## 跨会话交接快照（2026-10-02，Wave A 中断点 · 新对话入口）
 

@@ -166,3 +166,4 @@ plugin, and [docs/plugins.md](docs/plugins.md) shows the worked version:
 | [examples/plugins/git-status/](examples/plugins/git-status) | a complete plugin, both surfaces |
 | [examples/plugins/json-validate/](examples/plugins/json-validate) | a plugin with its own environment (a dependency via uv) |
 | [examples/plugins/multi-file/](examples/plugins/multi-file) | a plugin organized as a package, submodules included |
+| [examples/plugins/message-drawers/](examples/plugins/message-drawers) | a plugin message as a shaped block — the diff-drawer example |

@@ -1,4 +1,5 @@
 # Spec 03 · K8×K13：墙钟预算约束重试退避（波次 A）
+> ✅ 2026-10-02 @ merge（`spec/k8-deadline`）—— 合并后 704 passed。
 
 > 分支 `spec/k8-deadline`；worktree `C:\Users\shifu\.worktrees\mocode\spec-k8-deadline`；
 > 前置：W0；深读：总纲 + `ref/kernel-plugin-api.md` K8（"墙钟预算同时约束重试退避 sleep"）与 K13。

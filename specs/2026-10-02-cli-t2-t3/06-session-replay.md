@@ -1,4 +1,5 @@
 # Spec 06 · PluginMessage 持久化与回放（波次 B）
+> ✅ 2026-10-02 @ merge（`spec/session-replay`）—— T1-T4 全部完成并合并；合并后 725 passed；翻案文档欠账由 lead `660dd9a` 清零。
 
 > 分支 `spec/session-replay`；worktree `C:\Users\shifu\.worktrees\mocode\spec-session-replay`；
 > 前置：波 A 全部合并；深读：总纲（裁决 #6——翻案上一组取舍 #1）+ `ref/cli-tui-api.md` §5.4/§5.5。

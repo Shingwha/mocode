@@ -1,4 +1,5 @@
 # Spec 02 · S2 TUI 联动：运行中命令转后台（波次 A）
+> ✅ 2026-10-02 @ merge（`spec/bash-promote`）—— 合并后 698 passed。
 
 > 分支 `spec/bash-promote`；worktree `C:\Users\shifu\.worktrees\mocode\spec-bash-promote`；
 > 前置：W0；深读：总纲 + `ref/kernel-plugin-api.md` S2 表格"TUI 联动"行 + `ref/cli-tui-api.md` §4.1。

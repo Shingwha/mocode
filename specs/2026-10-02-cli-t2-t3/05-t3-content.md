@@ -1,4 +1,5 @@
 # Spec 05 · T3 内容渲染：Markdown 流式 + diff drawer 范例（波次 B）
+> ✅ 2026-10-02 @ merge（`spec/t3-content`）—— T1-T4 全部完成并合并；默认环境 733+2skip / tui 环境 735，均 exit 0。
 
 > 分支 `spec/t3-content`；worktree `C:\Users\shifu\.worktrees\mocode\spec-t3-content`；
 > 前置：波 A 全部合并（01 号：流式未完成行进实时区、部分行重写）；深读：总纲（裁决 #2/#5）+ `ref/cli-tui-api.md` §6 T3 行 + "Markdown 流式渲染单独说一句"。
