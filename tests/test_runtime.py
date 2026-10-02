@@ -51,7 +51,20 @@ class TestTheRuntime:
         mc.config.save = lambda *a, **k: None
 
         assert mc.home == tmp_path / "home"
-        assert mc.store._base_dir == tmp_path / "home" / "sessions"
+
+        # A conversation whose project lies outside the home still records
+        # its session inside it — and the store reads it back from there.
+        conversation = mc.new_conversation(cwd=tmp_path)
+        conversation.messages.append({"role": "user", "content": "hi"})
+        saved = conversation.save()
+
+        assert saved is not None
+        assert (tmp_path / "home" / "sessions").is_dir()
+        assert [s.id for s in mc.store.list_all()] == [saved.id]
+
+        resumed = mc.resume(saved.id)
+        assert resumed is not None
+        assert resumed.messages == conversation.messages
 
     def test_it_holds_no_conversation(self, mc: MoCode):
         """Opening is the runtime's job; being one is not."""
