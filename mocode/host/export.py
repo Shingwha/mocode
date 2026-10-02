@@ -6,8 +6,22 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ..core.transcript import (
+    answered_call_id,
+    is_assistant,
+    is_tool_result,
+    is_user,
+    reasoning_of,
+    text_of,
+    tool_call_arguments,
+    tool_call_by_id,
+    tool_call_id,
+    tool_call_name,
+    tool_calls_of,
+)
 from .io import write_json
 from .session import Session, extract_title, timestamp
+from .text import one_line
 
 
 def export_session(path: Path, session: Session, system_prompt: str = "") -> None:
@@ -52,11 +66,11 @@ def _frontmatter(session: Session) -> list[str]:
 
 def _overview(session: Session) -> list[str]:
     title = session.title or extract_title(session.messages) or "Session"
-    turns = sum(1 for m in session.messages if m.get("role") == "user")
+    turns = sum(1 for m in session.messages if is_user(m))
     calls = sum(
-        len(m["tool_calls"])
+        len(tool_calls_of(m))
         for m in session.messages
-        if m.get("role") == "assistant" and m.get("tool_calls")
+        if is_assistant(m) and tool_calls_of(m)
     )
     return [
         "# MoCode Session Export",
@@ -76,41 +90,40 @@ def _block(heading: str, body: str) -> list[str]:
 def _turn(turn: list[dict[str, Any]], number: int, all_messages: list[dict[str, Any]]) -> list[str]:
     lines = ["---", "", f"## Turn {number}", ""]
     rest = turn
-    if turn and turn[0].get("role") == "user":
-        lines += ["### User", "", _text(turn[0].get("content", "")), ""]
+    if turn and is_user(turn[0]):
+        lines += ["### User", "", text_of(turn[0], sep="\n"), ""]
         rest = turn[1:]
 
     for msg in rest:
-        role = msg.get("role")
-        if role == "assistant":
+        if is_assistant(msg):
             lines += _assistant(msg)
-        elif role == "tool":
+        elif is_tool_result(msg):
             lines += _tool_result(
-                msg.get("tool_call_id", ""), _text(msg.get("content", "")), all_messages
+                answered_call_id(msg), text_of(msg, sep="\n"), all_messages
             )
     return lines
 
 
 def _assistant(msg: dict[str, Any]) -> list[str]:
     lines = ["### Assistant", ""]
-    reasoning = msg.get("reasoning_content", "")
+    reasoning = reasoning_of(msg)
     if reasoning:
         lines += ["<details><summary>Thinking</summary>", "", reasoning, "", "</details>", ""]
-    content = _text(msg.get("content", ""))
+    content = text_of(msg, sep="\n")
     if content:
         lines += [content, ""]
-    for call in msg.get("tool_calls", []):
+    for call in tool_calls_of(msg):
         lines += _tool_call(call)
     return lines
 
 
 def _tool_call(call: dict[str, Any]) -> list[str]:
-    function = call.get("function", {})
-    name = function.get("name", "unknown")
-    arguments = function.get("arguments", "{}")
+    name = tool_call_name(call, "unknown")
+    arguments = tool_call_arguments(call, "{}")
+    call_id = tool_call_id(call)
     lines = [f"#### Tool Call: {name} (`{_short_args(arguments)}`)"]
-    if call.get("id"):
-        lines.append(f"<!-- call_id: {call['id']} -->")
+    if call_id:
+        lines.append(f"<!-- call_id: {call_id} -->")
     lines.append("```json")
     try:
         lines.append(json.dumps(json.loads(arguments), ensure_ascii=False, indent=2))
@@ -120,11 +133,8 @@ def _tool_call(call: dict[str, Any]) -> list[str]:
 
 
 def _tool_result(call_id: str, content: str, messages: list[dict[str, Any]]) -> list[str]:
-    name = "Tool"
-    for msg in messages:
-        for call in msg.get("tool_calls", []):
-            if call.get("id") == call_id:
-                name = call.get("function", {}).get("name", "Tool")
+    call = tool_call_by_id(messages, call_id)
+    name = tool_call_name(call, "Tool") if call is not None else "Tool"
     lines = [f"<details><summary>Tool Result: {name}</summary>", ""]
     if call_id:
         lines.append(f"<!-- call_id: {call_id} -->")
@@ -136,7 +146,7 @@ def _turns(messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     turns: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     for msg in messages:
-        if msg.get("role") == "user" and current:
+        if is_user(msg) and current:
             turns.append(current)
             current = [msg]
         else:
@@ -144,24 +154,6 @@ def _turns(messages: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     if current:
         turns.append(current)
     return turns
-
-
-def _text(content: Any) -> str:
-    """Plain text from message content (string or list of parts)."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for part in content:
-            if isinstance(part, str):
-                parts.append(part)
-            elif isinstance(part, dict):
-                if part.get("type") == "text":
-                    parts.append(part.get("text", ""))
-                elif part.get("type") == "image_url":
-                    parts.append("[image attached]")
-        return "\n".join(parts)
-    return str(content) if content else ""
 
 
 def _short_args(arguments: str, max_len: int = 60) -> str:
@@ -172,8 +164,5 @@ def _short_args(arguments: str, max_len: int = 60) -> str:
         return arguments[:max_len]
     if isinstance(args, dict) and args:
         key, value = next(iter(args.items()))
-        text = str(value)
-        if len(text) > 30:
-            text = text[:27] + "..."
-        return f"{key}={text}"
+        return f"{key}={one_line(str(value), 30, ellipsis='...')}"
     return arguments[:max_len]

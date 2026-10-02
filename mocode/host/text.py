@@ -1,7 +1,8 @@
 """Text decoding — turning bytes a shell or a file handed us into a string.
 
-The host renders nothing, so width and ellipsizing are not its business; the
-terminal's own text helpers live in ``mocode.cli.text``.
+The host renders nothing, so it measures no columns; the terminal's own text
+helpers live in ``mocode.cli.text``. What it does own is the one-line
+collapse, which a heading or a description needs and a screen does not.
 """
 
 from __future__ import annotations
@@ -19,4 +20,15 @@ def decode_bytes(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
 
-__all__ = ["decode_bytes"]
+def one_line(text: str, limit: int, ellipsis: str = "…") -> str:
+    """Collapse *text* to at most *limit* characters, marking the cut.
+
+    The cut is counted in characters and the *ellipsis* stands in for exactly
+    as many as it is long, so the result never exceeds *limit*.
+    """
+    if len(text) <= limit:
+        return text
+    return text[: limit - len(ellipsis)] + ellipsis
+
+
+__all__ = ["decode_bytes", "one_line"]
