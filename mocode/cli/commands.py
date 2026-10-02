@@ -3,9 +3,10 @@
 The split is by capability, not by history (see :class:`CommandContext`): a
 command that needs an interactive picker or the clipboard belongs to the
 frontend that offers it, so these stay here. What a conversation can do for
-itself — ``/export``, ``/clear``, ``/help``, and the default prompt sections —
-arrives from the host's built-in plugins (``session``, ``help``,
-``default-prompts``) and reaches every frontend the same way.
+itself — ``/export``, ``/clear``, ``/help``, ``/effort``, and the default
+prompt sections — arrives from the host's built-in plugins (``session``,
+``help``, ``effort``, ``default-prompts``) and reaches every frontend the
+same way.
 
 They are registered by :class:`~mocode.cli.plugin.BuiltinCommands` — the first
 implementation of the terminal's plugin interface, so that contributing to the
@@ -122,43 +123,6 @@ async def _model(ctx: CommandContext) -> CommandResult:
     return CONTINUE
 
 
-# ── /effort ──────────────────────────────────────────
-
-
-async def _effort(ctx: CommandContext) -> CommandResult:
-    """Switch the reasoning effort for this conversation.
-
-    A decision about this conversation only — nothing is written to
-    config.json. The ``effort`` on a model entry in config is the default
-    new conversations start from; this picker only changes what the current
-    one sends.
-    """
-    conversation = ctx.conversation
-    spec = conversation.model
-    levels = list(spec.efforts)
-    if spec.effort is not None and spec.effort not in levels:
-        levels.append(spec.effort)
-
-    picked = await dialogs.select(
-        f"Reasoning effort for {conversation.model_name}:",
-        [
-            dialogs.Choice(
-                title=level,
-                value=level,
-                description="current" if level == spec.effort else None,
-            )
-            for level in levels
-        ],
-        default=spec.effort if spec.effort in levels else levels[0],
-    )
-    if picked is None:
-        return CONTINUE
-
-    conversation.set_effort(picked)
-    await conversation.notify(f"Reasoning effort: {picked}")
-    return CONTINUE
-
-
 # ── /resume ──────────────────────────────────────────
 
 MAX_RESUME_CHOICES = 20
@@ -242,6 +206,5 @@ COMMANDS = (
     Command("/quit", "Exit the application", handler=_quit, aliases=("/exit", "quit", "exit")),
     Command("/copy", "Copy the last assistant response to clipboard", handler=_copy),
     Command("/model", "Switch provider and model", handler=_model),
-    Command("/effort", "Set reasoning effort for this conversation", handler=_effort),
     Command("/resume", "Browse and resume sessions", handler=_resume),
 )

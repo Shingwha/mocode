@@ -140,7 +140,7 @@ class TestBothSurfacesInOneDirectory:
 
         assert [p.name for p in app.runtime.plugins_for(tmp_path)] == [
             "filesystem", "shell", "skills", "default-prompts", "session", "help",
-            "cache-protect", "acme",
+            "effort", "cache-protect", "acme",
         ]
 
 

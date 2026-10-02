@@ -268,50 +268,6 @@ class TestModelCommand:
         assert [n.message for n in _notices(events)] == ["Switched to P / b"]
 
 
-class TestEffortCommand:
-    @pytest.mark.asyncio
-    async def test_picking_a_level_switches_it_for_this_conversation(
-        self, conversation: Conversation, monkeypatch
-    ):
-        """The default model declares no table, so the kernel default triple
-        stands; nothing is marked current and the first level is preselected."""
-        assert conversation.agent.model.effort is None
-
-        async def fake_select(title, choices, *, default=None, instruction=""):
-            assert title == "Reasoning effort for test-model:"
-            assert [(c.title, c.value) for c in choices] == [
-                ("low", "low"),
-                ("medium", "medium"),
-                ("high", "high"),
-            ]
-            assert [c.description for c in choices] == [None, None, None]
-            assert default == "low"
-            return "high"
-
-        monkeypatch.setattr("mocode.cli.dialogs.select", fake_select)
-
-        result, events = await _run(_get_builtin_cmd("/effort"), conversation)
-
-        assert result is CONTINUE
-        assert conversation.agent.model.effort == "high"
-        assert [n.message for n in _notices(events)] == ["Reasoning effort: high"]
-
-    @pytest.mark.asyncio
-    async def test_cancelling_leaves_the_effort_alone(
-        self, conversation: Conversation, monkeypatch
-    ):
-        async def fake_select(title, choices, *, default=None, instruction=""):
-            return None
-
-        monkeypatch.setattr("mocode.cli.dialogs.select", fake_select)
-
-        result, events = await _run(_get_builtin_cmd("/effort"), conversation)
-
-        assert result is CONTINUE
-        assert conversation.agent.model.effort is None
-        assert events == []
-
-
 class TestSkillCommand:
     """`/skill:<name>` is contributed by a *host* plugin, so it works headless."""
 

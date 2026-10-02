@@ -571,6 +571,7 @@ class TestPluginSet:
             "default-prompts",
             "session",
             "help",
+            "effort",
             "cache-protect",
         ]
 

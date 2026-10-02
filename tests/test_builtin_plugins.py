@@ -171,6 +171,67 @@ class TestSessionPlugin:
         assert [s.id for s in conversation.list_sessions()] == [previous]
 
 
+class TestEffortPlugin:
+    """``/effort`` is a host built-in: it works headless, needs only a
+    conversation, and never writes config.json — the same contract the
+    session and help commands are held to."""
+
+    @pytest.mark.asyncio
+    async def test_no_arg_reports_current_level_and_the_table(
+        self, conversation: Conversation
+    ):
+        result, events = await _run(_cmd(conversation, "/effort"), conversation)
+
+        assert result is CONTINUE
+        assert conversation.agent.model.effort is None
+        assert [n.message for n in _notices(events)] == [
+            "Reasoning effort: (server default) — available: low, medium, high"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_level_arg_switches_it_for_this_conversation(
+        self, conversation: Conversation
+    ):
+        result, events = await _run(
+            _cmd(conversation, "/effort"), conversation, args="high"
+        )
+
+        assert result is CONTINUE
+        assert conversation.agent.model.effort == "high"
+        assert conversation.ctx.model.effort == "high"
+        assert [n.message for n in _notices(events)] == ["Reasoning effort: high"]
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_level_warns_and_changes_nothing(
+        self, conversation: Conversation
+    ):
+        result, events = await _run(
+            _cmd(conversation, "/effort"), conversation, args="ultra"
+        )
+
+        assert result is CONTINUE
+        assert conversation.agent.model.effort is None
+        notices = _notices(events)
+        assert len(notices) == 1
+        assert notices[0].level == "warn"
+        assert "Unknown effort 'ultra'" in notices[0].message
+        assert "available: low, medium, high" in notices[0].message
+
+    @pytest.mark.asyncio
+    async def test_switching_never_writes_config(
+        self, conversation: Conversation, monkeypatch
+    ):
+        saves: list = []
+        monkeypatch.setattr(
+            conversation.runtime.config, "save", lambda *a, **k: saves.append(1)
+        )
+
+        await _run(_cmd(conversation, "/effort"), conversation, args="high")
+
+        assert conversation.agent.model.effort == "high"
+        assert saves == []
+
+
 class TestHelpPlugin:
     @pytest.mark.asyncio
     async def test_lists_registered_commands(self, conversation: Conversation):

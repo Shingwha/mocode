@@ -60,6 +60,7 @@ def builtin_plugins() -> list[Plugin]:
     from .builtin import (
         cache_protect,
         default_prompts,
+        effort,
         filesystem,
         help,
         session,
@@ -74,6 +75,7 @@ def builtin_plugins() -> list[Plugin]:
         default_prompts.PLUGIN,
         session.PLUGIN,
         help.PLUGIN,
+        effort.PLUGIN,
         cache_protect.PLUGIN,
     ]
 

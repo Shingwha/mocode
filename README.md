@@ -109,7 +109,7 @@ MoCode sends **no** `max_tokens` unless you set `max_tokens` on the model. Guess
 
 `context_window` and `max_tokens` are optional and stay absent until you fill them in — MoCode never invents a model's limits. They are what plugins read (a compaction hook, for example, needs the window size) and what the request carries.
 
-Reasoning effort is a model fact too. A model entry may declare its own ordered level table with `efforts` — absent, the default triple `low` / `medium` / `high` stands, and any custom names (`["high", "xhigh", "max"]`, say) are allowed. The chosen level is sent on the wire verbatim as the API's standard `reasoning_effort` field; `effort` on the entry is the level new conversations start from, and when it is absent the request carries no such parameter and the server decides entirely on its own. `> /effort` switches the level for the current conversation at runtime, without touching the file.
+Reasoning effort is a model fact too. A model entry may declare its own ordered level table with `efforts` — absent, the default triple `low` / `medium` / `high` stands, and any custom names (`["high", "xhigh", "max"]`, say) are allowed. The chosen level is sent on the wire verbatim as the API's standard `reasoning_effort` field; `effort` on the entry is the level new conversations start from, and when it is absent the request carries no such parameter and the server decides entirely on its own. `/effort` (no argument) reports the level and the table; `/effort high` switches the level for the current conversation at runtime, without touching the file — a host built-in command every frontend gets.
 
 Endpoints that need provider-specific request fields (DeepSeek's `thinking`, llama.cpp's samplers, and so on) take a custom provider type registered in code — see [docs/providers.md](docs/providers.md).
 
@@ -225,7 +225,7 @@ A conversation owns its project, its model, its history and its event stream; `c
 |---------|-------------|
 | `/help` | Show all commands |
 | `/model` | Switch provider/model |
-| `/effort` | Set the reasoning effort for this conversation |
+| `/effort [level]` | Show or set the reasoning effort for this conversation |
 | `/resume [file.json]` | Browse and resume sessions |
 | `/export [json\|md]` | Export the current session |
 | `/clear` | Save and clear the conversation |
