@@ -79,8 +79,6 @@ def render_settled(text: str, kind: str) -> list[L.Line] | None:
     """
     if rich is None:
         return None
-    import rich.console
-
     console = rich.console.Console(force_terminal=True, width=terminal_width())
     with console.capture() as capture:
         console.print(rich.markdown.Markdown(text))

@@ -181,9 +181,11 @@ class Painter:
         self._refused: set[str] = set()
         #: Whether anything live is in the region right now.
         self._has_live = False
-        #: Row counts of the *sealed* stream blocks whose last line still
-        #: rides in the region — the lines before it are already appended.
-        self._block_rows: dict[str, int] = {}
+        #: The rows of the *sealed* stream blocks whose last line still
+        #: rides in the region — recorded at close, so a later re-render of
+        #: the block's lines (a full markdown render, say) never rewrites
+        #: what the stream actually wrote.
+        self._block_rows: dict[int, list[str]] = {}
         #: Whether the last projection could not seat the stream's line,
         #: and whether its rows are the region's last — an open line.
         self._declined = False
@@ -391,11 +393,12 @@ class Painter:
                     return None
                 self._open_tail = True  # the last row is still being written
                 return _Member(rows, True)
-            # Sealed: its last line rides in the region as a final row — the
-            # rows the stream was rewritten with, and no others.
-            if not self._block_rows.get(id(block)) or not block.lines:
+            # Sealed: its last line's rows ride in the region as final rows
+            # — the rows the stream was rewritten with, and no others.
+            rows = self._block_rows.get(id(block))
+            if not rows or not block.lines:
                 return None
-            return _Member(self._stream_rows_of_line(block.lines[-1]), False)
+            return _Member(rows, False)
 
         # Anything else that is not a region member ends the region: it
         # appends below rows we can no longer stand behind.
@@ -618,7 +621,7 @@ class Painter:
             self._repaint(head + keep, len(head), open_line=True)
             self._d.print()  # the newline that finishes the line
             if block is not None:
-                self._block_rows[id(block)] = len(keep)
+                self._block_rows[id(block)] = keep
             self._frozen = len(self._span)  # everything above is final too
             self._open_line = False
             self._span_epoch = self._d.epoch

@@ -79,7 +79,13 @@ class Block:
 class Transcript:
     """The document a turn's events fold into."""
 
-    def __init__(self, tools: "ToolRegistry | None" = None, *, drawers=None):
+    def __init__(
+        self,
+        tools: "ToolRegistry | None" = None,
+        *,
+        drawers=None,
+        markdown=None,
+    ):
         #: The registry the lines vocabulary reads (summary/result keys).
         #: Call-scoped — ``apply_history`` may replace it.
         self.tools = tools
@@ -88,6 +94,12 @@ class Transcript:
         #: wired) means the built-in shapes below — a transcript stays
         #: constructible on its own, with no frontend around.
         self._drawers = drawers
+        #: How a sealed answer/reasoning block materialises its lines:
+        #: ``markdown(text, kind) -> list[Line] | None`` — ``None`` keeps
+        #: the plain vocabulary. A frontend wires its full renderer (rich,
+        #: say) only where a terminal can honour it; the fold stays plain
+        #: on its own.
+        self._markdown = markdown
         self.blocks: list[Block] = []
 
     # ── The fold ──────────────────────────────────────────
@@ -182,12 +194,26 @@ class Transcript:
         block.meta["text"] += text
 
     def _seal_stream(self) -> None:
-        """Close the open streaming block, materialising its lines."""
+        """Close the open streaming block, materialising its lines.
+
+        The lines are the plain vocabulary unless a markdown renderer is
+        wired and takes the block — a settled answer or reasoning block is
+        the one place a full render is legal, every line it streamed being
+        committed already.
+        """
         if self.blocks and self.blocks[-1].state == STREAMING:
             block = self.blocks[-1]
             text = block.meta.get("text", "")
-            block.lines = L.answer(text) if block.kind == "answer" else L.reasoning(text)
+            block.lines = self._materialize(text, block.kind)
             block.state = DONE
+
+    def _materialize(self, text: str, kind: str) -> list[L.Line]:
+        """A sealed block's lines: rendered when the renderer serves it."""
+        if self._markdown is not None:
+            rendered = self._markdown(text, kind)
+            if rendered is not None:
+                return rendered
+        return L.answer(text) if kind == "answer" else L.reasoning(text)
 
     # ── Tool calls ────────────────────────────────────────
 
