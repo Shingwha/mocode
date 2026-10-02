@@ -108,6 +108,7 @@ class CLIApp:
                 ps1="❯",
                 keys=self.keys,
                 key_context=lambda buffer=None: self._key_context(buffer=buffer),
+                middleware=self.input_middleware,
             )
             self.display = Display(input_=self.input, theme=self.theme)
         else:

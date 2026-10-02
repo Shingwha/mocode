@@ -9,7 +9,7 @@ from .text import count_visual_lines
 
 if TYPE_CHECKING:
     from ..host.command import CommandRegistry
-    from .plugin import KeyRegistry
+    from .plugin import InputMiddleware, KeyRegistry
 
 #: Paste marker thresholds (OR: below either → insert directly)
 _PASTE_LINE_THRESHOLD = 5
@@ -146,6 +146,11 @@ class Input:
     text in the buffer it clears the line; on an empty buffer it arms a
     confirmation — a second Ctrl-C exits, and :attr:`confirm_armed` (read by
     whoever paints the chrome) says the confirmation is pending.
+
+    *middleware* is the :class:`~mocode.cli.plugin.InputMiddleware` chain the
+    submitted line passes through before the caller sees it — a middleware
+    returning ``None`` consumes the line: the caller gets ``""`` and the
+    prompt simply comes back.
     """
 
     def __init__(
@@ -155,12 +160,14 @@ class Input:
         *,
         keys: "KeyRegistry | None" = None,
         key_context: Callable | None = None,
+        middleware: "InputMiddleware | None" = None,
     ):
         self._ps1 = ps1
         self._pastes = PasteStore()
         self._registry = registry
         self._keys = keys
         self._key_context = key_context
+        self._middleware = middleware
         self._session = None
         self._confirm_armed = False
 
@@ -252,6 +259,11 @@ class Input:
             print("\033[A\033[2K", end="", flush=True)
         text = self._resolve_paste_markers(raw).strip()
         # Sanitize surrogates from prompt_toolkit on Windows
-        return text.encode("utf-16-le", errors="surrogatepass").decode(
+        text = text.encode("utf-16-le", errors="surrogatepass").decode(
             "utf-16-le", errors="replace"
         )
+        if self._middleware is not None:
+            text = self._middleware.run(text)
+            if text is None:
+                return ""  # consumed: no command, no model call, prompt again
+        return text
