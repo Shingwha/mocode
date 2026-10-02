@@ -1,4 +1,4 @@
-✅ 2026-10-02 @ master（W1a/W1b/W2 已合并，891 passed；W3 未实施 — 用户已点名，分支 `feat/mcp-http` 与 worktree 已建并转交新对话继续）
+✅ 2026-10-03 @ master（W1a/W1b/W2 已合并；官方 SDK 依赖 `mcp==2.2.0` 由 lead 落在 `fda301f`；W3 重启为「客户端改用 SDK」重写：`05` 已派工，`06`–`08` 按前置推进，W3b∥W3c 可并行）
 
 # Spec Group · MCP + Codemode 两个内置插件（2026-10-02）
 
@@ -45,8 +45,10 @@
 - `mode="only"`（把已声明工具对模型隐藏）——v1 只实现 pi 的 `on` 形态。
 - **MRTR / elicitation**（modern 的 `InputRequiredResult`）：mocode v1 无交互 UI，收到即报错。
 - **modern `subscriptions/listen`**：W1 不做，W3 可选；modern server 的工具列表在连接时取一次。
-- OAuth、MCP resources/prompts、sampling、`!command` 展开、legacy `type:"sse"` 传输。
-- streamable HTTP 传输（放进 **W3 可选波** `04-w3-mcp-http.md`；本组主线不依赖它）。
+- OAuth、MCP prompts、sampling、`!command` 展开；resources **变更**通知（tools 变更通知已做，见 W3b）；`tool_search` 插件。
+- ~~legacy `type:"sse"` 传输~~ → **已入范围**（W3a-2，SDK `sse_client`）。
+- streamable HTTP / SSE 传输 → **已入范围**（W3a-2，原 `04` 手写设计作废，见 §9）。
+- MCP resources 只读工具 → **已入范围**（W3c）。
 
 ## 3. 已拍板决策（不再反复）
 
@@ -57,16 +59,16 @@
 | D3 | codemode 沙箱 = **进程内 `exec` + restricted `__builtins__`** | 模型本来就有 bash，安全边界不是目标；目标是稳定 DSL + 资源约束。**文档必须写明"不是安全沙箱"**。子进程隔离记为遗留。 |
 | D4 | `tools.x()` 非 ok **抛异常** | pi 语义；`asyncio.gather(..., return_exceptions=True)` 天然可用。异常带 `DispatchResult`。 |
 | D5 | codemode **只做 `on` 形态** | `only` 需要改别的插件的 `availability`，侵犯"一个插件一个关注点"；记为遗留。 |
-| D6 | **不新增任何 runtime 依赖** | stdio 用 `subprocess`/asyncio；HTTP 波用 stdlib `urllib.request` + 手写 SSE 解析。 |
+| D6 | ~~**不新增任何 runtime 依赖**~~ **SUPERSEDED 2026-10-03**：用户拍板改用官方 `mcp` SDK（v2，`mcp==2.2.0`，lead 落 master `fda301f`）；stdlib 手写方案作废 | SDK 覆盖双 era 协商、三种传输、resources、订阅；自研成本与一致性风险高于依赖重量 |
 | D7 | MCP server 名/工具名规范：非 `[A-Za-z0-9_]` → `_`；仅 `-`/`_` 不同的 server 名视为同名；`mcp__<server>__<tool>` 冲突加 6 位 hash 后缀 | 对齐 pi 的命名规则；名字可预测、可去重。 |
 | D8 | 每个 MCP 工具用 `ToolError` 表达 `isError`；成功时 `ToolResult.details` 带 `structured_content` / `content` / `server` / `tool` | 走 dispatcher 标准错误管线；details 不进 messages。 |
 | D9 | MCP 在 `prepare()` 里连接；**只对 `direct` server 有界等待**（默认 10s），其余后台连接 | 首 turn 不被慢 server 卡住；program-only 工具不改模型 payload，迟到注册无 cache 代价。 |
 | D10 | codemode 的输出截断保留 head+tail，全文落临时文件并在结果里给路径 | 对齐 pi 的 `max_output_tokens` 行为。 |
 | D11 | `store` 只在脚本成功（正常结束或 `exit()`）时提交 | 对齐 pi；失败脚本不留半截状态。 |
 | D12 | codemode 描述静态；MCP 用 `mcp_servers` prompt section 暴露 namespace | codemode 的 tool description 在 `build()` 定型；MCP 工具在 `prepare()` 才发现，动态信息只能进 section / registry。 |
-| D13 | MCP 客户端是 **dual-era**：`server/discover` 探测 modern，失败则回退 `initialize` legacy | 当前规范 2026-07-28 已去掉握手；线上大量 server 仍是 legacy。标准明确要求双支持客户端用 discover 探测。 |
+| D13 | ~~MCP 客户端是 **dual-era**：手写 `server/discover` 探测~~ **SUPERSEDED 2026-10-03**：改由 SDK `Client(mode="auto")` 承载（discover 探测 + initialize 回退，实测真实 legacy server 走通） | 语义等价且是官方实现；mocode 只做 exposure/注册/错误码映射 |
 | D14 | 插件目录 `mcp.json` **严格按 Agent Plugins 1.0.0 解析**；项目/用户级 mocode 配置才允许 `exposure`/`${VAR}` 等扩展 | 标准路径是别家客户端也会读的可移植数据；mocode 自有配置才是 mocode 的语法。 |
-| D15 | legacy `type:"sse"` 传输 **跳过并 report**（不实现） | 2026-07-28 已移除 GET stream；`sse` 是 2024-11-05 legacy。对齐 pi。 |
+| D15 | ~~legacy `type:"sse"` 传输 **跳过并 report**~~ **SUPERSEDED 2026-10-03**：`sse` 一并支持（W3a-2，SDK `sse_client`） | 用户拍板；SDK 原生支持 2024-11-05 HTTP+SSE，成本近零 |
 
 ## 4. 波次表
 
@@ -75,13 +77,20 @@
 | W1a | `feat/mcp-stdio` | `01-w1-mcp.md` | MCP 插件（stdio） | W0 | `mocode/host/plugin/builtin/mcp/**` + `tests/test_builtin_mcp.py` |
 | W1b | `feat/codemode` | `02-w1-codemode.md` | codemode 插件 | W0 | `mocode/host/plugin/builtin/codemode/**` + `tests/test_builtin_codemode.py` |
 | W2 | `feat/mcp-codemode-integration` | `03-w2-integration.md` | 注册进 `builtin_plugins()`、保留名、README/docs、端到端测试 | W1a+W1b 合并 | `mocode/host/plugin/host.py`、`README.md`、`docs/plugins.md`、`docs/ARCHITECTURE.md`、`tests/test_builtin_mcp_codemode.py` |
-| W3 | `feat/mcp-http` | `04-w3-mcp-http.md` | **可选**：streamable HTTP 传输 + resources | W2 | `mocode/host/plugin/builtin/mcp/**`、`tests/test_builtin_mcp_http.py` |
+| ~~W3~~ | ~~`feat/mcp-http`~~ | `04-w3-mcp-http.md` | ❌ 作废（手写传输设计被 SDK 方案取代，见 §9） | — | — |
+| dep | master（lead） | — | 官方 SDK 依赖 + AGENTS.md 清单 | — | `pyproject.toml`、`uv.lock`、`AGENTS.md` |
+| W3a-1 | `feat/mcp-sdk-stdio` | `05-w3a1-sdk-stdio.md` | stdio 客户端改用官方 SDK（删 `session.py`/`rpc.py`） | dep | `builtin/mcp/**`、`tests/test_builtin_mcp.py` |
+| W3a-2 | `feat/mcp-sdk-http` | `06-w3a2-http-sse.md` | streamable HTTP + SSE 传输 | W3a-1 | `builtin/mcp/**`、`tests/test_builtin_mcp.py`、`tests/test_builtin_mcp_http.py` |
+| W3b | `feat/mcp-sdk-subs` | `07-w3b-subscriptions.md` | modern subscriptions/listen → `sync_tools` | W3a-2 | `builtin/mcp/client.py`、新增 `subscriptions.py`、新测试文件 |
+| W3c | `feat/mcp-sdk-resources` | `08-w3c-resources.md` | resources 只读工具 | W3a-2 | `builtin/mcp/tools.py`、`runtime.py`、新测试文件 |
+| docs | master（lead） | — | `docs/plugins.md` mcp 节收口 | W3b+W3c | `docs/plugins.md` |
 
 - W1a ∥ W1b 并行（各自包 + 各自测试文件，零共享写入）。
 - W2 是 **唯一** 允许改 `host.py` / 文档的波；W1a、W1b 禁碰这些文件。
 - W1a/W1b 自测时**不需要** `builtin_plugins()` 注册：用 `plugin_host(plugins=[PLUGIN])`
   或直接实例化插件即可（见 `ref/mocode-api.md` 的测试 fixture 事实）。
-- W3 可选，用户未点名可跳过；跳过不影响 W1/W2 验收。
+- W3a-1 → W3a-2 →（W3b ∥ W3c）串并行；**W3b 与 W3c 写范围文件级不相交**，一个 agent 一波，从同一合并点各切分支。
+- dep/docs 两行是 lead 直落 master 的跨模块小改（依赖与文档收口），不进 worker 写范围。
 
 合并顺序 = 表内顺序；W1a、W1b 谁先合都行（文件不相交），但 W2 必须在两者都合之后。
 
@@ -102,7 +111,7 @@
 7. **写入范围外零 diff**；禁触清单逐文件写明；遇阻塞报告后停止，不越界自救。
 8. 代码/注释/docstring/docs/commit 一律**英文**；spec 中文。commit 小写祈使句，
    `feat:` / `test:` / `docs:` 前缀；标题一行 + 正文动机。
-9. 无新 runtime 依赖（`mocode/pyproject.toml` 的 `dependencies` 不变）。
+9. ~~无新 runtime 依赖~~ **SUPERSEDED 2026-10-03**：例外是官方 SDK `mcp==2.2.0`（用户拍板，`fda301f`）；除此之外 `dependencies` 不变，`uv.lock` 只允许这一处依赖树扩张。
 10. 不 push、不打 tag、不发版；agent 不 merge、不碰主检出与其他 worktree。
 
 ## 6. Git / worktree / 环境协议
@@ -137,3 +146,33 @@
 
 终验（全量门禁 + `import mocode` <1ms + 两个插件手动 smoke）→ 汇总报告
 （工单状态 / 取舍登记 / 遗留清单）→ 清理 worktree、保留分支。收尾时 lead 在每份工单头部补一行状态。
+
+## 9. 波次 W3 重启：改用官方 `mcp` SDK（2026-10-03）
+
+2026-10-03 用户拍板：MCP 客户端整体改用官方 `mcp` Python SDK（v2）重写，取代
+`04` 的手写传输方案。群组决策修订：D6/D13/D15 作废（见 §3），不变量 9 加例外。
+
+**Step-0 验证记录（lead 实测，2026-10-03）**：
+
+1. `uv add mcp` → `mcp==2.2.0`，23 包（含 starlette/uvicorn/sse-starlette/python-multipart
+   服务端栈、pywin32[Windows]）；`idna` 3.13→3.20；**全量门禁 891 passed exit 0**；
+   `import mocode` 0.74ms 且 `-X importtime` 无 `mcp`（SDK 在导入图外）。
+2. `Client` 是 dataclass：`Client(server, *, mode="auto", read_timeout_seconds=None,
+   input_required_max_rounds=10, ...)`；`async with` 即生命周期；`mode="auto"` 先
+   `server/discover` 探测、失败回退 `initialize`。
+3. 传输签名：`streamable_http_client(url, *, http_client=None, terminate_on_close=True,
+   max_sse_event_size=1MiB)`（**headers 必须走 `httpx2.AsyncClient`**）；
+   `sse_client(url, *, headers=None, timeout=5.0, sse_read_timeout=300.0, ...)`
+   （**sse 直接收 headers**）；`stdio_client(StdioServerParameters, errlog=sys.stderr)`。
+4. `StdioServerParameters.env` 是"叠加在裁剪过的平台默认环境上"——mocode 必须显式
+   传全量 env 才能保持 W1a 行为。
+5. input_required：默认 10 轮驱动，耗尽抛 `InputRequiredRoundsExceededError`；
+   手工驱动 `session.<method>(..., allow_input_required=True)`。mocode 无交互 UI →
+   映射 `mcp_input_required`。
+6. 进程内 `MCPServer` + `Client(server)` 可用（官方测试用法，实测 2026-07-28）——
+   各波测试的主 seam。
+7. **真机冒烟（仓库外临时脚本，不入库，符合用户版权要求）**：对一个托管
+   streamable-HTTP MCP 搜索服务（key 可选，有无 key 结果一致）连接，
+   `mode="auto"` 协商出 **2025-11-25（legacy 回退路径真实可用）**；
+   server 为 `anysearch-mcp-server 1.0.0`，tools-only capabilities，4 个工具。
+   只记录元数据，不调用工具、不落任何结果内容。
