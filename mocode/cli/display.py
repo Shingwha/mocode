@@ -123,12 +123,15 @@ class Display:
     # ── Messages ───────────────────────────────────────────
 
     def info(self, text: str) -> None:
+        """A normal notice — an answer, a confirmation, a status."""
         self.render(L.notice(text, "info"))
 
     def warn(self, text: str) -> None:
+        """A notice worth pausing on — something was not done as asked."""
         self.render(L.notice(text, "warn"))
 
     def error(self, text: str) -> None:
+        """A notice about a failure — the run could not do what it was asked."""
         self.render(L.notice(text, "error"))
 
     def conversation_changed(self, messages: list[dict], tools=None) -> None:
@@ -138,13 +141,14 @@ class Display:
         if messages:
             self.render_all(L.conversation(messages, tools))
 
-    # ── Input delegation ───────────────────────────────────
+    # ── Input delegation ────────────────────────────────────
 
     def clear_session(self) -> None:
         """Clear the paste store when starting a new conversation."""
         self._input.clear_session()
 
     async def prompt(self) -> str:
+        """Read the next line of input — the REPL's wait, delegated to ``Input``."""
         return await self._input.prompt()
 
     # ── Output ─────────────────────────────────────────────
@@ -170,6 +174,12 @@ class Display:
         self.print(self.format(line))
 
     def render_all(self, lines: list[L.Line]) -> None:
+        """Put several lines on screen in order — a whole block at once.
+
+        The bulk form of :meth:`render`: nothing accumulates between the lines,
+        it is exactly the loop — the saving is that a caller who already has a
+        list does not call one line at a time.
+        """
         for line in lines:
             self.render(line)
 

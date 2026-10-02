@@ -58,6 +58,12 @@ class BuiltinCommands(CLIPlugin):
     description = "Terminal commands: /quit /copy /model /resume"
 
     def build(self, cli: "CLIApp") -> None:
+        """Register the terminal's own commands — the ones that need a terminal.
+
+        The import is deferred to the call so a headless run never pays for
+        ``questionary``, which these commands are the only reason to have
+        installed at all.
+        """
         # Imported here so a headless run never pays for questionary.
         from .commands import COMMANDS
 

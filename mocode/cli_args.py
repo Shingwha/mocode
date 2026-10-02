@@ -7,6 +7,13 @@ import sys
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """The whole argument grammar — flags and the ``plugin`` command group.
+
+    ``-p/--prompt`` is the non-interactive path: one query, then exit, with
+    stdin available as context. The rest manage plugins rather than run an
+    agent, and the ``plugin`` group nests its own required subcommand so
+    ``mocode plugin`` alone says what it can do instead of failing.
+    """
     parser = argparse.ArgumentParser(
         prog="mocode",
         description="MoCode — Lean agent framework",
@@ -50,6 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse *argv* (default: ``sys.argv``) into the namespace the entry reads.
+
+    Exits through argparse on a grammar error, which is the point of this
+    living in its own module: the grammar is decided before any framework
+    import, so a bad command line fails immediately.
+    """
     return build_parser().parse_args(argv)
 
 

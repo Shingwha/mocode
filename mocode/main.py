@@ -24,6 +24,14 @@ if TYPE_CHECKING:
 
 
 def main():
+    """The entry point: dispatch the arguments, then get out of the way.
+
+    Two shapes only — ``mocode plugin …`` hands off to the plugin manager and
+    exits, everything else starts the application, interactive or as a one-shot
+    driven by ``-p/--prompt``. The dispatch itself is trivial on purpose: the
+    framework imports happen inside ``_run_app``, so a bare ``--help`` or a bad
+    plugin command pays for nothing.
+    """
     args = parse_args()
 
     if args.command == "plugin":
