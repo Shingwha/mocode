@@ -1,27 +1,23 @@
-"""shell plugin — run commands in a persistent bash session.
+"""The persistent bash session — foreground execution and background jobs.
 
 The session is asynchronous so output can be reported as it is produced: a
 command that takes a minute is watchable rather than a blank wait, and a
 timeout can actually kill the child process instead of abandoning a thread.
 
-Commands run either in the **foreground** — the tool blocks until the command
-is done, streaming each line as it lands — or in the **background**, where the
-tool returns a handle immediately (``shell_1``) and the model comes back for
-the output when it wants it: ``bash_output`` reads incrementally (each read
-returns only what arrived since the last one), ``kill_shell`` stops a job.
+Commands run either in the **foreground** — :meth:`BashSession.execute`
+blocks until the command is done, streaming each line as it lands — or in
+the **background**, where :meth:`BashSession.start_background` returns a
+handle immediately (``shell_1``) and :meth:`BashSession.read_output` reads
+incrementally, each read returning only what arrived since the last one.
 Background output accumulates in bounded rings, so a dev server that runs
-overnight cannot grow memory without bound; what the rings dropped is counted
-and reported.
-
-A foreground command that is still running can be **promoted** into the
-background mid-flight (:meth:`BashSession.promote` — the hook a "move it to
-background" keybinding calls): the waiting call settles at once as "moved to
-background as shell_N", and the command lives on as an ordinary job.
+overnight cannot grow memory without bound; what the rings dropped is
+counted and reported.
 
 Every command runs in its own process group (POSIX), so a timeout or an
-explicit kill takes down the whole tree — ``bash -c "npm run dev"`` must not
-leave its node children behind. On Windows there are no process groups: the
-direct child is killed, and grandchildren survive it (a known limitation).
+explicit kill takes down the whole tree — ``bash -c "npm run dev"`` must
+not leave its node children behind. On Windows there are no process groups:
+the direct child is killed, and grandchildren survive it (a known
+limitation).
 """
 
 from __future__ import annotations
@@ -32,25 +28,20 @@ import re
 import shutil
 import signal
 import sys
-from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from ....core.events import ToolOutput
-from ....core.tool import Tool, ToolError, ToolPolicy, ToolResult
-from ...text import decode_bytes
-from ..base import Plugin
-from ..context import BuildContext
+from .....core.tool import ToolError, ToolResult
+from ....text import decode_bytes
+from ...context import BuildContext
+from .ring import _Ring
 
 if TYPE_CHECKING:
-    from ....core.hook import ToolCallContext
-    from ..context import HostContext
+    from ...context import HostContext
 
 #: Called with each chunk of output as it arrives: ``on_output(text, stream)``.
 OutputSink = Callable[[str, str], Awaitable[None]]
-
-_BASH_TAG = frozenset({"shell"})
 
 #: POSIX's "kill it now" — the attribute does not exist on Windows, and the
 #: line that uses it never runs there, but a platform-stubbed test would still
@@ -134,59 +125,6 @@ def _terminate(proc: asyncio.subprocess.Process) -> None:
         pass
 
 
-class _Ring:
-    """A bounded buffer of lines — keeps the newest, counts what it dropped.
-
-    The memory bound for background output: at most *max_lines* lines and
-    *max_bytes* characters, whichever is hit first. A dev server running
-    overnight overflows either way; the answer is to drop the oldest and say
-    how many went, not to grow without bound.
-    """
-
-    def __init__(self, max_lines: int = 2000, max_bytes: int = 256 * 1024):
-        self.lines: deque[str] = deque()
-        self.max_lines = max_lines
-        self.max_bytes = max_bytes
-        self._bytes = 0
-        #: Lines evicted before anything could read them.
-        self.discarded = 0
-
-    def append(self, line: str) -> None:
-        self.lines.append(line)
-        self._bytes += len(line)
-        while self.lines and (
-            len(self.lines) > self.max_lines or self._bytes > self.max_bytes
-        ):
-            dropped = self.lines.popleft()
-            self._bytes -= len(dropped)
-            self.discarded += 1
-
-    def drain(self) -> list[str]:
-        """Take everything buffered — a plain incremental read."""
-        lines = list(self.lines)
-        self.lines.clear()
-        self._bytes = 0
-        return lines
-
-    def take_matching(self, pattern: re.Pattern) -> list[str]:
-        """Take the lines matching *pattern*, keep the rest buffered.
-
-        A filtered read consumes only what it matched: the unmatched lines
-        stay for a later read (plain, or with another pattern) rather than
-        being lost — the caller said what it wanted, not what to throw away.
-        """
-        matched: list[str] = []
-        kept: deque[str] = deque()
-        for line in self.lines:
-            if pattern.search(line):
-                matched.append(line)
-            else:
-                kept.append(line)
-        self.lines = kept
-        self._bytes = sum(len(line) for line in kept)
-        return matched
-
-
 @dataclass
 class _Job:
     """One background command: its process, its bounded output, its state."""
@@ -225,74 +163,6 @@ def _start_order(job: _Job) -> int:
     return int(job.id.rsplit("_", 1)[1])
 
 
-#: A foreground call's side of the promotion handshake. ``FG_RUNNING`` until
-#: one side wins: :meth:`BashSession.promote` flips it to ``FG_PROMOTED`` (the
-#: call becomes a job) or the foreground wait resolves to ``FG_SETTLED``
-#: (exited, or timed out — promotion is locked out from then on). First flip
-#: wins; the loser stands down without touching the process or the pumps.
-FG_RUNNING = "running"
-FG_PROMOTED = "promoted"
-FG_SETTLED = "settled"
-
-
-class _ForegroundSink:
-    """One output stream's destination while its call runs in the foreground.
-
-    Lines accumulate in the call's own buffer and ride the event sink as they
-    land. :meth:`claim` re-targets the pump at the promoted job's ring: from
-    the next line on, the ring is the only record — the block the lines used
-    to report into settles as "moved to background", and ``bash_output`` is
-    how anyone reads on. The pump routes each line by the sink *at read
-    time*, so a line straddling the switch is wholly foreground or wholly
-    background — never lost, never in both.
-    """
-
-    def __init__(self, buffer: list[str], on_output: OutputSink | None):
-        self.buffer = buffer
-        self.on_output = on_output
-        self._ring: Callable[[str], None] | None = None
-
-    def claim(self, ring: Callable[[str], None]) -> None:
-        """Re-target at the promoted job's ring; retire the event sink."""
-        self._ring = ring
-        self.on_output = None
-
-    def append(self, text: str) -> None:
-        if self._ring is None:
-            self.buffer.append(text)
-        else:
-            self._ring(text)
-
-    async def emit(self, text: str, stream: str) -> None:
-        if self.on_output is not None:
-            await self.on_output(text, stream)
-
-
-@dataclass
-class _Foreground:
-    """A foreground call in flight — what :meth:`BashSession.promote` lifts.
-
-    The handshake: the waiting side awaits the process *or* the ``release``
-    future, whichever lands first; ``promote`` claims the entry, re-targets
-    the pumps at a new job's rings and resolves the future. The ``state``
-    field arbitrates the race against the foreground timeout — both sides
-    check-and-set it with no await in between, so the first flip is final.
-    """
-
-    command: str
-    proc: asyncio.subprocess.Process
-    pumps: list[asyncio.Task]
-    sinks: dict[str, _ForegroundSink]
-    waiter: asyncio.Task
-    release: asyncio.Future
-    #: The registry key — the call id when the dispatcher gave one, a
-    #: synthetic key when not (a bare session, or a keybinding's target).
-    key: str = ""
-    call_id: str | None = None
-    state: str = FG_RUNNING
-    job: _Job | None = None
-
-
 class BashSession:
     """Persistent bash session — cwd and env vars survive across commands.
 
@@ -321,10 +191,6 @@ class BashSession:
         #: Background jobs of this conversation, by id, in start order.
         self.jobs: dict[str, _Job] = {}
         self._job_seq = 0
-        #: Foreground calls in flight, by registry key — what promote() can
-        #: lift into a job while they still run.
-        self._foreground: dict[str, _Foreground] = {}
-        self._fg_seq = 0
         #: Jobs that ended and wait for the idle-time announcement.
         self._pending_done: list[_Job] = []
         self._notifier: asyncio.Task | None = None
@@ -377,7 +243,6 @@ class BashSession:
         command: str,
         timeout: int,
         on_output: OutputSink | None = None,
-        call_id: str | None = None,
     ) -> ToolResult:
         stripped = command.strip()
         if stripped.startswith("cd ") and "&&" not in stripped and ";" not in stripped:
@@ -393,64 +258,28 @@ class BashSession:
 
         out: list[str] = []
         err: list[str] = []
-        sinks = {
-            "stdout": _ForegroundSink(out, on_output),
-            "stderr": _ForegroundSink(err, on_output),
-        }
         pumps = [
-            asyncio.create_task(
-                _pump(proc.stdout, "stdout", sinks["stdout"].append, sinks["stdout"].emit)
-            ),
-            asyncio.create_task(
-                _pump(proc.stderr, "stderr", sinks["stderr"].append, sinks["stderr"].emit)
-            ),
+            asyncio.create_task(_pump(proc.stdout, "stdout", out.append, on_output)),
+            asyncio.create_task(_pump(proc.stderr, "stderr", err.append, on_output)),
         ]
-        if call_id is None:
-            self._fg_seq += 1
-            key = f"anonymous-{self._fg_seq}"
-        else:
-            key = call_id
-        fg = _Foreground(
-            command=command,
-            proc=proc,
-            pumps=pumps,
-            sinks=sinks,
-            waiter=asyncio.create_task(proc.wait()),
-            release=asyncio.get_running_loop().create_future(),
-            key=key,
-            call_id=call_id,
-        )
-        self._foreground[key] = fg
+        waiter = asyncio.create_task(proc.wait())
         try:
             await asyncio.wait(
-                {fg.waiter, fg.release},
-                timeout=timeout,
-                return_when=asyncio.FIRST_COMPLETED,
+                {waiter}, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
             )
-            if fg.state == FG_PROMOTED:
-                # Promote won the race: the process and the pumps are the
-                # job's now — settle the call as a handle, touch nothing.
-                job = fg.job
-                return ToolResult(
-                    f"moved to background as {job.id} (bash_output to poll)",
-                    {"shell_id": job.id, "status": JOB_RUNNING, "promoted": True},
-                )
-            fg.state = FG_SETTLED  # the foreground side won — lock promote out
-            if fg.waiter.done():
+            if waiter.done():
                 # The process is gone; the pipes still hold whatever it wrote last.
                 await asyncio.gather(*pumps)
             else:
                 return ToolResult(f"(timed out after {timeout}s)")
         finally:
-            self._foreground.pop(key, None)
-            fg.waiter.cancel()
-            if fg.state != FG_PROMOTED:
-                for task in pumps:
-                    task.cancel()
-                await asyncio.gather(*pumps, return_exceptions=True)
-                if proc.returncode is None:
-                    _terminate(proc)
-                    await proc.wait()
+            waiter.cancel()
+            for task in pumps:
+                task.cancel()
+            await asyncio.gather(*pumps, return_exceptions=True)
+            if proc.returncode is None:
+                _terminate(proc)
+                await proc.wait()
 
         output = "".join(out).strip()
         stderr = "".join(err).strip()
@@ -459,99 +288,6 @@ class BashSession:
         # The exit code is a fact about the run, not part of what the model
         # needs to read — so it travels as a detail.
         return ToolResult(output or "(empty)", {"exit_code": proc.returncode})
-
-    # ── Promotion ──────────────────────────────────────────
-
-    async def promote(self, call_id: str | None = None) -> dict:
-        """Move the one foreground command that is running into the background.
-
-        The waiting foreground call is released at once — its tool result
-        becomes "moved to background as shell_N" — and the command lives on as
-        an ordinary background job: ``bash_output(shell_id)`` reads what it
-        prints from here on (the rings start at the promotion — everything
-        before it already went to the live block), ``kill_shell`` stops it,
-        and its completion is announced like any job's.
-
-        Without *call_id* exactly one foreground call must be running — the
-        shape a "move it to background" keybinding wants, no ids required.
-        None running raises ``no_running_call``; several raise
-        ``ambiguous_call`` (name the call id of the one to move). The
-        background concurrency cap applies — full means ``limit``, and the
-        call simply stays foreground. Promotion and the foreground timeout
-        race each other: first to claim the call wins, the loser stands down
-        without killing the process or the pumps.
-
-        Returns the job's handle: ``{"shell_id", "status", "promoted"}``.
-        """
-        fg = self._pick_foreground(call_id)
-        job = self._claim(fg)
-        return {"shell_id": job.id, "status": JOB_RUNNING, "promoted": True}
-
-    def _pick_foreground(self, call_id: str | None) -> _Foreground:
-        """The foreground entry a promotion names — exactly one, or a ToolError.
-
-        A settled entry (the process just exited, its call not yet resumed) is
-        not promotable and does not count: the race referee is the entry's
-        state plus its waiter, not the registry alone.
-        """
-        if call_id is None:
-            entries = [
-                fg
-                for fg in self._foreground.values()
-                if fg.state == FG_RUNNING and not fg.waiter.done()
-            ]
-            if not entries:
-                raise ToolError(
-                    "no foreground command is running to promote",
-                    code="no_running_call",
-                )
-            if len(entries) > 1:
-                raise ToolError(
-                    f"{len(entries)} foreground commands are running; "
-                    "promote takes the call id of the one to move",
-                    code="ambiguous_call",
-                )
-            return entries[0]
-        fg = self._foreground.get(call_id)
-        if fg is None or fg.state != FG_RUNNING or fg.waiter.done():
-            raise ToolError(
-                f"no foreground command '{call_id}' is running to promote",
-                code="no_running_call",
-            )
-        return fg
-
-    def _claim(self, fg: _Foreground) -> _Job:
-        """Turn the running foreground call into a background job.
-
-        Entered only after ``_pick_foreground`` named a live call, and
-        synchronous end to end — no foreground step can interleave, so the
-        state flip below is the race's arbitration point: the foreground
-        side re-reads it the moment its wait resolves.
-        """
-        running = sum(1 for job in self.jobs.values() if job.running)
-        if running >= self.max_background:
-            raise ToolError(
-                f"{running} background shells already running "
-                f"(limit {self.max_background}); read or kill one first",
-                code="limit",
-            )
-        fg.state = FG_PROMOTED
-        self._foreground.pop(fg.key, None)
-        self._job_seq += 1
-        job = _Job(id=f"shell_{self._job_seq}", command=fg.command, proc=fg.proc)
-        for stream, sink in fg.sinks.items():
-            sink.claim((job.buf_out if stream == "stdout" else job.buf_err).append)
-        fg.job = job
-        # The pumps keep running — adopted, not restarted: they have been
-        # reading these pipes all along, and the rings pick up mid-stream.
-        job.collector = asyncio.create_task(self._adopt(job, fg.pumps))
-        deadline = self._deadline(None)
-        if deadline > 0:
-            job.watchdog = asyncio.create_task(self._watch(job, deadline))
-        self.jobs[job.id] = job
-        if not fg.release.done():
-            fg.release.set_result(None)
-        return job
 
     # ── Background ─────────────────────────────────────────
 
@@ -735,9 +471,9 @@ class BashSession:
     async def _adopt(self, job: _Job, pumps: list[asyncio.Task]) -> None:
         """Wait a job's process out, then finish its bookkeeping.
 
-        A started job's collector creates its own pumps; a promoted job
-        *adopts* the foreground call's — they have been reading the same
-        pipes all along, and the rings pick the stream up mid-flight.
+        A started job's collector creates its own pumps; they have been
+        reading these pipes all along, and the rings pick the stream up
+        mid-flight.
         """
         try:
             await job.proc.wait()
@@ -861,35 +597,6 @@ class BashSession:
         self._env_vars.clear()
 
 
-def _tool_output_sink(ctx: ToolCallContext) -> OutputSink:
-    """Publish each line to the run's event stream under this call's id."""
-
-    async def sink(text: str, stream: str) -> None:
-        await ctx.emit(ToolOutput(call_id=ctx.tool_call_id, text=text, stream=stream))
-
-    return sink
-
-
-def _early_output_sink(session: BashSession, ctx: ToolCallContext) -> OutputSink:
-    """A background job's early output, into the open block of its start call.
-
-    Bound to the turn that started the job: once that turn has ended, its
-    blocks have committed, and the job's rings — not the event stream — are
-    the record. Only the plugin path can know the turn (a bare session has no
-    host to ask), so there is nothing to report otherwise.
-    """
-    agent = getattr(session._host, "agent", None)
-    turn = agent.turn if agent is not None else None
-
-    async def sink(text: str, stream: str) -> None:
-        if turn is not None and not turn.done:
-            await ctx.emit(
-                ToolOutput(call_id=ctx.tool_call_id, text=text, stream=stream)
-            )
-
-    return sink
-
-
 async def _pump(
     reader: asyncio.StreamReader,
     stream: str,
@@ -907,211 +614,3 @@ async def _pump(
         append(text)
         if on_output is not None:
             await on_output(text, stream)
-
-
-# ── The tools ──────────────────────────────────────────────
-
-
-def bash_tool(cwd: Path, default_timeout: int = 240, *, host=None) -> Tool:
-    """Run shell commands in a persistent bash session — one tool per
-    conversation, its session created here and captured by the closure."""
-    return bash_tool_for(BashSession(cwd, host=host), default_timeout)
-
-
-def bash_tool_for(session: BashSession, default_timeout: int = 240) -> Tool:
-    """The bash tool around an existing session — how the plugin registers it,
-    so the trio below shares one session."""
-    # Only for runs nobody dispatches (bare tool.run): when the dispatcher
-    # is involved it resolves the deadline — the model's ``timeout``
-    # argument via the policy below, else the config — and hands it back
-    # on the context, which drives this tool's foreground wait.
-    fallback_timeout = default_timeout
-
-    async def execute(args: dict, ctx=None) -> "str | ToolResult":
-        if args.get("restart"):
-            session.restart()
-            return ToolResult("Bash session restarted")
-
-        timeout = fallback_timeout
-        if ctx is not None and ctx.tool_timeout is not None:
-            timeout = ctx.tool_timeout
-        if args.get("run_in_background"):
-            # The policy deadline bounds the *start* call only; the job runs
-            # on its own deadline — the explicit argument, capped by config.
-            return await session.start_background(
-                args["command"],
-                timeout=args.get("timeout"),
-                on_output=(
-                    _early_output_sink(session, ctx) if ctx is not None else None
-                ),
-            )
-        return await session.execute(
-            args["command"],
-            timeout=timeout,
-            on_output=_tool_output_sink(ctx) if ctx is not None else None,
-            # The dispatcher's id for this call — how a promote that names a
-            # call (rather than "the one running") finds it.
-            call_id=ctx.tool_call_id if ctx is not None else None,
-        )
-
-    tool = Tool(
-        name="bash",
-        description=(
-            "Run a shell command in a persistent bash session (Unix-style, e.g. ls, grep, find). "
-            "Working directory and environment variables persist across commands. "
-            "Use 'restart' to reset session state (cwd, env vars), or "
-            "run_in_background for a long-running command: it returns a shell_id "
-            "immediately, and bash_output(shell_id) reads what it printed."
-        ),
-        schema={
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "The bash command to execute (Unix-style syntax)",
-                },
-                "restart": {
-                    "type": "boolean",
-                    "description": "Reset session state (working directory and environment variables)",
-                },
-                "timeout": {
-                    "type": "number",
-                    "description": "Max execution time in seconds (default: the host's tool_timeout policy)",
-                },
-                "run_in_background": {
-                    "type": "boolean",
-                    "description": (
-                        "Start the command and return a shell_id immediately instead of "
-                        "waiting for it; read its output with bash_output(shell_id)"
-                    ),
-                    "default": False,
-                },
-            },
-            "required": ["command"],
-        },
-        func=execute,
-        tags=_BASH_TAG,
-        summary_key="command",
-        result_key="exit_code",
-        with_context=True,
-        # The model-facing timeout argument is policy, not bookkeeping:
-        # the dispatcher enforces it around the whole call; absent means
-        # None, i.e. fall through to the config default.
-        policy=lambda args: ToolPolicy(timeout=args.get("timeout")),
-    )
-    # The conversation's session, for whoever must reach it from outside the
-    # tool (the plugin's close() kills background jobs through it). The tool
-    # owns the session and the registry owns the tool — the per-conversation
-    # lookup goes through the registry, never through plugin state, which one
-    # instance shares across every conversation in the process.
-    tool.session = session  # type: ignore[attr-defined]
-    return tool
-
-
-def bash_output_tool(session: BashSession) -> Tool:
-    """Read a background shell's output incrementally — reading is consuming."""
-
-    async def execute(args: dict) -> ToolResult:
-        return await session.read_output(
-            args["shell_id"],
-            filter=args.get("filter"),
-            wait=bool(args.get("wait")),
-            timeout=args.get("timeout"),
-        )
-
-    return Tool(
-        name="bash_output",
-        description=(
-            "Read new output from a background shell started with "
-            "bash(run_in_background=true). Each call returns only the lines that "
-            "arrived since the last read. A filter regex returns (and consumes) "
-            "just the matching lines, keeping the rest buffered; wait=true blocks "
-            "until the job finishes. The status says whether it is still running."
-        ),
-        schema={
-            "type": "object",
-            "properties": {
-                "shell_id": {
-                    "type": "string",
-                    "description": "The background shell to read, e.g. shell_1",
-                },
-                "filter": {
-                    "type": "string",
-                    "description": (
-                        "A regex: only matching lines are returned and consumed; "
-                        "non-matching lines stay buffered"
-                    ),
-                },
-                "wait": {
-                    "type": "boolean",
-                    "description": "Block until the job completes (or timeout) before reading",
-                    "default": False,
-                },
-                "timeout": {
-                    "type": "number",
-                    "description": "Seconds to wait when wait=true (default: unbounded)",
-                },
-            },
-            "required": ["shell_id"],
-        },
-        func=execute,
-        tags=_BASH_TAG,
-        summary_key="shell_id",
-        result_key="status",
-    )
-
-
-def kill_shell_tool(session: BashSession) -> Tool:
-    """Stop a background shell — the process group where the platform has one."""
-
-    async def execute(args: dict) -> ToolResult:
-        return await session.kill(args["shell_id"])
-
-    return Tool(
-        name="kill_shell",
-        description="Stop a background shell started with bash(run_in_background=true).",
-        schema={
-            "type": "object",
-            "properties": {
-                "shell_id": {
-                    "type": "string",
-                    "description": "The background shell to stop, e.g. shell_1",
-                },
-            },
-            "required": ["shell_id"],
-        },
-        func=execute,
-        tags=_BASH_TAG,
-        summary_key="shell_id",
-        result_key="status",
-    )
-
-
-class ShellPlugin(Plugin):
-    name = "shell"
-    description = "Run shell commands in a persistent bash session"
-
-    def build(self, ctx: BuildContext) -> None:
-        # The session's working directory is the conversation's project: build()
-        # runs once per conversation, so two projects never share one shell.
-        # The context is kept so background jobs can report early output and
-        # announce completion — it grows into a HostContext at assembly.
-        session = BashSession(cwd=ctx.cwd, host=ctx)
-        session.configure(ctx.plugin_config("shell"))
-        ctx.tools.register(
-            bash_tool_for(session, default_timeout=ctx.config.agent.tool_timeout)
-        )
-        ctx.tools.register(bash_output_tool(session))
-        ctx.tools.register(kill_shell_tool(session))
-
-    def close(self, ctx: HostContext) -> None:
-        # The registry is the per-conversation handle to what build() created;
-        # killing through it keeps the plugin instance stateless. The host
-        # isolates a failure here from every other plugin's close().
-        bash = ctx.tools.get("bash")
-        session = getattr(bash, "session", None)
-        if session is not None:
-            session.shutdown()
-
-
-PLUGIN = ShellPlugin()
