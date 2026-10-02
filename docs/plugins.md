@@ -8,7 +8,7 @@ the [Agent Plugins](https://agent-plugins.org) standard:
 git-helper/
 ├── plugin.json                  the manifest: name, version, description
 ├── skills/<name>/SKILL.md       portable skills — any compatible client
-├── mcp.json                     MCP servers (recognised, not served yet)
+├── mcp.json                     MCP servers (served by the `mcp` builtin)
 ├── mocode/plugin.py             contributions to the agent — every frontend
 └── mocode.cli/plugin.py         contributions to the terminal — this frontend only
 ```
@@ -750,6 +750,128 @@ go through the conversation, which is the only thing they share. The
 terminal's own commands are the first implementation of this interface
 (`cli/plugin.py::BuiltinCommands`), so there is one way to contribute here.
 
+## The `mcp` and `codemode` builtins
+
+Two built-ins cooperate: `mcp` is a *source* of tools — it connects to
+[MCP](https://modelcontextprotocol.io) servers and registers each of their
+tools under a predictable name — and `codemode` is *orchestration*: one tool
+through which the model runs a Python script that calls any tool (MCP ones
+included) in parallel and filters the results, so only what matters reaches
+the conversation.
+
+### `mcp` — MCP servers as tools
+
+Server entries are read from four sources, highest priority first:
+`plugins.mcp.servers` in config.json, `<cwd>/.mocode/mcp.json`,
+`<home>/mcp.json`, and each plugin directory's `mcp.json`. A same-named entry
+at a higher priority replaces the lower one wholesale; names differing only
+in `-`/`_` are the same name.
+
+```jsonc
+// ~/.mocode/mcp.json (or ./.mocode/mcp.json) — mocode's own file
+{
+  "mcpServers": {
+    "demo": {
+      "type": "stdio",                     // stdio only, for now
+      "command": "uvx",
+      "args": ["demo-mcp"],
+      "env": { "TOKEN": "${DEMO_TOKEN}" }, // ${VAR} expands from the environment
+      "enabled": true,                     // false = keep the entry, never connect
+      "timeout": 60,                       // per-request seconds (default 60)
+      "exposure": "codemode",              // see the table below
+      "toolExposure": { "search_*": "direct", "delete_*": "hidden" },
+      "description": "one line for the prompt's mcp_servers section"
+    }
+  }
+}
+```
+
+Mocode's own files accept the extensions above. A plugin directory's
+`mcp.json` is the portable Agent Plugins 1.0.0 form instead — `$schema` plus
+`mcpServers` carrying only the standard fields (`{type, command, args, env,
+cwd}` for stdio; `{type, url, headers}` for streamable HTTP, which is **not
+yet** served), `${PLUGIN_ROOT}` / `${PLUGIN_DATA}` expansion, and mocode
+extensions like `exposure` reported and ignored.
+
+Every server tool becomes `mcp__<server>__<tool>` — characters outside
+`[A-Za-z0-9_]` fold to `_`, and colliding names gain a stable short hash.
+Exposure decides who can see and call it:
+
+| exposure | availability |
+|---|---|
+| `direct` | the model and program code — it joins the offered tool interface and the `mcp_servers` prompt section |
+| `codemode` | program code only — the model reaches it through a codemode script |
+| `deferred` | same as `codemode` for now; a `tool_search` built-in is not shipped yet |
+| `hidden` | registered but disabled for everyone |
+
+The default is `plugins.mcp.default_exposure: "auto"` — `codemode` when
+`plugins.codemode.enabled` is `true`, otherwise `direct`. (`codemode-deferred`
+is accepted as a `codemode` alias; `toolExposure` overrides per tool, exact
+names before `*`-patterns, first match wins.)
+
+Servers whose tools may reach the model connect under a bounded wait
+(default 10s, `connect_timeout_s`) before the first turn; the rest connect in
+the background and register when they arrive, so a slow server never stalls a
+conversation. The program-only `mcp_status` tool reports each server's state,
+the `mcp_servers` prompt section lists every reachable server with how its
+tools are reached, and closing the conversation kills every server child. If
+program-only tools exist while codemode is disabled, one warning says so per
+conversation. Not yet, by design: streamable HTTP transport, OAuth,
+`!command`, the legacy `sse` transport, and MCP resources/prompts/sampling.
+
+### `codemode` — a Python script that calls tools
+
+The `codemode` tool takes `{"script": "...", "options": {...}}`: the model
+writes a Python script and only the script's output comes back. The script
+runs as the body of an async function — top-level `await` and `return` are
+legal — with a restricted `__builtins__` and a fixed set of read-only modules
+(`asyncio`, `json`, `re`, `math`, `datetime`, `textwrap`, `collections`,
+`itertools`, `functools`). That is a stable API plus resource limits, **not a
+security sandbox**: the model already has `bash`.
+
+Inside a script:
+
+- `await tools.<name>(args)` calls a tool — *args* is a dict, or use keyword
+  arguments; for names that are not valid Python identifiers use the
+  subscript form, e.g. `tools["mcp__dev_radius__search"]`. Success returns an
+  object with `.content`, `.details` and `.status` (`str(result)` is the
+  content); failure raises, so
+  `asyncio.gather(..., return_exceptions=True)` keeps the successes.
+- `text(value)` / `console.log(...)` append output; a top-level `return v`
+  appends too, and `image(block)` attaches an image block.
+- `store(key, value)` / `load(key)` keep small JSON state across a
+  conversation's codemode calls; `store(key, None)` deletes, and writes
+  commit only when the script succeeds.
+- `ALL_TOOLS` (a snapshot from script start), `search_tools(query, limit=8,
+  namespace=None)` and `describe_tool(name)` discover callable tools —
+  including program-only ones the model's interface does not list.
+- `exit()` ends the script successfully.
+
+A script's calls run through the dispatcher with program origin: they are
+observable on the event stream, but they never enter the conversation's
+messages and do not count as the turn's tool calls. Output past
+`max_output_chars` (default 12000, head and tail kept) spills to a temp file
+named in the result. A whole-script deadline can be set per call with
+`options.timeout_ms` or a first-line `# @options: {"timeout_ms": 60000}`
+comment, and per conversation with `plugins.codemode.timeout_s`; store limits
+are `plugins.codemode.store_max_value_chars` / `store_max_total_chars`.
+`codemode` cannot call itself. Not yet: `mode="only"` (hiding declared tools
+from the model), a `models` catalogue, and `describe_namespace()`.
+
+To make MCP's `auto` exposure route tools through scripts, set the marker it
+reads:
+
+```jsonc
+{
+  "plugins": {
+    "codemode": { "enabled": true },
+    "mcp": { "default_exposure": "auto" }
+  }
+}
+```
+
+Disable either built-in like any other plugin (`"enabled": false`).
+
 ## Rules of the road
 
 - **Plugins are trusted code.** Importing `mocode/plugin.py` executes it —
@@ -761,7 +883,8 @@ terminal's own commands are the first implementation of this interface
   its own tool — is an overwrite. `register(tool, replace=True)` forces a
   takeover knowingly.
 - **Built-in names are reserved** (`filesystem`, `shell`, `skills`,
-  `default-prompts`, `session`, `help`, `effort`, `cache-protect`): a
+  `mcp`, `codemode`, `default-prompts`, `session`, `help`, `effort`,
+  `cache-protect`): a
   third-party plugin cannot shadow them. Overriding built-in behaviour means
   disabling the built-in and contributing your own under a different name.
 - **One plugin, one name.** Project-local beats user-global; the loser is

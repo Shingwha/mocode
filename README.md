@@ -93,7 +93,9 @@ MoCode reads `~/.mocode/config.json`. The file is organised by who owns each val
   },
 
   "plugins": {
-    "shell": { "enabled": false }
+    "shell": { "enabled": false },
+    "mcp": { "default_exposure": "auto" },
+    "codemode": { "enabled": true }
   }
 }
 ```
@@ -136,6 +138,8 @@ The plugins MoCode ships are ordinary plugins: disable any of them with
 | `filesystem` | `read` (with line numbers, offset/limit, directory listings), `write`, `edit` — paths resolve into the conversation's project |
 | `shell` | `bash`, `bash_output`, `kill_shell` — one persistent bash session per conversation; cwd, env and background jobs survive between calls |
 | `skills` | the `skill` tool, a `/skill:<name>` command per skill, the prompt's skills section |
+| `mcp` | connects to MCP servers from `mcp.json` / config and registers their tools as `mcp__<server>__<tool>`; `mcp_status` answers program calls with the server table |
+| `codemode` | the `codemode` tool — the model writes a Python script that calls other tools in parallel; only the script's output comes back |
 | `default-prompts` | the four sections a fresh prompt starts with: `guidelines`, `agents`, `environment`, `time` |
 | `session` | `/export` (JSON to resume, Markdown to read), `/clear` |
 | `help` | `/help` — lists every registered command, plugin ones included |
@@ -178,7 +182,7 @@ A plugin is a directory laid out the way the [Agent Plugins](https://agent-plugi
 ~/.mocode/plugins/git-helper/     user-global
 ├── plugin.json              the manifest — name, version, description
 ├── skills/<name>/SKILL.md   portable skills (standard)
-├── mcp.json                 MCP servers (standard; not served yet)
+├── mcp.json                 MCP servers (standard; served by the `mcp` builtin)
 ├── mocode/plugin.py         contributions to the agent: tools, commands, hooks, prompt
 └── mocode.cli/plugin.py     contributions to the terminal: chrome only it can honour
 ```

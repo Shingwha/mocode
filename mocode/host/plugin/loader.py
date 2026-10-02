@@ -5,7 +5,7 @@ A plugin is a directory::
     acme/
     ├── plugin.json            the manifest: name, version, description (standard)
     ├── skills/<name>/SKILL.md portable skills, readable by any client (standard)
-    ├── mcp.json               portable MCP servers (standard; recognised, not served yet)
+    ├── mcp.json               portable MCP servers (standard; served by the `mcp` builtin)
     ├── mocode/plugin.py       MoCode contributions — build(ctx) (our namespace);
     │   or mocode/plugin/      a package: __init__.py as the entry, submodules beside it
     └── mocode.cli/plugin.py   the terminal's own contributions (the terminal's namespace)

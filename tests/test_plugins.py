@@ -371,6 +371,7 @@ class TestPluginHost:
         assert sorted(ctx.tools.names()) == [
             "bash",
             "bash_output",
+            "codemode",
             "edit",
             "kill_shell",
             "read",
@@ -519,6 +520,8 @@ class TestPluginSet:
             "filesystem",
             "shell",
             "skills",
+            "mcp",
+            "codemode",
             "default-prompts",
             "session",
             "help",

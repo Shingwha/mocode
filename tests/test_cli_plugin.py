@@ -109,8 +109,8 @@ class TestBothSurfacesInOneDirectory:
         app = _app(tmp_path, plugins)
 
         assert [p.name for p in app.runtime.plugins_for(tmp_path)] == [
-            "filesystem", "shell", "skills", "default-prompts", "session", "help",
-            "effort", "cache-protect", "acme",
+            "filesystem", "shell", "skills", "mcp", "codemode", "default-prompts",
+            "session", "help", "effort", "cache-protect", "acme",
         ]
 
 

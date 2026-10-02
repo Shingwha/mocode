@@ -94,8 +94,8 @@ class TestTheWorldIsAnnounced:
         assert conversation.agent.system_prompt == frozen
         notice = updates(conversation)[-1]["content"]
         assert "derived section 'tools-sdk' changed:" in notice
-        assert "-callable tools: bash, bash_output, edit, kill_shell, read, skill, write" in notice
-        assert "+callable tools: bash, bash_output, edit, kill_shell, skill, write" in notice
+        assert "-callable tools: bash, bash_output, codemode, edit, kill_shell, read, skill, write" in notice
+        assert "+callable tools: bash, bash_output, codemode, edit, kill_shell, skill, write" in notice
 
     async def test_a_rebuild_re_renders_the_pinned_section(self, wired, tmp_path: Path):
         from mocode.core.prompt import Section
@@ -117,7 +117,7 @@ class TestTheWorldIsAnnounced:
 
         # A rebuild is the deliberate cache loss: the pin dropped, the
         # section re-rendered from the registry as it now stands.
-        assert "callable tools: bash, bash_output, edit, kill_shell, skill, write" in conversation.agent.system_prompt
+        assert "callable tools: bash, bash_output, codemode, edit, kill_shell, skill, write" in conversation.agent.system_prompt
         assert updates(conversation) == []
 
     async def test_a_switch_back_on_is_news_again(self, wired, tmp_path: Path):
