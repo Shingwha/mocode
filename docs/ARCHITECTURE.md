@@ -362,6 +362,18 @@ for per-conversation plugin state that travels with the session; a
 `rebuild_prompt()` re-freezes both halves and clears them, accepting the
 cache loss in one deliberate act.
 
+**Plugin-authored messages travel with the session.** A `PluginMessage` —
+what `ctx.emit_message` publishes — is content of the conversation, not of
+the moment: the conversation captures every one, serialized, in a bounded
+deque (the newest 200; what falls off the end is gone), and the session
+record carries the capture. On `load_session`, after `ConversationChanged`
+has told readers to clear and repour the document, the stored messages are
+republished onto the channel in order — the channel re-stamps `seq` as it
+does for every publish, `run_id` keeps its stored value, and the capture is
+switched off for the replay so the next save writes the same list back, not
+a doubled one. `adopt` never replays; only a resume does, and a
+`new_session()` clears the capture together with the history it replaces.
+
 ## Plugins
 
 A plugin directory follows the [Agent Plugins](https://agent-plugins.org)

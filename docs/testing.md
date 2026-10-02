@@ -83,6 +83,25 @@ assert finished.status == "ok"
 assert terminal(events).content == "greeted"
 ```
 
+*A resume reads back the same way.* `load_session` publishes
+`ConversationChanged` first — readers clear and repour the document — and
+then republishes the session's stored plugin messages in order. Subscribe
+before the resume, drain afterwards, and expect the redraw announcement
+ahead of the replayed `PluginMessage`s:
+
+```python
+from mocode.core.events import PluginMessage
+from mocode.host.events import ConversationChanged
+
+sub = fresh.subscribe()
+await fresh.load_session(stored)
+events = []
+while (event := sub.take()) is not None:
+    events.append(event)
+assert isinstance(events[0], ConversationChanged)
+assert [e.kind for e in events_of_type(events, PluginMessage)] == expected
+```
+
 ## A complete test
 
 The conventions are the repository's own (`tests/test_plugins.py`): write

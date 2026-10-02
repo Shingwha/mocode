@@ -15,8 +15,9 @@ from pathlib import Path
 import pytest
 
 from mocode.core.agent import AgentConfig
-from mocode.core.events import Notice, RunFinished, TextDelta
+from mocode.core.events import Notice, PluginMessage, RunFinished, TextDelta
 from mocode.core.provider import ModelSpec, Response, Usage
+from mocode.host.events import ConversationChanged
 from mocode.host.runtime import MoCode
 from mocode.host.session import Session
 from mocode.testing import MockProvider, SlowProvider, tool_call_response
@@ -26,6 +27,14 @@ from .conftest import make_config
 
 def _answer(text: str = "done") -> Response:
     return Response(content=text, usage=Usage(1, 1), finish_reason="stop")
+
+
+def _drain(subscription) -> list:
+    """Everything a subscription has buffered, oldest first."""
+    events = []
+    while (event := subscription.take()) is not None:
+        events.append(event)
+    return events
 
 
 def _project(tmp_path: Path, name: str) -> Path:
@@ -382,6 +391,154 @@ class TestSessions:
         assert resumed.cwd == project
         assert resumed.messages == conversation.messages
         assert mc.resume("session_nope") is None
+
+
+class TestPluginMessageReplay:
+    """emit → save → resume → replay: the §5.4 promise, end to end."""
+
+    @pytest.mark.asyncio
+    async def test_saved_messages_replay_in_order_on_resume(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        project = _project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=project)
+        conversation.messages.append({"role": "user", "content": "hi"})
+        await conversation.ctx.emit_message(
+            "rag/index", {"done": 12, "total": 40}, block_id="rag-1"
+        )
+        await conversation.ctx.emit_message(
+            "rag/index", {"done": 40, "total": 40}, block_id="rag-1"
+        )
+        await conversation.ctx.seal_message("rag-1")
+        await conversation.ctx.emit_message("shell/background-done", {"exit": 0})
+
+        stored = conversation.save()
+        assert stored is not None
+        assert [
+            (m["kind"], m["data"], m["block_id"], m["sealed"])
+            for m in stored.plugin_messages
+        ] == [
+            ("rag/index", {"done": 12, "total": 40}, "rag-1", False),
+            ("rag/index", {"done": 40, "total": 40}, "rag-1", False),
+            ("", {}, "rag-1", True),
+            ("shell/background-done", {"exit": 0}, "", False),
+        ]
+
+        fresh = mc.new_conversation(cwd=project)
+        subscription = fresh.subscribe()
+        await fresh.load_session(stored)
+
+        events = _drain(subscription)
+        # The redraw announcement comes first: replay lands on the cleared
+        # document, never into one a reader is about to wipe.
+        assert isinstance(events[0], ConversationChanged)
+        replayed = [e for e in events if isinstance(e, PluginMessage)]
+        assert [(e.kind, e.data, e.block_id, e.sealed) for e in replayed] == [
+            ("rag/index", {"done": 12, "total": 40}, "rag-1", False),
+            ("rag/index", {"done": 40, "total": 40}, "rag-1", False),
+            ("", {}, "rag-1", True),
+            ("shell/background-done", {"exit": 0}, "", False),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_replay_is_not_re_captured_by_the_next_save(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        project = _project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=project)
+        conversation.messages.append({"role": "user", "content": "hi"})
+        await conversation.ctx.emit_message("rag/index", {"done": 1})
+        stored = conversation.save()
+
+        fresh = mc.new_conversation(cwd=project)
+        await fresh.load_session(stored)
+        # One new message lands on the resumed conversation; the replayed one
+        # must not double the record.
+        await fresh.ctx.emit_message("rag/index", {"done": 2})
+
+        assert fresh.save().plugin_messages == [
+            *stored.plugin_messages,
+            {
+                "type": "plugin_message",
+                "run_id": "",
+                "seq": fresh.agent.channel.seq,
+                "kind": "rag/index",
+                "data": {"done": 2},
+                "block_id": "",
+                "sealed": False,
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_replay_keeps_the_stored_run_id_and_restmps_seq(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        project = _project(tmp_path, "a")
+        stored = Session(
+            id="session_runid",
+            created_at="2025-01-01T00:00:00",
+            updated_at="2025-01-01T00:00:00",
+            workdir=str(project),
+            messages=[{"role": "user", "content": "hi"}],
+            plugin_messages=[
+                {
+                    "type": "plugin_message",
+                    "run_id": "run_old",
+                    "seq": 7,
+                    "kind": "k",
+                    "data": {},
+                    "block_id": "",
+                    "sealed": False,
+                }
+            ],
+        )
+
+        fresh = mc.new_conversation(cwd=project)
+        subscription = fresh.subscribe()
+        await fresh.load_session(stored)
+
+        events = _drain(subscription)
+        [replayed] = [e for e in events if isinstance(e, PluginMessage)]
+        assert replayed.run_id == "run_old"
+        assert replayed.seq != 7
+        assert replayed.seq > events[0].seq  # re-stamped, after the redraw
+
+    @pytest.mark.asyncio
+    async def test_only_the_newest_200_messages_survive_and_replay(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        project = _project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=project)
+        conversation.messages.append({"role": "user", "content": "hi"})
+        for i in range(250):
+            await conversation.ctx.emit_message("progress", {"i": i})
+
+        stored = conversation.save()
+        assert len(stored.plugin_messages) == 200
+        assert stored.plugin_messages[0]["data"] == {"i": 50}
+        assert stored.plugin_messages[-1]["data"] == {"i": 249}
+
+        fresh = mc.new_conversation(cwd=project)
+        subscription = fresh.subscribe()
+        await fresh.load_session(stored)
+        replayed = [
+            e for e in _drain(subscription) if isinstance(e, PluginMessage)
+        ]
+        assert [e.data["i"] for e in replayed] == list(range(50, 250))
+
+    @pytest.mark.asyncio
+    async def test_a_new_session_starts_with_no_plugin_messages(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        project = _project(tmp_path, "a")
+        conversation = mc.new_conversation(cwd=project)
+        conversation.messages.append({"role": "user", "content": "old"})
+        await conversation.ctx.emit_message("old/message", {})
+        conversation.save()
+
+        await conversation.new_session()
+
+        assert conversation.session().plugin_messages == []
 
 
 # ── lifecycle ───────────────────────────────────────────────
