@@ -16,7 +16,7 @@ Two ways in, both import-light:
 
     mc = MoCode()
     conv = mc.new_conversation(cwd="/srv/proj-a")
-    async for event in conv.chat("list the tests"):
+    async for event in conv.stream("list the tests"):
         ...
 """
 
