@@ -68,6 +68,22 @@ class CLIApp:
         # registry the terminal dispatches from.
         self.commands = CommandRegistry()
 
+        # The plugin contribution surfaces the input layer and the status bar
+        # read. Plain containers: plugins fill them through ctx during build,
+        # the Input picks them up when its PromptSession is first created.
+        from .plugin import (
+            HeaderRegistry,
+            InputMiddleware,
+            KeyRegistry,
+            StatusRegistry,
+        )
+
+        self.keys = KeyRegistry()
+        self.input_middleware = InputMiddleware()
+        self.status = StatusRegistry(state_fn=self._status_state)
+        self.header = HeaderRegistry()
+        self._running = False
+
         self.display: "Display | None" = display
         self.input: "Input | None" = None
         if _render and self.display is None:
@@ -75,10 +91,17 @@ class CLIApp:
             from .input import Input
             from .theme import Theme
 
+            self.theme = Theme()
             # A render-only run never prompts, so the Input goes unused — it is
             # cheap to build and prompt_toolkit is imported only on first use.
             self.input = Input(self.commands, ps1="❯")
-            self.display = Display(input_=self.input, theme=Theme())
+            self.display = Display(input_=self.input, theme=self.theme)
+        else:
+            # A display handed in from outside carries its own theme; the
+            # context only gets a view when we can see it.
+            self.theme = getattr(display, "_t", None)
+        if self.display is not None:
+            self.header.bind(self.display.print)
 
         self.runtime = MoCode(
             config=self.config, home=self.home, plugin_dirs=plugin_dirs
@@ -115,10 +138,35 @@ class CLIApp:
                 self.interactive and self.display is not None and self.display.live
             ),
         )
-        self.ctx = CLIContext(commands=self.commands, drawers=self.drawers, ui=self.ui)
+        self.ctx = CLIContext(
+            commands=self.commands,
+            drawers=self.drawers,
+            ui=self.ui,
+            keys=self.keys,
+            input=self.input_middleware,
+            status=self.status,
+            header=self.header,
+            theme=self.theme,
+            conversation=self.conversation,
+        )
         self.plugins = build_cli_plugins(
             self.ctx, self.runtime.plugin_sources_for(self.cwd)
         )
+
+    def _status_state(self):
+        """The world as the status bar should report it — rebuilt per redraw."""
+        from .plugin import StatusState
+
+        return StatusState(
+            model=self.conversation.model_name,
+            cwd=self.cwd,
+            running=self._running,
+            usage=self.conversation.agent.last_usage,
+            pending_approvals=0,
+        )
+
+    def _register_builtin_keys(self) -> None:
+        """The terminal's own running-time keys — the flagships of the API."""
 
     # ── Dispatch ───────────────────────────────────────────
 
@@ -152,6 +200,7 @@ class CLIApp:
         turn = self.conversation.run(prompt)
 
         task = asyncio.ensure_future(self._follow(subscription, turn))
+        self._running = True
 
         def _on_sigint(signum, frame):
             if not task.done():
@@ -165,6 +214,7 @@ class CLIApp:
             self.display.warn("Response interrupted.")
         finally:
             signal.signal(signal.SIGINT, original_handler)
+            self._running = False
 
     async def _follow(self, subscription: Subscription, turn: "Turn") -> None:
         """Draw events until this turn ends. Leaving early stops the turn."""
@@ -218,6 +268,7 @@ class CLIApp:
             subscription.close()
             # Full lifecycle close, inside the loop: the terminal event lands
             # and plugins are released before the channel goes away.
+            await self.ctx.aclose()
             await self.conversation.aclose()
 
     def run(self) -> None:
@@ -275,6 +326,7 @@ class CLIApp:
         finally:
             # A one-shot is not a session: it saves nothing, and releases
             # whatever the plugins built for it.
+            await self.ctx.aclose()
             await self.conversation.aclose(save=False)
 
 

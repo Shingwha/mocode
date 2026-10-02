@@ -156,7 +156,10 @@ class TestBothSurfacesInOneDirectory:
         assert plugin.ctx.commands is app.commands   # the registry the app dispatches from
         assert plugin.ctx.drawers is app.drawers    # the table the renderer reads
         assert plugin.ctx.ui.is_interactive is False   # no terminal under a test pipe
-        assert not hasattr(plugin.ctx, "display") and not hasattr(plugin.ctx, "input")
+        assert plugin.ctx.input is app.input_middleware  # the chain, not the Input session
+        assert plugin.ctx.conversation is app.conversation
+        for internal in ("app", "display", "renderer"):
+            assert not hasattr(plugin.ctx, internal)
 
     @pytest.mark.asyncio
     async def test_its_command_speaks_on_the_conversations_stream(self, tmp_path: Path):
