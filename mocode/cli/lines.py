@@ -122,6 +122,15 @@ def notice(text: str, level: str = "info") -> Line:
     return Line(text=text, style={"warn": "warning", "error": "error"}.get(level, "info"))
 
 
+def thinking(frame: str) -> Line:
+    """The turn is under way and nothing else is on stage.
+
+    *frame* is the spinner's current glyph — the one part of this vocabulary
+    that moves, so the painter hands it in rather than owning a clock.
+    """
+    return Line(text="thinking", icon=frame, style="dim")
+
+
 # ── tool calls ──────────────────────────────────────────────
 
 
@@ -347,6 +356,7 @@ __all__ = [
     "prompt",
     "reasoning",
     "replay_call",
+    "thinking",
     "tokens",
     "tool_close",
     "tool_pending",

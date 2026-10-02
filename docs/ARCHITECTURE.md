@@ -414,9 +414,30 @@ walking the same grouping in `cli/lines.py`). The same event stream always
 folds into the same transcript, so the document is testable without a screen.
 The **Painter** (`cli/painter.py`) projects what changed onto the terminal:
 committed history is printed and forgotten — the terminal's scrollback is the
-archive — and the one rewritable region is the rows the current turn's open
-tool blocks occupy, generalized from the single block this codebase once
-kept in `Display`.
+archive — and the one rewritable surface is the **live region**: the rows the
+current turn's open material occupies. The region is a manager, not a single
+block: any shape change — a call starting, its output growing, a streamed
+line wrapping one row wider, a verdict landing — is one repaint of the whole
+region, recomputed from the transcript. Its members are:
+
+- a *running tool block*: its summary line plus the tail (`TOOL_TAIL_ROWS`)
+  of what it has printed — the newest output replacing the oldest rows, one
+  repaint per arrival, not one append;
+- the *unfinished line* of a streaming block (reasoning and answer may each
+  keep one open), wrapped to the width so a wrapped line's row offsets are
+  honest;
+- the *spinner row* — while the turn is under way and nothing else is live, a
+  braille frame and "thinking" say so (~80 ms steps on a background ticker;
+  nothing live, nothing ticks). A running call's summary line carries the
+  frame instead of a static ellipsis.
+
+A finished streamed line is not a member: the moment a line completes it is
+appended and never rewritten again — only the line still being written is
+rewritten in place. The same holds for a verdict: it seals its row and rides
+in the region — final, rewritten with itself only — until the turn's rule
+commits the whole region into the scrollback. `painter.verbose` is the one
+exception to "a landed call is one line": it keeps the output tail past the
+verdict for readers who want it.
 
 What a turn looks like, in one picture:
 
@@ -424,7 +445,7 @@ What a turn looks like, in one picture:
 ❯ 用 bash 数一下 mocode 下有多少个 py 文件
 
 The user wants to count the .py files. Let me run find.
-· bash  find mocode -name '*.py' | wc -l…          ← while it runs, dim
+· bash  find mocode -name '*.py' | wc -l ⠋            ← while it runs: dim, frame turning
 ✓ bash  find mocode -name '*.py' | wc -l · exit_code=0 · 0.1s   ← the same row
 mocode/ 下共有 47 个 .py 文件。
 ↑1,234 ↓567 tokens
@@ -436,16 +457,22 @@ There is no indentation, because a terminal has no hanging indent. The answer
 is unmarked and left at the default foreground, so it is the brightest thing
 on screen. A rule closes each turn, with what the turn cost on the line above.
 
-A tool call claims a row the moment it starts and keeps it: a dim placeholder
-that is rewritten in place with the verdict. A parallel batch stays one row per
-call in the order the calls were made rather than the order they finish —
-which is also why a call's own `ToolOutput` is not printed; it still reaches
-the model and every other consumer, the terminal just does not draw it.
+A tool call claims a row the moment it starts and keeps it: a dim pending
+line, spun while it runs, rewritten in place with the verdict. A parallel
+batch stays one row per call in the order the calls were made rather than
+the order they finish. What a call prints does not stream into the
+scrollback: the region carries only the tail of it, and it still reaches the
+model and every other consumer — the terminal just does not log it.
 
-Rewriting a row is only sound while the region is the last thing on screen, so
-the painter guards it rather than trusting it: every line in the region is
-clamped to one terminal row, and the display keeps an *epoch* — a count of
-every append-style write — that the painter checks before touching a row, so
+Repainting is only sound while the region is the last thing on screen, so
+the painter guards it rather than trusting it. Rows are addressed in *visual*
+lines — each region row is exactly one terminal row tall, wide rows split or
+fitted before they enter (`wrap_rows`/`fit_row`) — and rows that turned
+final (a landed verdict, a sealed stream line) freeze: a repaint rewrites
+only the live suffix below them, which is what keeps a long turn cheap. A
+region that would outgrow the screen stops admitting members, and their
+verdicts append instead. The display keeps an *epoch* — a count of every
+append-style write — that the painter checks before touching a row, so
 anything printed over the region freezes it for good. Off a terminal
 (`Display.live`) the whole mechanism is off and a call appends its verdict
 when it finishes; `main.py` passes `sys.stdout.isatty()`, so `mocode -p "…"`

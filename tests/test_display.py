@@ -15,7 +15,7 @@ import re
 
 from mocode.cli import lines
 from mocode.cli.display import Display
-from mocode.cli.painter import Painter, clamp_visible
+from mocode.cli.painter import Painter, fit_row, wrap_rows
 from mocode.cli.render import CLIRenderer
 from mocode.cli.theme import Theme
 from mocode.cli.transcript import Transcript
@@ -26,6 +26,8 @@ from mocode.core import (
     Notice,
     ReasoningDelta,
     RunFailed,
+    RunFinished,
+    RunStarted,
     TextDelta,
     Tool,
     ToolCallFinished,
@@ -88,23 +90,33 @@ class TestFormatting:
         assert _plain(_make_display().format(lines.Line(text="x", style="nope"))) == "x"
 
 
-class TestClamping:
-    """A block row has to be exactly one terminal row, or its offsets lie."""
+class TestRowFitting:
+    """A region row has to be exactly one terminal row, or its offsets lie."""
 
     def test_text_that_fits_is_left_alone(self):
-        assert clamp_visible("read  a.py", 40) == "read  a.py"
+        assert fit_row("read  a.py", 40) == "read  a.py"
 
     def test_an_overlong_line_ends_in_an_ellipsis(self):
-        assert _plain(clamp_visible("x" * 100, 10)) == "x" * 9 + "…"
+        assert _plain(fit_row("x" * 100, 10)) == "x" * 9 + "…"
 
     def test_styling_survives_and_is_closed(self):
-        got = clamp_visible("\033[2m" + "x" * 100 + "\033[0m", 10)
+        got = fit_row("\033[2m" + "x" * 100 + "\033[0m", 10)
         assert got.startswith("\033[2m")
         assert got.endswith("\033[0m")
         assert _plain(got) == "x" * 9 + "…"
 
     def test_wide_characters_are_measured_not_counted(self):
-        assert _plain(clamp_visible("中文测试宽度", 8)) == "中文测…"
+        assert _plain(fit_row("中文测试宽度", 8)) == "中文测…"
+
+    def test_wrap_rows_splits_at_the_width_without_losing_text(self):
+        rows = wrap_rows("abcdefghij", 4)
+        assert rows == ["abcd", "efgh", "ij"]
+
+    def test_wrap_rows_measures_wide_characters(self):
+        assert wrap_rows("中文中文中", 4) == ["中文", "中文", "中"]
+
+    def test_wrap_rows_keeps_an_empty_line(self):
+        assert wrap_rows("", 4) == [""]
 
 
 class TestStreaming:
@@ -332,17 +344,19 @@ async def _run_parallel(display: Display, delays: dict[str, float]):
         renderer.draw(event)
 
 
-#: One in-place rewrite: move up n rows, clear the row, write the line, come
-#: back down the same n — the backreference is half the assertion.
-REWRITE = re.compile(r"\x1b\[(\d+)A\x1b\[K(.*?)\x1b\[\1B\r")
+#: One region repaint opens by moving up to the top of its rewritable rows.
+UP = re.compile(r"\x1b\[(\d+)A")
+#: A row rewrite: clear the line, write the row, step to the next one.
+ROW = re.compile(r"\r\x1b\[K([^\n]*)\n")
 
 
 class TestLiveBlock:
     """A batch keeps one row per call — in call order, rewritten in place.
 
     On a terminal the row a call claims while it runs is the row its verdict
-    lands on. These assert the escape sequence exactly, because the row offsets
-    are the whole mechanism: an offset one row off corrupts the screen.
+    lands on. The repaint's escape sequences are asserted exactly, because
+    the row offsets are the whole mechanism: an offset one row off corrupts
+    the screen.
     """
 
     @pytest.mark.asyncio
@@ -351,19 +365,25 @@ class TestLiveBlock:
         await _run_parallel(_make_display(live=True), {"a": 0.01, "b": 0.02, "c": 0.03})
         out = capsys.readouterr().out
 
-        # Every call claims its row before any of them finishes: that is the
-        # property the whole design rests on.
-        assert [l for l in _plain(out).splitlines() if l.startswith("· ")] == [
-            "· a  a…",
-            "· b  b…",
-            "· c  c…",
+        # Every call claims its row before any of them finishes: the three
+        # placeholders appear, in call order, as the region grows to three.
+        # A pending call says "still going" with the spinner's frame, not
+        # an ellipsis — the rows are claimed in the same instant, so the
+        # frame is the first one for all three.
+        assert list(dict.fromkeys(l for l in _plain(out).splitlines() if l.startswith("· "))) == [
+            "· a  a ⠋",
+            "· b  b ⠋",
+            "· c  c ⠋",
         ]
-        # Then each verdict is written into its own row, counting up from the
-        # bottom of the block.
-        assert [(m[0], _plain(m[1])) for m in REWRITE.findall(out)] == [
-            ("3", "✓ a  a"),
-            ("2", "✓ b  b"),
-            ("1", "✓ c  c"),
+        assert UP.search(out).group(1) == "1"          # one row when 'b' joins
+        assert out.count("\x1b[3A") >= 1               # three rows once 'c' has
+        assert "\x1b[M" not in out                     # a batch only grows
+        # Each verdict lands in its own row, in call order — the last state
+        # the screen holds has all three, top to bottom, as claimed.
+        assert [l for l in _plain(out).splitlines() if l.startswith("✓")][-3:] == [
+            "✓ a  a",
+            "✓ b  b",
+            "✓ c  c",
         ]
 
     def test_a_plugin_message_draws_its_summary(self, capsys):
@@ -398,14 +418,89 @@ class TestPainterGolden:
             transcript.apply(event)
             painter.paint(transcript)
 
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m"
+        B = "\x1b[2m·\x1b[0m \x1b[2mread  y ⠋\x1b[0m"
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        VB = "\x1b[92m✓\x1b[0m \x1b[96mread  y\x1b[0m"
         assert capsys.readouterr().out == (
-            # each call claims its row, in call order, while it runs
-            "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m\n"
-            "\x1b[2m·\x1b[0m \x1b[2mread  y…\x1b[0m\n"
-            # each verdict replaces its own row, from the bottom of the region
-            "\x1b[2A\x1b[K\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m\x1b[2B\r"
-            "\x1b[1A\x1b[K\x1b[92m✓\x1b[0m \x1b[96mread  y\x1b[0m\x1b[1B\r"
+            # 'a' claims the region's first row
+            f"{A}\n"
+            # 'b' joins: up to the region top, rewrite, grow by one row
+            f"\x1b[1A\r\x1b[K{A}\n{B}\n"
+            # 'a' lands: the whole region repaints, verdict over its row
+            f"\x1b[2A\r\x1b[K{VA}\n\r\x1b[K{B}\n"
+            # 'b' lands: 'a' is final now, so only 'b's row is rewritten
+            f"\x1b[1A\r\x1b[K{VB}\n"
         )
+
+    def test_a_thinking_row_turns_while_the_turn_is_empty(self, capsys, monkeypatch):
+        """Nothing live on stage: the spinner says the turn is under way — it
+        rides below a landed verdict, and the turn's end deletes its row."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        T0 = "\x1b[2m⠋\x1b[0m \x1b[2mthinking\x1b[0m"
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m"
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        for event in (
+            RunStarted(),
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolCallFinished(call_id="a", name="read"),
+            RunFinished(usage=Usage(1, 1)),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # the turn opens on an empty stage: one spinner row
+            f"{T0}\n"
+            # a call claims the row: the spinner makes room — the verdict
+            # row above is final once it lands, so only its own row rewrites
+            f"\x1b[1A\r\x1b[K{A}\n"
+            # the verdict lands and nothing else is live: the spinner rides
+            # below it, on the row the verdict's growth pushed down
+            f"\x1b[1A\r\x1b[K{VA}\n{T0}\n"
+            # the turn closes: the spinner's row is deleted — up one from
+            # below both rows, then two deletions, leaving the verdict in
+            # place for the rule to land under
+            "\x1b[1A\x1b[M\x1b[M"
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+
+    def test_the_spinner_frame_advances_only_while_it_spins(self, capsys, monkeypatch):
+        """A tick rewrites the thinking row's frame; a closed turn's screen
+        is final, and ticking it changes nothing."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        T0 = "\x1b[2m⠋\x1b[0m \x1b[2mthinking\x1b[0m"
+        T1 = "\x1b[2m⠙\x1b[0m \x1b[2mthinking\x1b[0m"
+        T2 = "\x1b[2m⠹\x1b[0m \x1b[2mthinking\x1b[0m"
+        event = RunStarted()
+        transcript.apply(event)
+        painter.paint(transcript, event)
+        painter.tick()
+        painter.tick()
+
+        assert capsys.readouterr().out == (
+            f"{T0}\n"
+            f"\x1b[1A\r\x1b[K{T1}\n"
+            f"\x1b[1A\r\x1b[K{T2}\n"
+        )
+
+        end = RunFinished(usage=Usage(1, 1))
+        transcript.apply(end)
+        painter.paint(transcript, end)
+        assert capsys.readouterr().out == (
+            "\x1b[1A\x1b[M"  # the spinner's row goes with the turn
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+        painter.tick()
+        assert capsys.readouterr().out == ""  # a closed turn is untouched
 
     def test_a_redirected_painter_appends_the_verdict_only(self, capsys):
         display = _make_display(live=False)
@@ -422,9 +517,210 @@ class TestPainterGolden:
         assert _plain(out) == "✓ read  x\n"     # no placeholder row in a log
         assert "\x1b[" not in _plain(out)
 
+    def test_a_live_stream_rewrites_the_unfinished_line(self, capsys, monkeypatch):
+        """A finished line appends; the line still being written is rewritten."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)  # one write per delta
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        for event in (
+            TextDelta(text="Hel"),
+            TextDelta(text="lo\n"),
+            TextDelta(text="world"),
+            RunFinished(usage=Usage(4, 4)),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # the unfinished line is the region's row, left unterminated so
+            # the next fragment continues it
+            "Hel"
+            # the line finishes: what is new appends — a committed line is
+            # never rewritten — and the row it owned commits with it
+            "lo\n"
+            # the next unfinished line, again the region's row
+            "world"
+            # the turn closes: the line ends, and the rule lands below the
+            # region rather than being lost to it
+            "\n"
+            "\x1b[90m↑4 ↓4 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+
+    def test_a_wrapping_line_counts_visual_rows(self, capsys, monkeypatch):
+        """A partial line that wraps is split — one offset off corrupts the screen."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        monkeypatch.setattr("mocode.cli.painter.terminal_width", lambda: 20)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        for event in (
+            TextDelta(text="0123456789"),
+            TextDelta(text="abcdefghij"),
+            TextDelta(text="klm"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            "0123456789"
+            # the line fills the row: one visual row, rewritten in place
+            "\x1b[1A\r\x1b[K0123456789abcdefghij"
+            # and overflows it: two visual rows, so the rewrite moves up one
+            # and writes the second row below
+            "\x1b[1A\r\x1b[K0123456789abcdefghij\nklm"
+        )
+
+    def test_a_sealed_stream_rides_in_the_region_below_the_next_tool(
+        self, capsys, monkeypatch
+    ):
+        """Reasoning and answer are region members in turn — one each, in order."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        R = "\x1b[90mthink\x1b[0m"
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m"
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        for event in (
+            ReasoningDelta(text="think"),
+            TextDelta(text="ans"),
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolCallFinished(call_id="a", name="read"),
+            RunFinished(usage=Usage(1, 1)),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # reasoning's unfinished line: the region's first row
+            f"{R}"
+            # the answer opens: reasoning's line ends and rides as a final row
+            f"\n"
+            f"ans"
+            # the call starts: the answer's line ends and rides, and the
+            # call's row grows below both
+            f"\n{A}\n"
+            # the verdict lands over the row the call claimed
+            f"\x1b[1A\r\x1b[K{VA}\n"
+            # and the turn closes below the region
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+
+    def test_a_running_call_shows_the_tail_of_what_it_printed(
+        self, capsys, monkeypatch
+    ):
+        """New output replaces the oldest rows of the tail — one repaint, not appends."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m"
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        for event in (
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolOutput(call_id="a", text="building\n"),
+            ToolOutput(call_id="a", text="linking\n"),
+            ToolCallFinished(call_id="a", name="read"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # the call claims its row before it speaks
+            f"{A}\n"
+            # its first output grows the region below that row
+            f"\x1b[1A\r\x1b[K{A}\nbuilding\n"
+            # the next replaces the tail — the rows are rewritten, and the
+            # surplus row is deleted rather than scrolled
+            f"\x1b[2A\r\x1b[K{A}\n\r\x1b[Kbuilding\nlinking\n"
+            # the verdict lands: the tail goes with it, one line as ever
+            f"\x1b[3A\r\x1b[K{VA}\n\x1b[M\x1b[M"
+        )
+
+    def test_verbose_keeps_a_landed_calls_output_tail(self, capsys, monkeypatch):
+        """The verbose view commits the tail with the verdict, not before it."""
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        painter.verbose = True
+        transcript = Transcript()
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        for event in (
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolOutput(call_id="a", text="building\nlinking\n"),
+            ToolCallFinished(call_id="a", name="read"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # the call claims its row before it speaks
+            "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m\n"
+            # its output grows the region below that row
+            "\x1b[1A\r\x1b[K\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m\n"
+            "building\nlinking\n"
+            # the verdict lands with the tail riding below it — the whole
+            # region repaints, nothing is deleted
+            "\x1b[3A\r\x1b[K" + VA + "\n"
+            "\r\x1b[Kbuilding\n\r\x1b[Klinking\n"
+        )
+
+    def test_a_redirected_call_prints_its_verdict_and_nothing_else(self, capsys):
+        """A log gets no placeholder rows and no output tail — just the verdict."""
+        display = _make_display(live=False)
+        painter = Painter(display)
+        transcript = Transcript()
+        for event in (
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolOutput(call_id="a", text="building\n"),
+            ToolOutput(call_id="a", text="linking\n"),
+            ToolCallFinished(call_id="a", name="read"),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        out = _plain(capsys.readouterr().out)
+        assert out == "✓ read  x\n"
+        assert "building" not in out
+
+    def test_a_window_coalesces_deltas_and_other_output_flushes_first(
+        self, capsys, monkeypatch
+    ):
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 3600)  # never closes
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x ⠋\x1b[0m"
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        for event in (
+            TextDelta(text="Hel"),
+            TextDelta(text="lo world"),
+            ToolCallStarted(call_id="a", name="read", args={"path": "x"}),
+            ToolCallFinished(call_id="a", name="read"),
+            RunFinished(usage=Usage(1, 1)),
+        ):
+            transcript.apply(event)
+            painter.paint(transcript, event)
+
+        assert capsys.readouterr().out == (
+            # the first fragment: nothing has been written yet
+            "Hel"
+            # the second is coalesced — until the call starts, which flushes
+            # the stream first: the row is rewritten with both fragments
+            "\x1b[1A\r\x1b[KHello world"
+            # the line ends with the stream, and the call's row grows below
+            f"\n{A}\n"
+            f"\x1b[1A\r\x1b[K{VA}\n"
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+
     @pytest.mark.asyncio
     async def test_output_that_is_not_a_verdict_freezes_the_block(self, capsys):
-        """A row is only rewritable while nothing else has been printed."""
+        """A region is only rewritable while nothing else has been printed."""
 
         async def noisy(args, ctx):
             await ctx.emit(Notice(message="careful", level="warn"))
@@ -447,10 +743,14 @@ class TestPainterGolden:
             renderer.draw(event)
 
         out = capsys.readouterr().out
-        assert "· noisy…" in _plain(out)          # the row it claimed
-        assert "careful" in _plain(out)           # what froze the block
-        assert not REWRITE.search(out)            # so the verdict is appended
-        assert "✓ noisy" in _plain(out)
+        assert re.search(r"· noisy [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]", _plain(out))  # the row it claimed
+        assert "careful" in _plain(out)           # what committed the region
+        after = out[out.index("careful"):]
+        # The region is rebuilt from nothing after the notice, so a repaint
+        # may reach one row up — the newest row, the spinner's — but never
+        # deeper into what the notice committed.
+        assert not re.search(r"\x1b\[[2-9]\d*A", after)
+        assert "✓ noisy" in _plain(out)           # so the verdict is appended
 
     @pytest.mark.asyncio
     async def test_a_redirected_run_prints_no_placeholders(self, capsys):
@@ -464,7 +764,7 @@ class TestPainterGolden:
         }
 
     @pytest.mark.asyncio
-    async def test_a_block_taller_than_the_screen_stops_claiming_rows(
+    async def test_a_region_taller_than_the_screen_stops_admitting_members(
         self, capsys, monkeypatch
     ):
         """Rows above the fold have scrolled away; their offsets mean nothing."""
@@ -473,8 +773,10 @@ class TestPainterGolden:
         await _run_parallel(_make_display(live=True), {"a": 0.01, "b": 0.02, "c": 0.03})
 
         out = capsys.readouterr().out
-        assert len([l for l in _plain(out).splitlines() if l.startswith("· ")]) == 3 - 1
-        assert "✓ c  c" in _plain(out)   # the third call is appended when it ends
+        # Height 3 admits one row (the cap leaves room for the rest line):
+        # 'a' claims it; 'b' and 'c' are refused and their verdicts append.
+        assert len([l for l in _plain(out).splitlines() if l.startswith("· ")]) == 1
+        assert "✓ c  c" in _plain(out)   # the refused calls append when they end
 
 
 class TestTranscript:
