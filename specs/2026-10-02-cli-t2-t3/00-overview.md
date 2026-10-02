@@ -1,8 +1,9 @@
 # Spec 组 · CLI T2/T3 + 内核收尾（2026-10-02）
 
-> 状态：进行中。spec 是定义、不是看板——分支被合并 = 工单完成，git 是唯一进度权威。
+> 状态：进行中（2026-10-02 暂停于 Wave A，待新对话定范围后续作）。spec 是定义、不是看板——分支被合并 = 工单完成，git 是唯一进度权威。
 > worker agent 不改任何 spec、不写状态；完成信号 = 最终报告 + 分支 commit。
 > 上一组：`specs/2026-10-01-kernel-plugin-refactor/`（内核线 + T1 已全部合并，终态 686 passed）。
+> 当前 master：`e45b44d`，全量门禁 704 passed。**新对话入口 = 文末「跨会话交接快照」**。
 
 ## 目标与范围
 
@@ -18,7 +19,7 @@
 ## 权威参考与事实口径
 
 - 设计意图：`ref/` 两份文档（worker 只信组内副本）。
-- **事实基线（2026-10-02 探索核实，master c8b30eb，686 passed）**——各工单开头重述与本工单相关的部分；冲突时以工单与代码为准。要点：流式文本现状"追加即提交"（不在可重写区），`clamp_visible` 只作用于 painter 实时区的工具行；`DrawerRegistry.register(key, fn, *, override=False)` 已实现（T1 超前）；`UI` 仅有 `is_interactive` + `message()`；Session 无任何事件字段；`with_retry_stream(provider, *args, policy=None)` 的 sleep 在 `provider.py:325`（裸 asyncio.sleep，不感知 deadline）；`_iterate` 的预算检查在每次迭代顶（`agent.py:392-416`），注释自认"回退中可能超预算一个间隔"。
+- **事实基线（2026-10-02 探索核实，时点 master c8b30eb，686 passed；当前 master e45b44d，704 passed——增量 = 02/03 合并 + 导出欠账）**——各工单开头重述与本工单相关的部分；冲突时以工单与代码为准。要点：流式文本现状"追加即提交"（不在可重写区），`clamp_visible` 只作用于 painter 实时区的工具行；`DrawerRegistry.register(key, fn, *, override=False)` 已实现（T1 超前）；`UI` 仅有 `is_interactive` + `message()`；Session 无任何事件字段；`with_retry_stream(provider, *args, policy=None)` 的 sleep 在 `provider.py:325`（裸 asyncio.sleep，不感知 deadline）；`_iterate` 的预算检查在每次迭代顶（`agent.py:392-416`），注释自认"回退中可能超预算一个间隔"。（后两条已被 03 号工单改变，见其状态行。）
 
 ## 波次表
 
@@ -37,7 +38,7 @@
 ## 全局不变量（每份工单引用，违反即打回）
 
 1. `AGENTS.md` 硬不变量全部有效（core 零特性名、唯一执行路径、观察走事件流、`import mocode` <1ms、分层 `core←host←cli` 不破）。
-2. 回归红线：`uv run pytest -q` 全绿。**基线 686 passed**（2026-10-02 实测 30.86s）。只增不减（T2 允许改写 T1 golden 的**期望字节**——那是视觉变化的一部分，断言结构不得弱化）。
+2. 回归红线：`uv run pytest -q` 全绿。**基线 704 passed**（master `e45b44d` 实测 44.56s，exit 0）。只增不减（T2 允许改写 T1 golden 的**期望字节**——那是视觉变化的一部分，断言结构不得弱化）。
 3. 无 TTY 承诺不变：所有新特性在非 TTY 下降级（§5.7 契约），管道模式输出仍为纯追加。
 4. 事件流契约不变：`run_id + seq`、每 turn 恰一个终止事件、`to_dict()` 往返。
 5. "能写成插件的概念不进 core/host"：keys/status/header/ui 全是 cli 层领土；本轮 core 改动仅 03 号工单（deadline）与既有事件的零扩展。
@@ -76,7 +77,7 @@ spec 中文；代码/注释/仓库文档/commit 英文（仓库惯例：小写�
 
 | 工单 | 分支 | 状态 |
 |---|---|---|
-| 01-t2-render | spec/t2-render | 🔶 进行中：T1 已提交 `37a7d7c`（区域管理器落地，689 passed）；**T2-T5 待续**（见 01 号头部快照） |
+| 01-t2-render | spec/t2-render | 🔶 进行中：T1-T3 已提交（`ba2bb1c`/`d68ef1a`/`3a554ee`），**提交态门禁实测 714 passed**（47.12s，exit 0）；T4 半成品未提交（工作区 WIP，带 WIP 门禁红：7 failed golden）；T5 未动；**分支未合并** |
 | 02-bash-promote | spec/bash-promote | ✅ 2026-10-02 @ merge（promote() API + 12 测试，合并后 698 passed） |
 | 03-k8-deadline | spec/k8-deadline | ✅ 2026-10-02 @ merge（deadline 进编排器 + RetryDeadlineExceeded，合并后 704 passed） |
 | 04-t3-input-status | spec/t3-input-status | ⬜ |
@@ -84,20 +85,39 @@ spec 中文；代码/注释/仓库文档/commit 英文（仓库惯例：小写�
 | 06-session-replay | spec/session-replay | ⬜ |
 | 07-t3-ui | spec/t3-ui | ⬜ |
 
-## 跨会话交接快照（2026-10-02，Wave A 中断点）
+## 跨会话交接快照（2026-10-02，Wave A 中断点 · 新对话入口）
 
-- **master**：Wave A 之二已合并（bash-promote、k8-deadline），全量门禁 **704 passed**。分支出处与合并序完整保留在 git log。
-- **01 号工单（T2 渲染泛化）做到一半**：T1（区域管理器重构）已在分支 `spec/t2-render` 提交 `37a7d7c`，基于 e2da75b；**worktree 保留在 `C:\Users\shifu\.worktrees\mocode\spec-t2-render`**，续作直接在该 worktree 继续（无需重建）。
-- **T1 已定型的实现契约**（T2-T5 续作必须遵守，均在 painter.py 落地）：
-  1. 统一重画算法：`CUU 上移 h_old → 逐行 \r\x1b[K+行+\n → 增行直接追加 → 缩行 \x1b[M 删除`；行按可视宽度预算（每行恰好一个可视行，进区域前 wrap/fit 完成）。
-  2. 冻结前缀：`_frozen` 只增（`max(top, min(live_start, len(rows)))`），final 行（已落 verdict、已完结流式行）只被"原样重写"，长 turn 重画只碰 live 后缀。
-  3. 同帧跳过：`rows == self._span` 时不写屏。
-  4. 成员资格看 `_admitted`（区域账本），落定 verdict 同时登记 `_printed`（追加账本）防双印；`_refused` 的成员 verdict 走追加。
-  5. 非工具块出现在 tail → `_commit_span()` + 追加路径（T1 阶段流式仍走 display.stream 追加——**T2 的任务就是把它搬进区域**）。
-  6. 非TTY路径（`_paint_appended`）与旧实现字节级一致，redirected 测试原样通过——这是回归红线。
-  7. cap = `terminal_height() - 2`；超限拒绝新成员（verdict 追加）。
-  8. `Painter(display, animate=False)`；spinner 骨架（`tick()`/`_ensure_ticker`/`SPINNER_FRAMES`）已就位但未接线——T4 填 `_running_text` 的帧后缀与 thinking 行。
-- **T2-T5 剩余**：T2 流式块进区域（partial 行成员 + 完结行冻结）、T3 工具输出尾部（TOOL_TAIL_ROWS=6 常量已备）+ 收拢 + `painter.verbose`、T4 spinner 接线、T5 `docs/ARCHITECTURE.md` 终端章节改写。
-- **收尾欠账**（k8-deadline agent 按禁触留下的）：`RetryDeadlineExceeded` 的 `mocode/core/__init__.py`/SDK 导出 + ARCHITECTURE 一句话——并入 Wave B 任一工单或 lead 收尾。
-- **下一步**：01 号 T2-T5 完成 → 门禁合并 → Wave B 三并行（04/05/06，worktree 从最新 master 建）→ Wave C（07）→ 终验收尾。
-- 环境：PATH 需 `export PATH="/c/Users/shifu/.local/bin:$PATH"` 后才有 uv。
+**新对话从这里开始**：本快照 + `git log` 即全部进度。分支合并与否是唯一状态；本快照与 git 冲突时以 git 为准。
+
+### master（`e45b44d`，全量门禁 704 passed / 44.56s / exit 0）
+- Wave A 之二已合并：02-bash-promote（`promote()` API + 12 测试，合并后 698）、03-k8-deadline（deadline 进编排器 + `RetryDeadlineExceeded`，合并后 704）。分支出处与合并序完整保留在 git log。
+- **k8-deadline 收尾欠账已清零**（lead 直接提交于 master，`e45b44d`）：`RetryDeadlineExceeded` 补入 `mocode/core/__init__.py` 与 SDK `mocode/plugins/__init__.py` 导出，`docs/ARCHITECTURE.md` 退避段按实现改写（原文"budget 不在退避中检查"已被 03 推翻）。
+- 已合并分支原地保留未推送；工作区唯一未跟踪文件 `.zcodeignore` 是 ZCode 宿主的忽略清单，与本组无关。
+
+### 01 号工单（T2 渲染泛化）——分支 `spec/t2-render` @ `3a554ee`，**未合并**
+- worktree 保留在 `C:\Users\shifu\.worktrees\mocode\spec-t2-render`（已 rebase 到 master `e45b44d`；续作直接在该 worktree 继续，无需重建）。
+- 已提交：T1 `ba2bb1c`（区域管理器）、T2 `d68ef1a`（流式未完成行进区域、完结行追加即提交）、T3 `3a554ee`（工具输出尾部 + 收拢 + `painter.verbose`）。
+- **提交态门禁实测：714 passed / 47.12s / exit 0**（704 + T1-T3 新增 10 测试）。
+- **T4 半成品、未提交**：worktree 工作区有未提交改动（`lines.py` 的 `thinking()` 词汇 + `painter.py` 的 thinking 行与 `_spinning` 标志）——取消前 agent 的续作点，**不要丢弃、不要手改**。带着这份 WIP 跑门禁是**红的：7 failed**（`tests/test_display.py::TestPainterGolden`——thinking 行改变期望字节而 golden 未更新）。T4 完成 = 接线 spinner（thinking 行 + `_running_text` 帧后缀 + 时间驱动）+ 更新 golden + 门禁回绿。
+- `.smoke/`（未跟踪）：取消前 agent 的冒烟 driving 脚本（`t1_baseline` / `t2_*` / `t3_*` / `t4_spinner` / `capture_nontty*` 等，含非 TTY 字节捕获），可作续作调试参考，也可整体删除——不影响任何提交。
+- T5（`docs/ARCHITECTURE.md` 终端章节改写）未动。
+
+### T1 已定型的实现契约（T4/T5 续作必须遵守，均在 painter.py 落地）
+1. 统一重画算法：`CUU 上移 h_old → 逐行 \r\x1b[K+行+\n → 增行直接追加 → 缩行 \x1b[M 删除`；行按可视宽度预算（每行恰好一个可视行，进区域前 wrap/fit 完成）。
+2. 冻结前缀：`_frozen` 只增（`max(top, min(live_start, len(rows)))`），final 行（已落 verdict、已完结流式行）只被"原样重写"，长 turn 重画只碰 live 后缀。
+3. 同帧跳过：`rows == self._span` 时不写屏。
+4. 成员资格看 `_admitted`（区域账本），落定 verdict 同时登记 `_printed`（追加账本）防双印；`_refused` 的成员 verdict 走追加。
+5. 非工具块出现在 tail → `_commit_span()` + 追加路径。
+6. 非TTY路径（`_paint_appended`）与旧实现字节级一致，redirected 测试原样通过——这是回归红线。
+7. cap = `terminal_height() - 2`；超限拒绝新成员（verdict 追加）。
+8. `Painter(display, animate=False)`；spinner 骨架（`tick()`/`_ensure_ticker`/`SPINNER_FRAMES`）已就位；T4 的 WIP（未提交）已在 thinking 行/`_spinning` 上动工，`_running_text` 的帧后缀尚未接。
+
+### 待决事项（新对话先拍板再派工）
+- 用户意图：TUI 后续准备**重新设计**。lead 评估（2026-10-02）：01-T2-T5 / 04 / 05 / 07 的形态全部绑定当前 prompt_toolkit 实时区方案（区域重画、bottom_toolbar 状态栏、打印式 header、raw 键位循环），重设计后形状大概率重做；**06（PluginMessage 持久化 + resume 回放）是 host 层契约，与 TUI 形状无关**，重设计后依然要，且是上一轮明确指示翻案的项。
+- 新对话第一件事：定范围——(a) 原计划走完 01-T4/T5 → 门禁合并 → Wave B → Wave C；(b) 冻结 01-T2-T5/04/05/07，只做 06；(c) 其他切分。定完再建分支派工；未定之前不派任何 agent。
+- 若选 (b)：01 分支与 worktree 原地保留（不合并、不删除、不清理 WIP），本组 spec 留作重设计的设计记录。
+
+### 下一步（按待决事项结论分叉）
+- 续 01：在保留 worktree 接续 T4 WIP → 更新 golden → 门禁回绿 → T5 文档 → `git diff master --stat` 自查 → 合并（合并前后各跑全量门禁）。
+- Wave B/C：按定稿的范围从**合并时刻的最新 master** 建 worktree（`~/.worktrees/mocode/<分支>`），波次表与禁触清单以各工单为准。
+- 环境：PATH 需 `export PATH="/c/Users/shifu/.local/bin:$PATH"` 后才有 uv；Windows 10 + Git Bash；Python 3.13.16 via uv 0.12.21。
