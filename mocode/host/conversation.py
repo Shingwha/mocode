@@ -256,7 +256,14 @@ class Conversation:
         # baselines they diff against become that session's, before anything
         # is announced.
         self.ctx.plugin_states = dict(session.plugin_state)
+        # Plugin-authored messages travel the same way: the session's record
+        # becomes this conversation's capture, so the next save writes back
+        # exactly what was stored plus whatever is new.
+        stored = [m for m in session.plugin_messages if isinstance(m, dict)]
+        self._plugin_messages.clear()
+        self._plugin_messages.extend(stored)
         await self.changed()
+        await self._replay_plugin_messages(stored)
 
     def rebuild_prompt(self) -> None:
         """Re-render and re-freeze the system prompt — the explicit escape hatch.
@@ -342,6 +349,35 @@ class Conversation:
         if self._replaying or not isinstance(event, PluginMessage):
             return
         self._plugin_messages.append(event.to_dict())
+
+    async def _replay_plugin_messages(self, stored: list[dict[str, Any]]) -> None:
+        """Republish the session's plugin-authored messages, in order.
+
+        Runs after :meth:`changed` because that event's readers clear and
+        repour the document first — a replay into a not-yet-cleared
+        transcript would be wiped. The channel re-stamps ``seq``, as it does
+        for every publish; ``run_id`` keeps the stored value, and no consumer
+        depends on it. The capture is switched off for the replay, so the
+        republished messages are not re-ingested and a later save does not
+        double them. Outside a resume nothing republishes: ``adopt`` only
+        replaces the history.
+        """
+        if not stored:
+            return
+        self._replaying = True
+        try:
+            for raw in stored:
+                await self.agent.channel.publish(
+                    PluginMessage(
+                        run_id=raw.get("run_id", ""),
+                        kind=raw.get("kind", ""),
+                        data=raw.get("data", {}),
+                        block_id=raw.get("block_id", ""),
+                        sealed=bool(raw.get("sealed", False)),
+                    )
+                )
+        finally:
+            self._replaying = False
 
     def _as_session(self, *, updated_at: str, title: str) -> Session:
         """The same fields both ``save()`` and ``session()`` report."""
