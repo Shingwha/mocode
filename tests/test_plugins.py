@@ -120,7 +120,7 @@ def _write_plugin(
 
 
 def _ctx(tmp_path: Path, **config_kwargs) -> BuildContext:
-    config = Config(active_provider="p", active_model="m", **config_kwargs)
+    config = Config(provider="p", model="m", **config_kwargs)
     return BuildContext(home=tmp_path / "home", cwd=tmp_path, config=config)
 
 
