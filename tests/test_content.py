@@ -15,7 +15,15 @@ import pytest
 
 from mocode.cli import lines as L
 from mocode.cli.markdown import FenceTracker, render_settled, style_code_line
-from mocode.cli.plugin import CLIContext, DrawerRegistry, load_cli_plugins
+from mocode.cli.plugin import (
+    CLIContext,
+    DrawerRegistry,
+    HeaderRegistry,
+    InputMiddleware,
+    KeyRegistry,
+    StatusRegistry,
+    load_cli_plugins,
+)
 from mocode.cli.theme import Theme
 from mocode.cli.transcript import Transcript
 from mocode.core.events import PluginMessage, TextDelta, ToolCallStarted
@@ -148,7 +156,12 @@ class TestMessageDrawersExample:
         assert [p.name for p in cli] == ["message-drawers.cli"]
 
         drawers = DrawerRegistry()
-        ctx = CLIContext(commands=CommandRegistry(), drawers=drawers, ui=MagicMock())
+        ctx = CLIContext(
+            commands=CommandRegistry(), drawers=drawers, ui=MagicMock(),
+            keys=KeyRegistry(), input=InputMiddleware(),
+            status=StatusRegistry(), header=HeaderRegistry(),
+            theme=None, conversation=MagicMock(),
+        )
         cli[0].build(ctx)
 
         event = PluginMessage(
@@ -185,7 +198,10 @@ class TestMessageDrawersExample:
 
         drawers = DrawerRegistry()
         cli_ctx = CLIContext(
-            commands=CommandRegistry(), drawers=drawers, ui=MagicMock()
+            commands=CommandRegistry(), drawers=drawers, ui=MagicMock(),
+            keys=KeyRegistry(), input=InputMiddleware(),
+            status=StatusRegistry(), header=HeaderRegistry(),
+            theme=None, conversation=MagicMock(),
         )
         load_cli_plugins([self.PLUGIN])[0].build(cli_ctx)
 
