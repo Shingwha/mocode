@@ -5,6 +5,10 @@ lives here: :class:`MockProvider` replays canned responses as chunk streams,
 :say: / :call_tool: build the responses a script is made of, and
 :collect: / :terminal: / :events_of_type: read back what the run emitted.
 
+A script may also rehearse failure: put an exception in the ``responses`` list
+and it is raised when popped, with ``retriable=`` deciding what the kernel
+should retry; ``provider.last_request`` reads back the call that raised.
+
 A test script states what the "model" does, the way ``tests/test_plugins.py``
 in the repository does it::
 

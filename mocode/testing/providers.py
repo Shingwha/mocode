@@ -2,13 +2,16 @@
 
 ``MockProvider`` replays canned :class:`Response` objects as chunk streams.
 It deliberately splits tool-call arguments across chunks, exactly as a real
-API does, so the accumulator path gets exercised instead of bypassed.
+API does, so the accumulator path gets exercised instead of bypassed. A
+scripted entry may also be an exception: it is raised when popped, so a test
+can rehearse failures (rate limits, expired keys) the way a real backend
+would produce them, and ``retriable`` decides which the kernel should retry.
 """
 
 from __future__ import annotations
 
 import json
-from typing import AsyncIterator, Iterable
+from typing import AsyncIterator, Callable, Iterable
 
 from mocode.core.provider import Chunk, Response, ToolCallDelta, Usage
 
@@ -55,7 +58,16 @@ class MockProvider:
     """Streams canned responses in order and records every request.
 
     The last response repeats forever, so a test that does not care how many
-    iterations a run takes does not have to enumerate them.
+    iterations a run takes does not have to enumerate them. An entry of the
+    script may be an exception instead of a :class:`Response` — it is raised
+    when popped, after the call has been recorded, exactly where a real
+    provider would fail (the retry window only covers failures before the
+    first chunk, so a scripted failure can only arrive there too).
+
+    ``retriable`` answers :meth:`is_retriable` — what the kernel should retry
+    (default: nothing). ``on_attempt`` runs at the top of every stream call,
+    before the scripted outcome is popped: the hook a test needs when an
+    attempt itself consumes something (a fake clock, a counter).
     """
 
     def __init__(
@@ -64,18 +76,29 @@ class MockProvider:
         *,
         chunk_size: int = 0,
         model: str = "mock",
+        retriable: Callable[[Exception], bool] | None = None,
+        on_attempt: Callable[[], None] | None = None,
     ):
         self.responses = list(responses or [Response(content="done", usage=Usage(1, 1))])
         self.calls: list[dict] = []
         self.chunk_size = chunk_size
         self._model = model
+        self._retriable: Callable[[Exception], bool] = retriable or (
+            lambda exc: False
+        )
+        self._on_attempt = on_attempt
 
     @property
     def model(self) -> str:
         return self._model
 
+    @property
+    def last_request(self) -> dict | None:
+        """The most recent recorded call, or ``None`` before the first one."""
+        return self.calls[-1] if self.calls else None
+
     def is_retriable(self, exc: Exception) -> bool:
-        return False
+        return self._retriable(exc)
 
     async def stream(
         self,
@@ -94,9 +117,13 @@ class MockProvider:
                 "effort": effort,
             }
         )
+        if self._on_attempt is not None:
+            self._on_attempt()
         response = (
             self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
         )
+        if isinstance(response, BaseException):
+            raise response
         for chunk in response_to_chunks(response, self.chunk_size):
             yield chunk
 
@@ -113,9 +140,9 @@ def tool_call_response(name: str, args: str = "{}", call_id: str = "c1") -> Resp
     )
 
 
-def say(text: str) -> Response:
+def say(text: str, *, finish_reason: str = "stop") -> Response:
     """A response that answers with plain text — how a turn normally ends."""
-    return Response(content=text, usage=Usage(1, 1))
+    return Response(content=text, usage=Usage(1, 1), finish_reason=finish_reason)
 
 
 def call_tool(name: str, args: dict, *, call_id: str = "c1") -> Response:
