@@ -34,7 +34,7 @@ class CLIRenderer:
         self._d = display
         self._conversation = conversation
         self._transcript = Transcript(conversation.tools, drawers=drawers)
-        self._painter = Painter(display)
+        self._painter = Painter(display, animate=display.live)
 
     def draw(self, event: "Event") -> None:
         if isinstance(event, ConversationChanged):
@@ -48,4 +48,4 @@ class CLIRenderer:
             self._painter.redraw_all(self._transcript)
             return
         self._transcript.apply(event)
-        self._painter.paint(self._transcript)
+        self._painter.paint(self._transcript, event)

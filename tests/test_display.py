@@ -15,7 +15,7 @@ import re
 
 from mocode.cli import lines
 from mocode.cli.display import Display
-from mocode.cli.painter import Painter, clamp_visible
+from mocode.cli.painter import Painter, fit_row, wrap_rows
 from mocode.cli.render import CLIRenderer
 from mocode.cli.theme import Theme
 from mocode.cli.transcript import Transcript
@@ -88,23 +88,33 @@ class TestFormatting:
         assert _plain(_make_display().format(lines.Line(text="x", style="nope"))) == "x"
 
 
-class TestClamping:
-    """A block row has to be exactly one terminal row, or its offsets lie."""
+class TestRowFitting:
+    """A region row has to be exactly one terminal row, or its offsets lie."""
 
     def test_text_that_fits_is_left_alone(self):
-        assert clamp_visible("read  a.py", 40) == "read  a.py"
+        assert fit_row("read  a.py", 40) == "read  a.py"
 
     def test_an_overlong_line_ends_in_an_ellipsis(self):
-        assert _plain(clamp_visible("x" * 100, 10)) == "x" * 9 + "…"
+        assert _plain(fit_row("x" * 100, 10)) == "x" * 9 + "…"
 
     def test_styling_survives_and_is_closed(self):
-        got = clamp_visible("\033[2m" + "x" * 100 + "\033[0m", 10)
+        got = fit_row("\033[2m" + "x" * 100 + "\033[0m", 10)
         assert got.startswith("\033[2m")
         assert got.endswith("\033[0m")
         assert _plain(got) == "x" * 9 + "…"
 
     def test_wide_characters_are_measured_not_counted(self):
-        assert _plain(clamp_visible("中文测试宽度", 8)) == "中文测…"
+        assert _plain(fit_row("中文测试宽度", 8)) == "中文测…"
+
+    def test_wrap_rows_splits_at_the_width_without_losing_text(self):
+        rows = wrap_rows("abcdefghij", 4)
+        assert rows == ["abcd", "efgh", "ij"]
+
+    def test_wrap_rows_measures_wide_characters(self):
+        assert wrap_rows("中文中文中", 4) == ["中文", "中文", "中"]
+
+    def test_wrap_rows_keeps_an_empty_line(self):
+        assert wrap_rows("", 4) == [""]
 
 
 class TestStreaming:
@@ -332,17 +342,19 @@ async def _run_parallel(display: Display, delays: dict[str, float]):
         renderer.draw(event)
 
 
-#: One in-place rewrite: move up n rows, clear the row, write the line, come
-#: back down the same n — the backreference is half the assertion.
-REWRITE = re.compile(r"\x1b\[(\d+)A\x1b\[K(.*?)\x1b\[\1B\r")
+#: One region repaint opens by moving up to the top of its rewritable rows.
+UP = re.compile(r"\x1b\[(\d+)A")
+#: A row rewrite: clear the line, write the row, step to the next one.
+ROW = re.compile(r"\r\x1b\[K([^\n]*)\n")
 
 
 class TestLiveBlock:
     """A batch keeps one row per call — in call order, rewritten in place.
 
     On a terminal the row a call claims while it runs is the row its verdict
-    lands on. These assert the escape sequence exactly, because the row offsets
-    are the whole mechanism: an offset one row off corrupts the screen.
+    lands on. The repaint's escape sequences are asserted exactly, because
+    the row offsets are the whole mechanism: an offset one row off corrupts
+    the screen.
     """
 
     @pytest.mark.asyncio
@@ -351,19 +363,22 @@ class TestLiveBlock:
         await _run_parallel(_make_display(live=True), {"a": 0.01, "b": 0.02, "c": 0.03})
         out = capsys.readouterr().out
 
-        # Every call claims its row before any of them finishes: that is the
-        # property the whole design rests on.
-        assert [l for l in _plain(out).splitlines() if l.startswith("· ")] == [
+        # Every call claims its row before any of them finishes: the three
+        # placeholders appear, in call order, as the region grows to three.
+        assert list(dict.fromkeys(l for l in _plain(out).splitlines() if l.startswith("· "))) == [
             "· a  a…",
             "· b  b…",
             "· c  c…",
         ]
-        # Then each verdict is written into its own row, counting up from the
-        # bottom of the block.
-        assert [(m[0], _plain(m[1])) for m in REWRITE.findall(out)] == [
-            ("3", "✓ a  a"),
-            ("2", "✓ b  b"),
-            ("1", "✓ c  c"),
+        assert UP.search(out).group(1) == "1"          # one row when 'b' joins
+        assert out.count("\x1b[3A") >= 1               # three rows once 'c' has
+        assert "\x1b[M" not in out                     # a batch only grows
+        # Each verdict lands in its own row, in call order — the last state
+        # the screen holds has all three, top to bottom, as claimed.
+        assert [l for l in _plain(out).splitlines() if l.startswith("✓")][-3:] == [
+            "✓ a  a",
+            "✓ b  b",
+            "✓ c  c",
         ]
 
     def test_a_plugin_message_draws_its_summary(self, capsys):
@@ -398,13 +413,19 @@ class TestPainterGolden:
             transcript.apply(event)
             painter.paint(transcript)
 
+        A = "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m"
+        B = "\x1b[2m·\x1b[0m \x1b[2mread  y…\x1b[0m"
+        VA = "\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m"
+        VB = "\x1b[92m✓\x1b[0m \x1b[96mread  y\x1b[0m"
         assert capsys.readouterr().out == (
-            # each call claims its row, in call order, while it runs
-            "\x1b[2m·\x1b[0m \x1b[2mread  x…\x1b[0m\n"
-            "\x1b[2m·\x1b[0m \x1b[2mread  y…\x1b[0m\n"
-            # each verdict replaces its own row, from the bottom of the region
-            "\x1b[2A\x1b[K\x1b[92m✓\x1b[0m \x1b[96mread  x\x1b[0m\x1b[2B\r"
-            "\x1b[1A\x1b[K\x1b[92m✓\x1b[0m \x1b[96mread  y\x1b[0m\x1b[1B\r"
+            # 'a' claims the region's first row
+            f"{A}\n"
+            # 'b' joins: up to the region top, rewrite, grow by one row
+            f"\x1b[1A\r\x1b[K{A}\n{B}\n"
+            # 'a' lands: the whole region repaints, verdict over its row
+            f"\x1b[2A\r\x1b[K{VA}\n\r\x1b[K{B}\n"
+            # 'b' lands: 'a' is final now, so only 'b's row is rewritten
+            f"\x1b[1A\r\x1b[K{VB}\n"
         )
 
     def test_a_redirected_painter_appends_the_verdict_only(self, capsys):
@@ -424,7 +445,7 @@ class TestPainterGolden:
 
     @pytest.mark.asyncio
     async def test_output_that_is_not_a_verdict_freezes_the_block(self, capsys):
-        """A row is only rewritable while nothing else has been printed."""
+        """A region is only rewritable while nothing else has been printed."""
 
         async def noisy(args, ctx):
             await ctx.emit(Notice(message="careful", level="warn"))
@@ -448,9 +469,10 @@ class TestPainterGolden:
 
         out = capsys.readouterr().out
         assert "· noisy…" in _plain(out)          # the row it claimed
-        assert "careful" in _plain(out)           # what froze the block
-        assert not REWRITE.search(out)            # so the verdict is appended
-        assert "✓ noisy" in _plain(out)
+        assert "careful" in _plain(out)           # what committed the region
+        after = out[out.index("careful"):]
+        assert not UP.search(after)               # nothing is rewritten past it
+        assert "✓ noisy" in _plain(out)           # so the verdict is appended
 
     @pytest.mark.asyncio
     async def test_a_redirected_run_prints_no_placeholders(self, capsys):
@@ -464,7 +486,7 @@ class TestPainterGolden:
         }
 
     @pytest.mark.asyncio
-    async def test_a_block_taller_than_the_screen_stops_claiming_rows(
+    async def test_a_region_taller_than_the_screen_stops_admitting_members(
         self, capsys, monkeypatch
     ):
         """Rows above the fold have scrolled away; their offsets mean nothing."""
@@ -473,8 +495,10 @@ class TestPainterGolden:
         await _run_parallel(_make_display(live=True), {"a": 0.01, "b": 0.02, "c": 0.03})
 
         out = capsys.readouterr().out
-        assert len([l for l in _plain(out).splitlines() if l.startswith("· ")]) == 3 - 1
-        assert "✓ c  c" in _plain(out)   # the third call is appended when it ends
+        # Height 3 admits one row (the cap leaves room for the rest line):
+        # 'a' claims it; 'b' and 'c' are refused and their verdicts append.
+        assert len([l for l in _plain(out).splitlines() if l.startswith("· ")]) == 1
+        assert "✓ c  c" in _plain(out)   # the refused calls append when they end
 
 
 class TestTranscript:
