@@ -61,9 +61,9 @@ class TestSessionStore:
     def store(self, tmp_path):
         return SessionStore(base_dir=tmp_path / "sessions")
 
-    def test_save_and_load(self, store):
+    def test_save_and_find(self, store):
         store.save("/project", _session())
-        loaded = store.load("/project", "session_abc")
+        loaded = store.find("session_abc")
         assert loaded is not None
         assert loaded.id == "session_abc"
 
@@ -81,7 +81,7 @@ class TestSessionStore:
     def test_delete(self, store):
         store.save("/p", _session("session_s1"))
         assert store.delete("/p", "session_s1") is True
-        assert store.load("/p", "session_s1") is None
+        assert store.find("session_s1") is None
 
     def test_listing_nothing_is_empty(self, store):
         assert store.list("/nope") == []

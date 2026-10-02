@@ -114,12 +114,12 @@ class TestRunState:
             ev.RunStarted(),
             ev.ToolCallStarted(call_id="c1", name="bash", args={"command": "ls"}),
         )
-        assert [c.name for c in state.running_tool_calls] == ["bash"]
+        assert [c.name for c in state.tool_calls.values() if not c.done] == ["bash"]
 
         state.apply(ev.ToolCallFinished(call_id="c1", name="bash", status="ok", result="a\nb"))
         call = state.tool_calls["c1"]
         assert call.done and call.status == "ok" and call.result == "a\nb"
-        assert state.running_tool_calls == []
+        assert [c for c in state.tool_calls.values() if not c.done] == []
 
     def test_tool_output_accumulates_per_call(self):
         state = self._state(
@@ -131,7 +131,7 @@ class TestRunState:
         )
         assert state.tool_calls["c1"].output_text == "one\ntwo\n"
 
-    def test_failed_tool_calls_are_queryable(self):
+    def test_tool_calls_fold_their_terminal_status(self):
         state = self._state(
             ev.RunStarted(),
             ev.ToolCallStarted(call_id="c1", name="a"),
@@ -139,7 +139,8 @@ class TestRunState:
             ev.ToolCallStarted(call_id="c2", name="b"),
             ev.ToolCallFinished(call_id="c2", name="b", status="ok"),
         )
-        assert [c.name for c in state.failed_tool_calls] == ["a"]
+        assert state.tool_calls["c1"].status == "timeout"
+        assert state.tool_calls["c2"].status == "ok"
         assert state.tool_calls_made == 2
 
     def test_unknown_events_are_ignored(self):

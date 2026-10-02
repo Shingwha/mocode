@@ -313,7 +313,7 @@ class TestSessions:
         assert session.workdir == str(project)
         assert session.provider == "test"
         assert session.title == "hello"
-        assert mc.store.load(str(project), conversation.id).messages == conversation.messages
+        assert mc.store.find(conversation.id).messages == conversation.messages
 
     def test_nothing_said_means_nothing_written(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
@@ -564,7 +564,7 @@ class TestLifecycle:
 
         conversation.close()
 
-        assert mc.store.load(str(project), conversation.id) is not None
+        assert mc.store.find(conversation.id) is not None
         assert conversation.subscribe().take() is None
 
     def test_close_can_skip_saving(self, mc: MoCode, tmp_path: Path):

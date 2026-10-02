@@ -558,8 +558,8 @@ class TestEmitAttribution:
         reader = agent.channel.subscribe()
         await host_ctx.emit(Notice(message="idle words"))
         seen = []
-        while reader.pending():
-            seen.append(await reader.get())
+        while (event := reader.take()) is not None:
+            seen.append(event)
         assert [e.run_id for e in seen] == [""]
 
         # …and a later turn's view does not reach back for it.
@@ -604,16 +604,26 @@ class TestSpawn:
 
         assert child.channel is not host.agent.channel
 
-    def test_hooks_are_not_inherited(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_hooks_are_not_inherited(self, tmp_path):
+        seen: list[Event] = []
+
         class Marker(AgentHook):
-            pass
+            async def on_event(self, event):
+                seen.append(event)
 
         host = self._host(tmp_path)
         host.agent.hooks.add(Marker())
+        host.agent.provider.responses = [_plain_answer("child ran")]
 
-        child = host.spawn(system_prompt="clean")
+        # visible=False: the child runs on a private stream, so the only way
+        # the parent's Marker could fire is through the child's own hook
+        # dispatch — which must not happen.
+        child = host.spawn(system_prompt="clean", visible=False)
+        await child.start("hi").wait()
 
-        assert not any(isinstance(h, Marker) for h in child.hooks.all())
+        assert child.state.answer == "child ran"
+        assert seen == []
 
     def test_a_narrower_tool_set_and_a_model(self, tmp_path):
         host = self._host(tmp_path, _echo_tool())

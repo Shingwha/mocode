@@ -159,9 +159,9 @@ class TestPrompt:
     def test_a_render_field_produces_the_text(self):
         section = Section("sdk", render=lambda ctx: f"tools known: {ctx.get('n', 0)}")
 
-        result = Prompt().context(n=3).register(section).build()
+        result = Prompt().register(section).build()
 
-        assert "tools known: 3" in result
+        assert "tools known: 0" in result
 
     def test_render_beats_a_callable_content(self):
         section = Section(
@@ -377,17 +377,6 @@ class TestSchemaDeclaration:
     def test_summary_key_falls_back_to_the_first_property(self):
         schema = {"type": "object", "properties": {"z": {"type": "string"}}}
         assert _tool_with(schema).summary_key == "z"
-
-    def test_returns_travels_as_metadata_only(self):
-        tool = Tool(
-            "t",
-            "T",
-            {"type": "object", "properties": {}},
-            lambda a: "ok",
-            returns={"type": "object", "properties": {"rows": {"type": "integer"}}},
-        )
-        assert tool.returns is not None and "rows" in tool.returns["properties"]
-        assert "returns" not in str(tool.to_schema())
 
 
 class TestSchemaChecker:
