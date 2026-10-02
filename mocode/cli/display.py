@@ -68,7 +68,7 @@ class Display:
         theme: Theme | None = None,
         live: bool | None = None,
     ):
-        self._t = theme or DEFAULT_THEME
+        self.theme = theme or DEFAULT_THEME
         self._input = input_
         self._stream_kind: str | None = None
         self._stream_line_start = True
@@ -128,7 +128,7 @@ class Display:
 
     def format(self, line: L.Line) -> str:
         """A :class:`Line` as the string to print. Pure, so it can be asserted on."""
-        t = self._t
+        t = self.theme
         parts = []
         if line.icon:
             parts.append(self._colored(line.icon, line.icon_style or line.style))
@@ -147,8 +147,8 @@ class Display:
         return head + (" · " if line.text else " ") + note
 
     def _colored(self, text: str, style: str) -> str:
-        code = getattr(self._t, style, "")
-        return f"{code}{text}{self._t.reset}" if code else text
+        code = getattr(self.theme, style, "")
+        return f"{code}{text}{self.theme.reset}" if code else text
 
     # ── Streamed text ──────────────────────────────────────
 

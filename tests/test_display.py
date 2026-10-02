@@ -779,6 +779,143 @@ class TestPainterGolden:
         assert "✓ c  c" in _plain(out)   # the refused calls append when they end
 
 
+class TestMarkdownStream:
+    """Fence colouring while a block streams, and the sealed block's lines.
+
+    The judgment belongs to the moment a line completes: the row that opens
+    a fence passes plain, the rows inside it dim, and its closing row reads
+    as the frame's end. A pipe never sees any of it (the appended path is
+    byte-identical to what it always was).
+    """
+
+    @staticmethod
+    def _paint(transcript, painter, capsys, monkeypatch, events):
+        monkeypatch.setattr("mocode.cli.painter.THROTTLE", 0)  # one write per delta
+        for event in events:
+            transcript.apply(event)
+            painter.paint(transcript, event)
+        return capsys.readouterr().out
+
+    def test_fenced_lines_dim_as_they_commit(self, capsys, monkeypatch):
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        out = self._paint(
+            transcript,
+            painter,
+            capsys,
+            monkeypatch,
+            (
+                TextDelta(text="Here\n"),
+                TextDelta(text="```python\n"),
+                TextDelta(text="print(1)\n"),
+                TextDelta(text="```\n"),
+                TextDelta(text="done"),
+                RunFinished(usage=Usage(1, 1)),
+            ),
+        )
+
+        fence, code, close = "```python", "print(1)", "```"
+        assert out == (
+            # prose and the fence's opening row pass plain — the fence did
+            # not exist when its own row completed
+            f"Here\n{fence}\n"
+            # rows inside the fence commit dim; the closing row does too
+            f"\x1b[2m{code}\x1b[0m\n\x1b[2m{close}\x1b[0m\n"
+            # after the fence the stream is prose again
+            "done\n"
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+
+    def test_answer_and_reasoning_carry_their_own_fence_state(
+        self, capsys, monkeypatch
+    ):
+        """A fence opened in the reasoning leaves the answer alone."""
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript()
+        out = self._paint(
+            transcript,
+            painter,
+            capsys,
+            monkeypatch,
+            (
+                ReasoningDelta(text="```\n"),
+                TextDelta(text="not code\n"),
+                RunFinished(usage=Usage(1, 1)),
+            ),
+        )
+
+        assert out == (
+            "\x1b[90m```\x1b[0m\n"          # reasoning's fence row, dim as ever
+            "not code\n"                      # the answer's tracker is outside
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+
+    def test_a_sealed_block_keeps_its_streamed_rows_when_its_lines_rerender(
+        self, capsys, monkeypatch
+    ):
+        """The settle-time render rewrites the block's document lines, never
+        the rows the stream already wrote — a committed line is history."""
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript(
+            markdown=lambda text, kind: [lines.Line(text="RICH")]
+        )
+        out = self._paint(
+            transcript,
+            painter,
+            capsys,
+            monkeypatch,
+            (TextDelta(text="plain"), RunFinished(usage=Usage(1, 1))),
+        )
+
+        assert out == (
+            "plain\n"  # the streamed row stays; no repaint reaches for "RICH"
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+        assert transcript.blocks[0].lines == [lines.Line(text="RICH")]
+
+    def test_a_settled_block_renders_through_rich_when_available(
+        self, capsys, monkeypatch
+    ):
+        """Rich present and a live display: the sealed block's document lines
+        carry the full render; the streamed screen is untouched, and a
+        redraw shows what the render produced."""
+        pytest.importorskip("rich")
+        from mocode.cli.markdown import render_settled
+
+        monkeypatch.setattr("mocode.cli.markdown.terminal_width", lambda: 80)
+        display = _make_display(live=True)
+        painter = Painter(display)
+        transcript = Transcript(markdown=render_settled)
+        out = self._paint(
+            transcript,
+            painter,
+            capsys,
+            monkeypatch,
+            (TextDelta(text="# Title\n\nplain"), RunFinished(usage=Usage(1, 1))),
+        )
+
+        # The turn on screen is the stream as it committed — plain.
+        assert out == (
+            "# Title\n\nplain\n"
+            "\x1b[90m↑1 ↓1 tokens\x1b[0m\n"
+            "\x1b[2m" + "─" * 72 + "\x1b[0m\n"
+        )
+        # The sealed block's document lines are the rich render.
+        assert any("\x1b[" in row.text for row in transcript.blocks[0].lines)
+        # A redraw (history replaced, screen stale) shows the full render.
+        painter.redraw_all(transcript)
+        redrawn = capsys.readouterr().out
+        assert "\x1b[2J\x1b[H" in redrawn
+        assert "\x1b[" in redrawn  # rich ANSI lands on screen
+        assert "Title" in strip_ansi(redrawn)
+
+
 class TestTranscript:
     """The same event stream, folded into a document — no terminal involved."""
 

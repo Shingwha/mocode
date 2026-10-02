@@ -24,3 +24,9 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
 ]
+# Optional terminal extras — ``uv sync --group tui``. Without it the CLI
+# keeps every behaviour; with it, sealed answer/reasoning blocks render
+# their markdown fully (see mocode.cli.markdown).
+tui = [
+    "rich>=13.0",
+]

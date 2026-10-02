@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..host.events import ConversationChanged
+from .markdown import render_settled
 from .painter import Painter
 from .transcript import Transcript
 
@@ -33,7 +34,13 @@ class CLIRenderer:
     def __init__(self, display: "Display", conversation: "Conversation", drawers=None):
         self._d = display
         self._conversation = conversation
-        self._transcript = Transcript(conversation.tools, drawers=drawers)
+        # A redirected display never asks for the full render: a pipe keeps
+        # its plain appends, rich installed or not.
+        self._transcript = Transcript(
+            conversation.tools,
+            drawers=drawers,
+            markdown=render_settled if display.live else None,
+        )
         self._painter = Painter(display, animate=display.live)
 
     def draw(self, event: "Event") -> None:
