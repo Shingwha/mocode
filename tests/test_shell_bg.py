@@ -605,3 +605,234 @@ class TestTerminate:
         proc = Proc()
         _terminate(proc)  # type: ignore[arg-type]
         assert proc.killed is False
+
+
+class TestPromotion:
+    """A foreground command lifted into the background mid-flight.
+
+    The keybinding's shape: ``promote()`` with no arguments moves *the* one
+    foreground call — no call id required. The waiting tool call settles at
+    once as "moved to background", and the promoted command reads, dies and
+    announces itself like any other job.
+    """
+
+    async def _foreground(self, bash, command: str):
+        """A foreground call in flight — the tool path, no context attached."""
+        return asyncio.ensure_future(bash.run_async({"command": command}, None))
+
+    @pytest.mark.asyncio
+    async def test_promotion_returns_a_handle_and_the_call_settles(
+        self, tools, session
+    ):
+        bash, _, _ = tools
+
+        task = await self._foreground(bash, "sleep 2")
+        await asyncio.sleep(0.4)  # the call is up and running
+
+        info = await session.promote()
+
+        assert info == {"shell_id": "shell_1", "status": "running", "promoted": True}
+        result = await asyncio.wait_for(task, 10)
+        assert result.content == "moved to background as shell_1 (bash_output to poll)"
+        assert result.details == {
+            "shell_id": "shell_1",
+            "status": "running",
+            "promoted": True,
+        }
+        # The job is ordinary: it runs, and kill_shell stops it.
+        job = session.jobs["shell_1"]
+        assert job.running
+        await session.kill("shell_1")
+        assert job.status == "killed"
+
+    @pytest.mark.asyncio
+    async def test_a_second_promotion_finds_nothing_left(self, tools, session):
+        bash, _, _ = tools
+
+        task = await self._foreground(bash, "sleep 2")
+        await asyncio.sleep(0.4)
+        await session.promote()
+
+        with pytest.raises(ToolError) as exc:
+            await session.promote()
+        assert exc.value.code == "no_running_call"
+        await session.kill("shell_1")
+        await asyncio.wait_for(task, 10)
+
+    @pytest.mark.asyncio
+    async def test_bash_output_reads_from_the_promotion_on(self, tools, session):
+        """The rings start at the promotion: earlier lines already went to the
+        live block — they do not come back through bash_output."""
+        bash, output, _ = tools
+
+        task = await self._foreground(bash, "echo early; sleep 2; echo late; echo oops >&2")
+        await asyncio.sleep(0.5)  # "early" has been pumped to the open block
+        info = await session.promote()
+
+        result = await output.run_async(
+            {"shell_id": info["shell_id"], "wait": True}, None
+        )
+        assert result.details["lines"] == ["late", "oops"]
+        assert result.details["status"] == "completed"
+        assert result.details["exit_code"] == 0
+        assert "early" not in result.content
+        await asyncio.wait_for(task, 10)
+
+    @pytest.mark.asyncio
+    async def test_a_promoted_job_is_announced_when_it_completes(
+        self, mc, tmp_path: Path
+    ):
+        """The coalescing notifier knows no difference — a promoted job's
+        completion is queued like a started job's."""
+        conversation = mc.new_conversation(cwd=tmp_path)
+        bash = conversation.tools.get("bash")
+        session = bash.session
+
+        task = await self._foreground(bash, "sleep 1")
+        await asyncio.sleep(0.4)
+        info = await session.promote()
+        await asyncio.wait_for(task, 10)
+
+        deadline = asyncio.get_event_loop().time() + 5.0
+        messages = []
+        while asyncio.get_event_loop().time() < deadline:
+            messages = [
+                e
+                for e in conversation.agent.channel.history()
+                if isinstance(e, PluginMessage)
+            ]
+            if messages:
+                break
+            await asyncio.sleep(0.05)
+        assert len(messages) == 1
+        assert messages[0].kind == "shell/background-done"
+        assert [job["id"] for job in messages[0].data["jobs"]] == [info["shell_id"]]
+        assert messages[0].data["jobs"][0]["status"] == "completed"
+        conversation.close(save=False)
+
+    @pytest.mark.asyncio
+    async def test_a_promotion_takes_a_concurrency_slot(self, tools, session):
+        bash, _, _ = tools
+        session.configure({"max_background": 1})
+
+        await _start(bash, "sleep 5")
+        task = await self._foreground(bash, "sleep 5")
+        await asyncio.sleep(0.4)
+
+        with pytest.raises(ToolError) as exc:
+            await session.promote()
+        assert exc.value.code == "limit"
+        # The refused promotion left the call running in the foreground.
+        assert not task.done()
+
+        await session.kill("shell_1")  # a slot frees — the retry succeeds
+        info = await session.promote()
+        assert info["shell_id"] == "shell_2"
+        await session.kill("shell_2")
+        await asyncio.wait_for(task, 10)
+        assert task.result().details["promoted"] is True
+
+    @pytest.mark.asyncio
+    async def test_promote_without_a_running_call_is_an_error(self, session):
+        with pytest.raises(ToolError) as exc:
+            await session.promote()
+        assert exc.value.code == "no_running_call"
+        with pytest.raises(ToolError) as exc:
+            await session.promote("call-x")
+        assert exc.value.code == "no_running_call"
+
+    @pytest.mark.asyncio
+    async def test_a_finished_call_cannot_be_promoted(self, tools, session):
+        bash, _, _ = tools
+
+        await bash.run_async({"command": "echo hi"}, None)
+
+        with pytest.raises(ToolError) as exc:
+            await session.promote()
+        assert exc.value.code == "no_running_call"
+
+    @pytest.mark.asyncio
+    async def test_two_foreground_calls_are_ambiguous(self, tools, session):
+        bash, _, _ = tools
+
+        first = await self._foreground(bash, "sleep 5")
+        second = await self._foreground(bash, "sleep 5")
+        await asyncio.sleep(0.4)
+
+        with pytest.raises(ToolError) as exc:
+            await session.promote()
+        assert exc.value.code == "ambiguous_call"
+        assert "2 foreground commands" in exc.value.message
+
+        for task in (first, second):
+            task.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+        assert session.jobs == {}
+        assert session._foreground == {}
+
+    @pytest.mark.asyncio
+    async def test_a_named_call_id_promotes_its_call_among_several(
+        self, session
+    ):
+        first = asyncio.ensure_future(
+            session.execute("sleep 5", 15, call_id="call-a")
+        )
+        second = asyncio.ensure_future(session.execute("sleep 5", 15))
+        await asyncio.sleep(0.4)
+
+        info = await session.promote("call-a")
+        assert info["shell_id"] == "shell_1"
+        result = await asyncio.wait_for(first, 10)
+        assert result.details["promoted"] is True
+        # One foreground call is left — the shapeless promote finds it now.
+        other = await session.promote()
+        assert other["shell_id"] == "shell_2"
+
+        await session.kill("shell_1")
+        await session.kill("shell_2")
+        await asyncio.wait_for(second, 10)
+        assert second.result().details["promoted"] is True
+
+    @pytest.mark.asyncio
+    async def test_promotion_wins_the_race_against_the_timeout(self, session):
+        """The foreground deadline was armed — the promotion still beats it,
+        and the promoted job outlives the moment the deadline passed."""
+        task = asyncio.ensure_future(session.execute("sleep 5", 1))
+        await asyncio.sleep(0.4)
+        info = await session.promote()
+
+        result = await asyncio.wait_for(task, 10)
+        assert result.details["promoted"] is True  # not the timeout result
+        await asyncio.sleep(1.3)  # the foreground deadline has come and gone
+        job = session.jobs[info["shell_id"]]
+        assert job.running, "the promoted job must outlive the foreground timeout"
+        await session.kill(info["shell_id"])
+
+    @pytest.mark.asyncio
+    async def test_the_timeout_wins_the_race_and_leaves_nothing_behind(
+        self, session
+    ):
+        task = asyncio.ensure_future(session.execute("sleep 5", 1))
+        result = await asyncio.wait_for(task, 10)
+        assert result.content == "(timed out after 1s)"
+
+        with pytest.raises(ToolError) as exc:
+            await session.promote()
+        assert exc.value.code == "no_running_call"
+        assert session.jobs == {}
+        assert session._foreground == {}
+
+    @pytest.mark.asyncio
+    async def test_restart_kills_promoted_jobs(self, tools, session):
+        bash, _, _ = tools
+
+        task = await self._foreground(bash, "sleep 5")
+        await asyncio.sleep(0.4)
+        info = await session.promote()
+        job = session.jobs[info["shell_id"]]
+
+        await bash.run_async({"command": "x", "restart": True}, None)
+
+        assert session.jobs == {}
+        assert job.status == "killed"
+        await asyncio.wait_for(task, 10)

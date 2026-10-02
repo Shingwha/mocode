@@ -332,6 +332,19 @@ its background jobs there, reaching the session through the registry (the
 tool owns the session, the registry owns the tool), never through state on
 the plugin instance.
 
+One more thing the session answers for, and the reason a *frontend* cares:
+`session.promote()` moves a foreground command that is still running into the
+background, mid-flight. The waiting `bash` call settles at once as "moved to
+background as shell_N", and the command lives on as an ordinary job —
+`bash_output` reads what it prints from the promotion on (everything before
+already went to the live block), `kill_shell` stops it, and its completion is
+announced like any job's. Called with no argument it moves *the* one
+foreground call running — the shape a runtime keybinding wants; with zero
+running it raises `no_running_call`, with several `ambiguous_call` (name the
+call id of the one to move). The background concurrency cap applies, and a
+promotion races the foreground timeout honestly: first to claim the call
+wins, the loser stands down without killing anything.
+
 ## Tools
 
 A tool is declared with a JSON Schema object node — the dialect every model

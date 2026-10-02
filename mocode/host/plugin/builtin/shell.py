@@ -13,6 +13,11 @@ Background output accumulates in bounded rings, so a dev server that runs
 overnight cannot grow memory without bound; what the rings dropped is counted
 and reported.
 
+A foreground command that is still running can be **promoted** into the
+background mid-flight (:meth:`BashSession.promote` — the hook a "move it to
+background" keybinding calls): the waiting call settles at once as "moved to
+background as shell_N", and the command lives on as an ordinary job.
+
 Every command runs in its own process group (POSIX), so a timeout or an
 explicit kill takes down the whole tree — ``bash -c "npm run dev"`` must not
 leave its node children behind. On Windows there are no process groups: the
@@ -220,6 +225,74 @@ def _start_order(job: _Job) -> int:
     return int(job.id.rsplit("_", 1)[1])
 
 
+#: A foreground call's side of the promotion handshake. ``FG_RUNNING`` until
+#: one side wins: :meth:`BashSession.promote` flips it to ``FG_PROMOTED`` (the
+#: call becomes a job) or the foreground wait resolves to ``FG_SETTLED``
+#: (exited, or timed out — promotion is locked out from then on). First flip
+#: wins; the loser stands down without touching the process or the pumps.
+FG_RUNNING = "running"
+FG_PROMOTED = "promoted"
+FG_SETTLED = "settled"
+
+
+class _ForegroundSink:
+    """One output stream's destination while its call runs in the foreground.
+
+    Lines accumulate in the call's own buffer and ride the event sink as they
+    land. :meth:`claim` re-targets the pump at the promoted job's ring: from
+    the next line on, the ring is the only record — the block the lines used
+    to report into settles as "moved to background", and ``bash_output`` is
+    how anyone reads on. The pump routes each line by the sink *at read
+    time*, so a line straddling the switch is wholly foreground or wholly
+    background — never lost, never in both.
+    """
+
+    def __init__(self, buffer: list[str], on_output: OutputSink | None):
+        self.buffer = buffer
+        self.on_output = on_output
+        self._ring: Callable[[str], None] | None = None
+
+    def claim(self, ring: Callable[[str], None]) -> None:
+        """Re-target at the promoted job's ring; retire the event sink."""
+        self._ring = ring
+        self.on_output = None
+
+    def append(self, text: str) -> None:
+        if self._ring is None:
+            self.buffer.append(text)
+        else:
+            self._ring(text)
+
+    async def emit(self, text: str, stream: str) -> None:
+        if self.on_output is not None:
+            await self.on_output(text, stream)
+
+
+@dataclass
+class _Foreground:
+    """A foreground call in flight — what :meth:`BashSession.promote` lifts.
+
+    The handshake: the waiting side awaits the process *or* the ``release``
+    future, whichever lands first; ``promote`` claims the entry, re-targets
+    the pumps at a new job's rings and resolves the future. The ``state``
+    field arbitrates the race against the foreground timeout — both sides
+    check-and-set it with no await in between, so the first flip is final.
+    """
+
+    command: str
+    proc: asyncio.subprocess.Process
+    pumps: list[asyncio.Task]
+    sinks: dict[str, _ForegroundSink]
+    waiter: asyncio.Task
+    release: asyncio.Future
+    #: The registry key — the call id when the dispatcher gave one, a
+    #: synthetic key when not (a bare session, or a keybinding's target).
+    key: str = ""
+    call_id: str | None = None
+    state: str = FG_RUNNING
+    job: _Job | None = None
+
+
 class BashSession:
     """Persistent bash session — cwd and env vars survive across commands.
 
@@ -248,6 +321,10 @@ class BashSession:
         #: Background jobs of this conversation, by id, in start order.
         self.jobs: dict[str, _Job] = {}
         self._job_seq = 0
+        #: Foreground calls in flight, by registry key — what promote() can
+        #: lift into a job while they still run.
+        self._foreground: dict[str, _Foreground] = {}
+        self._fg_seq = 0
         #: Jobs that ended and wait for the idle-time announcement.
         self._pending_done: list[_Job] = []
         self._notifier: asyncio.Task | None = None
@@ -300,6 +377,7 @@ class BashSession:
         command: str,
         timeout: int,
         on_output: OutputSink | None = None,
+        call_id: str | None = None,
     ) -> ToolResult:
         stripped = command.strip()
         if stripped.startswith("cd ") and "&&" not in stripped and ";" not in stripped:
@@ -315,24 +393,64 @@ class BashSession:
 
         out: list[str] = []
         err: list[str] = []
+        sinks = {
+            "stdout": _ForegroundSink(out, on_output),
+            "stderr": _ForegroundSink(err, on_output),
+        }
         pumps = [
-            asyncio.create_task(_pump(proc.stdout, "stdout", out.append, on_output)),
-            asyncio.create_task(_pump(proc.stderr, "stderr", err.append, on_output)),
+            asyncio.create_task(
+                _pump(proc.stdout, "stdout", sinks["stdout"].append, sinks["stdout"].emit)
+            ),
+            asyncio.create_task(
+                _pump(proc.stderr, "stderr", sinks["stderr"].append, sinks["stderr"].emit)
+            ),
         ]
+        if call_id is None:
+            self._fg_seq += 1
+            key = f"anonymous-{self._fg_seq}"
+        else:
+            key = call_id
+        fg = _Foreground(
+            command=command,
+            proc=proc,
+            pumps=pumps,
+            sinks=sinks,
+            waiter=asyncio.create_task(proc.wait()),
+            release=asyncio.get_running_loop().create_future(),
+            key=key,
+            call_id=call_id,
+        )
+        self._foreground[key] = fg
         try:
-            try:
-                await asyncio.wait_for(proc.wait(), timeout)
-            except asyncio.TimeoutError:
+            await asyncio.wait(
+                {fg.waiter, fg.release},
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if fg.state == FG_PROMOTED:
+                # Promote won the race: the process and the pumps are the
+                # job's now — settle the call as a handle, touch nothing.
+                job = fg.job
+                return ToolResult(
+                    f"moved to background as {job.id} (bash_output to poll)",
+                    {"shell_id": job.id, "status": JOB_RUNNING, "promoted": True},
+                )
+            fg.state = FG_SETTLED  # the foreground side won — lock promote out
+            if fg.waiter.done():
+                # The process is gone; the pipes still hold whatever it wrote last.
+                await asyncio.gather(*pumps)
+            else:
                 return ToolResult(f"(timed out after {timeout}s)")
-            # The process is gone; the pipes still hold whatever it wrote last.
-            await asyncio.gather(*pumps)
         finally:
-            for task in pumps:
-                task.cancel()
-            await asyncio.gather(*pumps, return_exceptions=True)
-            if proc.returncode is None:
-                _terminate(proc)
-                await proc.wait()
+            self._foreground.pop(key, None)
+            fg.waiter.cancel()
+            if fg.state != FG_PROMOTED:
+                for task in pumps:
+                    task.cancel()
+                await asyncio.gather(*pumps, return_exceptions=True)
+                if proc.returncode is None:
+                    _terminate(proc)
+                    await proc.wait()
 
         output = "".join(out).strip()
         stderr = "".join(err).strip()
@@ -341,6 +459,99 @@ class BashSession:
         # The exit code is a fact about the run, not part of what the model
         # needs to read — so it travels as a detail.
         return ToolResult(output or "(empty)", {"exit_code": proc.returncode})
+
+    # ── Promotion ──────────────────────────────────────────
+
+    async def promote(self, call_id: str | None = None) -> dict:
+        """Move the one foreground command that is running into the background.
+
+        The waiting foreground call is released at once — its tool result
+        becomes "moved to background as shell_N" — and the command lives on as
+        an ordinary background job: ``bash_output(shell_id)`` reads what it
+        prints from here on (the rings start at the promotion — everything
+        before it already went to the live block), ``kill_shell`` stops it,
+        and its completion is announced like any job's.
+
+        Without *call_id* exactly one foreground call must be running — the
+        shape a "move it to background" keybinding wants, no ids required.
+        None running raises ``no_running_call``; several raise
+        ``ambiguous_call`` (name the call id of the one to move). The
+        background concurrency cap applies — full means ``limit``, and the
+        call simply stays foreground. Promotion and the foreground timeout
+        race each other: first to claim the call wins, the loser stands down
+        without killing the process or the pumps.
+
+        Returns the job's handle: ``{"shell_id", "status", "promoted"}``.
+        """
+        fg = self._pick_foreground(call_id)
+        job = self._claim(fg)
+        return {"shell_id": job.id, "status": JOB_RUNNING, "promoted": True}
+
+    def _pick_foreground(self, call_id: str | None) -> _Foreground:
+        """The foreground entry a promotion names — exactly one, or a ToolError.
+
+        A settled entry (the process just exited, its call not yet resumed) is
+        not promotable and does not count: the race referee is the entry's
+        state plus its waiter, not the registry alone.
+        """
+        if call_id is None:
+            entries = [
+                fg
+                for fg in self._foreground.values()
+                if fg.state == FG_RUNNING and not fg.waiter.done()
+            ]
+            if not entries:
+                raise ToolError(
+                    "no foreground command is running to promote",
+                    code="no_running_call",
+                )
+            if len(entries) > 1:
+                raise ToolError(
+                    f"{len(entries)} foreground commands are running; "
+                    "promote takes the call id of the one to move",
+                    code="ambiguous_call",
+                )
+            return entries[0]
+        fg = self._foreground.get(call_id)
+        if fg is None or fg.state != FG_RUNNING or fg.waiter.done():
+            raise ToolError(
+                f"no foreground command '{call_id}' is running to promote",
+                code="no_running_call",
+            )
+        return fg
+
+    def _claim(self, fg: _Foreground) -> _Job:
+        """Turn the running foreground call into a background job.
+
+        Entered only after ``_pick_foreground`` named a live call, and
+        synchronous end to end — no foreground step can interleave, so the
+        state flip below is the race's arbitration point: the foreground
+        side re-reads it the moment its wait resolves.
+        """
+        running = sum(1 for job in self.jobs.values() if job.running)
+        if running >= self.max_background:
+            raise ToolError(
+                f"{running} background shells already running "
+                f"(limit {self.max_background}); read or kill one first",
+                code="limit",
+            )
+        fg.state = FG_PROMOTED
+        self._foreground.pop(fg.key, None)
+        self._job_seq += 1
+        job = _Job(id=f"shell_{self._job_seq}", command=fg.command, proc=fg.proc)
+        for stream, sink in fg.sinks.items():
+            sink.claim((job.buf_out if stream == "stdout" else job.buf_err).append)
+        fg.job = job
+        # The pumps keep running — adopted, not restarted: they have been
+        # reading these pipes all along, and the rings pick up mid-stream.
+        job.collector = asyncio.create_task(self._adopt(job, fg.pumps))
+        deadline = self._deadline(None)
+        if deadline > 0:
+            job.watchdog = asyncio.create_task(self._watch(job, deadline))
+        self.jobs[job.id] = job
+        if not fg.release.done():
+            fg.release.set_result(None)
+        return job
 
     # ── Background ─────────────────────────────────────────
 
@@ -519,15 +730,31 @@ class BashSession:
             asyncio.create_task(_pump(job.proc.stdout, "stdout", job.buf_out.append, on_output)),
             asyncio.create_task(_pump(job.proc.stderr, "stderr", job.buf_err.append, on_output)),
         ]
+        await self._adopt(job, pumps)
+
+    async def _adopt(self, job: _Job, pumps: list[asyncio.Task]) -> None:
+        """Wait a job's process out, then finish its bookkeeping.
+
+        A started job's collector creates its own pumps; a promoted job
+        *adopts* the foreground call's — they have been reading the same
+        pipes all along, and the rings pick the stream up mid-flight.
+        """
         try:
             await job.proc.wait()
-            # The process is gone; the pipes still hold whatever it wrote
-            # last — bounded by the grace, because a killed child's own
-            # children may still hold the write ends (see _DRAIN_GRACE).
-            try:
-                await asyncio.wait_for(asyncio.gather(*pumps), _DRAIN_GRACE)
-            except asyncio.TimeoutError:
-                pass
+        finally:
+            await self._settle(job, pumps)
+
+    async def _settle(self, job: _Job, pumps: list[asyncio.Task]) -> None:
+        """Bound the pipe tail, then close the job's bookkeeping.
+
+        The process is gone; the pipes still hold whatever it wrote last —
+        bounded by the grace, because a killed child's own children may
+        still hold the write ends (see _DRAIN_GRACE).
+        """
+        try:
+            await asyncio.wait_for(asyncio.gather(*pumps), _DRAIN_GRACE)
+        except asyncio.TimeoutError:
+            pass
         finally:
             for task in pumps:
                 task.cancel()
@@ -722,6 +949,9 @@ def bash_tool_for(session: BashSession, default_timeout: int = 240) -> Tool:
             args["command"],
             timeout=timeout,
             on_output=_tool_output_sink(ctx) if ctx is not None else None,
+            # The dispatcher's id for this call — how a promote that names a
+            # call (rather than "the one running") finds it.
+            call_id=ctx.tool_call_id if ctx is not None else None,
         )
 
     tool = Tool(
