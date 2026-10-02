@@ -46,10 +46,19 @@ async def _effort(ctx: CommandContext) -> CommandResult:
 
 
 class EffortPlugin(Plugin):
+    """The builtin behind ``/effort`` — the reasoning level as a command.
+
+    A command rather than a host feature because both directions are only a
+    conversation: reporting the level needs the model's declared table, and
+    switching switches that conversation. The interactive picker over the same
+    levels is a frontend's choice, not a requirement.
+    """
+
     name = "effort"
     description = "Reasoning effort: /effort shows or sets the level"
 
     def build(self, ctx: BuildContext) -> None:
+        """Register the one ``/effort`` command."""
         ctx.commands.register(
             Command(
                 "/effort",

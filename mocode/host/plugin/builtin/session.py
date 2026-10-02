@@ -45,10 +45,18 @@ async def _clear(ctx: CommandContext) -> CommandResult:
 
 
 class SessionPlugin(Plugin):
+    """The builtin session commands — take one away, or start over.
+
+    ``/export`` writes the conversation out in a portable format; ``/clear``
+    starts a new session in place. Both go through the conversation rather than
+    around it, so listeners see the change the same way they see any other.
+    """
+
     name = "session"
     description = "Session files: /export /clear"
 
     def build(self, ctx: BuildContext) -> None:
+        """Register ``/export`` and ``/clear``."""
         ctx.commands.register(
             Command("/export", "Export conversation to a file (json|md)", handler=_export),
             Command("/clear", "Clear the current conversation", handler=_clear),

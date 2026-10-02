@@ -52,6 +52,9 @@ class IterationContext:
     messages: list[dict] = field(default_factory=list)
     iteration: int = 0
     system_prompt: str = ""
+    #: The conversation's event sink — ``await ctx.emit(event)`` publishes on
+    #: this run's channel, attributed to the run. A hook that watches or
+    #: explains has something to say here without needing a channel of its own.
     emit: EmitFn = _noop_emit
 
 
@@ -142,6 +145,8 @@ class RequestContext:
     system_prompt: str = ""
     tools: list[dict] = field(default_factory=list)
     model: "ModelSpec | None" = None
+    #: The conversation's event sink — ``await ctx.emit(event)`` publishes on
+    #: this run's channel, attributed to the run.
     emit: EmitFn = _noop_emit
 
 
@@ -215,6 +220,13 @@ class HookRunner:
         self._hooks: list[AgentHook] = list(hooks or [])
 
     def add(self, hook: AgentHook) -> None:
+        """Append *hook* to the end of the fan-out order.
+
+        ``build()`` adding hooks one by one is how plugin load order becomes
+        dispatch order — built-ins first, then each plugin directory
+        alphabetically, and inside one plugin the order ``build()`` added
+        them.
+        """
         self._hooks.append(hook)
 
     async def _dispatch(self, method: str, **kwargs) -> None:
@@ -227,19 +239,28 @@ class HookRunner:
                 )
 
     async def before_iteration(self, ctx: IterationContext) -> None:
+        """Every hook's ``before_iteration``, in registration order."""
         await self._dispatch("before_iteration", ctx=ctx)
 
     async def before_request(self, ctx: RequestContext) -> None:
+        """Every hook's ``before_request``, in registration order."""
         await self._dispatch("before_request", ctx=ctx)
 
     async def after_response(self, ctx: ResponseContext) -> None:
+        """Every hook's ``after_response``, in registration order."""
         await self._dispatch("after_response", ctx=ctx)
 
     async def on_tool_start(self, ctx: ToolCallContext) -> None:
+        """Every hook's ``on_tool_start``, in registration order."""
         await self._dispatch("on_tool_start", ctx=ctx)
 
     async def on_tool_complete(self, ctx: ToolCallContext) -> None:
+        """Every hook's ``on_tool_complete``, in registration order."""
         await self._dispatch("on_tool_complete", ctx=ctx)
 
     async def on_event(self, event: "Event") -> None:
+        """Every hook's ``on_event``, in registration order.
+
+        The in-band subscriber: the publisher waits for this to return.
+        """
         await self._dispatch("on_event", event=event)

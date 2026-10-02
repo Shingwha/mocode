@@ -58,10 +58,21 @@ class Session:
     #: session is resumed. The conversation's capture is bounded (the newest
     #: PLUGIN_MESSAGE_CAP survive); what fell off is gone for good.
     plugin_messages: list[dict[str, Any]] = field(default_factory=list)
+    #: Anything else a caller wants recorded about this conversation. MoCode
+    #: never reads it, only preserves it through load → save — the slot an
+    #: embedding uses for its own bookkeeping without the host knowing the
+    #: shape.
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Session":
+        """Read a stored session, requiring the four fields that address it.
+
+        ``id`` / ``created_at`` / ``updated_at`` / ``workdir`` are required —
+        a session without them is unreadable, and the caller's ``KeyError`` is
+        how the store recognizes a corrupt file. Everything else defaults to
+        its empty shape, so a session saved before a field existed still loads.
+        """
         return cls(
             id=data["id"],
             created_at=data["created_at"],
@@ -79,6 +90,12 @@ class Session:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """The session as JSON — every field, in the order the file shows them.
+
+        Round-trips through :meth:`from_dict`: the required four are always
+        present, and the optional ones carry their stored value even when
+        empty, so a header-free save is not mistaken for an older format.
+        """
         return {
             "id": self.id,
             "created_at": self.created_at,
@@ -114,10 +131,17 @@ def new_session_id() -> str:
 
 
 def timestamp() -> str:
+    """The current local time, to the second — a session's ``updated_at``."""
     return datetime.now().isoformat()
 
 
 def extract_title(messages: list[dict[str, Any]]) -> str:
+    """A display title from the conversation: the first user message.
+
+    Clipped to 80 characters with newlines flattened, because a title is one
+    line in a list. Empty when there is no user message yet — a session whose
+    first turn has not been asked is a session with nothing to name it.
+    """
     for msg in messages:
         if msg.get("role") == "user":
             content = msg.get("content", "")
@@ -167,10 +191,21 @@ class SessionStore:
         return None
 
     def save(self, workdir: str, session: Session) -> None:
+        """Write *session* under *workdir*'s namespace, creating it if needed.
+
+        Overwrites the whole file — a session is rewritten in full each time,
+        because there is no partial state a resumed conversation should keep
+        from an earlier save.
+        """
         d = self._sessions_dir(_hash_workdir(workdir))
         write_json(d / f"{session.id}.json", session.to_dict())
 
     def delete(self, workdir: str, session_id: str) -> bool:
+        """Remove one session. False if it was already gone or could not be.
+
+        A failing unlink is reported, not raised: "could not delete" is an
+        answer the caller can show, and a missing file is the same answer.
+        """
         path = self._base_dir / _hash_workdir(workdir) / f"{session_id}.json"
         if not path.exists():
             return False
@@ -200,7 +235,7 @@ class SessionStore:
 
 
 def load_session_file(path: Path) -> tuple[list[dict], str] | None:
-    """Read messages and title back out of of an exported file, or ``None``."""
+    """Read messages and title back out of an exported file, or ``None``."""
     if not path.exists() or path.suffix != ".json":
         return None
     data = read_json(path)

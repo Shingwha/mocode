@@ -24,6 +24,12 @@ class PasteStore:
         self._counter: int = 0
 
     def clear(self) -> None:
+        """Forget every stored paste and restart the marker counter.
+
+        Called when a conversation starts over: markers are per-conversation
+        indices, and a new conversation should not leave ``[paste:7]``
+        resolvable from something typed three turns ago.
+        """
         self._store.clear()
         self._counter = 0
 
@@ -64,6 +70,13 @@ class SlashCompleter:
         self._registry = registry
 
     async def get_completions_async(self, document, complete_event):
+        """Yield a completion per command whose name starts with the typed text.
+
+        The async form prompt_toolkit's completion protocol asks for; yielding
+        none for anything that is not a bare word — no leading ``/``, or an
+        argument already present — is what keeps slash completion from covering
+        an argument's own completions.
+        """
         text = document.text
         if not text.startswith("/") or " " in text:
             return
@@ -162,6 +175,14 @@ class Input:
         self._pastes.clear()
 
     async def prompt(self, default: str = "") -> str:
+        """Wait for the next line of user input and return it resolved.
+
+        Three things happen beyond reading the line: the prompt's own lines are
+        erased so the scrollback holds what was submitted, not twice what it
+        cost to submit, ``[paste:N]`` markers are replaced with the content
+        they stand for, and lone surrogates are scrubbed — what a Windows
+        console paste can hand over and a well-formed UTF-8 string cannot hold.
+        """
         self._ensure_session()
         raw = await self._session.prompt_async(f"{self._ps1} ", default=default)
         # Clear the prompt_toolkit input lines from the terminal

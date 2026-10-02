@@ -105,12 +105,22 @@ def _render_time(_ctx: dict[str, Any]) -> str:
 
 
 class DefaultPromptsPlugin(Plugin):
+    """The builtin that gives every conversation its default prompt sections.
+
+    Four sections at ascending priorities, so they render in the order that
+    keeps the prefix stable and the volatile part last: guidelines, the
+    project's AGENTS.md, the environment, and today's date. The date renders
+    itself on every build because it is the one line that goes stale — a
+    resume corrects it with a notice rather than a new prompt.
+    """
+
     name = "default-prompts"
     description = (
         "The default prompt sections: guidelines, AGENTS.md, environment, time"
     )
 
     def build(self, ctx: BuildContext) -> None:
+        """Append the four default sections in priority order."""
         ctx.prompt_sections += [
             Section("guidelines", _GUIDELINES, priority=10),
             Section("agents", _agents(ctx.home, ctx.cwd), priority=20),

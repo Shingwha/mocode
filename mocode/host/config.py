@@ -116,6 +116,14 @@ class ModelEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> ModelEntry:
+        """Read a model entry, tolerating whatever the JSON actually holds.
+
+        Every field is coerced or dropped rather than trusted: a wrongly typed
+        ``effort`` or a non-string ``efforts`` item means "not declared", so a
+        hand-edited file degrades to the kernel default instead of failing the
+        load. Unknown keys — including unknown ``retry`` subkeys — are ignored,
+        which is what lets an older MoCode read a newer file.
+        """
         data = data or {}
         retry = data.get("retry")
         efforts = data.get("efforts")
@@ -141,6 +149,12 @@ class ModelEntry:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """The entry as JSON, omitting anything that was never declared.
+
+        A saved file carries only what the user wrote: ``id`` always, and each
+        optional field only when it is set — so a round trip through load and
+        save cannot grow the file with defaults nobody asked for.
+        """
         out: dict[str, Any] = {"id": self.id}
         if self.name:
             out["name"] = self.name
@@ -205,6 +219,12 @@ class ProviderEntry:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ProviderEntry:
+        """Read a provider entry, skipping malformed models.
+
+        A model entry that is not a dict, or that declares no ``id`` (nothing
+        to address it by), is dropped rather than failing the whole provider —
+        one bad line in a long models list should not make the file unreadable.
+        """
         models: list[ModelEntry] = []
         raw_models = data.get("models")
         if isinstance(raw_models, list):
@@ -224,6 +244,11 @@ class ProviderEntry:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """The provider as JSON, omitting the fields that hold their defaults.
+
+        ``type`` is written only when it is not the built-in ``"openai"``,
+        which keeps a minimal config minimal across a save.
+        """
         out: dict[str, Any] = {"models": [m.to_dict() for m in self.models]}
         if self.type != "openai":
             out["type"] = self.type
@@ -238,6 +263,20 @@ class ProviderEntry:
 
 @dataclass
 class Config:
+    """The whole configuration file — defaults, providers, plugins, agent policy.
+
+    ``provider`` / ``model`` are the *defaults for new conversations* only;
+    nothing here rewrites a conversation that is already running, and the only
+    writer of the file is ``MoCode.set_default_model``. A conversation that
+    switches models changes its own state, not this.
+
+    ``agent`` is the core :class:`AgentConfig` nested directly, so loop policy
+    is configurable the moment a field exists. ``providers`` and ``plugins`` are
+    keyed blocks; ``foreign`` carries every top-level key MoCode does not own
+    back out again untouched, so an unrecognized config survives a load-save
+    round trip.
+    """
+
     provider: str = ""
     model: str = ""
     #: Loop execution policy — the *only* policy type, owned by core: the
@@ -264,6 +303,12 @@ class Config:
 
     @property
     def current(self) -> ProviderEntry | None:
+        """The provider the next conversation starts on, or ``None`` if unnamed.
+
+        ``None`` when ``provider`` names nothing that is declared — an
+        embedder wiring its own provider sees no entry here rather than a
+        broken one.
+        """
         return self.providers.get(self.provider)
 
     def model_spec(
@@ -292,6 +337,12 @@ class Config:
     # ── Serialization ──────────────────────────────────────
 
     def to_dict(self) -> dict[str, Any]:
+        """The file as JSON, with the foreign keys merged back in.
+
+        ``foreign`` is written with ``setdefault``, so a key MoCode owns can
+        never be overwritten by a stale copy of itself riding along in
+        ``foreign``.
+        """
         data: dict[str, Any] = {
             "provider": self.provider,
             "model": self.model,
@@ -305,6 +356,13 @@ class Config:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Config:
+        """Read a config file, accepting every block in its default shape.
+
+        The ``agent`` block is filtered to the known :class:`AgentConfig`
+        fields — an unknown subkey is ignored, so a newer file's policy keys do
+        not break an older MoCode. Everything MoCode does not own lands in
+        ``foreign``.
+        """
         agent_raw = data.get("agent")
         if not isinstance(agent_raw, dict):
             agent_raw = {}

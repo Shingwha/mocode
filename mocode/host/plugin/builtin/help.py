@@ -29,10 +29,18 @@ async def _help(ctx: CommandContext) -> CommandResult:
 
 
 class HelpPlugin(Plugin):
+    """The builtin behind ``/help`` — the registry answers for itself.
+
+    It reads the conversation's command registry rather than a list of its own,
+    so a plugin contributing a command shows up in the help without anyone
+    remembering to add it — no second table to keep in sync.
+    """
+
     name = "help"
     description = "List the commands this conversation offers"
 
     def build(self, ctx: BuildContext) -> None:
+        """Register the one ``/help`` command."""
         ctx.commands.register(Command("/help", "Show available commands", handler=_help))
 
 

@@ -163,14 +163,17 @@ class Conversation:
 
     @property
     def tools(self) -> ToolRegistry:
+        """The tools offered for this conversation, as the plugins registered them."""
         return self.ctx.tools
 
     @property
     def commands(self) -> "CommandRegistry":
+        """The shared commands any frontend of this conversation can dispatch."""
         return self.ctx.commands
 
     @property
     def model(self) -> "ModelSpec | None":
+        """Which model this conversation is running, with its declared limits."""
         return self.ctx.model
 
     def set_model(self, key: str, model: str) -> None:

@@ -257,6 +257,7 @@ class ToolCallFinished(Event):
     type: ClassVar[str] = "tool_call_finished"
 
     def summary(self) -> str:
+        """Tool name and its terminal status — ``bash [ok]``, ``read [error]``."""
         return f"{self.name} [{self.status}]"
 
 
@@ -299,6 +300,7 @@ class PluginMessage(Event):
     type: ClassVar[str] = "plugin_message"
 
     def summary(self) -> str:
+        """The plugin message's ``kind`` — its discriminator, not its payload."""
         return f"plugin message: {self.kind}"
 
 

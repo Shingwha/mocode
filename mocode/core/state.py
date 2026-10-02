@@ -60,6 +60,11 @@ class ToolCallState:
 
     @property
     def done(self) -> bool:
+        """Whether this call has finished — any terminal status, including an error.
+
+        The opposite of :data:`TOOL_RUNNING`: while it is False the call is
+        still in flight and its result is not yet an answer.
+        """
         return self.status != TOOL_RUNNING
 
     @property
@@ -68,6 +73,11 @@ class ToolCallState:
         return "".join(self.output)
 
     def to_dict(self) -> dict[str, Any]:
+        """This call as plain data — the shape a session stores it in.
+
+        ``output`` is folded into one string, because the streaming cadence is
+        a display concern and not a fact about the call.
+        """
         return {
             "call_id": self.call_id,
             "name": self.name,
@@ -204,6 +214,11 @@ class RunState:
         return len(self.tool_calls)
 
     def to_dict(self) -> dict[str, Any]:
+        """The snapshot as plain data — the shape a session stores it in.
+
+        Mirrors the folded events, so a resumed session reconstructs the same
+        snapshot without replaying the stream.
+        """
         return {
             "run_id": self.run_id,
             "status": self.status,

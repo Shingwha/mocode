@@ -262,10 +262,18 @@ def edit_tool(base: Path) -> Tool:
 
 
 class FilesystemPlugin(Plugin):
+    """The builtin file tools — read, write, edit, all scoped to one project.
+
+    The three share a root: the conversation's working directory. Nothing here
+    decides whether a path is *allowed* — the scope is the conversation, and a
+    plugin that wants a sandbox writes its own tool or vetoes through a hook.
+    """
+
     name = "filesystem"
     description = "Read, write and edit files"
 
     def build(self, ctx: BuildContext) -> None:
+        """Register the three tools rooted at this conversation's project."""
         # Relative paths resolve against the conversation's project: build()
         # runs once per conversation, so each one edits its own tree.
         for tool in (read_tool(ctx.cwd), write_tool(ctx.cwd), edit_tool(ctx.cwd)):

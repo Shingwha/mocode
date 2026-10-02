@@ -150,6 +150,11 @@ class _Job:
 
     @property
     def running(self) -> bool:
+        """Whether the job's process is still alive — its ``done`` not yet set.
+
+        Distinct from having unread output: a finished job keeps its ring until
+        something reads it, and that is exactly the case this answers False for.
+        """
         return not self.done.is_set()
 
 
@@ -213,6 +218,12 @@ class BashSession:
 
     @property
     def cwd(self) -> str:
+        """Where the next command runs — ``cd`` and ``export`` change it.
+
+        The session's working directory, not the process's: ``cd`` is handled
+        here rather than in a child, which is the whole reason a shell session
+        is persistent.
+        """
         return str(self._cwd)
 
     def configure(self, settings: dict) -> None:
@@ -244,6 +255,14 @@ class BashSession:
         timeout: int,
         on_output: OutputSink | None = None,
     ) -> ToolResult:
+        """Run *command* in the foreground and wait for it to finish.
+
+        ``cd`` and ``export`` never reach a child process — they are answered
+        here so they change this session. Output is streamed to *on_output* as
+        it arrives, which is how a tool reports progress mid-command. ``timeout``
+        bounds the call; the killed process reports the timeout as its exit
+        code rather than hanging the turn.
+        """
         stripped = command.strip()
         if stripped.startswith("cd ") and "&&" not in stripped and ";" not in stripped:
             return ToolResult(self._handle_cd(stripped[3:].strip()), {"exit_code": 0})

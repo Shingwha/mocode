@@ -51,6 +51,15 @@ class CLIRenderer:
         self._rows: dict[str, int | None] = {}
 
     def draw(self, event: "Event") -> None:
+        """Draw one event — the renderer's whole subscription surface.
+
+        A ``match`` over the events a terminal can represent, with an
+        intentional fallback: anything it was not written for — a core event
+        with nothing to draw, an event type a plugin defined — either describes
+        itself through ``summary()`` or draws nothing. That is why a plugin's
+        new event needs no change here, and why the host needs no renderer
+        registry: an event renders itself.
+        """
         match event:
             case TextDelta():
                 self._d.stream(event.text, kind="answer")

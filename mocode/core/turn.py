@@ -51,6 +51,11 @@ class Turn:
 
     @property
     def done(self) -> bool:
+        """Whether the turn has finished, failed, or been cancelled.
+
+        Reads the underlying task, so it is True as soon as the terminal event
+        is on its way — before it is necessarily delivered to a reader.
+        """
         return self._task.done()
 
     def subscribe(self, *, since: int | None = None) -> Subscription:

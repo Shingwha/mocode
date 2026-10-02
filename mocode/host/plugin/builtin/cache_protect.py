@@ -112,11 +112,13 @@ class _Watcher(AgentHook):
     # ── the two triggers ────────────────────────────────────
 
     async def on_event(self, event: "Event") -> None:
+        """A conversation that was just replaced — its artifacts are back."""
         if isinstance(event, ConversationChanged):
             # A resume (or /clear): the frozen artifacts were just put back.
             self._announce()
 
     async def before_iteration(self, ctx: "IterationContext") -> None:
+        """The first iteration of a turn — where a diff belongs in the prompt."""
         if ctx.iteration == 1:
             self._announce(messages=ctx.messages)
 
@@ -240,12 +242,22 @@ class _Watcher(AgentHook):
 
 
 class CacheProtectPlugin(Plugin):
+    """The builtin that holds a session's request prefix still.
+
+    The mechanism is a watcher hook: it baselines what a resume was given and
+    turns anything that drifts — a different system prompt, a different tool
+    interface — into a diff notice, so a resumed conversation can be corrected
+    without silently paying a full cache miss. On by default, because the
+    alternative is a resumed session being slower than it needs to be.
+    """
+
     name = NAME
     description = (
         "Keeps a session's request prefix pinned; changes arrive as diff notices"
     )
 
     def build(self, ctx: BuildContext) -> None:
+        """Register the watcher — the whole plugin is one conversation's hook."""
         ctx.hooks.append(_Watcher(ctx))
 
 

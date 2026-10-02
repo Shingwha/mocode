@@ -55,6 +55,7 @@ class Usage:
     completion_tokens: int
 
     def to_dict(self) -> dict[str, int]:
+        """The two counts as a plain dict — what ``RunState.to_dict`` embeds."""
         return {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
@@ -137,6 +138,11 @@ class StreamAccumulator:
         self._built = False
 
     def feed(self, chunk: Chunk) -> None:
+        """Fold one chunk in. Raises once :meth:`build` has been called.
+
+        ``usage`` and ``finish_reason`` are last-wins — a backend reports them
+        on its final chunk, and repeating them is not a contradiction.
+        """
         if self._built:
             raise RuntimeError("this accumulator has already built its response")
         if chunk.text:
@@ -159,14 +165,25 @@ class StreamAccumulator:
 
     @property
     def text(self) -> str:
+        """Everything said so far, in arrival order."""
         return "".join(self._text)
 
     @property
     def reasoning(self) -> str:
+        """The model's thinking so far, concatenated across chunks.
+
+        Empty for a backend that does not separate thinking from answering.
+        """
         return "".join(self._reasoning)
 
     @property
     def tool_calls(self) -> list[ToolCall]:
+        """The calls seen so far, ordered by ``index``.
+
+        Live view: a call whose arguments are still streaming reports what has
+        arrived so far. Complete recursively: a fragment carrying only
+        ``arguments`` joins the call its ``index`` already names.
+        """
         return [
             ToolCall(id=slot.id, name=slot.name, arguments=slot.arguments)
             for _, slot in sorted(self._tool_slots.items())
@@ -205,12 +222,23 @@ class Provider(Protocol):
     """
 
     @property
-    def model(self) -> str: ...
+    def model(self) -> str:
+        """The model this provider is wired to, as the backend spells it."""
 
     @property
-    def retry_policy(self) -> RetryPolicy: ...
+    def retry_policy(self) -> RetryPolicy:
+        """This backend's policy — how often and how long to retry."""
 
-    def is_retriable(self, exc: Exception) -> bool: ...
+    def is_retriable(self, exc: Exception) -> bool:
+        """Whether *exc* is worth another attempt.
+
+        A rate limit or a transport error is; a 400 about the request body
+        never improves by being asked again. A provider that cannot tell the
+        difference answers True — the attempt budget bounds the loop, and one
+        wasted retry is cheaper than a turn abandoned over a transient failure.
+        """
+        ...
+
     def stream(
         self,
         messages: list[dict[str, Any]],
@@ -218,7 +246,14 @@ class Provider(Protocol):
         tools: list[dict[str, Any]],
         max_tokens: int | None,
         effort: Effort | None,
-    ) -> AsyncIterator[Chunk]: ...
+    ) -> AsyncIterator[Chunk]:
+        """Yield the response as chunks, newest token first.
+
+        Called once per provider attempt. Usage and ``finish_reason`` belong on
+        the last chunk; the loop folds the stream through a
+        :class:`StreamAccumulator` and never needs the whole response first.
+        """
+        ...
 
 
 # ---- Retry with exponential backoff ----
