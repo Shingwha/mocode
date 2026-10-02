@@ -13,15 +13,18 @@ under; this document explains the shape.
 ```
 mocode/
 ├── core/                the kernel — mechanism only, no app dependencies
-│   ├── agent.py         AgentConfig, AgentLoop (start/stream/chat/derive), Turn
+│   ├── agent.py         AgentConfig, AgentLoop (start/stream/chat/derive,
+│   │                    run_with_messages), IterationLimit, LoopResult
+│   ├── turn.py          Turn — one turn's window on the channel; wait/cancel
 │   ├── channel.py       EventChannel, Subscription — the run's event stream
-│   ├── dispatch.py      ToolDispatcher — the one execution path for a tool call
-│   ├── events.py        Event + the eleven events a run emits
-│   ├── state.py         RunState — the events folded into a live snapshot
+│   ├── dispatch.py      ToolDispatcher, DispatchResult — the one execution path
+│   ├── events.py        Event + the twelve events a run emits
+│   ├── state.py         RunState, ToolCallState — events folded into a snapshot
 │   ├── hook.py          AgentHook, HookRunner, contexts — the interception channel
 │   ├── prompt.py        Prompt, Section — section-based XML assembly
 │   ├── provider.py      Provider protocol, Chunk/Response DTOs, with_retry_stream
-│   └── tool.py          Tool, ToolPolicy, ToolRegistry, the JSON-Schema checker
+│   ├── tool.py          Tool, ToolPolicy, ToolRegistry, the JSON-Schema checker
+│   └── transcript.py    the message-dict format — one home, read/write helpers
 ├── host/                the layer an application embeds
 │   ├── runtime.py       MoCode — the process runtime: config, plugins, sessions
 │   ├── conversation.py  Conversation — one project, one model, one history
@@ -29,19 +32,25 @@ mocode/
 │   ├── command.py       Command, CommandRegistry (register + dispatch), CommandResult
 │   ├── config.py        Config, ProviderEntry, ModelEntry
 │   ├── session.py       Session, SessionStore
-│   ├── export.py        Session → Markdown
+│   ├── export.py        Session → JSON to resume / Markdown to read
 │   ├── prompt.py        build_system_prompt(ctx) — render sections, nothing else
+│   ├── text.py          decode_bytes, one_line — the host's text helpers
+│   ├── io.py            read_json / write_json — the host's file I/O
 │   └── plugin/          Plugin, BuildContext/HostContext, loader, PluginHost,
 │                        env (a plugin's own uv environment), install (install/sync/list/remove)
 │       └── builtin/     the plugins MoCode ships: filesystem, shell, skills,
-│                         default-prompts, session, help, cache-protect
+│                         default-prompts, session, help, effort, cache-protect
 ├── cli/                 the terminal front-end — a consumer of host/
 │   ├── app.py           CLIApp — the REPL, dispatch and Ctrl-C
 │   ├── plugin.py        CLIPlugin — the terminal's own extension surface
+│   ├── commands.py      the commands that need a terminal: /quit /copy /model /resume
 │   ├── render.py        CLIRenderer — the event stream, as terminal lines
 │   ├── lines.py         Line + builders — what a turn looks like, as data
-│   ├── display.py       Display — terminal primitives; theme, text, input, dialogs
-│   └── commands.py      the commands that need a terminal: /quit /copy /model /resume
+│   ├── display.py       Display — terminal output primitives
+│   ├── theme.py         Theme — the terminal's whole appearance, one dataclass
+│   ├── text.py          terminal text metrics: width, wrapping, truncation
+│   ├── input.py         PromptSession, paste handling, keybindings, completer
+│   └── dialogs.py       questionary wrappers; None when there is no one to ask
 ├── providers/openai.py  OpenAI-compatible streaming provider
 ├── plugins/__init__.py  the public SDK third-party plugins import
 ├── testing/             the public test kit — a scripted model, no network
@@ -49,6 +58,9 @@ mocode/
 │   └── providers.py     MockProvider, SlowProvider, say/call_tool, chunk replay
 └── cli_args.py main.py  argument parsing and process entry
 ```
+
+The public surface of every layer, with signatures, is mapped in
+[docs/api.md](api.md).
 
 Dependencies only ever point down: `core ← host ← cli`. `core` and `providers`
 import nothing above them; `host` never imports `cli`. The layering rules and
@@ -314,7 +326,8 @@ shell session, skill index and tool instances exist), what has been said, and
 which session id it will be saved as. A conversation's plugins are *built* for
 it — `load_plugins()` is the per-project half (discovery, import, enabled
 check, cached by `MoCode`), `PluginHost.build_all()` is the per-conversation
-half.
+half. The two-stage lifecycle (`build` / `prepare`) and the one place the
+request surface is written are [plugins.md](plugins.md)'s to explain.
 
 The runtime keeps no registry of live conversations: the identity a
 conversation has in an application — a route, a tab, a socket — is that
@@ -457,7 +470,10 @@ user input → CLIApp._dispatch ─┬─ slash command → handler(CommandConte
 An embedding application is the same path minus the terminal:
 `your app → conversation.run() → Turn → channel → your subscription`.
 
-## Where the tests live
+## A curated tour of the tests
+
+`tests/` holds 25 files; this is a route through twelve of them, not a map —
+the rest are their own index.
 
 - `tests/test_agent_loop.py` — the loop, tools, interception, derive;
   `tests/test_channel.py` — ordering, replay, lagging readers, closing;
