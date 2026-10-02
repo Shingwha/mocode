@@ -55,7 +55,7 @@ class Usage:
     completion_tokens: int
 
     def to_dict(self) -> dict[str, int]:
-        """The two counts as a plain dict — the shape a session stores them in."""
+        """The two counts as a plain dict — what ``RunState.to_dict`` embeds."""
         return {
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
@@ -233,9 +233,9 @@ class Provider(Protocol):
         """Whether *exc* is worth another attempt.
 
         A rate limit or a transport error is; a 400 about the request body
-        never improves by being asked again. Defaults to True for anything the
-        type ignores, which is the safe direction: an unknown error is worth
-        one more try and the attempt budget bounds the loop.
+        never improves by being asked again. A provider that cannot tell the
+        difference answers True — the attempt budget bounds the loop, and one
+        wasted retry is cheaper than a turn abandoned over a transient failure.
         """
         ...
 
