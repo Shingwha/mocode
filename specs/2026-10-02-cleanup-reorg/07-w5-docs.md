@@ -87,6 +87,12 @@ reality, not from old docs. Note in the file header that docstrings are the
 detailed source and this is the map.
 
 ### T6 examples/
+Plus, in docs/testing.md, add one short paragraph (from W4-T's verified finding):
+a test that needs a background job held until released should use a bounded
+`sleep N` child (single fork at spawn), not a polling loop or an external
+gate — on Windows, killing a bash whose command loops over an external
+command can strand an MSYS fork-child, since TerminateProcess only kills the
+direct child. `sleep` children self-terminate.
 - Fix `examples/core/minimal.py:66` and `examples/core/nested.py:48`:
   `Tool(schema=...)` must be a JSON-Schema object node
   (`{"type": "object", "properties": {...}}`) like every other usage in the
