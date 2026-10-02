@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ master（W1a/W1b/W2 已合并，891 passed；W3 未实施 — 用户已点名，分支 `feat/mcp-http` 与 worktree 已建并转交新对话继续）
+
 # Spec Group · MCP + Codemode 两个内置插件（2026-10-02）
 
 > Group: `specs/2026-10-02-mcp-codemode/`

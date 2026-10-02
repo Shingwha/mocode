@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ feat/codemode
+
 # Spec 02 · W1b：`codemode` 内置插件（波次 W1b）
 
 > 分支 `feat/codemode`；worktree `C:\Users\shifu\.worktrees\mocode\feat-codemode`。

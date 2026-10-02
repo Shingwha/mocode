@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ feat/mcp-codemode-integration
+
 # Spec 03 · W2：集成 + 文档 + 端到端（波次 W2）
 
 > 分支 `feat/mcp-codemode-integration`；worktree `C:\Users\shifu\.worktrees\mocode\feat-mcp-codemode-integration`。

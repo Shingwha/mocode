@@ -1,3 +1,5 @@
+✅ 2026-10-02 @ feat/mcp-stdio
+
 # Spec 01 · W1a：`mcp` 内置插件（stdio）（波次 W1a）
 
 > 分支 `feat/mcp-stdio`；worktree `C:\Users\shifu\.worktrees\mocode\feat-mcp-stdio`。

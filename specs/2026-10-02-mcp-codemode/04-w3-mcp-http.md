@@ -1,3 +1,5 @@
+⏸️ 2026-10-02 未实施 — 用户已点名转主线；分支 `feat/mcp-http` 与 worktree（`C:\Users\shifu\.worktrees\mocode\feat-mcp-http`）已建、零 commit 指向 master，转交新对话从 T1 开始
+
 # Spec 04 · W3（可选）：MCP streamable HTTP + resources + subscriptions（波次 W3）
 
 > 分支 `feat/mcp-http`；worktree `C:\Users\shifu\.worktrees\mocode\feat-mcp-http`。
