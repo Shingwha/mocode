@@ -258,7 +258,7 @@ resolved policy for that call.
 | Prompt sections | `ctx.prompt_sections.append(Section(...))` — a name collision is won by the last section registered |
 | Own settings | `ctx.plugin_config("name")` — the `plugins.<name>` object from config.json |
 | Own state | `ctx.plugin_state("name")` — a dict that travels with the session |
-| Model facts | `ctx.model` — name / `context_window` / `max_output`, readable in `build()` |
+| Model facts | `ctx.model` — name / `context_window` / `max_tokens` / `efforts` / `effort`, readable in `build()` |
 | Files it ships | `ctx.plugin_sources` — the directories the project's plugins were loaded from |
 | Provider types | `ctx.register_provider_type(name, factory)` — see [providers.md](providers.md) |
 | Messages to the user | `await ctx.emit(Notice(...))` at call time — a `Notice` carries its own text and level |

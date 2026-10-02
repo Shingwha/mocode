@@ -16,7 +16,8 @@ declared, not abstracted away:
   `tool_calls`, `reasoning_content`), `tool` (with `tool_call_id`);
 - `tools` are OpenAI function schemas (`{"type": "function", "function": …}`);
 - `system` travels as a separate string, not a message;
-- the output cap is called `max_tokens`.
+- the output cap is called `max_tokens`;
+- thinking intensity is called `effort`.
 
 One dialect means the kernel has exactly one message shape to keep correct. A
 backend that speaks something else — Anthropic, a local server — translates
@@ -71,6 +72,7 @@ class Provider(Protocol):
         system: str,                      # the complete system prompt
         tools: list[dict[str, Any]],      # function schemas; [] = no tools
         max_tokens: int | None,           # output cap; None = send no cap
+        effort: Effort | None,            # thinking level; None = send none
     ) -> AsyncIterator[Chunk]: ...
 ```
 
@@ -81,6 +83,8 @@ response — the loop does not care which it is.
 **The provider must:**
 
 - place `system` where the backend wants it (prepended message or parameter);
+- translate `effort` onto its wire as it sees fit — `None` means the request
+  carries no thinking-intensity parameter at all;
 - map each backend chunk onto a `Chunk`, dropping chunks that carry nothing;
 - preserve `index` on tool-call fragments, keeping `arguments` as raw JSON text;
 - make the request inside the generator, on first iteration — that is what
@@ -160,7 +164,7 @@ beats the exponential curve.
 `base_url`.
 
 ```python
-OpenAIProvider(api_key, model="gpt-4o", base_url=None, extra_body=None)
+OpenAIProvider(api_key, model="gpt-4o", base_url=None, retry_policy=None)
 ```
 
 What `stream()` does, in order:
@@ -173,7 +177,10 @@ What `stream()` does, in order:
 3. **Request** — `await client.chat.completions.create(..., stream=True)`.
    The `await` performs the request, so a dead connection surfaces inside the
    retry window. An empty tools list becomes `None` (the API rejects `[]`);
-   `max_tokens` is sent only when set — MoCode never invents a cap.
+   `max_tokens` is sent only when set — MoCode never invents a cap; and
+   `reasoning_effort` is sent only when an effort level is set — the level
+   name travels verbatim, custom names included, and when none is set the
+   server decides entirely on its own.
 4. **Map** — `_to_chunk()` tolerates what compatible endpoints disagree about:
    `delta.content` → `text`; `delta.reasoning_content` (or a *string*
    `delta.reasoning` — the newest models use it for a structured object,
@@ -182,10 +189,9 @@ What `stream()` does, in order:
    the final usage-only chunk pass through. Empty chunks are dropped.
 
 **Token accounting:** streaming responses report usage only when asked, so
-`stream_options: {"include_usage": True}` is sent by default. An endpoint that
-rejects the parameter is configured around by putting its own
-`stream_options` in the model's `extra_body` — that value wins and is lifted
-out so it is not sent twice.
+`stream_options: {"include_usage": True}` is sent on every request. An
+endpoint that rejects the parameter needs a custom provider type, not a
+config knob.
 
 **Retriable:** `RateLimitError`, `InternalServerError`, `APIConnectionError`,
 `APITimeoutError`. Everything else (auth, bad request) is permanent.
@@ -202,8 +208,8 @@ Which implementation it builds is the entry's `type` field:
 ```jsonc
 {
   "providers": {
-    "intern":  { "base_url": "…", "models": { … } },   // no type → "openai"
-    "local":   { "type": "llama", "models": { … } }
+    "intern":  { "base_url": "…", "models": [ … ] },   // no type → "openai"
+    "local":   { "type": "llama", "models": [ … ] }
   }
 }
 ```
@@ -234,26 +240,35 @@ class LlamaPlugin(Plugin):
 
 A factory receives `(entry, key, model)` and reads what it needs —
 `entry.api_key_for(key)` resolves `api_key` → `$<PROVIDER_KEY>_API_KEY`,
-`entry.base_url`, the model entry's `extra_body`. Registering a name again
-replaces it. A config entry naming an unregistered type is a configuration
-mistake: `provider_for()` raises instead of falling back.
+`entry.base_url`, and `entry.model(model)` finds the model's own entry (or
+`None` when the model is not declared) for its facts and overrides.
+Registering a name again replaces it. A config entry naming an unregistered
+type is a configuration mistake: `provider_for()` raises instead of falling
+back.
 
-`extra_body` is a per-model dict of additional request fields
-(`temperature`, `reasoning_effort`, …) merged into the call — provider
-extensions without provider code. The model entry also carries an optional
-`retry` block, the per-model `RetryPolicy` override — keys are the
-`RetryPolicy` fields, unknown keys are ignored, and an absent block leaves
-the provider's own policy standing:
+Endpoints that need provider-specific request fields (DeepSeek's `thinking`,
+llama.cpp's samplers, …) take a custom provider type — see *Adding a
+provider* below; there is no per-model request-extension dict in config. The
+model entry itself carries the limits (`context_window`, `max_tokens`), the
+reasoning-level table (`efforts`, `effort`), and an optional `retry` block —
+the per-model `RetryPolicy` override, keys are the `RetryPolicy` fields,
+unknown keys are ignored, and an absent block leaves the provider's own
+policy standing:
 
 ```jsonc
 {
   "providers": {
     "intern": {
       "base_url": "…",
-      "models": {
-        // rate-limited hard, recovers slowly: fewer attempts, longer waits
-        "Atria-Dawn-Preview": { "retry": { "max_attempts": 3, "base_delay": 5.0 } }
-      }
+      "models": [
+        {
+          "id": "Atria-Dawn-Preview",
+          "efforts": ["low", "medium", "high"],  // optional; this triple is the default
+          "effort": "high",                      // optional level sent with the request
+          // rate-limited hard, recovers slowly: fewer attempts, longer waits
+          "retry": { "max_attempts": 3, "base_delay": 5.0 }
+        }
+      ]
     }
   }
 }
@@ -261,7 +276,7 @@ the provider's own policy standing:
 
 The built-in `OpenAIProvider` accepts the override as a constructor
 parameter (`retry_policy=`); a provider of your own reads it the same way —
-`entry.models[model].retry_policy()` — and decides what to do with `None`.
+`entry.model(model).retry_policy()` — and decides what to do with `None`.
 
 ## Adding a provider
 
@@ -283,10 +298,10 @@ class AnthropicProvider:
         from anthropic import APIConnectionError, APITimeoutError, RateLimitError
         return isinstance(exc, (RateLimitError, APIConnectionError, APITimeoutError))
 
-    async def stream(self, messages, system, tools, max_tokens):
+    async def stream(self, messages, system, tools, max_tokens, effort):
         # convert messages to your SDK's format, open the stream, map events
         # onto Chunk. Anthropic *requires* an output cap where OpenAI makes it
-        # optional — a backend like that makes models.<m>.max_output a config
+        # optional — a backend like that makes models.<m>.max_tokens a config
         # requirement; the provider still never invents a number.
         ...
         # text:      yield Chunk(text=…)

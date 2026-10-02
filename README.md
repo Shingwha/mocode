@@ -53,8 +53,8 @@ MoCode reads `~/.mocode/config.json`. The file is organised by who owns each val
 
 ```jsonc
 {
-  "active_provider": "intern",
-  "active_model": "Atria-Dawn-Preview",
+  "provider": "commandcode",               // the default for new conversations
+  "model": "deepseek/deepseek-v4.1-flash",
 
   "agent": {                       // host policy — the same whatever model is loaded
     "tool_timeout": 240,           // seconds before a tool call is abandoned
@@ -62,17 +62,26 @@ MoCode reads `~/.mocode/config.json`. The file is organised by who owns each val
   },
 
   "providers": {
-    "intern": {
-      "name": "Intern Discovery",
-      "base_url": "https://discovery-api.intern-ai.org.cn/v1",
+    "commandcode": {
+      "name": "Command Code",
+      "base_url": "https://api.commandcode.ai/provider/v1",
       "api_key": "sk-...",         // optional — see below
-      "models": {                  // keyed by model name
-        "Atria-Dawn-Preview": {
-          "context_window": 200000,  // optional; for plugins that budget context
-          "max_output": 32768,       // optional; no cap is sent when absent
-          "extra_body": {}           // optional; provider-specific request fields
+      "models": [                  // ordered array; "id" is the unique key
+        {
+          "id": "deepseek/deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash",  // optional display name
+          "context_window": 1000000,      // optional; for plugins that budget context
+          "max_tokens": 65536,            // optional; no cap is sent when absent
+          "efforts": ["low", "high", "max"],  // optional reasoning-level table
+          "effort": "high",               // optional level sent with the request
+          "retry": { "max_attempts": 3 }  // optional; per-model retry override
+        },
+        {
+          "id": "xiaomi/mimo-v2.6-pro",
+          "efforts": ["high", "xhigh", "max"],  // any custom levels are allowed
+          "effort": "xhigh"
         }
-      }
+      ]
     }
   },
 
@@ -94,13 +103,15 @@ An explicit `api_key` in the file wins over the environment.
 
 ### Output caps
 
-MoCode sends **no** `max_tokens` unless you set `max_output` on the model. Guessing low silently truncates answers, and guessing high can be rejected outright, so the server's own default applies until you say otherwise.
+MoCode sends **no** `max_tokens` unless you set `max_tokens` on the model. Guessing low silently truncates answers, and guessing high can be rejected outright, so the server's own default applies until you say otherwise.
 
 ### Model facts
 
-`context_window` and `max_output` are optional and stay absent until you fill them in — MoCode never invents a model's limits. They are what plugins read (a compaction hook, for example, needs the window size) and what the request carries.
+`context_window` and `max_tokens` are optional and stay absent until you fill them in — MoCode never invents a model's limits. They are what plugins read (a compaction hook, for example, needs the window size) and what the request carries.
 
-Any OpenAI-compatible API works — just set `base_url`. Per-model `extra_body` passes provider-specific fields straight through (DeepSeek's `thinking`, llama.cpp's samplers, and so on).
+Reasoning effort is a model fact too. A model entry may declare its own ordered level table with `efforts` — absent, the default triple `low` / `medium` / `high` stands, and any custom names (`["high", "xhigh", "max"]`, say) are allowed. The chosen level is sent on the wire verbatim as the API's standard `reasoning_effort` field; `effort` on the entry is the level new conversations start from, and when it is absent the request carries no such parameter and the server decides entirely on its own. `> /effort` switches the level for the current conversation at runtime, without touching the file.
+
+Endpoints that need provider-specific request fields (DeepSeek's `thinking`, llama.cpp's samplers, and so on) take a custom provider type registered in code — see [docs/providers.md](docs/providers.md).
 
 `> /model` switches provider and model and writes the choice back to the file.
 
@@ -214,6 +225,7 @@ A conversation owns its project, its model, its history and its event stream; `c
 |---------|-------------|
 | `/help` | Show all commands |
 | `/model` | Switch provider/model |
+| `/effort` | Set the reasoning effort for this conversation |
 | `/resume [file.json]` | Browse and resume sessions |
 | `/export [json\|md]` | Export the current session |
 | `/clear` | Save and clear the conversation |

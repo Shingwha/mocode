@@ -150,14 +150,14 @@ def _write_plugin(plugins_dir: Path, name: str, code: str) -> None:
 def _config() -> Config:
     """Well-shaped and never real — the provider is replaced right after."""
     return Config(
-        active_provider="test",
-        active_model="test-model",
+        provider="test",
+        model="test-model",
         providers={
             "test": ProviderEntry(
                 name="Test",
                 api_key="sk-test",
                 base_url="http://localhost",
-                models={"test-model": ModelEntry()},
+                models=[ModelEntry(id="test-model")],
             )
         },
     )
