@@ -235,7 +235,7 @@ class Config:
         return ModelSpec(
             name=name,
             context_window=model.context_window,
-            max_output=model.max_output,
+            max_tokens=model.max_output,
         )
 
     # ── Serialization ──────────────────────────────────────

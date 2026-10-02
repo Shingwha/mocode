@@ -33,12 +33,16 @@ class OpenAIProvider:
     # config arrives through the constructor's retry_policy parameter.
     retry_policy = RetryPolicy(honor_retry_after=True)
 
+    # Token accounting is configured per endpoint; every compatible endpoint
+    # accepts usage reporting, so it is always on — an endpoint that rejects
+    # the parameter needs a custom provider type, not a config knob here.
+    _stream_options = {"include_usage": True}
+
     def __init__(
         self,
         api_key: str,
         model: str = "gpt-4o",
         base_url: str | None = None,
-        extra_body: dict[str, Any] | None = None,
         retry_policy: RetryPolicy | None = None,
     ):
         self._api_key = api_key
@@ -49,15 +53,6 @@ class OpenAIProvider:
         # keeps the provider's own policy.
         if retry_policy is not None:
             self.retry_policy = retry_policy
-
-        # `stream_options` rides inside extra_body — token accounting is
-        # configured per endpoint — and is lifted out so it is not sent twice.
-        body = dict(extra_body or {})
-        configured = body.pop("stream_options", None)
-        self._stream_options = (
-            configured if isinstance(configured, dict) else {"include_usage": True}
-        )
-        self._extra_body = body or None
 
     def _ensure_client(self):
         if self._client is None:
@@ -79,6 +74,7 @@ class OpenAIProvider:
         system: str,
         tools: list[dict[str, Any]],
         max_tokens: int | None,
+        effort: str | None,
     ) -> AsyncIterator[Chunk]:
         openai_messages = [
             {"role": "system", "content": system},
@@ -89,7 +85,6 @@ class OpenAIProvider:
             "model": self._model,
             "messages": openai_messages,
             "tools": tools or None,
-            "extra_body": self._extra_body,
             "stream": True,
             "stream_options": self._stream_options,
         }
@@ -97,6 +92,10 @@ class OpenAIProvider:
         # rather than capping the answer at a number MoCode made up.
         if max_tokens is not None:
             request["max_tokens"] = max_tokens
+        # Thinking intensity: the level name travels verbatim, including
+        # custom names a config declared — MoCode does no vendor adaptation.
+        if effort is not None:
+            request["reasoning_effort"] = effort
 
         # The await performs the request, so a rate limit or a dead connection
         # surfaces here — inside the retry window, before any chunk is handed

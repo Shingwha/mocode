@@ -60,6 +60,8 @@ from .hook import (
 from .prompt import Prompt, Section
 from .provider import (
     Chunk,
+    EFFORTS,
+    Effort,
     ModelSpec,
     Provider,
     Response,
@@ -89,6 +91,8 @@ __all__ = [
     "AgentLoop",
     "Chunk",
     "DispatchResult",
+    "EFFORTS",
+    "Effort",
     "Event",
     "EventChannel",
     "HookRunner",

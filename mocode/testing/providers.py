@@ -83,6 +83,7 @@ class MockProvider:
         system,
         tools,
         max_tokens,
+        effort,
     ) -> AsyncIterator[Chunk]:
         self.calls.append(
             {
@@ -90,6 +91,7 @@ class MockProvider:
                 "system": system,
                 "tools": tools,
                 "max_tokens": max_tokens,
+                "effort": effort,
             }
         )
         response = (

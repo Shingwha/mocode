@@ -18,6 +18,15 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
+#: A reasoning-effort level. The series is open: ``EFFORTS`` is only the
+#: default triple, config may declare arbitrary custom level names per model,
+#: and a provider translates the level name verbatim onto the wire.
+Effort = str
+
+#: The default ordered effort series — three levels, low to high. A model
+#: entry in config may replace it with any custom list of level names.
+EFFORTS: tuple[Effort, ...] = ("low", "medium", "high")
+
 
 @dataclass
 class ToolCall:
@@ -90,13 +99,21 @@ class ModelSpec:
     """What the kernel knows about the model it is driving.
 
     Both limits are optional because MoCode does not invent them. An absent
-    ``max_output`` means the request carries no output cap at all and the server
-    applies its own — guessing low would silently truncate answers.
+    ``max_tokens`` means the request carries no output cap at all and the
+    server applies its own — guessing low would silently truncate answers.
+
+    ``efforts`` is the model's optional ordered level table for a frontend
+    selector; it defaults to the kernel's three-level series and config may
+    declare any custom names. ``effort`` is the level sent with the request —
+    absent means the request carries no such parameter and the server decides
+    entirely on its own.
     """
 
     name: str
     context_window: int | None = None
-    max_output: int | None = None
+    max_tokens: int | None = None
+    efforts: tuple[Effort, ...] = EFFORTS
+    effort: Effort | None = None
 
 
 class StreamAccumulator:
@@ -175,10 +192,12 @@ class Provider(Protocol):
     The kernel's interchange dialect is the OpenAI wire format: ``messages``
     are OpenAI role dicts (``user`` / ``assistant`` with ``tool_calls`` /
     ``tool`` with ``tool_call_id``), ``tools`` are OpenAI function schemas,
-    ``system`` travels separately, and the output cap is called ``max_tokens``.
-    A provider for a backend that speaks something else translates at this
-    edge — the dialect is declared here rather than abstracted away, so the
-    kernel has exactly one message shape to keep correct.
+    ``system`` travels separately, the output cap is called ``max_tokens`` and
+    thinking intensity is called ``effort`` — each provider translates both
+    onto its wire as it sees fit. A provider for a backend that speaks
+    something else translates at this edge — the dialect is declared here
+    rather than abstracted away, so the kernel has exactly one message shape
+    to keep correct.
 
     All members are required. A provider that cannot stream natively
     yields a single chunk holding the whole response — the loop does not care
@@ -198,6 +217,7 @@ class Provider(Protocol):
         system: str,
         tools: list[dict[str, Any]],
         max_tokens: int | None,
+        effort: Effort | None,
     ) -> AsyncIterator[Chunk]: ...
 
 
@@ -376,6 +396,8 @@ async def with_retry_stream(
 
 __all__ = [
     "Chunk",
+    "EFFORTS",
+    "Effort",
     "ModelSpec",
     "Provider",
     "Response",

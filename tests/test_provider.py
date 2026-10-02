@@ -59,10 +59,10 @@ def _tool_part(index: int, id: str = "", name: str = "", arguments: str = ""):
     )
 
 
-async def _stream(provider, messages=None, system="sys", tools=None, max_tokens=None):
+async def _stream(provider, messages=None, system="sys", tools=None, max_tokens=None, effort=None):
     return [
         chunk
-        async for chunk in provider.stream(messages or [], system, tools or [], max_tokens)
+        async for chunk in provider.stream(messages or [], system, tools or [], max_tokens, effort)
     ]
 
 
@@ -96,23 +96,18 @@ class TestRequestShape:
         assert sent[0]["model"] == "test-model"
 
     @pytest.mark.asyncio
-    async def test_extra_body_is_passed_through(self):
+    async def test_effort_is_sent_as_reasoning_effort(self):
+        """A level name travels verbatim, custom names included."""
         sent: list[dict] = []
-        provider = _provider(sent, extra_body={"thinking": {"type": "enabled"}})
-        await _stream(provider)
-        assert sent[0]["extra_body"] == {"thinking": {"type": "enabled"}}
+        await _stream(_provider(sent), effort="high")
+        assert sent[0]["reasoning_effort"] == "high"
 
     @pytest.mark.asyncio
-    async def test_stream_options_may_be_overridden_from_extra_body(self):
-        """An endpoint that rejects the parameter can be configured around it."""
+    async def test_no_effort_means_no_reasoning_effort_field(self):
+        """Absent level — the server decides on its own."""
         sent: list[dict] = []
-        provider = _provider(
-            sent, extra_body={"stream_options": {"include_usage": False}, "top_k": 5}
-        )
-        await _stream(provider)
-        assert sent[0]["stream_options"] == {"include_usage": False}
-        # Lifted out of extra_body, not sent twice.
-        assert sent[0]["extra_body"] == {"top_k": 5}
+        await _stream(_provider(sent))
+        assert "reasoning_effort" not in sent[0]
 
 
 class TestChunkMapping:

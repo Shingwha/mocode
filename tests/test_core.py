@@ -38,7 +38,7 @@ class TestAgentLoopAssembly:
         assert agent.tool_registry.names() == []
 
     def test_config_and_model_are_passed_through(self):
-        spec = ModelSpec(name="m", context_window=100_000, max_output=4096)
+        spec = ModelSpec(name="m", context_window=100_000, max_tokens=4096)
         agent = _loop(config=AgentConfig(tool_result_limit=4096), model=spec)
         assert agent.config.tool_result_limit == 4096
         assert agent.model is spec
@@ -46,7 +46,7 @@ class TestAgentLoopAssembly:
     def test_model_defaults_to_the_provider_name_with_no_invented_limits(self):
         agent = _loop()
         assert agent.model.name == "mock"
-        assert (agent.model.context_window, agent.model.max_output) == (None, None)
+        assert (agent.model.context_window, agent.model.max_tokens) == (None, None)
 
     def test_two_loops_never_share_a_channel(self):
         a, b = _loop(), _loop()

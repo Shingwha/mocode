@@ -136,18 +136,18 @@ class TestConfigModelSpec:
         spec = self._config().model_spec()
         assert spec.name == "big"
         assert spec.context_window == 200_000
-        assert spec.max_output == 32_768
+        assert spec.max_tokens == 32_768
 
     def test_resolves_explicit_pair(self):
         spec = self._config().model_spec("demo", "bare")
         assert spec.name == "bare"
         assert spec.context_window is None
-        assert spec.max_output is None
+        assert spec.max_tokens is None
 
     def test_unknown_model_gets_no_invented_limits(self):
         spec = self._config().model_spec("demo", "who-knows")
         assert spec.name == "who-knows"
-        assert spec.max_output is None
+        assert spec.max_tokens is None
 
     def test_unknown_provider_gets_no_invented_limits(self):
         spec = self._config().model_spec("ghost", "big")
