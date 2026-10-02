@@ -461,7 +461,8 @@ class AgentLoop:
                     self.messages,
                     self.system_prompt,
                     request_tools,
-                    self.model.max_output,
+                    self.model.max_tokens,
+                    self.model.effort,
                     deadline=deadline,
                 ):
                     acc.feed(chunk)
