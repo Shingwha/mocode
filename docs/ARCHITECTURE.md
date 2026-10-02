@@ -291,9 +291,11 @@ unlimited, all checked before each provider call — a cut is an ending, not a
 failure: the history stays replayable because every issued tool call keeps
 its answer); `cancelled` when the turn was stopped. `chat()` raises
 `IterationLimit` for the iteration cap rather than returning an empty string
-a caller could mistake for the model's answer. The wall-clock budget is not
-checked inside retry backoff: a turn mid-backoff may overshoot it by one
-backoff interval, by design.
+a caller could mistake for the model's answer. The wall-clock budget is
+enforced inside retry backoff as well: the deadline handed to
+`with_retry_stream` stops any sleep or retry past it, and the
+`RetryDeadlineExceeded` that follows lands on the same `time_budget` path —
+the budget endgame, never a provider failure to surface or to retry.
 
 ## The host
 
