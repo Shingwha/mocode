@@ -17,40 +17,36 @@ from mocode.host.plugin.builtin.skills import (
 from mocode.host.plugin.builtin.skills import parse_frontmatter
 from mocode.core import ToolError, ToolRegistry
 
+from .conftest import skill_dir
+
 
 class TestBashSession:
-    @pytest.mark.asyncio
     async def test_runs_a_command(self, tmp_path: Path):
         result = await BashSession(tmp_path).execute("echo hello", timeout=10)
         assert result.content == "hello"
 
-    @pytest.mark.asyncio
     async def test_the_exit_code_travels_as_a_detail(self, tmp_path: Path):
         session = BashSession(tmp_path)
         assert (await session.execute("true", timeout=10)).details == {"exit_code": 0}
         assert (await session.execute("exit 3", timeout=10)).details == {"exit_code": 3}
 
-    @pytest.mark.asyncio
     async def test_cd_persists(self, tmp_path: Path):
         session = BashSession(tmp_path)
         result = await session.execute(f"cd {tmp_path}", timeout=10)
         assert str(tmp_path) in result.content
         assert session.cwd == str(tmp_path)
 
-    @pytest.mark.asyncio
     async def test_env_vars_persist_across_commands(self, tmp_path: Path):
         session = BashSession(tmp_path)
         await session.execute("export MY_TEST_VAR=world", timeout=10)
         assert (await session.execute("echo $MY_TEST_VAR", timeout=10)).content == "world"
 
-    @pytest.mark.asyncio
     async def test_restart_clears_state(self, tmp_path: Path):
         session = BashSession(tmp_path)
         await session.execute("export MY_TEST_VAR=hello", timeout=10)
         session.restart()
         assert (await session.execute("echo $MY_TEST_VAR", timeout=10)).content == "(empty)"
 
-    @pytest.mark.asyncio
     async def test_env_values_are_never_executed_as_shell_code(self, tmp_path: Path):
         """Env vars are passed through ``env=``, never interpolated into a script."""
         session = BashSession(tmp_path)
@@ -60,7 +56,6 @@ class TestBashSession:
         assert (await session.execute("echo $EVIL", timeout=10)).content == "$(echo INJECTED)"
         assert (await session.execute("echo $TICK", timeout=10)).content == "`echo INJECTED`"
 
-    @pytest.mark.asyncio
     async def test_output_is_reported_line_by_line_as_it_arrives(self, tmp_path: Path):
         seen: list[tuple[str, str]] = []
 
@@ -78,7 +73,6 @@ class TestBashSession:
         ]
         assert "one" in result.content and "oops" in result.content
 
-    @pytest.mark.asyncio
     async def test_timeout_kills_the_command(self, tmp_path: Path):
         result = await BashSession(tmp_path).execute("sleep 5", timeout=1)
         assert result.content == "(timed out after 1s)"
@@ -101,7 +95,6 @@ class TestBashTool:
         assert tool.policy({"timeout": 7}) == ToolPolicy(timeout=7)
         assert tool.policy({}) == ToolPolicy(timeout=None)  # fall to config
 
-    @pytest.mark.asyncio
     async def test_the_model_timeout_argument_reaches_the_dispatcher(self, tmp_path: Path):
         from mocode.core.agent import AgentConfig
         from mocode.core.dispatch import ToolDispatcher
@@ -123,7 +116,6 @@ class TestBashTool:
         assert result.status == "timeout"
         assert result.content.startswith("timeout:")
 
-    @pytest.mark.asyncio
     async def test_restart_resets_the_session(self, tmp_path: Path):
         tool = bash_tool(tmp_path)
         await tool.run_async({"command": "export V=1"}, None)
@@ -186,27 +178,18 @@ class TestReadTool:
         assert read_tool(tmp_path).run({"path": str(tmp_path)}).details == {}
 
 
-def _make_skill_dir(base: Path, name: str, description: str, body: str = "") -> Path:
-    skill_dir = base / name
-    skill_dir.mkdir(parents=True, exist_ok=True)
-    (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: {description}\n---\n{body}", encoding="utf-8"
-    )
-    return skill_dir
-
-
 class TestSkills:
     def test_metadata_keeps_unknown_frontmatter_keys(self):
         meta = SkillMetadata.from_dict({"name": "x", "description": "d", "version": "1"})
         assert (meta.name, meta.description, meta.attrs) == ("x", "d", {"version": "1"})
 
     def test_a_skill_loads_its_body_without_frontmatter(self, tmp_path: Path):
-        skill_dir = _make_skill_dir(tmp_path, "my-skill", "test", "Hello world\n")
+        path = skill_dir(tmp_path, "my-skill", "test", "Hello world\n")
 
-        skill = Skill.from_dir(skill_dir)
+        skill = Skill.from_dir(path)
 
         assert skill.load_content() == "Hello world"
-        assert skill.base_dir == str(skill_dir)
+        assert skill.base_dir == str(path)
 
     def test_a_skill_without_a_name_is_skipped(self, tmp_path: Path):
         skill_dir = tmp_path / "nameless"
@@ -215,7 +198,7 @@ class TestSkills:
         assert Skill.from_dir(skill_dir) is None
 
     def test_discovery_prefers_the_directory_over_a_registered_skill(self, tmp_path: Path):
-        _make_skill_dir(tmp_path, "fastapi", "on disk")
+        skill_dir(tmp_path, "fastapi", "on disk")
 
         manager = SkillManager([tmp_path])
         manager.register(
@@ -229,12 +212,12 @@ class TestSkills:
         assert SkillManager([tmp_path / "nope"]).all() == []
 
     def test_the_tool_returns_content_and_where_to_find_it(self, tmp_path: Path):
-        skill_dir = _make_skill_dir(tmp_path, "fastapi", "FastAPI tips", "Use dependency injection.")
+        path = skill_dir(tmp_path, "fastapi", "FastAPI tips", "Use dependency injection.")
 
         result = skill_tool(SkillManager([tmp_path])).run({"name": "fastapi"})
 
         assert "Base directory:" in result
-        assert str(skill_dir) in result
+        assert str(path) in result
         assert "Use dependency injection." in result
 
     def test_an_unknown_skill_is_not_found(self, tmp_path: Path):

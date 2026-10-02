@@ -30,7 +30,7 @@ from mocode.host.plugin.builtin.shell import (
     kill_shell_tool,
 )
 from mocode.host.plugin.builtin.shell import BashSession
-from mocode.testing import MockProvider, call_tool, collect, say
+from mocode.testing import call_tool, collect, say
 
 BG = {"run_in_background": True}
 
@@ -56,7 +56,6 @@ async def _done(session: BashSession, shell_id: str) -> None:
 
 
 class TestBackgroundStart:
-    @pytest.mark.asyncio
     async def test_returns_a_handle_immediately(self, tools, session):
         bash, _, _ = tools
 
@@ -74,7 +73,6 @@ class TestBackgroundStart:
         assert "exit_code" not in result.details
         await session.kill("shell_1")
 
-    @pytest.mark.asyncio
     async def test_the_job_runs_and_finishes(self, tools, session):
         bash, _, _ = tools
 
@@ -87,7 +85,6 @@ class TestBackgroundStart:
 
 
 class TestBashOutput:
-    @pytest.mark.asyncio
     async def test_reading_is_consuming_no_line_comes_back_twice(
         self, tools, session
     ):
@@ -110,7 +107,6 @@ class TestBashOutput:
         assert third.details["lines"] == []
         assert third.content == "(no new output)"
 
-    @pytest.mark.asyncio
     async def test_a_filter_consumes_only_the_matching_lines(self, tools, session):
         bash, output, _ = tools
 
@@ -130,7 +126,6 @@ class TestBashOutput:
         rest = await output.run_async({"shell_id": shell_id}, None)
         assert rest.details["lines"] == ["ERR bad", "ERR worse"]
 
-    @pytest.mark.asyncio
     async def test_a_bad_filter_regex_is_a_tool_error(self, tools, session):
         bash, output, _ = tools
 
@@ -140,7 +135,6 @@ class TestBashOutput:
         assert exc.value.code == "invalid_param"
         await session.kill(shell_id)
 
-    @pytest.mark.asyncio
     async def test_wait_blocks_until_the_job_completes(self, tools, session):
         bash, output, _ = tools
 
@@ -150,7 +144,6 @@ class TestBashOutput:
         assert result.details["lines"] == ["done"]
         assert result.details["status"] == "completed"
 
-    @pytest.mark.asyncio
     async def test_wait_with_a_timeout_reports_the_still_running_job(
         self, tools, session
     ):
@@ -164,7 +157,6 @@ class TestBashOutput:
         assert result.details["status"] == "running"
         await session.kill(shell_id)
 
-    @pytest.mark.asyncio
     async def test_an_unknown_shell_is_not_found(self, tools):
         _, output, kill = tools
         with pytest.raises(ToolError) as exc:
@@ -205,7 +197,6 @@ class TestTheRings:
         assert [line.strip() for line in ring.lines] == ["one", "three"]
         assert ring.discarded == 0
 
-    @pytest.mark.asyncio
     async def test_a_flooded_job_reports_what_the_ring_dropped(self, tools, session):
         bash, output, _ = tools
 
@@ -220,7 +211,6 @@ class TestTheRings:
 
 
 class TestKillAndCleanup:
-    @pytest.mark.asyncio
     async def test_kill_shell_stops_the_job(self, tools, session):
         bash, output, kill = tools
 
@@ -235,7 +225,6 @@ class TestKillAndCleanup:
         after = await output.run_async({"shell_id": shell_id}, None)
         assert after.details["status"] == "killed"
 
-    @pytest.mark.asyncio
     async def test_killing_a_finished_job_reports_its_status(self, tools, session):
         bash, _, kill = tools
 
@@ -246,7 +235,6 @@ class TestKillAndCleanup:
         assert result.content == "shell_1 already completed"
         assert result.details["status"] == "completed"
 
-    @pytest.mark.asyncio
     async def test_restart_kills_every_background_job(self, tools, session):
         bash, _, _ = tools
 
@@ -260,7 +248,6 @@ class TestKillAndCleanup:
         assert session.jobs == {}
         assert all(job.status == "killed" for job in jobs)
 
-    @pytest.mark.asyncio
     async def test_shutdown_clears_the_jobs(self, tools, session):
         bash, _, _ = tools
 
@@ -270,7 +257,6 @@ class TestKillAndCleanup:
 
         assert session.jobs == {}
 
-    @pytest.mark.asyncio
     async def test_the_plugins_close_kills_what_it_built(self, mc, tmp_path: Path):
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
@@ -293,7 +279,6 @@ class TestKillAndCleanup:
 
 
 class TestLimits:
-    @pytest.mark.asyncio
     async def test_the_concurrency_cap_rejects_new_background_jobs(
         self, tools, session
     ):
@@ -309,7 +294,6 @@ class TestLimits:
         await session.kill("shell_1")
         await session.kill("shell_2")
 
-    @pytest.mark.asyncio
     async def test_the_cap_comes_from_the_plugin_config(self, mc, tmp_path: Path):
         mc.config.plugins["shell"] = {"max_background": 1}
         conversation = mc.new_conversation(cwd=tmp_path)
@@ -323,7 +307,6 @@ class TestLimits:
         session = bash.session
         await session.kill("shell_1")
 
-    @pytest.mark.asyncio
     async def test_a_background_deadline_times_the_job_out(self, tools, session):
         bash, output, _ = tools
 
@@ -338,7 +321,6 @@ class TestLimits:
         await asyncio.wait_for(job.done.wait(), 10)
         assert job.status == "timed_out"
 
-    @pytest.mark.asyncio
     async def test_configure_ignores_bad_values(self, session):
         session.configure({"max_background": "many", "background_timeout": -5})
         assert session.max_background == 16
@@ -348,7 +330,6 @@ class TestLimits:
 
 
 class TestSessionSemantics:
-    @pytest.mark.asyncio
     async def test_a_job_snapshots_cwd_and_env_at_start(self, tools, session, tmp_path):
         bash, output, _ = tools
         elsewhere = tmp_path / "elsewhere"
@@ -367,22 +348,16 @@ class TestSessionSemantics:
 
 
 class TestEarlyOutput:
-    @pytest.mark.asyncio
     async def test_a_jobs_first_lines_reach_the_open_block_of_its_start_call(
-        self, mc, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
         """Early output rides the existing ToolOutput mechanism into the block
         of the call that started the job — and the ring keeps it too: the
         event is a report, not a consumption."""
-        conversation = mc.new_conversation(cwd=tmp_path)
-        conversation.agent.provider = MockProvider(
-            [
-                call_tool(
-                    "bash", {"command": "echo early; sleep 1", **BG}
-                ),
-                call_tool("bash", {"command": "sleep 0.3"}),
-                say("done"),
-            ]
+        conversation, _ = wired(
+            call_tool("bash", {"command": "echo early; sleep 1", **BG}),
+            call_tool("bash", {"command": "sleep 0.3"}),
+            "done",
         )
 
         events = await collect(conversation.stream("go"))
@@ -446,7 +421,6 @@ class TestCompletionNotification:
             if isinstance(e, PluginMessage)
         ]
 
-    @pytest.mark.asyncio
     async def test_jobs_finishing_together_announce_as_one(
         self, mc, tmp_path: Path
     ):
@@ -468,7 +442,6 @@ class TestCompletionNotification:
         assert "sleep 0.4; echo a" in message.data["jobs"][0]["command"]
         conversation.close(save=False)
 
-    @pytest.mark.asyncio
     async def test_each_burst_is_its_own_block(self, mc, tmp_path: Path):
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
@@ -482,13 +455,11 @@ class TestCompletionNotification:
         assert [m.block_id for m in messages] == ["shell-bg-1", "shell-bg-2"]
         conversation.close(save=False)
 
-    @pytest.mark.asyncio
-    async def test_no_announcement_while_a_turn_is_running(self, mc, tmp_path: Path):
+    async def test_no_announcement_while_a_turn_is_running(self, wired, tmp_path: Path):
         """The model reads what it started; the announcement waits for idle —
         its empty run_id proves it was said between turns."""
-        conversation = mc.new_conversation(cwd=tmp_path)
-        conversation.agent.provider = MockProvider(
-            [call_tool("bash", {"command": "sleep 1"}), say("done")]
+        conversation, _ = wired(
+            call_tool("bash", {"command": "sleep 1"}), "done"
         )
         bash = conversation.tools.get("bash")
 
@@ -500,7 +471,6 @@ class TestCompletionNotification:
         assert messages[0].run_id == ""
         conversation.close(save=False)
 
-    @pytest.mark.asyncio
     async def test_a_killed_job_is_not_announced(self, mc, tmp_path: Path):
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
@@ -518,7 +488,6 @@ class TestCompletionNotification:
         assert messages == []
         conversation.close(save=False)
 
-    @pytest.mark.asyncio
     async def test_a_timed_out_job_is_announced(self, mc, tmp_path: Path):
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
@@ -538,7 +507,6 @@ class TestTerminate:
     """The process-group kill — the Windows branch runs here for real; the
     POSIX branch is exercised against a stubbed platform."""
 
-    @pytest.mark.asyncio
     async def test_windows_kills_the_direct_child(self, tools, session):
         if sys.platform != "win32":
             pytest.skip("the Windows branch of _terminate")

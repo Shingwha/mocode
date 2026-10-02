@@ -7,7 +7,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
 
 from mocode.core.agent import AgentConfig
 from mocode.core.provider import ModelSpec
@@ -23,6 +22,8 @@ from mocode.host.plugin.loader import (
     valid_name,
 )
 from mocode.testing import MockProvider
+
+from .conftest import write_plugin
 
 GREET_CODE = """
     from mocode.plugins import Plugin, Tool
@@ -74,51 +75,6 @@ PACKAGE_PLUGIN = {
 }
 
 
-def _write_plugin(
-    root: Path,
-    name: str,
-    code: str = "",
-    *,
-    manifest: dict | None = None,
-    raw_manifest: str | None = None,
-    skills: list[str] | None = None,
-    package: dict[str, str] | None = None,
-) -> Path:
-    """Create ``root/<name>/`` in the Agent Plugins layout.
-
-    *code* writes the single-file entry ``mocode/plugin.py``; *package* writes
-    the package entry ``mocode/plugin/<file>`` instead — the multi-file form.
-    """
-    plugin_dir = root / name
-    plugin_dir.mkdir(parents=True, exist_ok=True)
-
-    if raw_manifest is not None:
-        (plugin_dir / "plugin.json").write_text(raw_manifest, encoding="utf-8")
-    else:
-        data = {"$schema": "https://agent-plugins.org/schemas/v1.json", "name": name}
-        data.update(manifest or {})
-        (plugin_dir / "plugin.json").write_text(json.dumps(data), encoding="utf-8")
-
-    if code:
-        module = plugin_dir / HOST_NAMESPACE / "plugin.py"
-        module.parent.mkdir(parents=True, exist_ok=True)
-        module.write_text(textwrap.dedent(code), encoding="utf-8")
-
-    for filename, text in (package or {}).items():
-        module = plugin_dir / HOST_NAMESPACE / "plugin" / filename
-        module.parent.mkdir(parents=True, exist_ok=True)
-        module.write_text(textwrap.dedent(text), encoding="utf-8")
-
-    for skill in skills or []:
-        skill_dir = plugin_dir / "skills" / skill
-        skill_dir.mkdir(parents=True, exist_ok=True)
-        (skill_dir / "SKILL.md").write_text(
-            f"---\nname: {skill}\ndescription: from a plugin\n---\n\nDo {skill}.",
-            encoding="utf-8",
-        )
-    return plugin_dir
-
-
 def _ctx(tmp_path: Path, **config_kwargs) -> BuildContext:
     config = Config(provider="p", model="m", **config_kwargs)
     return BuildContext(home=tmp_path / "home", cwd=tmp_path, config=config)
@@ -131,20 +87,12 @@ def _load(ctx: BuildContext, plugin_dirs: list[Path]):
     return PluginHost(ctx, loaded.plugins)
 
 
-def _run_host(ctx: BuildContext, plugin_dirs: list[Path]) -> PluginHost:
-    """What the runtime does: build every contribution, then assemble."""
-    host = _load(ctx, plugin_dirs)
-    host.build_all()
-    host.assemble(provider=MockProvider(), config=AgentConfig())
-    return host
-
-
 # ── the manifest ────────────────────────────────────────────
 
 
 class TestManifest:
     def test_reads_the_standard_fields(self, tmp_path: Path):
-        _write_plugin(tmp_path, "greet", manifest={"version": "1.2.0", "description": "hi"})
+        write_plugin(tmp_path, "greet", manifest={"version": "1.2.0", "description": "hi"})
         spec = read_manifest(tmp_path / "greet" / "plugin.json")
         assert spec is not None
         assert spec.name == "greet"
@@ -193,7 +141,7 @@ class TestManifest:
 
 class TestDiscovery:
     def test_finds_a_plugin_directory(self, tmp_path: Path):
-        _write_plugin(tmp_path, "greet", GREET_CODE, manifest={"description": "greets"})
+        write_plugin(tmp_path, "greet", GREET_CODE, manifest={"description": "greets"})
         specs = discover([tmp_path])
         assert [s.name for s in specs] == ["greet"]
         assert specs[0].description == "greets"
@@ -202,7 +150,7 @@ class TestDiscovery:
 
     def test_a_plugin_without_code_is_still_a_plugin(self, tmp_path: Path):
         """`skills/` alone is a plugin — the standard's portable component."""
-        _write_plugin(tmp_path, "kit", skills=["deploy"])
+        write_plugin(tmp_path, "kit", skills=["deploy"])
         spec = discover([tmp_path])[0]
         assert spec.module is None
         assert load_plugin(spec) is None
@@ -218,20 +166,20 @@ class TestDiscovery:
         assert discover([tmp_path]) == []
 
     def test_reserved_names_are_skipped(self, tmp_path: Path):
-        _write_plugin(tmp_path, "shell", GREET_CODE)
+        write_plugin(tmp_path, "shell", GREET_CODE)
         assert discover([tmp_path], reserved={"shell"}) == []
 
     def test_local_wins_over_global(self, tmp_path: Path):
         local, global_ = tmp_path / "local", tmp_path / "global"
-        _write_plugin(local, "dup", manifest={"description": "from local"})
-        _write_plugin(global_, "dup", manifest={"description": "from global"})
+        write_plugin(local, "dup", manifest={"description": "from local"})
+        write_plugin(global_, "dup", manifest={"description": "from global"})
 
         specs = discover([local, global_])
         assert len(specs) == 1
         assert specs[0].description == "from local"
 
     def test_namespace_directories_are_offered_not_read(self, tmp_path: Path):
-        plugin_dir = _write_plugin(tmp_path, "greet", GREET_CODE)
+        plugin_dir = write_plugin(tmp_path, "greet", GREET_CODE)
         (plugin_dir / "mocode.cli").mkdir()
         (plugin_dir / "mocode.cli" / "plugin.py").write_text("", encoding="utf-8")
 
@@ -245,7 +193,7 @@ class TestDiscovery:
 
 class TestLoading:
     def test_module_level_instance_wins_over_first_class(self, tmp_path: Path):
-        _write_plugin(
+        write_plugin(
             tmp_path,
             "inst",
             """
@@ -263,7 +211,7 @@ class TestLoading:
         assert load_plugin(discover([tmp_path])[0]).name == "real"
 
     def test_first_subclass_is_used_when_there_is_no_instance(self, tmp_path: Path):
-        _write_plugin(
+        write_plugin(
             tmp_path,
             "multi",
             """
@@ -276,7 +224,7 @@ class TestLoading:
         assert load_plugin(discover([tmp_path])[0]).name == "real"
 
     def test_import_error_is_contained(self, tmp_path: Path, capsys):
-        _write_plugin(tmp_path, "broken", "raise RuntimeError('boom')")
+        write_plugin(tmp_path, "broken", "raise RuntimeError('boom')")
         assert load_plugin(discover([tmp_path])[0]) is None
         assert "boom" in capsys.readouterr().err
 
@@ -286,14 +234,14 @@ class TestLoading:
 
 class TestPackagePlugins:
     def test_a_package_entry_loads(self, tmp_path: Path):
-        _write_plugin(tmp_path, "packaged", package=PACKAGE_PLUGIN)
+        write_plugin(tmp_path, "packaged", package=PACKAGE_PLUGIN)
         spec = discover([tmp_path])[0]
         assert spec.module is not None and spec.module.name == "__init__.py"
         assert load_plugin(spec).name == "packaged"
 
     def test_submodules_load_by_relative_import(self, tmp_path: Path):
         """`from .helper import x` inside the package, under the plugin's own name."""
-        _write_plugin(tmp_path, "packaged", package=PACKAGE_PLUGIN)
+        write_plugin(tmp_path, "packaged", package=PACKAGE_PLUGIN)
         load_plugin(discover([tmp_path])[0])
 
         from mocode_plugin_packaged.helper import GREETING
@@ -303,7 +251,7 @@ class TestPackagePlugins:
     def test_two_plugins_may_ship_same_named_submodules(self, tmp_path: Path):
         """Each plugin's package lives under its own name — no sys.modules race."""
         for name in ("one", "two"):
-            _write_plugin(
+            write_plugin(
                 tmp_path,
                 name,
                 package={
@@ -331,7 +279,7 @@ class TestPackagePlugins:
         assert "mocode_plugin_two.helper" in sys.modules
 
     def test_the_single_file_wins_when_both_exist(self, tmp_path: Path):
-        _write_plugin(tmp_path, "both", GREET_CODE, package=PACKAGE_PLUGIN)
+        write_plugin(tmp_path, "both", GREET_CODE, package=PACKAGE_PLUGIN)
         spec = discover([tmp_path])[0]
         assert spec.module is not None and spec.module.name == "plugin.py"
         assert load_plugin(spec).name == "greet"
@@ -339,7 +287,7 @@ class TestPackagePlugins:
     def test_a_package_without_init_is_reported_not_skipped(
         self, tmp_path: Path, capsys
     ):
-        plugin_dir = _write_plugin(tmp_path, "no-init")
+        plugin_dir = write_plugin(tmp_path, "no-init")
         package = plugin_dir / HOST_NAMESPACE / "plugin"
         package.mkdir(parents=True)
         (package / "helper.py").write_text("x = 1", encoding="utf-8")
@@ -352,7 +300,7 @@ class TestPackagePlugins:
     def test_stray_modules_beside_no_entry_are_reported(
         self, tmp_path: Path, capsys
     ):
-        plugin_dir = _write_plugin(tmp_path, "stray")
+        plugin_dir = write_plugin(tmp_path, "stray")
         namespace = plugin_dir / HOST_NAMESPACE
         namespace.mkdir(parents=True)
         (namespace / "helpers.py").write_text("x = 1", encoding="utf-8")
@@ -364,7 +312,7 @@ class TestPackagePlugins:
 
     def test_a_namespace_that_ships_nothing_stays_quiet(self, tmp_path: Path, capsys):
         """An empty namespace directory is not a near-miss — nothing to fix."""
-        plugin_dir = _write_plugin(tmp_path, "empty")
+        plugin_dir = write_plugin(tmp_path, "empty")
         (plugin_dir / HOST_NAMESPACE).mkdir()
 
         assert discover([tmp_path])[0].module is None
@@ -373,7 +321,7 @@ class TestPackagePlugins:
     def test_a_broken_package_leaves_no_submodules_behind(
         self, tmp_path: Path, capsys
     ):
-        _write_plugin(
+        write_plugin(
             tmp_path,
             "half-broken",
             package={
@@ -394,26 +342,25 @@ class TestTheMultiFileExample:
 
     EXAMPLES = Path(__file__).resolve().parents[1] / "examples" / "plugins"
 
-    def test_the_example_is_loaded_and_built(self, tmp_path: Path):
+    def test_the_example_is_loaded_and_built(
+        self, tmp_path: Path, plugin_host
+    ):
         ctx = _ctx(tmp_path)
         loaded = load_plugins(plugin_dirs=[self.EXAMPLES], config=ctx.config)
 
         assert "multi-file" in [p.name for p in loaded.plugins]
 
-        host = PluginHost(ctx, loaded.plugins)
-        host.build_all()
-        host.assemble(provider=MockProvider(), config=AgentConfig())
+        host = plugin_host(plugins=loaded.plugins)
 
-        assert "/motd" in {c.name for c in ctx.commands.all()}
-        assert "motd" in {s.name for s in ctx.prompt_sections}
-        assert "motd" not in ctx.tools.names()  # the example registers no tools
+        assert "/motd" in {c.name for c in host.ctx.commands.all()}
+        assert "motd" in {s.name for s in host.ctx.prompt_sections}
+        assert "motd" not in host.ctx.tools.names()  # the example registers no tools
 
 
 # ── host ────────────────────────────────────────────────────
 
 
 class TestPluginHost:
-    @pytest.mark.asyncio
     async def test_builtins_are_loaded_and_contributing(self, tmp_path: Path):
         ctx = _ctx(tmp_path)
         host = _load(ctx, [])
@@ -433,42 +380,46 @@ class TestPluginHost:
         assert ctx.agent is agent
         assert "<system-prompt>" in agent.system_prompt
 
-    def test_a_plugin_contributes_commands_without_a_terminal(self, tmp_path: Path):
+    def test_a_plugin_contributes_commands_without_a_terminal(
+        self, tmp_path: Path, plugin_host
+    ):
         """A command contributed here is shared: any frontend can dispatch it."""
         plugins_dir = tmp_path / "plugins"
-        _write_plugin(plugins_dir, "pingable", COMMAND_CODE)
+        write_plugin(plugins_dir, "pingable", COMMAND_CODE)
 
-        ctx = _ctx(tmp_path)
-        _run_host(ctx, [plugins_dir])
+        host = plugin_host(load=[plugins_dir])
 
-        assert "/ping" in {c.name for c in ctx.commands.all()}
+        assert "/ping" in {c.name for c in host.ctx.commands.all()}
 
-    def test_directory_plugin_is_built(self, tmp_path: Path):
+    def test_directory_plugin_is_built(self, tmp_path: Path, plugin_host):
         plugins_dir = tmp_path / "plugins"
-        _write_plugin(plugins_dir, "greet", GREET_CODE)
-        ctx = _ctx(tmp_path)
-        _run_host(ctx, [plugins_dir])
-        assert "greet" in ctx.tools.names()
+        write_plugin(plugins_dir, "greet", GREET_CODE)
+        host = plugin_host(load=[plugins_dir])
+        assert "greet" in host.ctx.tools.names()
 
-    def test_disabled_plugin_contributes_nothing(self, tmp_path: Path):
-        ctx = _ctx(tmp_path, plugins={"shell": {"enabled": False}})
-        _run_host(ctx, [])
-        assert "bash" not in ctx.tools.names()
+    def test_disabled_plugin_contributes_nothing(self, tmp_path: Path, plugin_host):
+        host = plugin_host(
+            config_kwargs={"plugins": {"shell": {"enabled": False}}}, load=[]
+        )
+        assert "bash" not in host.ctx.tools.names()
 
-    def test_disabling_a_plugin_hides_its_sources_too(self, tmp_path: Path):
+    def test_disabling_a_plugin_hides_its_sources_too(
+        self, tmp_path: Path, plugin_host
+    ):
         """A disabled plugin contributes nothing — namespace or skills either."""
         plugins_dir = tmp_path / "plugins"
-        plugin_dir = _write_plugin(plugins_dir, "greet", GREET_CODE)
+        plugin_dir = write_plugin(plugins_dir, "greet", GREET_CODE)
 
-        ctx = _ctx(tmp_path, plugins={"greet": {"enabled": False}})
-        _run_host(ctx, [plugins_dir])
+        host = plugin_host(
+            config_kwargs={"plugins": {"greet": {"enabled": False}}}, load=[plugins_dir]
+        )
 
-        assert "greet" not in ctx.tools.names()
-        assert plugin_dir not in ctx.plugin_sources
+        assert "greet" not in host.ctx.tools.names()
+        assert plugin_dir not in host.ctx.plugin_sources
 
-    def test_build_failure_is_isolated(self, tmp_path: Path, capsys):
+    def test_build_failure_is_isolated(self, tmp_path: Path, plugin_host, capsys):
         plugins_dir = tmp_path / "plugins"
-        _write_plugin(
+        write_plugin(
             plugins_dir,
             "explodes",
             """
@@ -481,18 +432,17 @@ class TestPluginHost:
                     raise RuntimeError("bad build")
             """,
         )
-        _write_plugin(plugins_dir, "greet", GREET_CODE)
+        write_plugin(plugins_dir, "greet", GREET_CODE)
 
-        ctx = _ctx(tmp_path)
-        host = _run_host(ctx, [plugins_dir])
+        host = plugin_host(load=[plugins_dir])
 
         assert host.failures == ["explodes"]
-        assert "greet" in ctx.tools.names()  # the healthy plugin still built
+        assert "greet" in host.ctx.tools.names()  # the healthy plugin still built
         assert "bad build" in capsys.readouterr().err
 
-    def test_plugin_config_is_readable_by_plugins(self, tmp_path: Path):
+    def test_plugin_config_is_readable_by_plugins(self, tmp_path: Path, plugin_host):
         plugins_dir = tmp_path / "plugins"
-        _write_plugin(
+        write_plugin(
             plugins_dir,
             "configured",
             """
@@ -505,23 +455,24 @@ class TestPluginHost:
                     assert ctx.plugin_config("configured") == {"greeting": "hi"}
             """,
         )
-        ctx = _ctx(tmp_path, plugins={"configured": {"greeting": "hi"}})
-        _run_host(ctx, [plugins_dir])
-        assert ctx.plugin_config("configured") == {"greeting": "hi"}
+        host = plugin_host(
+            config_kwargs={"plugins": {"configured": {"greeting": "hi"}}},
+            load=[plugins_dir],
+        )
+        assert host.ctx.plugin_config("configured") == {"greeting": "hi"}
 
-    def test_a_plugin_ships_portable_skills(self, tmp_path: Path):
+    def test_a_plugin_ships_portable_skills(self, tmp_path: Path, plugin_host):
         """`skills/` inside a plugin travels with it, wherever it is installed."""
         plugins_dir = tmp_path / "plugins"
-        _write_plugin(plugins_dir, "kit", skills=["deploy"])
+        write_plugin(plugins_dir, "kit", skills=["deploy"])
 
-        ctx = _ctx(tmp_path)
-        _run_host(ctx, [plugins_dir])
+        host = plugin_host(load=[plugins_dir])
 
-        assert "/skill:deploy" in {c.name for c in ctx.commands.all()}
+        assert "/skill:deploy" in {c.name for c in host.ctx.commands.all()}
 
-    def test_a_user_skill_shadows_a_plugin_one(self, tmp_path: Path):
+    def test_a_user_skill_shadows_a_plugin_one(self, tmp_path: Path, plugin_host):
         plugins_dir = tmp_path / "plugins"
-        _write_plugin(plugins_dir, "kit", skills=["deploy"])
+        write_plugin(plugins_dir, "kit", skills=["deploy"])
 
         user_skills = tmp_path / ".mocode" / "skills" / "deploy"
         user_skills.mkdir(parents=True)
@@ -529,16 +480,17 @@ class TestPluginHost:
             "---\nname: deploy\ndescription: mine\n---\n\nMine.", encoding="utf-8"
         )
 
-        ctx = _ctx(tmp_path)
-        _run_host(ctx, [plugins_dir])
+        host = plugin_host(load=[plugins_dir])
 
-        command = ctx.commands.get("/skill:deploy")
+        command = host.ctx.commands.get("/skill:deploy")
         assert command is not None and command.description == "mine"
 
-    def test_plugin_source_reaches_the_files_a_plugin_ships(self, tmp_path: Path):
+    def test_plugin_source_reaches_the_files_a_plugin_ships(
+        self, tmp_path: Path, plugin_host
+    ):
         """A plugin reads its own files through ctx.plugin_sources."""
         plugins_dir = tmp_path / "plugins"
-        plugin_dir = _write_plugin(
+        plugin_dir = write_plugin(
             plugins_dir,
             "shipper",
             """
@@ -554,9 +506,8 @@ class TestPluginHost:
         (plugin_dir / "data").mkdir()
         (plugin_dir / "data" / "notes.txt").write_text("hi", encoding="utf-8")
 
-        ctx = _ctx(tmp_path)
-        _run_host(ctx, [plugins_dir])
-        assert ctx.plugin_sources == [plugin_dir]
+        host = plugin_host(load=[plugins_dir])
+        assert host.ctx.plugin_sources == [plugin_dir]
 
 
 # ── the plugin set and its lifecycle ────────────────────────
@@ -575,7 +526,9 @@ class TestPluginSet:
             "cache-protect",
         ]
 
-    def test_loaded_once_and_built_per_conversation(self, tmp_path: Path):
+    def test_loaded_once_and_built_per_conversation(
+        self, tmp_path: Path, plugin_host
+    ):
         """Loading is per project; building is per conversation.
 
         Two conversations in one project share the plugin *instances* and share
@@ -583,21 +536,18 @@ class TestPluginSet:
         index or any other piece of per-conversation state safe.
         """
         plugins_dir = tmp_path / "plugins"
-        _write_plugin(plugins_dir, "greet", GREET_CODE)
+        write_plugin(plugins_dir, "greet", GREET_CODE)
 
         loaded = load_plugins(plugin_dirs=[plugins_dir], config=_ctx(tmp_path).config)
-        first_ctx, second_ctx = _ctx(tmp_path), _ctx(tmp_path)
-        for ctx in (first_ctx, second_ctx):
-            host = PluginHost(ctx, loaded.plugins)
-            host.build_all()
-            host.assemble(provider=MockProvider(), config=AgentConfig())
+        first = plugin_host(plugins=loaded.plugins)
+        second = plugin_host(plugins=loaded.plugins)
 
-        assert first_ctx.tools.get("greet") is not second_ctx.tools.get("greet")
-        assert first_ctx.tools.get("bash") is not second_ctx.tools.get("bash")
+        assert first.ctx.tools.get("greet") is not second.ctx.tools.get("greet")
+        assert first.ctx.tools.get("bash") is not second.ctx.tools.get("bash")
 
-    def test_close_reaches_every_plugin(self, tmp_path: Path):
+    def test_close_reaches_every_plugin(self, tmp_path: Path, plugin_host):
         plugins_dir = tmp_path / "plugins"
-        _write_plugin(
+        write_plugin(
             plugins_dir,
             "keeper",
             """
@@ -611,10 +561,7 @@ class TestPluginSet:
                     type(self).closed.append(str(ctx.cwd))
             """,
         )
-        ctx = _ctx(tmp_path)
-        host = _load(ctx, [plugins_dir])
-        host.build_all()
-        host.assemble(provider=MockProvider(), config=AgentConfig())
+        host = plugin_host(load=[plugins_dir])
 
         host.close()
 
@@ -655,16 +602,16 @@ class TestHostContext:
         ctx.commands.register(Command("/x", "test", handler=_noop))
         assert [c.name for c in ctx.commands.all()] == ["/x"]
 
-    @pytest.mark.asyncio
-    async def test_subscribe_reads_a_turn_out_of_band(self, tmp_path: Path):
+    async def test_subscribe_reads_a_turn_out_of_band(
+        self, tmp_path: Path, plugin_host
+    ):
         """The plugin-facing observation path: everything a turn published."""
-        ctx = _ctx(tmp_path)
-        _run_host(ctx, [])
-        assert ctx.agent is not None
+        host = plugin_host(load=[])
+        assert host.ctx.agent is not None
 
-        reader = ctx.subscribe()
+        reader = host.ctx.subscribe()
         try:
-            await ctx.agent.chat("hi")
+            await host.ctx.agent.chat("hi")
             seen = []
             while (event := reader.take()) is not None:
                 seen.append(event.type)

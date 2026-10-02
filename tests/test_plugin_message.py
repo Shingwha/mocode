@@ -11,38 +11,10 @@ attribution a turn's readers rely on.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 
-import pytest
 
-from mocode.core.agent import AgentConfig
 from mocode.core.events import PluginMessage
 from mocode.core.hook import AgentHook
-from mocode.host.config import Config
-from mocode.host.plugin.context import BuildContext
-from mocode.host.plugin.host import PluginHost
-from mocode.testing import MockProvider, say
-
-
-def _host(
-    tmp_path: Path, hook: "Callable[[BuildContext], AgentHook] | None" = None
-) -> PluginHost:
-    """A built and assembled host — its ctx is a HostContext with an agent.
-
-    *hook* is a factory receiving the context (it exists before assembly, so a
-    hook may close over it — the same shape the cache-protect watcher uses).
-    """
-    ctx = BuildContext(
-        home=tmp_path / "home",
-        cwd=tmp_path,
-        config=Config(provider="p", model="m"),
-    )
-    if hook is not None:
-        ctx.hooks.append(hook(ctx))
-    host = PluginHost(ctx, [])
-    host.build_all()
-    host.assemble(provider=MockProvider([say("done")]), config=AgentConfig())
-    return host
 
 
 class TestPluginMessage:
@@ -104,9 +76,8 @@ class TestRunIdAttribution:
     """A PluginMessage published through ``HostContext.emit`` during a turn is
     attributed to it — the turn's readers see what plugins said while it ran."""
 
-    @pytest.mark.asyncio
     async def test_a_message_during_a_turn_is_stamped_with_its_run_id(
-        self, tmp_path: Path
+        self, plugin_host
     ):
         class Emit(AgentHook):
             def __init__(self, ctx):
@@ -117,10 +88,7 @@ class TestRunIdAttribution:
                     PluginMessage(kind="shell/background-done", data={"jobs": []})
                 )
 
-        host = _host(
-            tmp_path,
-            hook=lambda ctx: Emit(ctx),
-        )
+        host = plugin_host(hook=lambda ctx: Emit(ctx))
 
         assert await host.ctx.agent.chat("go") == "done"
 
@@ -134,9 +102,8 @@ class TestRunIdAttribution:
 class TestEmitMessage:
     """The two HostContext conveniences — plain PluginMessage publishing."""
 
-    @pytest.mark.asyncio
-    async def test_publishes_a_plugin_message_between_turns(self, tmp_path: Path):
-        host = _host(tmp_path)
+    async def test_publishes_a_plugin_message_between_turns(self, plugin_host):
+        host = plugin_host()
 
         await host.ctx.emit_message(
             "rag/index", {"done": 12, "total": 40}, block_id="rag-1"
@@ -153,9 +120,8 @@ class TestEmitMessage:
         # Between turns the entry belongs to the conversation stream alone.
         assert message.run_id == ""
 
-    @pytest.mark.asyncio
-    async def test_seal_message_publishes_a_sealed_marker(self, tmp_path: Path):
-        host = _host(tmp_path)
+    async def test_seal_message_publishes_a_sealed_marker(self, plugin_host):
+        host = plugin_host()
 
         await host.ctx.seal_message("rag-1")
 
@@ -163,9 +129,8 @@ class TestEmitMessage:
         assert isinstance(message, PluginMessage)
         assert (message.block_id, message.sealed, message.kind) == ("rag-1", True, "")
 
-    @pytest.mark.asyncio
-    async def test_the_payload_is_copied_not_shared(self, tmp_path: Path):
-        host = _host(tmp_path)
+    async def test_the_payload_is_copied_not_shared(self, plugin_host):
+        host = plugin_host()
 
         payload = {"done": 1}
         await host.ctx.emit_message("rag/index", payload)
@@ -174,8 +139,7 @@ class TestEmitMessage:
         message = host.ctx.agent.channel.history()[-1]
         assert message.data == {"done": 1}
 
-    @pytest.mark.asyncio
-    async def test_during_a_turn_it_is_stamped_like_any_emit(self, tmp_path: Path):
+    async def test_during_a_turn_it_is_stamped_like_any_emit(self, plugin_host):
         class EmitViaConvenience(AgentHook):
             def __init__(self, ctx):
                 self._ctx = ctx
@@ -183,7 +147,7 @@ class TestEmitMessage:
             async def before_iteration(self, ctx) -> None:
                 await self._ctx.emit_message("shell/background-done", {"jobs": []})
 
-        host = _host(tmp_path, hook=lambda ctx: EmitViaConvenience(ctx))
+        host = plugin_host(hook=lambda ctx: EmitViaConvenience(ctx))
 
         await host.ctx.agent.chat("go")
 

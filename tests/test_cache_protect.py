@@ -10,28 +10,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
-from mocode.core.provider import Response, Usage
 from mocode.host.runtime import MoCode
-from mocode.testing import MockProvider, tool_call_response
+from mocode.testing import tool_call_response
 
-from .conftest import make_config
-from .test_conversations import _answer, _project
-
-
-def _conversation(mc: MoCode, cwd: Path, *responses: Response):
-    conversation = mc.new_conversation(cwd=cwd)
-    conversation.agent.provider = MockProvider(list(responses) or [_answer()])
-    return conversation
-
-
-def _notices(conversation) -> list[dict]:
-    return [
-        m
-        for m in conversation.messages
-        if m.get("role") == "user" and "[context update" in str(m.get("content", ""))
-    ]
+from .conftest import project, updates, wired, wire
 
 
 def _tool_names(payload: list[dict]) -> set[str]:
@@ -39,11 +21,8 @@ def _tool_names(payload: list[dict]) -> set[str]:
 
 
 class TestThePayloadIsPinned:
-    @pytest.mark.asyncio
-    async def test_a_switch_costs_no_request_change(self, mc: MoCode, tmp_path: Path):
-        conversation = _conversation(
-            mc, _project(tmp_path, "a"), _answer("one"), _answer("two")
-        )
+    async def test_a_switch_costs_no_request_change(self, wired, tmp_path: Path):
+        conversation, _ = wired("one", "two", cwd=project(tmp_path, "a"))
 
         await conversation.chat("first")
         conversation.tools.disable("read")
@@ -53,14 +32,8 @@ class TestThePayloadIsPinned:
         assert provider.calls[0]["tools"] == provider.calls[1]["tools"]
         assert "read" in _tool_names(provider.calls[1]["tools"])
 
-    @pytest.mark.asyncio
-    async def test_a_disabled_tool_refuses_to_run(self, mc: MoCode, tmp_path: Path):
-        conversation = _conversation(
-            mc,
-            _project(tmp_path, "a"),
-            tool_call_response("read", '{"path": "notes.md"}'),
-            _answer("fine"),
-        )
+    async def test_a_disabled_tool_refuses_to_run(self, wired, tmp_path: Path):
+        conversation, _ = wired(tool_call_response("read", '{"path": "notes.md"}'), "fine", cwd=project(tmp_path, "a"))
         conversation.tools.disable("read")
 
         await conversation.chat("read it")
@@ -68,13 +41,10 @@ class TestThePayloadIsPinned:
         results = [m for m in conversation.messages if m.get("role") == "tool"]
         assert results[0]["content"].startswith("denied:")
 
-    @pytest.mark.asyncio
     async def test_a_rebuild_refreshes_the_payload_and_says_nothing(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        conversation = _conversation(
-            mc, _project(tmp_path, "a"), _answer("one"), _answer("two")
-        )
+        conversation, _ = wired("one", "two", cwd=project(tmp_path, "a"))
         await conversation.chat("first")
         conversation.tools.disable("read")
 
@@ -84,32 +54,28 @@ class TestThePayloadIsPinned:
         provider = conversation.agent.provider
         assert "read" not in _tool_names(provider.calls[-1]["tools"])
         # The model was just re-told everything; nothing is left to announce.
-        assert _notices(conversation) == []
+        assert updates(conversation) == []
 
 
 class TestTheWorldIsAnnounced:
-    @pytest.mark.asyncio
-    async def test_a_switch_off_is_one_line(self, mc: MoCode, tmp_path: Path):
-        conversation = _conversation(
-            mc, _project(tmp_path, "a"), _answer("one"), _answer("two")
-        )
+    async def test_a_switch_off_is_one_line(self, wired, tmp_path: Path):
+        conversation, _ = wired("one", "two", cwd=project(tmp_path, "a"))
         await conversation.chat("first")
 
         conversation.tools.disable("read")
         await conversation.chat("second")
 
-        assert "tool 'read' is now disabled" in _notices(conversation)[-1]["content"]
+        assert "tool 'read' is now disabled" in updates(conversation)[-1]["content"]
 
-    @pytest.mark.asyncio
     async def test_a_pinned_derived_section_holds_the_prompt_and_announces_itself(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
         """K10, whole: the pin keeps the prompt byte-identical while the
         registry it derives from moves, and the notice carries the section's
         live diff — the model hears what the prompt cannot say."""
         from mocode.core.prompt import Section
 
-        conversation = _conversation(mc, _project(tmp_path, "a"), _answer("1"), _answer("2"))
+        conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"))
 
         def render(_ctx: dict) -> str:
             offered = sorted(conversation.tools.names())
@@ -126,16 +92,15 @@ class TestTheWorldIsAnnounced:
 
         # The prompt never moved — the pin did its job.
         assert conversation.agent.system_prompt == frozen
-        notice = _notices(conversation)[-1]["content"]
+        notice = updates(conversation)[-1]["content"]
         assert "derived section 'tools-sdk' changed:" in notice
         assert "-callable tools: bash, bash_output, edit, kill_shell, read, skill, write" in notice
         assert "+callable tools: bash, bash_output, edit, kill_shell, skill, write" in notice
 
-    @pytest.mark.asyncio
-    async def test_a_rebuild_re_renders_the_pinned_section(self, mc: MoCode, tmp_path: Path):
+    async def test_a_rebuild_re_renders_the_pinned_section(self, wired, tmp_path: Path):
         from mocode.core.prompt import Section
 
-        conversation = _conversation(mc, _project(tmp_path, "a"), _answer("1"), _answer("2"))
+        conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"))
 
         def render(_ctx: dict) -> str:
             offered = sorted(conversation.tools.names())
@@ -153,13 +118,10 @@ class TestTheWorldIsAnnounced:
         # A rebuild is the deliberate cache loss: the pin dropped, the
         # section re-rendered from the registry as it now stands.
         assert "callable tools: bash, bash_output, edit, kill_shell, skill, write" in conversation.agent.system_prompt
-        assert _notices(conversation) == []
+        assert updates(conversation) == []
 
-    @pytest.mark.asyncio
-    async def test_a_switch_back_on_is_news_again(self, mc: MoCode, tmp_path: Path):
-        conversation = _conversation(
-            mc, _project(tmp_path, "a"), _answer("1"), _answer("2"), _answer("3")
-        )
+    async def test_a_switch_back_on_is_news_again(self, wired, tmp_path: Path):
+        conversation, _ = wired("1", "2", "3", cwd=project(tmp_path, "a"))
         await conversation.chat("first")
         conversation.tools.disable("read")
         await conversation.chat("second")
@@ -167,49 +129,42 @@ class TestTheWorldIsAnnounced:
         conversation.tools.enable("read")
         await conversation.chat("third")
 
-        assert "tool 'read' is now available" in _notices(conversation)[-1]["content"]
+        assert "tool 'read' is now available" in updates(conversation)[-1]["content"]
 
-    @pytest.mark.asyncio
     async def test_a_change_reverted_between_turns_is_never_news(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        conversation = _conversation(
-            mc, _project(tmp_path, "a"), _answer("1"), _answer("2")
-        )
+        conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"))
         await conversation.chat("first")
 
         conversation.tools.disable("read")
         conversation.tools.enable("read")
         await conversation.chat("second")
 
-        assert _notices(conversation) == []
+        assert updates(conversation) == []
 
-    @pytest.mark.asyncio
     async def test_an_in_place_edit_is_seen_and_diffed(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
         """The schema is built from the Tool object, never the cached
         projection — an edit no registry operation invalidates is still seen."""
-        conversation = _conversation(
-            mc, _project(tmp_path, "a"), _answer("1"), _answer("2")
-        )
+        conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"))
         await conversation.chat("first")
 
         conversation.tools.get("read").description = "Read a file, with line numbers"
         await conversation.chat("second")
 
-        notice = _notices(conversation)[-1]["content"]
+        notice = updates(conversation)[-1]["content"]
         assert "tool 'read' changed:" in notice
         assert '-    "description": "Read a file and return' in notice
         assert '+    "description": "Read a file, with line numbers"' in notice
 
-    @pytest.mark.asyncio
     async def test_a_tool_registered_late_is_announced_with_its_schema(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
         from mocode.core.tool import Tool
 
-        conversation = _conversation(mc, _project(tmp_path, "a"), _answer("one"), _answer("two"))
+        conversation, _ = wired("one", "two", cwd=project(tmp_path, "a"))
         await conversation.chat("hello")
         # Late means after the surface materialized — a tool registered
         # before the first turn is simply part of the initial interface.
@@ -219,17 +174,14 @@ class TestTheWorldIsAnnounced:
 
         await conversation.chat("again")
 
-        notice = _notices(conversation)[0]["content"]
+        notice = updates(conversation)[0]["content"]
         assert "tool 'grep' is now available:" in notice
         assert '+    "name": "grep"' in notice
 
-    @pytest.mark.asyncio
     async def test_the_notice_lands_before_the_users_message(
-        self, mc: MoCode, tmp_path: Path
+        self, wired, tmp_path: Path
     ):
-        conversation = _conversation(
-            mc, _project(tmp_path, "a"), _answer("1"), _answer("2")
-        )
+        conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"))
         await conversation.chat("first")
         conversation.tools.disable("read")
 
@@ -240,56 +192,49 @@ class TestTheWorldIsAnnounced:
 
 
 class TestAResume:
-    @pytest.mark.asyncio
     async def test_the_interface_comes_back_and_the_change_is_announced(
-        self, mc: MoCode, tmp_path: Path
+        self, mc: MoCode, tmp_path: Path, wired
     ):
-        project = _project(tmp_path, "a")
-        conversation = _conversation(mc, project, _answer("one"))
+        workdir = project(tmp_path, "a")
+        conversation, _ = wired("one", cwd=workdir)
         await conversation.chat("hi")
         session = conversation.save()
 
-        second = mc.new_conversation(cwd=project)
+        second = mc.new_conversation(cwd=workdir)
         # The world moved between the save and the resume: read is off now.
         second.tools.disable("read")
         await second.load_session(session)
         # load_session restores the session's model, which replaces the
         # provider — the recorder goes back on afterwards.
-        second.agent.provider = MockProvider([_answer("two")])
+        wire(second, "two")
         await second.chat("again")
 
         provider = second.agent.provider
         assert "read" in _tool_names(provider.calls[0]["tools"])
-        assert "tool 'read' is now disabled" in _notices(second)[-1]["content"]
+        assert "tool 'read' is now disabled" in updates(second)[-1]["content"]
 
-    @pytest.mark.asyncio
     async def test_a_resume_with_no_change_says_nothing(
-        self, mc: MoCode, tmp_path: Path
+        self, mc: MoCode, tmp_path: Path, wired
     ):
-        project = _project(tmp_path, "a")
-        conversation = _conversation(mc, project, _answer("one"))
+        workdir = project(tmp_path, "a")
+        conversation, _ = wired("one", cwd=workdir)
         await conversation.chat("hi")
         session = conversation.save()
 
-        second = mc.new_conversation(cwd=project)
+        second = mc.new_conversation(cwd=workdir)
         await second.load_session(session)
-        second.agent.provider = MockProvider([_answer("two")])
+        wire(second, "two")
         await second.chat("again")
 
-        assert _notices(second) == []
+        assert updates(second) == []
 
 
 class TestTheHostsSwitch:
-    @pytest.mark.asyncio
     async def test_an_unpinned_runtime_keeps_the_payload_live(
-        self, tmp_path: Path
+        self, tmp_path: Path, make_mc, wired
     ):
-        mc = MoCode(
-            config=make_config(), home=tmp_path / "home", freeze_interface=False
-        )
-        conversation = _conversation(
-            mc, _project(tmp_path, "a"), _answer("one"), _answer("two")
-        )
+        mc = make_mc(freeze_interface=False)
+        conversation, _ = wired("one", "two", cwd=project(tmp_path, "a"), mc=mc)
         await conversation.chat("first")
 
         conversation.tools.disable("read")
@@ -298,20 +243,17 @@ class TestTheHostsSwitch:
         provider = conversation.agent.provider
         assert "read" not in _tool_names(provider.calls[1]["tools"])
 
-    @pytest.mark.asyncio
     async def test_disabling_the_plugin_silences_the_notices(
-        self, mc: MoCode, tmp_path: Path
+        self, mc: MoCode, tmp_path: Path, wired
     ):
         mc.config.plugins["cache-protect"] = {"enabled": False}
-        conversation = _conversation(
-            mc, _project(tmp_path, "a"), _answer("1"), _answer("2")
-        )
+        conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"))
         await conversation.chat("first")
 
         conversation.tools.disable("read")
         await conversation.chat("second")
 
-        assert _notices(conversation) == []
+        assert updates(conversation) == []
         # The pin and the refusal are the registry's, not the plugin's.
         provider = conversation.agent.provider
         assert "read" in _tool_names(provider.calls[1]["tools"])

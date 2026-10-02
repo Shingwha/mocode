@@ -14,12 +14,12 @@ from mocode.host.plugin import install as plugins
 from mocode.host.plugin.env import PluginVenvError
 from mocode.host.plugin.loader import discover, load_plugin
 
-from .test_plugins import _write_plugin
+from .conftest import write_plugin
 
 
 def _source_plugin(root: Path, name: str, *, with_pyproject: bool = False) -> Path:
     """A plugin directory outside any plugins root, ready to be installed."""
-    plugin_dir = _write_plugin(
+    plugin_dir = write_plugin(
         root, name, "from mocode.plugins import Plugin\nplugin = Plugin()\n"
     )
     if with_pyproject:
