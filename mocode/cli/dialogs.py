@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import sys
 
-__all__ = ["Choice", "select"]
+__all__ = ["Choice", "confirm", "select", "text"]
 
 # Created once on first use.
 _style = None
@@ -61,6 +61,31 @@ def usable() -> bool:
         return sys.stdin.isatty() and sys.stdout.isatty()
     except (ValueError, OSError):  # detached streams
         return False
+
+
+async def confirm(message: str, *, danger: bool = False) -> bool:
+    """Yes/no, answered with one key. Esc declines, as does a missing terminal."""
+    if not usable():
+        return False
+    answer = await _questionary().confirm(
+        message,
+        default=False,
+        qmark="!" if danger else "?",
+        style=_get_style(),
+    ).ask_async()
+    return bool(answer)
+
+
+async def text(message: str, *, default: str = "") -> str | None:
+    """One line of free text. Returns None when cancelled."""
+    if not usable():
+        return None
+    return await _questionary().text(
+        message,
+        default=default,
+        qmark="?",
+        style=_get_style(),
+    ).ask_async()
 
 
 async def select(

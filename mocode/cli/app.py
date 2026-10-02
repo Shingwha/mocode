@@ -153,6 +153,8 @@ class CLIApp:
             is_interactive=bool(
                 self.interactive and self.display is not None and self.display.live
             ),
+            chrome=self.display.render if self.display is not None else None,
+            running=lambda: self._running,
         )
         self.ctx = CLIContext(
             commands=self.commands,
@@ -360,7 +362,10 @@ class CLIApp:
             )
 
     async def _dispatch_running_key(self, name: str, turn: "Turn") -> None:
-        """One key while a turn runs: Esc and Ctrl-C cancel it, the rest dispatch."""
+        """One key while a turn runs: an open dialog answers first; Esc and
+        Ctrl-C cancel the turn; the rest dispatch to running bindings."""
+        if self.ui.feed_key(name):
+            return
         if name in ("escape", "c-c"):
             turn.cancel()
             return
