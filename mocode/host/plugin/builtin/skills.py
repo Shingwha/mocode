@@ -53,12 +53,25 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 
 @dataclass
 class SkillMetadata:
+    """What names a skill: its frontmatter ``name`` and ``description``.
+
+    Every other frontmatter key rides along in ``attrs`` untouched, so a
+    skill author can carry fields MoCode does not know about — and a future
+    reader can find them.
+    """
+
     name: str
     description: str
     attrs: dict = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict) -> SkillMetadata:
+        """Read a frontmatter mapping into metadata.
+
+        ``name`` and ``description`` are coerced to strings, because frontmatter
+        is YAML and a number or a list there should not crash a skill. A missing
+        ``name`` stays empty — the caller treats that as "not a skill".
+        """
         return cls(
             name=str(data.get("name", "")),
             description=str(data.get("description", "")),
@@ -80,6 +93,12 @@ class Skill:
         return str(self.path) if self.path else ""
 
     def load_content(self) -> str:
+        """The skill's instructions, read from disk on first call and cached.
+
+        Loading is lazy so that listing skills — which shows only their
+        metadata — never opens a file it does not need. Empty for a skill whose
+        ``SKILL.md`` is gone or unreadable.
+        """
         if self._content is None:
             self._content = _read_body(self.path)
         return self._content
@@ -136,12 +155,24 @@ class SkillManager:
                     self._skills[skill.metadata.name] = skill
 
     def get(self, name: str) -> Skill | None:
+        """The skill *name* answers to — discovered first, registered as fallback.
+
+        The order is the priority: one the project or user placed on disk wins
+        over one a plugin brought, which is what lets a plugin ship a default
+        skill that anyone can override by adding a directory.
+        """
         return self._skills.get(name) or self._registered.get(name)
 
     def all(self) -> list[Skill]:
+        """Every skill — discovered ones first, then the programmatic ones.
+
+        The order is the one the prompt section lists, so it is deliberate
+        rather than incidental.
+        """
         return list(self._skills.values()) + list(self._registered.values())
 
     def names(self) -> list[str]:
+        """Every skill's name, in the same order :meth:`all` returns them."""
         return list(self._skills) + list(self._registered)
 
 
@@ -230,10 +261,23 @@ def _render_skills(manager: SkillManager):
 
 
 class SkillsPlugin(Plugin):
+    """The builtin skills system — directories, one loading tool, one command each.
+
+    Three sources are scanned, in the order a shadow should resolve: skills a
+    plugin ships, then the user's own ``~/skills``, then this project's
+    ``.mocode/skills``. Later directories shadow earlier ones, so a project can
+    override a skill it was given without editing it.
+
+    Each skill becomes two surfaces: the ``skill`` tool loads its instructions
+    on demand, and a command of its name runs it directly — a skill a user
+    invokes is not a skill the model has to be told about.
+    """
+
     name = "skills"
     description = "Reusable instructions discovered from skill directories"
 
     def build(self, ctx: BuildContext) -> None:
+        """Scan the skill directories and register the loading surfaces."""
         manager = SkillManager(
             [
                 # Portable skills a plugin ships. First, so that a user's own
