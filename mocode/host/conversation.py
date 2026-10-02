@@ -19,12 +19,13 @@ It owns four things and delegates the rest:
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from ..core.agent import AgentLoop
 from ..core.channel import Subscription
-from ..core.events import Event, Notice
+from ..core.events import Event, Notice, PluginMessage
 from ..core.tool import ToolRegistry
 from .events import ConversationChanged
 from .plugin.context import HostContext
@@ -42,6 +43,11 @@ if TYPE_CHECKING:
     from ..core.state import RunState
     from .command import CommandRegistry
     from .runtime import MoCode
+
+#: How many plugin-authored messages a conversation keeps for the session
+#: record. The deque is the whole story: older messages fall off the end,
+#: and a resume replays at most the newest this many.
+PLUGIN_MESSAGE_CAP = 200
 
 
 class Conversation:
@@ -78,6 +84,17 @@ class Conversation:
         self.id = session_id
         self.created_at = created_at
         self._saved_at = ""
+        #: Bounded capture of plugin-authored messages, serialized — the
+        #: payload that makes them survive a save/resume round trip. The
+        #: deque holds dicts, never event objects, so nothing here owes its
+        #: life to a run that has already ended.
+        self._plugin_messages: deque[dict[str, Any]] = deque(maxlen=PLUGIN_MESSAGE_CAP)
+        #: True while a resume republishes the stored messages — the capture
+        #: stays off for those, or the next save would persist them twice.
+        self._replaying = False
+        self._unwatch_plugin_messages = self.agent.channel.inline(
+            self._capture_plugin_message
+        )
 
     # ── Running ────────────────────────────────────────────
 
@@ -209,6 +226,7 @@ class Conversation:
         self.id = new_session_id()
         self.created_at = timestamp()
         self.adopt(messages or [])
+        self._plugin_messages.clear()
         await self.changed()
         return self.id
 
@@ -285,6 +303,7 @@ class Conversation:
     def _teardown(self, *, save: bool) -> None:
         if save:
             self.save()
+        self._unwatch_plugin_messages()
         self.host.close()
         self.agent.close()
         self.agent.channel.close(reason=f"conversation {self.id} closed")
@@ -310,6 +329,19 @@ class Conversation:
         await self.agent.channel.publish(ConversationChanged())
 
     # ── Internals ──────────────────────────────────────────
+
+    async def _capture_plugin_message(self, event: Event) -> None:
+        """Record a plugin-authored message for the next save.
+
+        Inline, not a buffered subscription, on purpose: a subscription
+        filters at read time, and a reader that never reads would never
+        capture anything — while the replay exclusion needs the capture to
+        happen at publish time, inside the replay window. The work is one
+        isinstance check and a small serialization.
+        """
+        if self._replaying or not isinstance(event, PluginMessage):
+            return
+        self._plugin_messages.append(event.to_dict())
 
     def _as_session(self, *, updated_at: str, title: str) -> Session:
         """The same fields both ``save()`` and ``session()`` report."""
