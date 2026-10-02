@@ -60,6 +60,16 @@ script = [call_tool("greet", {"who": "world"}), say("greeted")]
 script = [call_tool("greet", {"who": "world"})]
 ```
 
+## Holding a background job open
+
+A test that needs a background job to *stay alive* until something else
+releases it — a job's output, its completion, its kill — should start it as a
+bounded `sleep N` child (`"echo up; sleep 5"`), which is one fork at spawn and
+ends on its own. Do not reach for a polling loop (`while true; do …; done`) or
+an external gate file: on Windows, killing a bash whose command keeps forking
+strands an MSYS fork-child, because `TerminateProcess` reaches only the direct
+child. A `sleep` child has nothing to strand.
+
 ## Reading the turn back
 
 Three helpers read what the run emitted:
@@ -113,8 +123,6 @@ provider for the script, and read the turn back. Nothing touches the real
 import json
 from pathlib import Path
 
-import pytest
-
 from mocode.core.events import ToolCallFinished
 from mocode.host.config import Config, ModelEntry, ProviderEntry
 from mocode.host.runtime import MoCode
@@ -163,7 +171,6 @@ def _config() -> Config:
     )
 
 
-@pytest.mark.asyncio
 async def test_the_model_can_call_the_plugin_tool(tmp_path: Path):
     plugins_dir = tmp_path / "plugins"
     _write_plugin(plugins_dir, "greeter", PLUGIN_CODE)
@@ -185,8 +192,12 @@ async def test_the_model_can_call_the_plugin_tool(tmp_path: Path):
     assert "hello world" in tool_message["content"]
 ```
 
-Async tests need `@pytest.mark.asyncio`; commands publish rather than print,
-so a command test subscribes and drains instead of capturing stdout.
+Async tests need no decorator (`asyncio_mode = "auto"`); commands publish
+rather than print, so a command test subscribes and drains instead of
+capturing stdout. The repository's own fixtures (`tests/conftest.py`) wrap the
+three moves above — `wired` hands back a conversation already on a scripted
+model, `write_plugin` lays a plugin directory on disk, `plugin_host` builds a
+host with no runtime around it.
 
 ## Testing a `with_context` tool directly
 
@@ -220,11 +231,7 @@ assert tool.run({"who": "world"}, ctx) == "stopped early"
 `ctx.cancel_event` is a real `threading.Event`, and `ctx.emit` is a sink the
 default of which does nothing — an async tool publishes progress with
 `await ctx.emit(Notice(message="halfway there"))` and stays testable outside
-a running loop.
-
-`ctx.cancel_event` is a real `threading.Event` (set it to rehearse a
-cooperative cancel), and `ctx.emit(...)` is safe to call because the default
-does nothing. What you cannot rehearse this way is the interception protocol
+a running loop. What you cannot rehearse this way is the interception protocol
 — hooks rewriting `tool_args`, denials, result truncation — that is the
 dispatcher's behavior, and it is tested through the scripted model above.
 
