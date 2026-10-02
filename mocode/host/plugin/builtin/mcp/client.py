@@ -3,8 +3,9 @@
 The SDK (v2) carries the wire: ``mode="auto"`` probes ``server/discover`` and
 falls back to the ``initialize`` handshake (dual-era, decision D13), the stdio
 transport spawns the child in its own kill scope and shuts it down the way
-the standard prescribes, and every result is typed. What is left here is the
-seam towards mocode:
+the standard prescribes, the HTTP transports ride a pre-configured client
+(the entry's fixed headers, the session's timeouts), and every result is
+typed. What is left here is the seam towards mocode:
 
 * the session surface the runtime and the tool builders call
   (:meth:`McpSession.connect_and_register`, :meth:`~McpSession.list_tools`,
@@ -39,7 +40,8 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -66,6 +68,12 @@ _MODERN_VERSION = "2026-07-28"
 _CLIENT_INFO = {"name": "mocode", "version": "0.4.0"}
 #: The per-request default when neither the call nor the config sets one.
 _DEFAULT_REQUEST_TIMEOUT = 60.0
+#: How long an HTTP transport may take to open a connection — the runtime
+#: bounds the whole connect at its own ``connect_timeout_s`` (default 10).
+_HTTP_CONNECT_TIMEOUT = 10.0
+#: How long an SSE stream may stay idle before it counts as dropped — the
+#: SDK's own read-timeout default for the legacy transport.
+_SSE_READ_TIMEOUT = 300.0
 #: Lines of server logging kept for error reports.
 _STDERR_TAIL_LINES = 50
 #: How much of the stderr log to read back when producing the tail.
@@ -165,19 +173,66 @@ def _stdio_client(config: McpServerConfig, errlog: "_StderrLog") -> Any:
     return stdio_client(parameters, errlog=errlog)
 
 
+def _read_timeout(config: McpServerConfig) -> float:
+    """The session's per-request budget — the entry's, else the default."""
+    return config.timeout or _DEFAULT_REQUEST_TIMEOUT
+
+
+@asynccontextmanager
+async def _streamable_http_transport(
+    config: McpServerConfig,
+) -> AsyncIterator[Any]:
+    """The SDK's streamable-HTTP transport for *config*.
+
+    The transport itself takes neither headers nor a timeout, so both ride
+    a pre-configured ``httpx2`` client: the entry's fixed headers become
+    its defaults (the SDK's MCP headers take precedence on collision) and
+    the read timeout is the session's per-request budget. The client is
+    entered and left here because the SDK leaves a passed-in client's
+    lifecycle to the caller.
+    """
+    import httpx2
+    from mcp.client.streamable_http import streamable_http_client
+
+    assert config.url is not None  # a parsed HTTP entry always has one
+    async with httpx2.AsyncClient(
+        headers=dict(config.headers),
+        timeout=httpx2.Timeout(_HTTP_CONNECT_TIMEOUT, read=_read_timeout(config)),
+    ) as http_client:
+        async with streamable_http_client(
+            config.url, http_client=http_client
+        ) as streams:
+            yield streams
+
+
+def _sse_transport(config: McpServerConfig) -> Any:
+    """The SDK's legacy SSE transport for *config* — unlike streamable
+    HTTP it takes the headers and the timeouts itself; the SSE read budget
+    is separate so an idle stream is not a failed request."""
+    from mcp.client.sse import sse_client
+
+    assert config.url is not None  # a parsed HTTP entry always has one
+    return sse_client(
+        config.url,
+        headers=dict(config.headers),
+        timeout=_read_timeout(config),
+        sse_read_timeout=_SSE_READ_TIMEOUT,
+    )
+
+
 def _build_target(config: McpServerConfig, errlog: "_StderrLog") -> Any:
     """The SDK transport for *config*'s wire — the one place an entry
     becomes a connection target (decision D7).
 
-    Wave W3a-2 lands the HTTP transports in its second step; until then an
-    entry naming one fails here, explicitly, instead of crashing inside
-    the stdio spawn (whose ``command`` is absent for those entries).
+    ``stdio`` spawns the child (its environment is explained on
+    :func:`_stdio_client`); ``streamable-http`` is the current Streamable
+    HTTP; ``sse`` is the legacy 2024-11-05 HTTP+SSE. All three negotiate
+    the era through the same ``Client``, so era fallback comes for free.
     """
-    if config.transport != "stdio":
-        raise McpError(
-            f"the {config.transport!r} transport is not supported yet",
-            "mcp_transport",
-        )
+    if config.transport == "streamable-http":
+        return _streamable_http_transport(config)
+    if config.transport == "sse":
+        return _sse_transport(config)
     return _stdio_client(config, errlog)
 
 
@@ -231,7 +286,7 @@ class McpSession:
     ):
         """*server* overrides the connection target the config describes —
         an in-process server (the tests' protocol seam) or a transport; the
-        default builds the stdio target from *config*."""
+        default builds the transport *config* names."""
         self.config = config
         self.name = config.name
         self.on_connected = on_connected
