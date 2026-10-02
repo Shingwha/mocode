@@ -414,6 +414,32 @@ class McpSession:
             )
         return result.model_dump(by_alias=True, exclude_none=True)
 
+    async def list_resources(self, cursor: str | None = None) -> dict:
+        """One page of the server's resources — wire-form, cursor and all."""
+        await self._ensure_connection()
+        client = self._client
+        assert client is not None  # ensured above
+        page = await self._request(lambda: client.list_resources(cursor=cursor))
+        return page.model_dump(by_alias=True, exclude_none=True)
+
+    async def list_resource_templates(self, cursor: str | None = None) -> dict:
+        """One page of the server's resource templates — wire-form."""
+        await self._ensure_connection()
+        client = self._client
+        assert client is not None  # ensured above
+        page = await self._request(
+            lambda: client.list_resource_templates(cursor=cursor)
+        )
+        return page.model_dump(by_alias=True, exclude_none=True)
+
+    async def read_resource(self, uri: str) -> dict:
+        """One resource by uri — the wire-form ``contents`` list."""
+        await self._ensure_connection()
+        client = self._client
+        assert client is not None  # ensured above
+        result = await self._request(lambda: client.read_resource(uri))
+        return result.model_dump(by_alias=True, exclude_none=True)
+
     # ── the connection ──────────────────────────────────────
 
     async def _ensure_connection(self) -> None:

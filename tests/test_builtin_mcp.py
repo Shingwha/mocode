@@ -1445,6 +1445,66 @@ class TestEraNegotiation:
         await asyncio.wait_for(session.close(), BOUND)
 
 
+def make_resource_server() -> MCPServer:
+    """An in-process server with one concrete resource and one template —
+    the shape the resource tools read through."""
+    server = MCPServer(name="withres", version="1.2.3")
+
+    @server.resource("note://today")
+    def today() -> str:
+        "today's note"
+
+        return "ship it"
+
+    @server.resource("greeting://{name}")
+    def greeting(name: str) -> str:
+        "a greeting"
+
+        return f"hello {name}"
+
+    return server
+
+
+class TestResourceMethods:
+    """The session's resource pass-throughs, wire-form — the tools built on
+    them (a later wave) only split contents and map errors."""
+
+    async def test_listing_resources_and_templates_is_wire_form(self, session_factory):
+        session = session_factory(server=make_resource_server())
+        await asyncio.wait_for(session.connect_and_register(), BOUND)
+        assert session.server_capabilities.resources is not None
+
+        resources = await asyncio.wait_for(session.list_resources(), BOUND)
+        entries = resources["resources"]
+        assert [r["uri"] for r in entries] == ["note://today"]
+        assert entries[0]["name"] == "today"
+        assert entries[0]["mimeType"] == "text/plain"
+
+        templates = await asyncio.wait_for(session.list_resource_templates(), BOUND)
+        assert [t["uriTemplate"] for t in templates["resourceTemplates"]] == [
+            "greeting://{name}"
+        ]
+
+    async def test_reading_a_resource_returns_its_contents(self, session_factory):
+        session = session_factory(server=make_resource_server())
+        await asyncio.wait_for(session.connect_and_register(), BOUND)
+        result = await asyncio.wait_for(session.read_resource("greeting://ada"), BOUND)
+        assert result["contents"] == [
+            {
+                "uri": "greeting://ada",
+                "mimeType": "text/plain",
+                "text": "hello ada",
+            }
+        ]
+
+    async def test_reading_a_missing_resource_is_an_mcp_error(self, session_factory):
+        session = session_factory(server=make_resource_server())
+        await asyncio.wait_for(session.connect_and_register(), BOUND)
+        with pytest.raises(McpError) as err:
+            await asyncio.wait_for(session.read_resource("note://absent"), BOUND)
+        assert err.value.code == "mcp_error"
+
+
 # ── runtime + tool registration ─────────────────────────────
 
 from mocode.core.events import Notice
