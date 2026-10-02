@@ -76,7 +76,7 @@ class TestTheRuntime:
         and a model without one keeps it."""
         from mocode.core.provider import RetryPolicy
 
-        mc.config.providers["test"].models["test-model"].retry = {
+        mc.config.providers["test"].model("test-model").retry = {
             "max_attempts": 3,
             "base_delay": 5.0,
         }
@@ -98,7 +98,7 @@ class TestProviderTypes:
     def test_a_registered_type_is_built_from_the_config_entry(self, make_mc):
         config = make_config()
         config.providers["local"] = ProviderEntry(
-            type="local", models={"llama": ModelEntry()}
+            type="local", models=[ModelEntry(id="llama")]
         )
         mc = make_mc(config)
         mc.register_provider_type("local", self._fake_factory)
@@ -111,7 +111,7 @@ class TestProviderTypes:
     def test_an_unregistered_type_is_a_configuration_mistake(self, make_mc):
         config = make_config()
         config.providers["local"] = ProviderEntry(
-            type="local", models={"llama": ModelEntry()}
+            type="local", models=[ModelEntry(id="llama")]
         )
         mc = make_mc(config)
 
@@ -121,7 +121,7 @@ class TestProviderTypes:
     def test_the_type_round_trips_through_the_file(self, tmp_path: Path):
         config = make_config()
         config.providers["local"] = ProviderEntry(
-            type="local", models={"llama": ModelEntry()}
+            type="local", models=[ModelEntry(id="llama")]
         )
         path = tmp_path / "config.json"
         config.save(path)
@@ -183,7 +183,7 @@ class TestPluginProviderTypes:
 
         config = make_config()
         config.providers["local"] = ProviderEntry(
-            type="plugged", models={"llama": ModelEntry()}
+            type="plugged", models=[ModelEntry(id="llama")]
         )
         return make_mc(config, plugin_dirs=[plugins_dir])
 

@@ -35,7 +35,7 @@ def _host(
     ctx = BuildContext(
         home=tmp_path / "home",
         cwd=tmp_path,
-        config=Config(active_provider="p", active_model="m"),
+        config=Config(provider="p", model="m"),
     )
     if hook is not None:
         ctx.hooks.append(hook(ctx))

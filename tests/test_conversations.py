@@ -260,8 +260,20 @@ class TestModel:
 
         conversation.set_model("second", "second-model")
 
-        assert mc.config.active_provider == "test"
-        assert mc.config.active_model == "test-model"
+        assert mc.config.provider == "test"
+        assert mc.config.model == "test-model"
+
+    def test_set_effort_switches_the_level_without_touching_the_config(
+        self, mc: MoCode, tmp_path: Path
+    ):
+        conversation = mc.new_conversation(cwd=_project(tmp_path, "a"))
+        mc.config.save = lambda *a, **k: pytest.fail("switching an effort is not a config write")
+
+        conversation.set_effort("max")
+
+        assert conversation.agent.model.effort == "max"
+        assert conversation.ctx.model.effort == "max"
+        assert mc.config.model == "test-model"
 
     def test_a_conversation_can_override_the_default(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(
@@ -282,7 +294,7 @@ class TestModel:
 
         mc.set_default_model("second", "second-model")
 
-        assert (config.active_provider, config.active_model) == ("second", "second-model")
+        assert (config.provider, config.model) == ("second", "second-model")
         assert mc.new_conversation(cwd=tmp_path).model_name == "second-model"
 
 

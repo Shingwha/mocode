@@ -528,7 +528,7 @@ def _host_context(tmp_path, agent: AgentLoop) -> HostContext:
     return HostContext(
         home=tmp_path / "home",
         cwd=tmp_path,
-        config=Config(active_provider="p", active_model="m"),
+        config=Config(provider="p", model="m"),
         agent=agent,
     )
 
@@ -652,7 +652,7 @@ def _host_context_for_tools() -> BuildContext:
     return BuildContext(
         home=Path(".") / "home",
         cwd=Path("."),
-        config=Config(active_provider="p", active_model="m"),
+        config=Config(provider="p", model="m"),
     )
 
 
@@ -725,7 +725,7 @@ class TestSourceStamping:
         ctx = BuildContext(
             home=Path(".") / "home",
             cwd=Path("."),
-            config=Config(active_provider="p", active_model="m"),
+            config=Config(provider="p", model="m"),
             tools=plain,
         )
 
@@ -738,7 +738,7 @@ class TestSourceStamping:
         ctx = BuildContext(
             home=tmp_path / "home",
             cwd=tmp_path,
-            config=Config(active_provider="p", active_model="m"),
+            config=Config(provider="p", model="m"),
         )
         loaded = load_plugins(plugin_dirs=[], config=ctx.config)
         PluginHost(ctx, loaded.plugins, sources=loaded.tool_sources).build_all()
@@ -778,7 +778,7 @@ class TestSourceStamping:
         ctx = BuildContext(
             home=tmp_path / "home",
             cwd=tmp_path,
-            config=Config(active_provider="p", active_model="m"),
+            config=Config(provider="p", model="m"),
         )
         loaded = load_plugins(
             plugin_dirs=[tmp_path / "plugins"], config=ctx.config

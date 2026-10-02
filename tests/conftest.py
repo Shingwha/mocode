@@ -30,20 +30,20 @@ def make_config() -> Config:
     only have to be well-formed — and never real.
     """
     return Config(
-        active_provider="test",
-        active_model="test-model",
+        provider="test",
+        model="test-model",
         providers={
             "test": ProviderEntry(
                 name="Test",
                 api_key="sk-test",
                 base_url="http://localhost",
-                models={"test-model": ModelEntry(), "other-model": ModelEntry()},
+                models=[ModelEntry(id="test-model"), ModelEntry(id="other-model")],
             ),
             "second": ProviderEntry(
                 name="Second",
                 api_key="sk-other",
                 base_url="http://localhost",
-                models={"second-model": ModelEntry()},
+                models=[ModelEntry(id="second-model")],
             ),
         },
     )
