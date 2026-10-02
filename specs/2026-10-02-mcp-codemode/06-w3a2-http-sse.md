@@ -1,4 +1,4 @@
-✅ 2026-10-03 @ feat/mcp-sdk-http（已派工，进行中）
+✅ 2026-10-03 @ feat/mcp-sdk-http（已合并 master `82fbf9e`；910 passed exit 0，lead 合并前后各复核一次）
 
 # Spec 06 · W3a-2：streamable HTTP + SSE 传输（波次 W3a-2）
 

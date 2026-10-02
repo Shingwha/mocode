@@ -1,4 +1,4 @@
-⏸️ 未实施 — 前置 W3a-2 合并后派工；**与 `08` 并行（写范围文件级不相交）**
+✅ 2026-10-03 @ feat/mcp-sdk-subs（已派工，进行中；与 `08` 并行）
 
 # Spec 07 · W3b：modern 工具变更订阅（subscriptions/listen）（波次 W3b）
 

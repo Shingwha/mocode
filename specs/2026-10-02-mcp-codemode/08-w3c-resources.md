@@ -1,4 +1,4 @@
-⏸️ 未实施 — 前置 W3a-2 合并后派工；**与 `07` 并行（写范围文件级不相交）**
+✅ 2026-10-03 @ feat/mcp-sdk-resources（已派工，进行中；与 `07` 并行）
 
 # Spec 08 · W3c：resources 只读工具（波次 W3c）
 
@@ -27,9 +27,9 @@
   modern/legacy 都可用）。W3a-1 的 `McpSession.server_capabilities` 已暴露。
 - 错误：新规范 `-32602`、旧 server `-32002`（资源不存在）都出现；两者都经
   `MCPError.code` 到手。
-- 若 `McpSession` 尚无 resources 直通方法（W3a-1/06 已按 D6 交付 wire 形薄封装，
-  如实测核对），本波**不得改 `client.py`**——缺什么就在 `runtime.py`/`tools.py`
-  内用现有 seam 组合，或停下来报告。
+- **直通已就绪（lead 落在 master `d6c3d57`）**：`McpSession.list_resources(cursor=…)`、
+  `list_resource_templates(cursor=…)`、`read_resource(uri)` 三个 wire-form 方法 +
+  `server_capabilities` 暴露均已交付并有测试；本波直接用，**不得改 `client.py`**。
 
 ## 2. 冻结实现决策
 

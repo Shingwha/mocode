@@ -1,4 +1,4 @@
-✅ 2026-10-03 @ master（W1a/W1b/W2/W3a-1 已合并，896 passed；W3a-2（`06`）已派工，W3b/W3c（`07`/`08`）待 W3a-2 合并后并行）
+✅ 2026-10-03 @ master（W1a/W1b/W2/W3a-1/W3a-2 已合并，913 passed；W3b/W3c（`07`/`08`）并行派工中；收尾 docs 由 lead 落）
 
 # Spec Group · MCP + Codemode 两个内置插件（2026-10-02）
 
