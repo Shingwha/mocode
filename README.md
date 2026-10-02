@@ -36,14 +36,21 @@ mocode
 > What does this project do?
 ```
 
-One-shot mode:
+One-shot mode — run one prompt and exit, with piped stdin as context:
 
 ```bash
 mocode -p "Explain what mocode/core/agent.py does"
 
 # with piped input as context
 cat error.log | mocode -p "Summarize these errors"
+
+# the prompt itself from stdin ("-" is the marker)
+cat task.txt | mocode -p -
 ```
+
+Other entry points: `mocode plugin install <git-url | local-path>` (and
+`list` / `sync` / `remove`) manages plugins without starting a conversation;
+the library entry is [Embedding](#embedding) below.
 
 ---
 
@@ -113,23 +120,27 @@ Reasoning effort is a model fact too. A model entry may declare its own ordered 
 
 Endpoints that need provider-specific request fields (DeepSeek's `thinking`, llama.cpp's samplers, and so on) take a custom provider type registered in code — see [docs/providers.md](docs/providers.md).
 
-`> /model` switches provider and model and writes the choice back to the file.
+`> /model` switches provider and model for the current conversation *and* remembers the choice as the default for new ones, which is the only thing a running MoCode writes back to the file.
 
 Keys MoCode does not recognise are preserved untouched when it saves.
 
 ---
 
-## Built-in Tools
+## Built-ins
 
-Shipped as the `filesystem` and `shell` plugins:
+The plugins MoCode ships are ordinary plugins: disable any of them with
+`"plugins": { "<name>": { "enabled": false } }` and contribute your own instead.
 
-| Tool | Plugin | Description |
-|------|--------|-------------|
-| `read` | `filesystem` | Read a file with line numbers (supports offset/limit, lists directories) |
-| `write` | `filesystem` | Write or append to a file |
-| `edit` | `filesystem` | Find-and-replace in a file |
-| `bash` | `shell` | Run commands in a persistent bash session (cwd and env survive) |
-| `skill` | `skills` | Load a skill's instructions by name |
+| Plugin | Contributes |
+|---|---|
+| `filesystem` | `read` (with line numbers, offset/limit, directory listings), `write`, `edit` — paths resolve into the conversation's project |
+| `shell` | `bash`, `bash_output`, `kill_shell` — one persistent bash session per conversation; cwd, env and background jobs survive between calls |
+| `skills` | the `skill` tool, a `/skill:<name>` command per skill, the prompt's skills section |
+| `default-prompts` | the four sections a fresh prompt starts with: `guidelines`, `agents`, `environment`, `time` |
+| `session` | `/export` (JSON to resume, Markdown to read), `/clear` |
+| `help` | `/help` — lists every registered command, plugin ones included |
+| `effort` | `/effort` — shows or sets the reasoning level for this conversation |
+| `cache-protect` | pins the request prefix, so a session keeps its provider-side cache; drift arrives as `[context update]` notices (a hook, no tools) |
 
 Need `glob`, `grep`, web fetch, sub-agents or context compaction? Those are plugins. See [docs/plugins.md](docs/plugins.md) — a sub-agent tool is about 40 lines on top of the kernel's `derive()` primitive.
 
@@ -172,30 +183,15 @@ A plugin is a directory laid out the way the [Agent Plugins](https://agent-plugi
 └── mocode.cli/plugin.py     contributions to the terminal: chrome only it can honour
 ```
 
-```python
-# mocode/plugin.py — works in every frontend
-from mocode.plugins import Plugin, Tool
+Restart MoCode and a dropped-in plugin is live — or install one without
+leaving the shell with `mocode plugin install <git-url | local-path>` (add
+`--project` to land in `./.mocode/plugins/`). A single `<name>.py` file next
+to the plugin directories works too, for a plugin with no portable parts.
 
-class GitHelperPlugin(Plugin):
-    name = "git-helper"
-
-    def build(self, ctx):
-        def run(args: dict) -> str:
-            return "clean"  # ask git here, in ctx.cwd
-
-        ctx.tools.register(Tool(
-            name="git_status",
-            description="Show the working tree status of the project.",
-            schema={"type": "object", "properties": {}},
-            func=run,
-        ))
-        # also: ctx.commands.register(Command(...)), ctx.hooks.append(...),
-        #       ctx.prompt_sections.append(Section(...))
-```
-
-Restart MoCode and it is live. A complete example with both surfaces lives in [examples/plugins/git-status](examples/plugins/git-status). Plugins are trusted code — installing one runs it.
-
-A single `<name>.py` file next to the plugin directories works too, for a plugin with no portable parts.
+The layout, the manifest rules, hooks, tools, the environment a plugin may
+declare for itself and a complete example live in
+[docs/plugins.md](docs/plugins.md) and [examples/plugins/git-status](examples/plugins/git-status).
+Plugins are trusted code — installing one runs it.
 
 ---
 
@@ -206,13 +202,14 @@ MoCode is a library before it is a CLI. One runtime opens as many conversations 
 ```python
 from mocode import MoCode
 
-mc = MoCode()                                        # config + home
-conv = mc.new_conversation(cwd="/srv/proj-a")         # one conversation
-async for event in conv.chat("list the tests"):
-    ...                                              # text, tool calls, usage
+mc = MoCode()                                    # config + home
+conv = mc.new_conversation(cwd="/srv/proj-a")     # one conversation
+async for event in conv.stream("list the tests"):
+    ...                                          # text, tool calls, usage
 
-conv.state.to_dict()                                 # status endpoint
-conv.save()                                          # → ~/.mocode/sessions/…
+answer = await conv.chat("list the tests")        # just the final text
+conv.state.to_dict()                              # status endpoint
+conv.save()                                       # → ~/.mocode/sessions/…
 ```
 
 A conversation owns its project, its model, its history and its event stream; `conv.subscribe(since=seq)` is how a reader catches up, including one that reconnects. See [docs/embedding.md](docs/embedding.md).
@@ -221,17 +218,21 @@ A conversation owns its project, its model, its history and its event stream; `c
 
 ## Interactive Commands
 
-| Command | Description |
-|---------|-------------|
-| `/help` | Show all commands |
-| `/model` | Switch provider/model |
-| `/effort [level]` | Show or set the reasoning effort for this conversation |
-| `/resume [file.json]` | Browse and resume sessions |
-| `/export [json\|md]` | Export the current session |
-| `/clear` | Save and clear the conversation |
-| `/copy` | Copy the last response to the clipboard |
-| `/skill:<name>` | Inject a skill into the conversation |
-| `/quit` | Exit |
+Two registries, one way to type them: slash-commands a *shared* command
+registry answers for every frontend, and the commands that need a picker or
+the clipboard — which only this frontend has.
+
+| Command | From | Description |
+|---|---|---|
+| `/help` | host (`help`) | Show all commands |
+| `/export [json\|md]` | host (`session`) | Export the current session |
+| `/clear` | host (`session`) | Save and clear the conversation |
+| `/effort [level]` | host (`effort`) | Show or set the reasoning effort for this conversation |
+| `/skill:<name>` | host (`skills`) | Inject a skill into the conversation |
+| `/model` | terminal | Switch provider/model (and remember it as the default) |
+| `/resume [file.json]` | terminal | Browse and resume sessions, or load an exported file |
+| `/copy` | terminal | Copy the last response to the clipboard |
+| `/quit` | terminal | Exit |
 
 ---
 
@@ -242,15 +243,13 @@ Two files are merged into the system prompt, global first:
 - `~/.mocode/AGENTS.md` — instructions for all your projects
 - `./AGENTS.md` — instructions for this project
 
-The prompt sections, `/export`, `/clear` and `/help` are contributions from
-MoCode's built-in plugins (`default-prompts`, `session`, `help`) — ordinary
-plugins you can disable with `"plugins": { "default-prompts": { "enabled":
-false } }`, the same way as any other.
+The prompt sections, `/export`, `/clear`, `/help` and `/effort` are
+contributions from MoCode's built-in plugins (`default-prompts`, `session`,
+`help`, `effort`) — ordinary plugins you can disable with
+`"plugins": { "default-prompts": { "enabled": false } }`, the same way as any
+other.
 
-A session's prompt and tool interface stay frozen while it runs, so the
-provider's prefix cache survives turn after turn. An AGENTS.md you edit
-mid-session is not written into that frozen prompt — the model is told what
-moved as a `[context update]` diff, just before your next message.
+A session's prompt and tool interface stay frozen while it runs, so the provider's prefix cache survives turn after turn. An AGENTS.md you edit mid-session is not written into that frozen prompt — the model is told what moved as a `[context update]` diff, just before your next message.
 
 ---
 
@@ -264,6 +263,22 @@ moved as a `[context update]` diff, just before your next message.
 ├── skills/          # Your skills
 └── plugins/         # Your plugins
 ```
+
+---
+
+## Documentation
+
+| Doc | For |
+|---|---|
+| [docs/plugins.md](docs/plugins.md) | writing a plugin |
+| [docs/embedding.md](docs/embedding.md) | embedding MoCode in an application |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | the module map and how the layers reason |
+| [docs/providers.md](docs/providers.md) | the Provider protocol, writing a provider |
+| [docs/testing.md](docs/testing.md) | testing a plugin against a scripted model |
+| [docs/api.md](docs/api.md) | the public surface, layer by layer |
+| [examples/core/](examples/core) | agents built from `core/` alone, runnable |
+
+Contributors work under [AGENTS.md](AGENTS.md).
 
 ---
 

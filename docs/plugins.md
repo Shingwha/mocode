@@ -356,7 +356,6 @@ Tool(
     tags=frozenset({"issues"}),
     summary_key="state",         # the argument a one-line summary shows
     result_key="issue_count",    # the detail shown alongside it
-    returns={"type": "object"},  # structured-output metadata for SDKs; never sent
     policy=ToolPolicy(timeout=60),  # per-tool overrides before config
 )
 ```
@@ -475,6 +474,17 @@ the run moves on — and so it can slow the run down. Keep it for code that must
 answer; a plugin that only watches calls `ctx.subscribe()` instead, which
 nobody waits for — see [embedding.md](embedding.md).
 
+**Every hook context carries an `emit`.** `before_iteration` and
+`before_request` get one on the context they are handed, and so does every
+`ToolCallContext` — the same publishing path `HostContext.emit` uses, already
+wired to the run the context belongs to, so `await ctx.emit(Notice(...))`
+from inside an interception point lands on the stream attributed to the turn
+that is running. It is a no-op by default, which is what keeps a context you
+construct yourself (a unit test of a `with_context` tool) safe outside a
+loop — see [testing.md](testing.md#testing-a-with_context-tool-directly).
+`on_tool_complete` may also `await ctx.emit(...)`, since it shares the tool
+call's context.
+
 A `system_prompt` a hook writes lasts **for the rest of the run**: the loop
 restores the prompt as it stood when the turn ends, so one turn's rewrite
 never leaks into the next. A persona that should hold for the whole
@@ -563,6 +573,63 @@ twice, and what a frontend already committed to the scrollback it treats
 as history. The bound is a session's worth of display chatter, not an
 archive: facts that must survive unbounded belong in `plugin_state()` or
 in the conversation history.
+
+## Watching the conversation — `ctx.subscribe()`
+
+Publishing is one half of the channel; the other half is reading it, and a
+plugin can do that too — out-of-band, so it never slows a run down:
+
+```python
+class Watcher(Plugin):
+    def build(self, ctx):
+        host = ctx                    # grows into a HostContext at assembly
+        self._sub = None
+
+    async def prepare(self, ctx):
+        self._sub = ctx.subscribe(since=None)   # live from here on
+
+    def close(self, ctx):
+        if self._sub:
+            self._sub.close()         # outlive the conversation on purpose? don't
+```
+
+`ctx.subscribe(since=seq)` replays what the channel still remembers after that
+number before continuing live — the same protocol a reconnecting client uses.
+A reader that falls behind loses its oldest events and says so
+(`Subscription.dropped`, and the gap in `seq`); what was missed is recovered
+from `conv.state`, not from the stream. The alternative is in-band:
+`on_event` on a hook, which the loop waits for. Reach for the subscription
+unless something must answer.
+
+## Skills in code — `SkillManager.register`
+
+A skill is normally a directory (`skills/<name>/SKILL.md`) and discovery finds
+it. The same skill can also be assembled in code: a `SkillManager` —
+`SkillManager.register(skill)` — adds one, and a *discovered* skill of the
+same name wins, so a user's file always shadows what your plugin brings.
+Both live in `mocode.host.plugin.builtin.skills` rather than in the SDK,
+because they are the skills plugin's own building blocks; `Skill.from_dir(path)`
+builds one from a directory, and `Skill(metadata=..., path=...)` from wherever
+your skill text came from. Shipping a plugin with skills should just mean
+shipping `skills/` — the code path is for one that *computes* them.
+
+## Namespace directories — `namespace_dir`
+
+`namespace_dir(source, namespace)` answers the question a namespace raises:
+does this plugin ship code for that client? It takes a plugin directory or a
+whole `PluginSpec` and returns the directory, or `None`:
+
+```python
+from mocode.host.plugin import namespace_dir
+
+mine = namespace_dir(spec, "mocode")      # the agent's own namespace
+cli_only = namespace_dir(spec, "mocode.cli")   # or any namespace a client declared
+```
+
+The host itself only ever *offers* the paths (`ctx.plugin_sources`,
+`LoadedPlugins.sources`) — it never looks inside one. A namespace belongs to
+whoever declared it, which is why `mocode.cli` is the terminal's to read and a
+web frontend's to ask for.
 
 ## Context compaction — a worked example
 
@@ -694,13 +761,16 @@ terminal's own commands are the first implementation of this interface
   its own tool — is an overwrite. `register(tool, replace=True)` forces a
   takeover knowingly.
 - **Built-in names are reserved** (`filesystem`, `shell`, `skills`,
-  `default-prompts`, `session`, `help`, `cache-protect`): a third-party plugin
-  cannot shadow them. Overriding built-in behaviour means disabling the
-  built-in and contributing your own under a different name.
+  `default-prompts`, `session`, `help`, `effort`, `cache-protect`): a
+  third-party plugin cannot shadow them. Overriding built-in behaviour means
+  disabling the built-in and contributing your own under a different name.
 - **One plugin, one name.** Project-local beats user-global; the loser is
   skipped rather than loaded twice.
 - **Failures are contained.** Import errors and exceptions from `build()` are
-  reported on stderr, the plugin is skipped, and the host starts normally. A
+  reported on stderr, the plugin is skipped, and the host starts normally —
+  the names of the ones that failed are collected in `PluginHost.failures`
+  (`mc`'s conversations expose it as `conversation.host.failures`) for an
+  application that wants to say so rather than silently run without them. A
   broken terminal plugin costs its own contributions, never the screen.
 - **Order is deterministic, but it is not a dependency graph.** Built-ins load
   first, then third-party plugins: project-local before user-global, sorted by

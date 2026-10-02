@@ -72,6 +72,11 @@ mc.provider_for(key, model)          # build a provider for a pair
 mc.set_default_model(key, model)     # the only thing that writes config.json
 ```
 
+A plugin that cannot be imported, or whose `build()` / `prepare()` / `close()`
+raises, is reported and skipped — one broken plugin never takes the host down.
+`conv.host.failures` lists the ones that did, so an application that cares can
+say so instead of silently running without them.
+
 ### Opening a conversation
 
 ```python
@@ -92,9 +97,11 @@ share the config, the plugin loading and the session store — and nothing else.
 `mc.resume(session_id)` is the one-line way back into a stored conversation.
 
 Opening is cheap by design: plugins *register* in `build()` and finish their
-I/O in `prepare()`, and the request surface — system prompt plus offered tool
-interface — is materialized once, at the top of the first turn (or, on a
-resume, byte-identically from the session). The first `chat`/`stream`/`run`
+I/O in `prepare()` (the full lifecycle is
+[plugins.md](plugins.md#the-two-stages-buildctx-and-preparectx)'s), and the
+request surface — system prompt plus offered tool interface — is materialized
+once, at the top of the first turn (or, on a resume, byte-identically from the
+session). The first `chat`/`stream`/`run`
 does that on its own. An application that wants the surface sooner — to read
 `conv.agent.system_prompt`, to inspect `conv.tools` as the model will be
 offered them — awaits it explicitly:
@@ -116,15 +123,22 @@ plain data: each has a `type` string, a `run_id`, a monotonic `seq`, and a
 | `TextDelta` | `text` | a fragment of the answer |
 | `ReasoningDelta` | `text` | a fragment of the model's reasoning trace |
 | `IterationFinished` | `iteration`, `usage`, `stop_reason` | the response is complete |
-| `ToolCallStarted` | `call_id`, `name`, `args` | a tool is about to run; args are final |
+| `ToolCallStarted` | `call_id`, `name`, `args`, `origin`, `parent_call_id` | a tool is about to run; args are final |
 | `ToolOutput` | `call_id`, `text`, `stream` | a running tool produced output |
-| `ToolCallFinished` | `call_id`, `name`, `status`, `result`, `error_code`, `duration` | a tool finished |
+| `ToolCallFinished` | `call_id`, `name`, `status`, `result`, `error_code`, `duration`, `details`, `origin`, `parent_call_id` | a tool finished |
 | `RunFinished` | `content`, `usage`, `iterations`, `tool_calls_made`, `stop_reason` | the turn ended |
 | `RunFailed` | `error`, `kind` | the turn ended on an unhandled error |
 | `Notice` | `message`, `level` | a plugin or the host wants to say something |
+| `PluginMessage` | `kind`, `data`, `block_id`, `sealed` | a plugin-authored entry — progress, a completion, anything structured |
 
 The host adds one event of its own outside the kernel: `ConversationChanged`
 (`mocode.host.events`) — the history was replaced, re-read the conversation.
+
+`origin` says who asked for a tool call: `"model"` inside a turn, or
+`"program"` when your code ran it itself through the dispatcher — a
+program-origin call carries `parent_call_id`, the call it is nested inside.
+Both reach every reader of the stream; only the model's side of the story
+folds into `RunState` and `messages`.
 
 Four rules make the stream safe to build on:
 
@@ -184,8 +198,6 @@ conv.state.iteration              # which LLM call
 conv.state.content                # everything streamed this turn
 conv.state.answer                 # the final answer ("" if the turn did not finish)
 conv.state.usage                  # Usage, summed over the turn
-conv.state.running_tool_calls     # [ToolCallState, ...] still executing
-conv.state.failed_tool_calls      # those that did not end "ok"
 conv.state.tool_calls["c1"]       # one call by id
 ```
 
