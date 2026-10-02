@@ -67,7 +67,7 @@ async def _model(ctx: CommandContext) -> CommandResult:
         dialogs.Choice(
             title=entry.label(key),
             value=key,
-            description=", ".join(entry.model_names()) or "(no models defined)",
+            description=", ".join(entry.model_ids()) or "(no models defined)",
         )
         for key, entry in config.providers.items()
     ]
@@ -82,7 +82,7 @@ async def _model(ctx: CommandContext) -> CommandResult:
         return CONTINUE
 
     entry = config.providers[chosen_key]
-    models = entry.model_names()
+    models = entry.models
     if not models:
         await conversation.notify(
             f"Provider '{chosen_key}' has no models defined in {config.path}.",
@@ -90,22 +90,22 @@ async def _model(ctx: CommandContext) -> CommandResult:
         )
         return CONTINUE
 
-    chosen_model = models[0]
+    chosen_model = models[0].id
     if len(models) > 1:
         picked = await dialogs.select(
             f"Select a model for {entry.label(chosen_key)}:",
             [
                 dialogs.Choice(
-                    title=name,
-                    value=name,
-                    description="current" if name == conversation.model_name else None,
+                    title=m.name or m.id,
+                    value=m.id,
+                    description="current" if m.id == conversation.model_name else None,
                 )
-                for name in models
+                for m in models
             ],
             default=(
                 conversation.model_name
-                if conversation.model_name in models
-                else models[0]
+                if conversation.model_name in entry.model_ids()
+                else models[0].id
             ),
         )
         if picked is None:

@@ -192,10 +192,6 @@ class ProviderEntry:
         """The declared model ids, in declaration order."""
         return [m.id for m in self.models]
 
-    def model_names(self) -> list[str]:
-        """Bridge for the pre-rename CLI call sites that W3 rewrites."""
-        return self.model_ids()
-
     def model(self, model_id: str) -> ModelEntry | None:
         """The entry declared for *model_id* — ``None`` when not declared."""
         for m in self.models:
