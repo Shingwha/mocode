@@ -84,6 +84,13 @@ class CommandRegistry:
         self._by_alias: dict[str, Command] = {}
 
     def register(self, *commands: Command) -> None:
+        """Add each command, keyed by its name and every alias.
+
+        A same-name registration replaces — the last section registered wins,
+        which is the rule a plugin overriding a builtin relies on. Variadic
+        because a plugin contributing several commands registers them in one
+        call rather than looping.
+        """
         for cmd in commands:
             self._by_name[cmd.name] = cmd
             for alias in cmd.aliases:

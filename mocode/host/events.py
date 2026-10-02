@@ -27,6 +27,7 @@ class ConversationChanged(Event):
     type: ClassVar[str] = "conversation_changed"
 
     def summary(self) -> str:
+        """One line for a frontend that shows the stream as text."""
         return "conversation replaced"
 
 
