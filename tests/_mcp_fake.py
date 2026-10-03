@@ -20,6 +20,8 @@ import mcp_types as sdk_types
 from mcp.shared.memory import create_client_server_memory_streams
 from mcp.shared.message import SessionMessage
 
+from .conftest import settle
+
 def write_server(tmp_path: Path, name: str, code: str) -> Path:
     """Write a fake server script into *tmp_path*; return its path."""
     path = tmp_path / name
