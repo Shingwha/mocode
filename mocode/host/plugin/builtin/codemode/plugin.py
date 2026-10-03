@@ -73,21 +73,30 @@ def effective_options(script: str, options: dict | None) -> dict:
     return merged
 
 
+def _deadline_seconds(options: dict, config: dict) -> float | None:
+    """The whole-script deadline in seconds: explicit ``timeout_ms`` (ceil'd,
+    at least one), then ``plugins.codemode.timeout_s``; ``None`` when neither
+    is set, leaving the call to the agent's tool timeout."""
+    ms = options.get("timeout_ms")
+    if ms:
+        return max(1, math.ceil(ms / 1000))
+    seconds = config.get("timeout_s", 0)
+    if seconds:
+        return seconds
+    return None
+
+
 def codemode_tool(host: "HostContext") -> Tool:
     """The ``codemode`` tool — closures over the host, stateless plugin."""
 
     def policy(args: dict) -> ToolPolicy:
-        """Whole-script deadline: explicit options, then the `@options`
-        comment, then `plugins.codemode.timeout_s`; 0/absent falls back to
-        the agent's configured tool timeout."""
+        """Whole-script deadline handed to the dispatcher: explicit options,
+        then the `@options` comment, then ``plugins.codemode.timeout_s``;
+        0/absent falls back to the agent's configured tool timeout."""
         options = effective_options(args.get("script") or "", args.get("options"))
-        ms = options.get("timeout_ms")
-        if ms:
-            return ToolPolicy(timeout=max(1, math.ceil(ms / 1000)))
-        seconds = host.plugin_config("codemode").get("timeout_s", 0)
-        if seconds:
-            return ToolPolicy(timeout=seconds)
-        return ToolPolicy(timeout=None)
+        return ToolPolicy(
+            timeout=_deadline_seconds(options, host.plugin_config("codemode"))
+        )
 
     async def run(args: dict, call_ctx: "ToolCallContext") -> ToolResult:
         script = args["script"]
@@ -110,23 +119,57 @@ def codemode_tool(host: "HostContext") -> Tool:
             output,
             store,
         )
+        deadline = _deadline_seconds(options, config)
         started = time.monotonic()
         ok = False
         error: BaseException | None = None
         value = None
-        try:
-            value = await run_script(script, env)
-            ok = True
-        except _ScriptExit:
-            ok = True
-        except asyncio.CancelledError:
-            # A turn cancelled or a timed-out call must unwind untouched —
-            # the dispatcher records the outcome.
-            raise
-        except Exception as e:  # the script's failure is the tool's result
-            error = e
+        timed_out = False
+        if deadline is not None:
+            # D6: an explicit deadline is enforced here, inside the plugin,
+            # so when it fires the result keeps what the script already
+            # emitted; the dispatcher's timeout path (which discards partial
+            # output by cancelling the call) never gets the chance.
+            script_task = asyncio.create_task(run_script(script, env))
+            try:
+                value = await asyncio.wait_for(script_task, timeout=deadline)
+                ok = True
+            except _ScriptExit:
+                ok = True
+            except asyncio.CancelledError:
+                # A turn cancelled mid-script unwinds untouched — the
+                # dispatcher records the outcome. wait_for already cancelled
+                # the script task.
+                raise
+            except TimeoutError:
+                if script_task.cancelled():
+                    # Our own deadline fired — reported as a normal failure
+                    # below, with the partial output kept.
+                    timed_out = True
+                else:
+                    # The script itself raised TimeoutError — its own error,
+                    # not the deadline.
+                    error = script_task.exception() or TimeoutError("timed out")
+            except Exception as e:  # the script's failure is the tool's result
+                error = e
+        else:
+            try:
+                value = await run_script(script, env)
+                ok = True
+            except _ScriptExit:
+                ok = True
+            except asyncio.CancelledError:
+                # A turn cancelled or a timed-out call must unwind untouched —
+                # the dispatcher records the outcome.
+                raise
+            except Exception as e:  # the script's failure is the tool's result
+                error = e
         if ok and value is not None:
             output.text(value)
+        if timed_out:
+            # A finished-looking failure: partial output plus the marker,
+            # store writes from the unfinished script discarded.
+            output.text(f"Script timed out after {deadline}s.")
         if ok:
             # Store limits are validated before anything is applied — a
             # limit breach turns the run into a failure with nothing staged.
@@ -145,6 +188,7 @@ def codemode_tool(host: "HostContext") -> Tool:
             max_chars=options.get("max_output_chars")
             or config.get("max_output_chars", 12000),
             script=script,
+            timed_out=timed_out,
         )
 
     return Tool(

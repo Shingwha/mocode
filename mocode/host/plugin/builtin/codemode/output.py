@@ -132,16 +132,24 @@ def build_result(
     tool_calls: int,
     max_chars: int,
     script: str = "",
+    timed_out: bool = False,
 ) -> ToolResult:
-    """The codemode tool's ToolResult — content for the model, facts in details."""
+    """The codemode tool's ToolResult — content for the model, facts in details.
+
+    ``timed_out`` is set only when the plugin's own deadline fired: the
+    details then carry the ``"timed_out": True`` marker alongside the
+    partial output in the content."""
     body, path = truncate_body(output.render_body(), max_chars)
+    details = {
+        "ok": ok,
+        "images": list(output.images),
+        "truncated": path is not None,
+        "full_output_path": path,
+        "tool_calls": tool_calls,
+    }
+    if timed_out:
+        details["timed_out"] = True
     return ToolResult(
         content=compose(ok, ms, body, error, path, script=script),
-        details={
-            "ok": ok,
-            "images": list(output.images),
-            "truncated": path is not None,
-            "full_output_path": path,
-            "tool_calls": tool_calls,
-        },
+        details=details,
     )

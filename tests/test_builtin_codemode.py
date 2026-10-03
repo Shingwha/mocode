@@ -58,6 +58,23 @@ def _failing_tool() -> Tool:
     )
 
 
+def _slow_tool(delay: float) -> Tool:
+    """A tool that answers after *delay* seconds — a cancelled call never
+    answers, so deadline tests stay fast while a missed cancellation is
+    still bounded by the sleep."""
+
+    async def slow(args):
+        await asyncio.sleep(delay)
+        return f"slow:{args['value']}"
+
+    return Tool(
+        name="slow",
+        description=f"sleep {delay}s then echo",
+        schema={"type": "object", "properties": {"value": {"type": "string"}}},
+        func=slow,
+    )
+
+
 # ── T1: runtime ─────────────────────────────────────────────
 
 
@@ -950,6 +967,87 @@ class TestRunTool:
         assert result.details["ok"] is False
         assert "Script error: ToolCallError: fail: error: execution_error: nope" in result.content
         assert "Script error (line" not in result.content
+
+    async def test_explicit_deadline_keeps_partial_output(self, plugin_host):
+        # D6: with an explicit deadline the plugin's own wait_for fires
+        # first and the result is a normal failure — partial output kept,
+        # timed_out marker set, no error line, store writes discarded.
+        registry = ToolRegistry()
+        registry.register(_slow_tool(10))
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await self._run(
+            host,
+            'store("k", 1)\ntext("before")\n'
+            'r = await tools.slow({"value": "x"})\ntext("after")',
+            options={"timeout_ms": 50},
+        )
+        assert result.details["ok"] is False
+        assert result.details["timed_out"] is True
+        assert "\nbefore\n" in result.content
+        assert "\nafter\n" not in result.content
+        assert "Script timed out after 1s." in result.content
+        assert "Script error" not in result.content
+        assert host.ctx.plugin_state("codemode") == {}
+
+    async def test_deadline_result_is_no_dispatcher_timeout(self, plugin_host):
+        # Through the dispatcher with room to spare, the fired deadline
+        # comes back as an ordinary ok call — never a TOOL_TIMEOUT status.
+        registry = ToolRegistry()
+        registry.register(_slow_tool(10))
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await host.ctx.agent.dispatcher.run(
+            "codemode",
+            {
+                "script": 'await tools.slow({"value": "x"})',
+                "options": {"timeout_ms": 50},
+            },
+            timeout=30,
+        )
+        assert result.status == "ok"
+        assert "Script timed out after 1s." in result.content
+
+    async def test_no_deadline_keeps_dispatcher_fallback(self, plugin_host):
+        # Without an explicit deadline the plugin path is byte-identical to
+        # before: the dispatcher's timeout cancels the call and the partial
+        # output is lost.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await host.ctx.agent.dispatcher.run(
+            "codemode",
+            {"script": 'text("before")\nawait asyncio.sleep(10)'},
+            timeout=1,
+        )
+        assert result.status == "timeout"
+        assert "before" not in result.content
+
+    async def test_turn_cancellation_passthrough_with_deadline(self, plugin_host):
+        # Cancelling the turn mid-script still propagates untouched even
+        # when a deadline is set — it must not be converted into a timed-out
+        # result (or swallowed).
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        tool = host.ctx.tools.get("codemode")
+        args = {"script": "await asyncio.sleep(10)", "options": {"timeout_ms": 60000}}
+        ctx = ToolCallContext(
+            tool_name="codemode", tool_args=args, tool_call_id="call_cm_cancel"
+        )
+        task = asyncio.create_task(tool.run_async(args, ctx))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async def test_script_own_timeout_error_is_not_the_deadline(self, plugin_host):
+        # A script may raise TimeoutError itself; the cancelled-task check
+        # keeps it the script's own error rather than the deadline marker.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(
+            host,
+            "raise TimeoutError('self-inflicted')",
+            options={"timeout_ms": 60000},
+        )
+        assert result.details["ok"] is False
+        assert "timed_out" not in result.details
+        assert "Script error (line 1): TimeoutError: self-inflicted" in result.content
+        assert "Script timed out" not in result.content
 
     async def test_failing_tool_call_fails_script(self, plugin_host):
         registry = ToolRegistry()
