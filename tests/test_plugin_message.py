@@ -28,6 +28,10 @@ class TestPluginMessage:
         )
         assert event.type == "plugin_message"
 
+        # 封块就是把 kind 腾空、sealed 立起来——字段组合的序列化形态
+        data = PluginMessage(block_id="rag-1", sealed=True).to_dict()
+        assert data["sealed"] is True and data["block_id"] == "rag-1" and data["kind"] == ""
+
     def test_to_dict_is_plain_data_with_the_nested_payload(self):
         @dataclass
         class Inner:
@@ -61,10 +65,6 @@ class TestPluginMessage:
             sealed=flat["sealed"],
         )
         assert rebuilt.to_dict() == flat
-
-    def test_a_seal_serializes_with_the_block_id(self):
-        data = PluginMessage(block_id="rag-1", sealed=True).to_dict()
-        assert data["sealed"] is True and data["block_id"] == "rag-1" and data["kind"] == ""
 
     def test_summary_names_the_kind(self):
         assert PluginMessage(kind="rag/index", data={"done": 1}).summary() == (
