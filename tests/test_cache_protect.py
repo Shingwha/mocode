@@ -8,6 +8,8 @@ Both are observed through a real conversation with a recording provider.
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 from mocode.host.runtime import MoCode
@@ -18,6 +20,61 @@ from .conftest import project, updates, wired, wire
 
 def _tool_names(payload: list[dict]) -> set[str]:
     return {schema["function"]["name"] for schema in payload}
+
+
+#: 公告里点名工具状态迁移的那一行：哪个工具、朝哪个方向。
+_STATE_LINE = re.compile(r"'([^']+)' is now (disabled|available|removed)")
+
+
+def _tool_states(notice: str) -> dict[str, str]:
+    """公告里"哪个工具动了、动去哪边"——解析出来的，不是逐字比的。
+
+    返回 ``{工具名: 方向}``：一次公告只应点名真正移动过的工具。
+    """
+    return {m.group(1): m.group(2) for m in _STATE_LINE.finditer(notice)}
+
+
+def _diff_sides(notice: str) -> tuple[str, str]:
+    """一条公告里 diff 的两侧被改动的行（剥掉 +/- 行标记）。
+
+    cache-protect 公告的唯一格式是 git 风格 unified diff；改动行按标记分到
+    两侧重组出来供解析（见下方各测试），而不是把整句文案钉进断言。上下文行
+    （无标记）与公告自身的说明行都不属于任何一侧的"改动"。
+    """
+    minus: list[str] = []
+    plus: list[str] = []
+    for line in notice.splitlines():
+        if line.startswith(("---", "+++", "@@")):
+            continue
+        if line.startswith("-"):
+            minus.append(line[1:])
+        elif line.startswith("+"):
+            plus.append(line[1:])
+    return "\n".join(minus), "\n".join(plus)
+
+
+def _json_entries(text: str) -> dict:
+    """diff 一侧里可独立解析的 JSON 键值行 → ``{键: 值}``。
+
+    就地改写时 hunk 只含改动区域，两侧都不是完整文档；但每一行改动本身是一
+    个完整的 ``"key": value`` 对，逐个解析即可证明模型看到的是真实取值。
+    """
+    entries: dict = {}
+    for line in text.splitlines():
+        body = line.strip().rstrip(",")
+        if not body.startswith('"'):
+            continue
+        try:
+            entries.update(json.loads("{" + body + "}"))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+    return entries
+
+
+def _listed_tools(text: str) -> set[str]:
+    """本文件自己的渲染格式（``callable tools: a, b, c``）里的工具名集合。"""
+    _, _, names = text.partition("callable tools: ")
+    return {name.strip() for name in names.split(",") if name.strip()}
 
 
 class TestThePayloadIsPinned:
@@ -65,7 +122,8 @@ class TestTheWorldIsAnnounced:
         conversation.tools.disable("read")
         await conversation.chat("second")
 
-        assert "tool 'read' is now disabled" in updates(conversation)[-1]["content"]
+        # 公告点名且只点名真正动了的那个工具
+        assert _tool_states(updates(conversation)[-1]["content"]) == {"read": "disabled"}
 
     async def test_a_pinned_derived_section_holds_the_prompt_and_announces_itself(
         self, wired, tmp_path: Path
@@ -86,6 +144,7 @@ class TestTheWorldIsAnnounced:
         )
         await conversation.chat("first")
         frozen = conversation.agent.system_prompt
+        offered = set(conversation.tools.names())
 
         conversation.tools.disable("read")
         await conversation.chat("second")
@@ -93,9 +152,13 @@ class TestTheWorldIsAnnounced:
         # The prompt never moved — the pin did its job.
         assert conversation.agent.system_prompt == frozen
         notice = updates(conversation)[-1]["content"]
-        assert "derived section 'tools-sdk' changed:" in notice
-        assert "-callable tools: bash, bash_output, codemode, edit, kill_shell, read, skill, write" in notice
-        assert "+callable tools: bash, bash_output, codemode, edit, kill_shell, skill, write" in notice
+        assert re.search(r"derived section 'tools-sdk'", notice)
+        # Announced diff, parsed: what the section read like against what it
+        # reads now — the registry's move as a set difference, not a sentence.
+        before, after = _diff_sides(notice)
+        assert _listed_tools(before) == offered
+        assert _listed_tools(after) == set(conversation.tools.names())
+        assert offered - set(conversation.tools.names()) == {"read"}
 
     async def test_a_rebuild_re_renders_the_pinned_section(self, wired, tmp_path: Path):
         from mocode.core.prompt import Section
@@ -115,9 +178,14 @@ class TestTheWorldIsAnnounced:
         conversation.rebuild_prompt()
         await conversation.chat("second")
 
-        # A rebuild is the deliberate cache loss: the pin dropped, the
-        # section re-rendered from the registry as it now stands.
-        assert "callable tools: bash, bash_output, codemode, edit, kill_shell, skill, write" in conversation.agent.system_prompt
+        # A rebuild is the deliberate cache loss: the pin dropped, the section
+        # re-rendered from the registry as it now stands — parsed out of the
+        # prompt, not quoted back from it.
+        section = re.search(
+            r"<tools-sdk>\n(.*?)\n</tools-sdk>", conversation.agent.system_prompt, re.S
+        )
+        assert section is not None
+        assert _listed_tools(section.group(1)) == set(conversation.tools.names())
         assert updates(conversation) == []
 
     async def test_a_switch_back_on_is_news_again(self, wired, tmp_path: Path):
@@ -129,7 +197,7 @@ class TestTheWorldIsAnnounced:
         conversation.tools.enable("read")
         await conversation.chat("third")
 
-        assert "tool 'read' is now available" in updates(conversation)[-1]["content"]
+        assert _tool_states(updates(conversation)[-1]["content"]) == {"read": "available"}
 
     async def test_a_change_reverted_between_turns_is_never_news(
         self, wired, tmp_path: Path
@@ -151,13 +219,20 @@ class TestTheWorldIsAnnounced:
         conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"))
         await conversation.chat("first")
 
-        conversation.tools.get("read").description = "Read a file, with line numbers"
+        read = conversation.tools.get("read")
+        stale = read.to_schema()
+        read.description = "Read a file, with line numbers"
         await conversation.chat("second")
 
         notice = updates(conversation)[-1]["content"]
-        assert "tool 'read' changed:" in notice
-        assert '-    "description": "Read a file and return' in notice
-        assert '+    "description": "Read a file, with line numbers"' in notice
+        assert re.search(r"tool 'read'", notice)
+        before, after = _diff_sides(notice)
+        # 改动行本身是 JSON 键值对：解析它们，证明模型看到的是旧/新 schema 的
+        # 真实取值——被改的是 description 这一个键，值来自工具对象的两次投影。
+        assert _json_entries(before) == {"description": stale["function"]["description"]}
+        assert _json_entries(after) == {
+            "description": read.to_schema()["function"]["description"]
+        }
 
     async def test_a_tool_registered_late_is_announced_with_its_schema(
         self, wired, tmp_path: Path
@@ -175,8 +250,10 @@ class TestTheWorldIsAnnounced:
         await conversation.chat("again")
 
         notice = updates(conversation)[0]["content"]
-        assert "tool 'grep' is now available:" in notice
-        assert '+    "name": "grep"' in notice
+        assert re.search(r"tool 'grep'", notice)
+        before, after = _diff_sides(notice)
+        assert before == ""  # nothing it was called before — the tool is new
+        assert json.loads(after) == conversation.tools.get("grep").to_schema()
 
     async def test_the_notice_lands_before_the_users_message(
         self, wired, tmp_path: Path
@@ -211,7 +288,7 @@ class TestAResume:
 
         provider = second.agent.provider
         assert "read" in _tool_names(provider.calls[0]["tools"])
-        assert "tool 'read' is now disabled" in updates(second)[-1]["content"]
+        assert _tool_states(updates(second)[-1]["content"]) == {"read": "disabled"}
 
     async def test_a_resume_with_no_change_says_nothing(
         self, mc: MoCode, tmp_path: Path, wired
@@ -265,9 +342,11 @@ class TestUnified:
 
         block = unified("the system prompt", "a\nb\nc", "a\nB\nc")
 
-        assert block.splitlines()[0] == "--- the system prompt as last told"
-        assert "-b" in block.splitlines()
-        assert "+B" in block.splitlines()
+        # The header names what the block diffs; the body measures the change.
+        header, *body = block.splitlines()
+        assert header.startswith("---") and "the system prompt" in header
+        assert "-b" in body
+        assert "+B" in body
 
     def test_an_addition_diffs_against_nothing(self):
         from mocode.host.plugin.builtin.cache_protect import unified

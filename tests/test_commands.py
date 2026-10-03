@@ -9,6 +9,7 @@ plugins and is tested in test_builtin_plugins.py.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -245,18 +246,24 @@ class TestSkillCommand:
         result, _events = await run_command(cmd, conversation)
 
         assert result.kind is Kind.PROMPT
-        assert "[Skill:workflow" in result.prompt
-        assert "do NOT call the skill tool" in result.prompt
-        assert "instructions here" in result.prompt
-        assert "User request:" not in result.prompt
+        # 注入的 prompt 以 [Skill:<name>] 形态的指令块开头，随后是技能正文——
+        # 顺序即契约，指令块与正文之间的文案不钉。
+        assert re.search(r"\[Skill:workflow\b", result.prompt)
+        assert result.prompt.index("[Skill:workflow") < result.prompt.index(
+            "instructions here"
+        )
+        # 没有附带用户请求：prompt 止于技能正文
+        assert result.prompt.rstrip().endswith("instructions here")
 
     async def test_with_user_request(self, conversation: Conversation):
         cmd = make_skill_command(_skill("kami", "PDF typesetting", "typeset instructions"))
 
         result, _events = await run_command(cmd, conversation, args="帮我做一份简历")
 
-        assert "User request: 帮我做一份简历" in result.prompt
-        assert "typeset instructions" in result.prompt
+        # 用户请求拼在技能正文之后——顺序即契约，"User request" 标签不钉
+        assert result.prompt.index("typeset instructions") < result.prompt.index(
+            "帮我做一份简历"
+        )
 
     async def test_an_empty_skill_says_so(self, conversation: Conversation):
         _result, events = await run_command(make_skill_command(_skill("empty", "d", "")), conversation)

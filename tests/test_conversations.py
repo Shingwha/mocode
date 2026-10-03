@@ -10,6 +10,7 @@ own working directory, two histories, two models.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
@@ -551,15 +552,24 @@ class TestLifecycle:
         assert mc.store.list_all() == []
 
     def test_rebuild_prompt_re_reads_the_project(self, mc: MoCode, tmp_path: Path):
+        """AGENTS.md 是当场重读的文件：重建时用户级与项目级两份规则都重新
+        注入 agents section。断言的是 section 在场、两份内容均到达——不钉任何
+        一句产品文案。"""
         workdir = project(tmp_path, "a")
+        mc.home.mkdir(parents=True, exist_ok=True)
+        (mc.home / "AGENTS.md").write_text("user-level rule", encoding="utf-8")
         conversation = mc.new_conversation(cwd=workdir)
-        assert "Always use tabs." not in conversation.agent.system_prompt
+        conversation.rebuild_prompt()
+        assert "user-level rule" in conversation.agent.system_prompt
+        assert "project-level rule" not in conversation.agent.system_prompt
 
-        (workdir / "AGENTS.md").write_text("Always use tabs.", encoding="utf-8")
-
+        (workdir / "AGENTS.md").write_text("project-level rule", encoding="utf-8")
         conversation.rebuild_prompt()
 
-        assert "Always use tabs." in conversation.agent.system_prompt
+        prompt = conversation.agent.system_prompt
+        assert "<agents>" in prompt  # 承载两份规则的 section 在场
+        assert "user-level rule" in prompt
+        assert "project-level rule" in prompt
 
     def test_an_imported_conversation_keeps_its_own_agent_config(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
@@ -749,11 +759,16 @@ class TestThePromptFreezesAcrossAResume:
     prefix cache survives — and tells the model what changed instead."""
 
     async def test_the_prompt_carries_time_and_os(self, mc: MoCode, tmp_path: Path):
+        """prompt 里最易腐烂的两节——time 与 environment——在场。断言 section
+        名与日期的形状（``YYYY-MM-DD (Weekday)``），不断言某个具体真实日期：
+        真实时钟的值会腐烂，形状不会。"""
         conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         await conversation.prepare()
 
-        assert "today:" in conversation.agent.system_prompt
-        assert "os:" in conversation.agent.system_prompt
+        prompt = conversation.agent.system_prompt
+        assert "<time>" in prompt and "</time>" in prompt
+        assert "<environment>" in prompt
+        assert re.search(r"\d{4}-\d{2}-\d{2} \(\w+\)", prompt)
 
     async def test_a_resume_keeps_the_prompt_and_notices_drift(
         self, wired, tmp_path: Path

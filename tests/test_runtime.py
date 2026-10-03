@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -311,7 +312,14 @@ class TestTheTerminal:
         await app._repl()
 
         out = strip_ansi(capsys.readouterr().out)
-        assert "/help" in out and "Show available commands" in out
+        # 列出的就是命令注册表本身：从文本提取命令名与注册表对账——一个不少，
+        # 也一个不多；命令描述话术不在契约内。
+        listed = {
+            match.group(1)
+            for line in out.splitlines()
+            if (match := re.match(r"^  (\S+)", line))
+        }
+        assert listed == {c.name for c in app.commands.all()}
 
     def test_a_one_shot_can_render_without_a_repl(self, tmp_path: Path):
         """`-p` on a terminal draws the turn; `render` asks for that."""
