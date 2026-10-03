@@ -120,17 +120,16 @@ async def _collect(provider, *args, **kwargs) -> str:
 
 
 class TestWithRetryStream:
-    async def test_the_stream_is_passed_through_verbatim(self):
-        # 空流也是一个合法回答，不是错误。
+    async def test_the_retry_window_closes_at_the_first_chunk(self):
+        """窗口的全貌：成功原样穿过（空流也合法），首块前可重试，首块后不可。"""
         assert await _collect(_provider(say("ab"))) == "ab"
         assert await _collect(_provider(say(""))) == ""
 
-    async def test_retries_before_the_first_chunk(self):
+        # 首块之前的失败可以重试：两次 429 之后成功，文本原样交付。
         provider = _provider(_rate("429"), _rate("429"), say("ok"))
         assert await _collect(provider, policy=RetryPolicy(max_attempts=4)) == "ok"
 
-    async def test_error_after_the_first_chunk_is_not_replayed(self):
-        """A stream cannot be replayed — a caller has already seen the chunks."""
+        # A stream cannot be replayed — a caller has already seen the chunks.
         with pytest.raises(_rate):
             await _collect(_Halfway(), policy=RetryPolicy(max_attempts=4))
 
@@ -144,11 +143,6 @@ class TestWithRetryStream:
                 await _collect(provider, policy=RetryPolicy(max_attempts=4))
             assert len(provider.calls) == 1  # only one attempt was made
             assert backoff.call_count == 0  # and no backoff was slept
-
-    async def test_retries_are_exhausted(self):
-        provider = _provider(_rate("429"), _rate("429"), _rate("429"))
-        with pytest.raises(_rate):
-            await _collect(provider, policy=RetryPolicy(max_attempts=3))
 
     async def test_arguments_are_forwarded(self):
         provider = _provider()
@@ -175,24 +169,26 @@ class TestPolicyResolution:
             provider, policy=RetryPolicy(max_attempts=3)
         ) == "ok"
 
-    async def test_provider_policy_beats_the_default(self):
-        provider = _provider(
-            _rate("429"), _rate("429"), policy=RetryPolicy(max_attempts=2)
-        )
-        with pytest.raises(_rate):
-            await _collect(provider)
-
-    async def test_undeclared_policy_defaults_to_seven_attempts(self):
+    async def test_the_provider_policy_beats_the_default_of_seven_attempts(self):
+        """没声明策略的 provider 吃内核默认（正好 7 次）；声明了的压过默认。"""
         # A provider that declares no retry_policy at all gets the kernel
         # default: exactly 7 attempts — six failures then success.
         provider = _provider(*[_rate("429")] * 6, say("ok"))
         assert await _collect(provider) == "ok"
 
-        provider = _provider(*[_rate("429")] * 7)
+        exhausted = _provider(*[_rate("429")] * 7)
         with pytest.raises(_rate):
-            await _collect(provider)
+            await _collect(exhausted)
+
+        # 声明了 2 次上限的 provider：第二次失败即止，不等默认的 7 次。
+        capped = _provider(
+            _rate("429"), _rate("429"), policy=RetryPolicy(max_attempts=2)
+        )
+        with pytest.raises(_rate):
+            await _collect(capped)
 
     async def test_exhaustion_raises_the_original_exception(self):
+        """重试花光：上溯的就是最后一次那个原始异常，不是包装。"""
         final = _rate("429")
         provider = _provider(_rate("429"), _rate("429"), final)
         with pytest.raises(_rate) as caught:
@@ -237,40 +233,36 @@ class TestRetryAfter:
             # 头 honored 时的值只能来自头，不落在默认退避区间。
             assert not 1.0 <= delay <= 1.5
 
-    async def test_missing_response_falls_back_to_backoff(self, backoff):
-        provider = _provider(_rate("429"), say("ok"))
-        assert await _collect(provider) == "ok"
-        delay = backoff.calls[0]
-        assert 1.0 <= delay <= 1.5
-
 
 class TestBackoffBounds:
-    async def test_each_delay_is_its_step_plus_at_most_jitter(self, backoff):
+    async def test_the_backoff_grows_by_steps_and_caps(self, backoff):
+        """退避曲线的两个面：编排真睡的值，与纯函数的形状，是同一条曲线。"""
         provider = _provider(*[_rate("429")] * 3, say("ok"))
         assert await _collect(provider) == "ok"
+        # 默认策略：每一步是基数翻倍，至多加抖动。
         for step, delay in zip([1.0, 2.0, 4.0], backoff.calls):
             assert step <= delay <= step + 0.5
 
-    async def test_delay_caps_at_max_delay(self, backoff):
-        provider = _provider(*[_rate("429")] * 2, say("ok"))
-        policy = RetryPolicy(base_delay=2.0, max_delay=3.0)
-        assert await _collect(provider, policy=policy) == "ok"
-        assert 2.0 <= backoff.calls[0] <= 2.5
-        assert backoff.calls[1] == 3.0
-
-
-class TestComputeDelay:
-    def test_grows_then_caps(self):
+        # 纯函数面：同一曲线单调增长，默认封顶 60。
         assert _compute_delay(0) < _compute_delay(1) < _compute_delay(2)
         assert 1.0 <= _compute_delay(0) <= 1.5  # base plus at most the jitter
         assert _compute_delay(20) <= 60.0
+
+        # 显式策略：基数 2、抖动 0，翻倍后顶到 max_delay 的 3.0。
+        slept = len(backoff.calls)
+        capped = _provider(*[_rate("429")] * 2, say("ok"))
+        policy = RetryPolicy(base_delay=2.0, jitter=0.0, max_delay=3.0)
+        assert await _collect(capped, policy=policy) == "ok"
+        assert backoff.calls[slept] == 2.0
+        assert backoff.calls[slept + 1] == 3.0
 
 
 class TestDeadline:
     """The wall clock bounds the orchestration itself — no sleep or retry
     past it, and a Retry-After never overrides the budget."""
 
-    async def test_no_deadline_ignores_the_clock(self, backoff):
+    async def test_the_deadline_switch(self, backoff):
+        """没有截止：时钟读多晚都不管；截止已过：一次尝试都不发。"""
         # Without a deadline the clock is never consulted, however late it
         # reads — the default behavior is exactly as it was.
         advance(backoff.clock, 10**9)  # the clock reads very late
@@ -278,15 +270,12 @@ class TestDeadline:
         assert await _collect(provider) == "ok"
         assert backoff.call_count == 1
 
-    async def test_deadline_already_gone_stops_before_the_first_attempt(
-        self, backoff
-    ):
-        advance(backoff.clock, 100.0)  # past the deadline the test sets below
-        provider = _provider(say("ok"))  # would have succeeded
+        # 时钟此刻已在截止之后：第一次尝试都不发，异常带着现场。
+        late = _provider(say("ok"))  # would have succeeded
         with pytest.raises(RetryDeadlineExceeded) as caught:
-            await _collect(provider, deadline=99.0)
-        assert provider.calls == []  # no attempt was even made
-        assert backoff.call_count == 0
+            await _collect(late, deadline=99.0)
+        assert late.calls == []  # no attempt was even made
+        assert backoff.call_count == 1  # and still no backoff was slept
         assert caught.value.provider == "mock"
         assert caught.value.last_error is None
 
@@ -302,24 +291,24 @@ class TestDeadline:
         assert backoff.call_count == 1  # slept once, never retried
         assert provider.responses == [say("ok")]
 
-    async def test_retry_after_yields_to_the_deadline(self, backoff):
-        """The budget is the hard boundary: a server-stated wait cannot buy
-        a sleep past it."""
-        # The failing attempt itself burns the last of the budget.
-        provider = _provider(
+    async def test_the_budget_bounds_a_stated_wait(self, backoff):
+        """预算是硬边界：服务器声明的等待买不过它；没到的截止不改变什么。"""
+        # The failing attempt itself burns the last of the budget, so the
+        # 30s stated wait never sleeps.
+        burned = _provider(
             _rate_limited("30.0"), say("ok"), clock=backoff.clock, burn=1.0
         )
         with pytest.raises(RetryDeadlineExceeded) as caught:
-            await _collect(provider, deadline=1.0)
+            await _collect(burned, deadline=1.0)
         assert backoff.call_count == 0  # the 30s wait never slept
         assert caught.value.provider == "mock"
         assert isinstance(caught.value.last_error, _rate)
 
-    async def test_deadline_still_future_allows_the_retry(self, backoff):
         # A deadline that has not passed changes nothing about the attempt
-        # it still covers — the burn lands inside the budget, the retry runs.
-        provider = _provider(
+        # it still covers — the burn lands inside the budget, the retry runs
+        # and the stated wait is honored.
+        honored = _provider(
             _rate_limited("0.3"), say("ok"), clock=backoff.clock, burn=1.0
         )
-        assert await _collect(provider, deadline=10.0) == "ok"
+        assert await _collect(honored, deadline=10.0) == "ok"
         assert 0.25 <= backoff.calls[0] <= 0.35  # Retry-After honored
