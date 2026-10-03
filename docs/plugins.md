@@ -859,39 +859,62 @@ resource changes.
 The `codemode` tool takes `{"script": "...", "options": {...}}`: the model
 writes a Python script and only the script's output comes back. The script
 runs as the body of an async function — top-level `await` and `return` are
-legal — with a restricted `__builtins__` and a fixed set of read-only modules
-(`asyncio`, `json`, `re`, `math`, `datetime`, `textwrap`, `collections`,
-`itertools`, `functools`). That is a stable API plus resource limits, **not a
-security sandbox**: the model already has `bash`.
+legal, `asyncio.run()`/`main()` wrappers are not (the loop is already
+running, and `asyncio.ensure_future` tasks are never awaited). Every name
+the script may use is an injected global — `tools`, `text`, `console`,
+`image`, `print`, `exit`, `store`, `load`, `all_tools`, `search_tools`,
+`describe_tool` — plus the read-only modules `asyncio`, `json`, `re`,
+`math`, `datetime`, `textwrap`, `collections`, `itertools`, `functools`
+and a restricted `__builtins__` (a safe set plus every builtin exception
+class and `dir`). There is no `import`, no file system, no network, no
+timer, no `open`: use the injected names directly. That is a stable API
+plus resource limits, **not a security sandbox**: the model already has
+`bash`.
 
 Inside a script:
 
 - `await tools.<name>(args)` calls a tool — *args* is a dict, or use keyword
-  arguments; for names that are not valid Python identifiers use the
-  subscript form, e.g. `tools["mcp__dev_radius__search"]`. Success returns an
-  object with `.content`, `.details` and `.status` (`str(result)` is the
-  content); failure raises, so
-  `asyncio.gather(..., return_exceptions=True)` keeps the successes.
-- `text(value)` / `console.log(...)` append output; a top-level `return v`
-  appends too, and `image(block)` attaches an image block.
+  arguments. Own tools keep their name (`tools.bash`); an MCP tool answers
+  to its folded full name — `tools["mcp__dev_radius__search"]`, or the
+  attribute `tools.mcp__dev_radius__search`, or the same name written with
+  hyphens, which normalizes to it — and, when unambiguous, to its short
+  name (`tools.search`); an ambiguous short name raises listing the
+  candidates, and the exact name always wins. Success returns an object
+  with `.content`, `.details`, `.status` and `.error_code` that also
+  answers the Mapping protocol (`res.get("content")`); `str(result)` is the
+  content. Failure raises —
+  `asyncio.gather(..., return_exceptions=True)` keeps the successes, and
+  builtin exception classes are catchable by name.
+- `text(value)` / `console.log(...)` / `print(...)` append output in the
+  order written; a top-level `return v` appends last, only when the script
+  succeeds, and `image(block)` attaches an image block.
 - `store(key, value)` / `load(key)` keep small JSON state across a
   conversation's codemode calls; `store(key, None)` deletes, and writes
   commit only when the script succeeds.
-- `ALL_TOOLS` (a snapshot from script start), `search_tools(query, limit=8,
-  namespace=None)` and `describe_tool(name)` discover callable tools —
-  including program-only ones the model's interface does not list.
+- `all_tools()` (the snapshot from script start), `search_tools(query,
+  limit=8, namespace=None, names_only=False)` and `describe_tool(name)`
+  discover callable tools — including program-only ones the model's
+  interface does not list. `describe_tool` reads the live registry through
+  the same callable-only filter, so a tool added mid-script describes but
+  never joins the snapshot.
 - `exit()` ends the script successfully.
 
 A script's calls run through the dispatcher with program origin: they are
 observable on the event stream, but they never enter the conversation's
-messages and do not count as the turn's tool calls. Output past
-`max_output_chars` (default 12000, head and tail kept) spills to a temp file
-named in the result. A whole-script deadline can be set per call with
-`options.timeout_ms` or a first-line `# @options: {"timeout_ms": 60000}`
-comment, and per conversation with `plugins.codemode.timeout_s`; store limits
-are `plugins.codemode.store_max_value_chars` / `store_max_total_chars`.
-`codemode` cannot call itself. Not yet: `mode="only"` (hiding declared tools
-from the model), a `models` catalogue, and `describe_namespace()`.
+messages and do not count as the turn's tool calls. A failure in the
+script's own code names the line — `Script error (line N): ...` with that
+line's source beneath it; failures surfacing inside a tool keep the plain
+format. Output past `max_output_chars` (default 12000, head and tail kept)
+spills to a temp file named in the result. A whole-script deadline — per
+call with `options.timeout_ms` or a first-line `# @options: {"timeout_ms":
+60000}` comment, per conversation with `plugins.codemode.timeout_s` — keeps
+the output already emitted when it fires (details carry `timed_out`); with
+no deadline the agent's tool timeout applies instead and partial output is
+lost. `plugins.codemode.max_concurrency` caps how many of a script's calls
+run at once (default: unlimited), and store limits are
+`plugins.codemode.store_max_value_chars` / `store_max_total_chars`.
+`codemode` cannot call itself. Not yet: `mode="only"` (hiding declared
+tools from the model), a `models` catalogue, and `describe_namespace()`.
 
 To make MCP's `auto` exposure route tools through scripts, set the marker it
 reads:

@@ -872,13 +872,36 @@ class TestPlugin:
     def test_description_teaches_python_dsl(self):
         assert "Python" in DESCRIPTION
         assert "tools.<name>(args)" in DESCRIPTION
-        assert 'tools["exact-name"]' in DESCRIPTION
+        assert 'tools["mcp__dev_radius__search"]' in DESCRIPTION
         assert "return_exceptions=True" in DESCRIPTION
         assert "store(key, value)" in DESCRIPTION
-        assert "ALL_TOOLS" in DESCRIPTION
+        assert "all_tools()" in DESCRIPTION
+        assert "describe_tool(name)" in DESCRIPTION
         assert "exit()" in DESCRIPTION
         assert "@options" in DESCRIPTION
         assert "cannot call itself" in DESCRIPTION
+
+    def test_description_pins_contract_phrases(self):
+        # W3: one pin per behavior in the spec's contract list, so a
+        # rewording that loses a behavior fails here. Phrases, not a full
+        # snapshot — the surrounding words stay free to move.
+        assert "do not `import`" in DESCRIPTION  # names are injected
+        assert "`asyncio.ensure_future`" in DESCRIPTION  # background tasks
+        assert "short name" in DESCRIPTION  # MCP short names
+        assert "candidates" in DESCRIPTION  # ambiguity lists them
+        assert "exact names win" in DESCRIPTION  # exact beats short
+        assert ".error_code" in DESCRIPTION  # the four outcome fields
+        assert 'res.get("content")' in DESCRIPTION  # Mapping access
+        assert "names_only=False" in DESCRIPTION  # discovery signature
+        assert "script-start snapshot" in DESCRIPTION  # all_tools() snapshot
+        assert "print(...)" in DESCRIPTION  # print reaches the output
+        assert "max_output_chars" in DESCRIPTION  # truncation
+        assert "timed_out" in DESCRIPTION  # explicit deadline path
+        assert "partial output is lost" in DESCRIPTION  # dispatcher fallback
+        assert "max_concurrency" in DESCRIPTION  # concurrency cap
+        assert "default unlimited" in DESCRIPTION  # ...off unless configured
+        assert "ALL_TOOLS" not in DESCRIPTION  # renamed to all_tools() (D3)
+        assert "mcp__dev-radius" not in DESCRIPTION  # folded-name example
 
     def test_build_registers_model_only_tool(self, plugin_host):
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
