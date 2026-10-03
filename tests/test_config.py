@@ -105,7 +105,8 @@ class TestModelEntry:
     def test_roundtrip_and_omission(self):
         """一个声明齐全的条目原样往返；什么都没声明的条目只序列化 id。
 
-        元组序列化成它当初被读到的那个 JSON 数组。
+        元组序列化成它当初被读到的那个 JSON 数组；声明过的 retry 段现搭成
+        策略，没声明的一个都不发明。
         """
         model = ModelEntry(
             id="big",
@@ -114,17 +115,14 @@ class TestModelEntry:
             max_tokens=32_768,
             efforts=("low", "high", "max"),
             effort="high",
+            retry={"max_attempts": 3, "base_delay": 5.0},
         )
         assert ModelEntry.from_dict(model.to_dict()) == model
         assert model.to_dict()["efforts"] == ["low", "high", "max"]
 
         assert ModelEntry().to_dict() == {"id": ""}
 
-    def test_retry_policy_builds_from_the_dict_or_stays_none(self):
-        policy = ModelEntry.from_dict(
-            {"retry": {"max_attempts": 3, "base_delay": 5.0}}
-        ).retry_policy()
-        assert policy == RetryPolicy(max_attempts=3, base_delay=5.0)
+        assert model.retry_policy() == RetryPolicy(max_attempts=3, base_delay=5.0)
         assert ModelEntry().retry_policy() is None
 
 
@@ -156,9 +154,8 @@ class TestProviderEntry:
         not_a_list = ProviderEntry.from_dict({"models": {"a": {}}})
         assert not_a_list.models == []
 
-    def test_model_lookup_hits_and_misses(self):
-        entry = ProviderEntry(models=[ModelEntry(id="a"), ModelEntry(id="b")])
-        assert entry.model("b").id == "b"
+        # 按 id 取条目：命中带出它自己，查无此人是 None
+        assert entry.model("a").id == "a"
         assert entry.model("who-knows") is None
 
     def test_the_key_resolves_explicit_then_environment_then_empty(self, monkeypatch):
@@ -228,25 +225,28 @@ class TestConfigModelSpec:
         assert custom.effort == "xhigh"
         assert self._config().model_spec("demo", "big").effort is None
 
-    def test_efforts_fall_back_to_the_kernel_default(self):
+        # 没声明 efforts 的条目——连同整家未知的 provider——退回内核默认
         assert self._config().model_spec("demo", "big").efforts == EFFORTS
         assert self._config().model_spec("demo", "who-knows").efforts == EFFORTS
         assert self._config().model_spec("ghost", "big").efforts == EFFORTS
 
 
 class TestConfigSerialization:
-    def test_agent_block_defaults(self):
-        config = Config.from_dict({})
-        assert config.agent == AgentConfig()
-        assert config.agent.tool_timeout == 240
-        assert config.agent.max_iterations == 0
-        assert config.agent.max_tool_calls == 0
-        assert config.agent.max_turn_seconds == 0
-        assert config.agent.tool_result_limit == 50000
-
-    def test_agent_block_is_the_core_policy_type(self):
+    def test_the_agent_block_is_the_core_policy_type(self):
         """One policy type: what the loop runs under is what the file stores —
-        读进来是它，写出去也是它，每个字段都过得去。"""
+        读进来是它，写出去也是它，每个字段都过得去；手改过的段被容忍：
+        没见过的子键忽略、类型不对的值退回默认、整个段不是对象也只是一段
+        空策略。"""
+        # 什么都没声明：一份空策略，默认值逐个在场
+        empty = Config.from_dict({})
+        assert empty.agent == AgentConfig()
+        assert empty.agent.tool_timeout == 240
+        assert empty.agent.max_iterations == 0
+        assert empty.agent.max_tool_calls == 0
+        assert empty.agent.max_turn_seconds == 0
+        assert empty.agent.tool_result_limit == 50000
+
+        # 声明过的字段读进来就是它自己
         parsed = Config.from_dict(
             {"agent": {"tool_timeout": 30, "max_turn_seconds": 120, "tool_result_limit": 9000}}
         )
@@ -254,12 +254,10 @@ class TestConfigSerialization:
             tool_timeout=30, max_turn_seconds=120, tool_result_limit=9000
         )
 
+        # 写出去再读回来，一个字段都不少
         original = Config(agent=AgentConfig(tool_timeout=45, max_iterations=7, max_tool_calls=99))
         assert Config.from_dict(original.to_dict()).agent == original.agent
 
-    def test_agent_block_tolerates_hand_editing(self):
-        """手改过的 agent 段：没见过的子键忽略、类型不对的值退回默认、
-        整个段不是对象也只是一段空策略。"""
         fallback = AgentConfig()
 
         # 没见过的子键被忽略，认得的那个照常生效
@@ -292,6 +290,21 @@ class TestConfigSerialization:
         )
         assert Config.from_dict(original.to_dict()) == original
 
+        # 顶层那一对：声明了就照原样写出来（键在顶层，不是嵌套结构）
+        assert original.to_dict()["provider"] == "demo"
+        assert original.to_dict()["model"] == "m"
+
+        # 没声明的留着空串——不是缺键；空的 plugins 映射同样是自有键
+        unset = Config(providers={"demo": ProviderEntry()})
+        data = unset.to_dict()
+        assert data["provider"] == ""
+        assert data["model"] == ""
+        assert data["providers"] == {"demo": {"models": []}}
+        assert "plugins" in data  # an empty mapping is still owned, not omitted
+
+        # 一个文件里根本不存在的 provider：读得进来，current 就是没有
+        assert Config.from_dict({"provider": "ghost", "providers": {}}).current is None
+
     def test_foreign_keys_survive_and_owned_keys_win(self):
         """Keys MoCode does not own must not be dropped when it saves — and a
         stale foreign copy never overrides a real owned key."""
@@ -313,23 +326,6 @@ class TestConfigSerialization:
         owned = Config.from_dict({"model": "real", "providers": {}})
         owned.foreign["model"] = "stale"
         assert owned.to_dict()["model"] == "real"
-
-    def test_the_top_level_pair_and_unset_stay_absent(self):
-        config = Config.from_dict({"provider": "demo", "model": "m"})
-        assert config.provider == "demo"
-        assert config.model == "m"
-        assert config.to_dict()["provider"] == "demo"
-        assert config.to_dict()["model"] == "m"
-
-        unset = Config(providers={"demo": ProviderEntry()})
-        data = unset.to_dict()
-        assert data["provider"] == ""
-        assert data["model"] == ""
-        assert data["providers"] == {"demo": {"models": []}}
-        assert "plugins" in data  # an empty mapping is still owned, not omitted
-
-        # 一个文件里根本不存在的 provider：读得进来，current 就是没有
-        assert Config.from_dict({"provider": "ghost", "providers": {}}).current is None
 
 
 class TestConfigPersistence:
@@ -356,7 +352,7 @@ class TestConfigPersistence:
         back.save()
         assert json.loads(custom.read_text(encoding="utf-8"))["model"] == "m"
 
-    def test_load_of_missing_or_broken_file_returns_none(self, tmp_path):
+        # 读不出来而不是崩：文件不存在、或者根本不是 JSON
         assert Config.load(tmp_path / "nope.json") is None
 
         broken = tmp_path / "broken.json"

@@ -38,7 +38,11 @@ def _installed_flag(root: Path, name: str) -> Path:
 
 
 class TestInstall:
-    def test_local_directory_is_copied_under_its_manifest_name(self, tmp_path):
+    def test_a_local_source_is_copied_and_loads_package_form_whole(
+        self, tmp_path
+    ):
+        """本地源被复制进安装根、装在清单名之下，源本身不被消耗；包形式
+        整份复制，加载器从它的 ``__init__`` 进入。"""
         source = _source_plugin(tmp_path / "src", "acme")
         root = tmp_path / "root"
 
@@ -48,6 +52,31 @@ class TestInstall:
         assert installed.directory == root / "acme"
         assert _installed_flag(root, "acme").is_file()
         assert source.is_dir()  # a copy, never consuming the source
+
+        # 包形式：整份复制，条目是 mocode/plugin/__init__.py
+        pkgsrc = tmp_path / "src" / "pkgsrc"
+        package = pkgsrc / "mocode" / "plugin"
+        package.mkdir(parents=True)
+        (pkgsrc / "plugin.json").write_text(
+            json.dumps({"name": "pkgsrc", "description": ""}), encoding="utf-8"
+        )
+        (package / "helper.py").write_text("FLAG = 'installed'\n", encoding="utf-8")
+        (package / "__init__.py").write_text(
+            "from mocode.plugins import Plugin\n\n"
+            "from .helper import FLAG\n\n"
+            "plugin = Plugin()\n"
+            "plugin.name, plugin.description = 'pkgsrc', FLAG\n",
+            encoding="utf-8",
+        )
+        package_root = tmp_path / "package-root"
+
+        installed = plugins.install_plugin(str(pkgsrc), root=package_root)
+
+        assert installed.name == "pkgsrc"
+        spec = discover([package_root])[0]
+        assert spec.module is not None and spec.module.name == "__init__.py"
+        loaded = load_plugin(spec)
+        assert loaded is not None and loaded.description == "installed"
 
     def test_an_install_that_cannot_happen_says_which_rule_it_broke(self, tmp_path):
         """三种装不进去：源不是插件、名字已被占用、源地址根本不可识别。"""
@@ -64,32 +93,6 @@ class TestInstall:
 
         with pytest.raises(plugins.PluginInstallError, match="not a git URL"):
             plugins.install_plugin(str(tmp_path / "missing"), root=tmp_path)
-
-    def test_a_package_form_plugin_installs_and_loads(self, tmp_path):
-        """Install copies the package whole; the loader enters at its __init__."""
-        source = tmp_path / "src" / "pkgsrc"
-        package = source / "mocode" / "plugin"
-        package.mkdir(parents=True)
-        (source / "plugin.json").write_text(
-            json.dumps({"name": "pkgsrc", "description": ""}), encoding="utf-8"
-        )
-        (package / "helper.py").write_text("FLAG = 'installed'\n", encoding="utf-8")
-        (package / "__init__.py").write_text(
-            "from mocode.plugins import Plugin\n\n"
-            "from .helper import FLAG\n\n"
-            "plugin = Plugin()\n"
-            "plugin.name, plugin.description = 'pkgsrc', FLAG\n",
-            encoding="utf-8",
-        )
-        root = tmp_path / "root"
-
-        installed = plugins.install_plugin(str(source), root=root)
-
-        assert installed.name == "pkgsrc"
-        spec = discover([root])[0]
-        assert spec.module is not None and spec.module.name == "__init__.py"
-        loaded = load_plugin(spec)
-        assert loaded is not None and loaded.description == "installed"
 
     def test_a_git_source_clones_then_places_or_says_why_it_could_not(
         self, tmp_path, monkeypatch
@@ -185,7 +188,8 @@ class TestInstallSyncsTheEnvironment:
     def test_a_declared_plugin_syncs_and_an_undeclared_one_never_does(
         self, tmp_path, monkeypatch
     ):
-        """声明了 pyproject.toml 的插件装好即同步；没声明的永远不同步。"""
+        """声明了 pyproject.toml 的插件装好即同步；没声明的永远不同步；
+        同步失败也照样装得上，只留一条点名补救动作的警告。"""
         synced = []
         monkeypatch.setattr(
             plugins.PluginVenv, "sync", lambda self: synced.append(self.plugin_dir)
@@ -204,35 +208,24 @@ class TestInstallSyncsTheEnvironment:
 
         assert synced == [tmp_path / "root" / "acme"]
 
-    def test_a_failed_sync_installs_anyway_with_a_warning(self, tmp_path, monkeypatch):
-        source = _source_plugin(tmp_path / "src", "acme", with_pyproject=True)
+        # 同步失败：插件照样装进来，警告在
+        failing = _source_plugin(tmp_path / "src3", "failing", with_pyproject=True)
         monkeypatch.setattr(
             plugins.PluginVenv,
             "sync",
             lambda self: (_ for _ in ()).throw(PluginVenvError("uv not found")),
         )
 
-        installed = plugins.install_plugin(str(source), root=tmp_path / "root")
+        installed = plugins.install_plugin(str(failing), root=tmp_path / "root3")
 
-        assert _installed_flag(tmp_path / "root", "acme").is_file()
-        assert "mocode plugin sync" in installed.env_warning
-
-    def test_a_failed_sync_installs_anyway_with_a_warning(self, tmp_path, monkeypatch):
-        source = _source_plugin(tmp_path / "src", "acme", with_pyproject=True)
-        monkeypatch.setattr(
-            plugins.PluginVenv,
-            "sync",
-            lambda self: (_ for _ in ()).throw(PluginVenvError("uv not found")),
-        )
-
-        installed = plugins.install_plugin(str(source), root=tmp_path / "root")
-
-        assert _installed_flag(tmp_path / "root", "acme").is_file()
+        assert _installed_flag(tmp_path / "root3", "failing").is_file()
         assert "mocode plugin sync" in installed.env_warning
 
 
 class TestSyncRemoveList:
-    def test_sync_resolves_the_plugin_across_roots(self, tmp_path, monkeypatch):
+    def test_sync_resolves_across_roots_and_names_an_unknown_plugin_alike(
+        self, tmp_path, monkeypatch
+    ):
         root = tmp_path / "root"
         _source_plugin(root, "acme", with_pyproject=True)
         monkeypatch.setattr(
@@ -243,7 +236,7 @@ class TestSyncRemoveList:
 
         assert report == "acme: ready"
 
-    def test_an_unknown_plugin_is_named_by_sync_and_remove_alike(self, tmp_path):
+        # 查无此插件：sync 与 remove 说的是同一句话
         with pytest.raises(plugins.PluginInstallError, match="no plugin named"):
             plugins.sync_plugin("ghost", dirs=[tmp_path])
 
@@ -307,7 +300,7 @@ class TestTheCliCommand:
         assert parse_args(["-p", "hi"]).command is None
         assert parse_args(["-p", "hi"]).prompt == "hi"
 
-    def test_install_prints_the_report_and_exits_zero(self, monkeypatch, capsys):
+    def test_the_report_and_the_failure_exit_codes(self, monkeypatch, capsys):
         from mocode import main
 
         monkeypatch.setattr(
@@ -324,9 +317,6 @@ class TestTheCliCommand:
         out = capsys.readouterr().out
         assert "installed acme" in out
         assert "Restart MoCode" in out
-
-    def test_a_failure_exits_one_and_says_why(self, monkeypatch, capsys):
-        from mocode import main
 
         def boom(name, *, dirs):
             raise plugins.PluginInstallError("no plugin named 'ghost'")

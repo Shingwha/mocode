@@ -37,32 +37,31 @@ def _finished(status="ok", result="", details=None, duration=-1.0, name="read") 
 class TestConversation:
     """Everything starts at column 0; the first character says what a line is."""
 
-    def test_the_prompt_is_the_trimmed_user_line_plus_a_blank(self):
-        """输入行脱掉空白、带上提示符；一段 prompt 就是它加一个空行。"""
+    def test_the_prompt_and_the_answer(self):
+        """输入行脱掉空白、带上提示符，一段 prompt 就是它加一个空行；答案
+        是默认状态——读者唯一真正要看的东西；推理退后一步，也只是换个
+        颜色，不加字形。"""
         assert lines.user("  帮我看看  ").icon == "❯"
         assert lines.user("  帮我看看  ").text == "帮我看看"
         assert lines.user("  帮我看看  ").style == "user"
         assert lines.prompt("你好") == [lines.user("你好"), Line()]
 
-    def test_the_answer_is_unmarked_and_reasoning_is_dim(self):
-        """答案是默认状态——读者唯一真正要看的东西；推理退后一步，也只是
-        换个颜色，不加字形。"""
         assert lines.answer("第一行\n第二行") == [Line(text="第一行"), Line(text="第二行")]
         assert lines.reasoning("先看看目录") == [
             Line(text="先看看目录", style="reasoning")
         ]
 
-    def test_the_rule_closes_a_turn(self):
+    def test_the_furniture_picks_its_own_style(self):
+        """收尾的规则线、各级别的公告、回合的成本行：形状与样式都由 builder
+        自己挑，调用方不掺和。"""
         rule = lines.divider()
         assert set(rule.text) == {"─"}
         assert rule.style == "dim"
 
-    def test_notice_levels_pick_a_colour(self):
         assert lines.notice("hi").style == "info"
         assert lines.notice("hi", "warn").style == "warning"
         assert lines.notice("hi", "error").style == "error"
 
-    def test_the_turn_costs_one_line(self):
         line = lines.tokens(Usage(prompt_tokens=1234, completion_tokens=567))
         assert line == Line(text="↑1,234 ↓567 tokens", style="muted")
 
@@ -95,7 +94,7 @@ class TestToolLines:
         line = lines.tool_pending("read", {"path": "a.py"}, _registry())
         assert (line.icon, line.text, line.style) == ("·", "read  a.py…", "dim")
 
-    def test_a_running_call_without_arguments_is_still_a_line(self):
+        # 没有参数可展示的调用也是一行
         assert lines.tool_pending("make", {}, _registry()).text == "make…"
 
     def test_a_long_argument_is_elided_in_the_middle(self):

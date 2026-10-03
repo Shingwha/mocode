@@ -235,6 +235,10 @@ class TestModel:
         assert override.model_name == "second-model"
         assert override.model == mc.config.model_spec("second", "second-model")
 
+        # 没注册过的 provider 是配置错误：报错点名缺的是哪一次
+        with pytest.raises(ValueError, match="not defined"):
+            first.set_model("nope", "m")
+
     def test_per_conversation_model_changes_never_write_the_config(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -250,11 +254,6 @@ class TestModel:
         assert mc.config.model == "test-model"
         assert conversation.agent.model.effort == "max"
         assert conversation.ctx.model.effort == "max"
-
-    def test_an_unknown_provider_is_reported(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
-        with pytest.raises(ValueError, match="not defined"):
-            conversation.set_model("nope", "m")
 
     def test_setting_the_default_writes_the_config(self, tmp_path: Path, make_mc):
         config = make_config()
@@ -313,6 +312,12 @@ class TestSessions:
         assert [s.title for s in conversation.list_sessions()] == ["old"]
         assert sorted(s.title for s in mc.store.list_all()) == ["b", "old"]
 
+        # 新会话一张白纸：历史空了，插件消息也一样不带过去
+        await conversation.ctx.emit_message("old/message", {})
+        fresh_id = await conversation.new_session()
+        assert fresh_id != previous
+        assert conversation.session().plugin_messages == []
+
     async def test_resume_restores_the_history_and_the_model(
         self, mc: MoCode, tmp_path: Path
     ):
@@ -331,11 +336,9 @@ class TestSessions:
         assert (fresh.provider_key, fresh.model_name) == ("second", "second-model")
         assert fresh.id == stored.id
 
-    async def test_a_resumed_session_keeps_its_model_even_if_the_provider_is_gone(
-        self, mc: MoCode, tmp_path: Path
-    ):
-        workdir = project(tmp_path, "a")
-        stored = Session(
+        # 存档的 provider 已经不在了：历史照常恢复，模型留在当前这个——
+        # 与上面同一个 resume 契约的另一个入口。
+        gone = Session(
             id="session_gone",
             created_at="2025-01-01T00:00:00",
             updated_at="2025-01-01T00:00:00",
@@ -344,12 +347,11 @@ class TestSessions:
             provider="retired",
             model="old-model",
         )
+        stranger = mc.new_conversation(cwd=workdir)
+        await stranger.load_session(gone)
 
-        conversation = mc.new_conversation(cwd=workdir)
-        await conversation.load_session(stored)
-
-        assert conversation.model_name == "test-model"  # the current one stays
-        assert conversation.messages == [{"role": "user", "content": "hi"}]
+        assert stranger.model_name == "test-model"  # the current one stays
+        assert stranger.messages == [{"role": "user", "content": "hi"}]
 
     async def test_the_runtime_finds_a_session_by_id_alone(
         self, mc: MoCode, tmp_path: Path
@@ -484,19 +486,6 @@ class TestPluginMessageReplay:
             e for e in _drain(subscription) if isinstance(e, PluginMessage)
         ]
         assert [e.data["i"] for e in replayed] == list(range(50, 250))
-
-    async def test_a_new_session_starts_with_no_plugin_messages(
-        self, mc: MoCode, tmp_path: Path
-    ):
-        workdir = project(tmp_path, "a")
-        conversation = mc.new_conversation(cwd=workdir)
-        conversation.messages.append({"role": "user", "content": "old"})
-        await conversation.ctx.emit_message("old/message", {})
-        conversation.save()
-
-        await conversation.new_session()
-
-        assert conversation.session().plugin_messages == []
 
 
 # ── lifecycle ───────────────────────────────────────────────
@@ -673,6 +662,14 @@ class TestTheSurfaceMaterializes:
         assert conversation.agent.system_prompt != ""
         assert conversation.tools.pinned
 
+        # prompt 里最易腐烂的两节——time 与 environment——在场。断言 section
+        # 名与日期的形状（``YYYY-MM-DD (Weekday)``），不断言某个具体真实日期：
+        # 真实时钟的值会腐烂，形状不会。
+        prompt = conversation.agent.system_prompt
+        assert "<time>" in prompt and "</time>" in prompt
+        assert "<environment>" in prompt
+        assert re.search(r"\d{4}-\d{2}-\d{2} \(\w+\)", prompt)
+
     async def test_the_first_turn_carries_the_surface_with_no_notice(
         self, wired, tmp_path: Path
     ):
@@ -735,18 +732,6 @@ class TestTheSurfaceMaterializes:
 class TestThePromptFreezesAcrossAResume:
     """A resume keeps the session's prompt byte-identical — the provider's
     prefix cache survives — and tells the model what changed instead."""
-
-    async def test_the_prompt_carries_time_and_os(self, mc: MoCode, tmp_path: Path):
-        """prompt 里最易腐烂的两节——time 与 environment——在场。断言 section
-        名与日期的形状（``YYYY-MM-DD (Weekday)``），不断言某个具体真实日期：
-        真实时钟的值会腐烂，形状不会。"""
-        conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
-        await conversation.prepare()
-
-        prompt = conversation.agent.system_prompt
-        assert "<time>" in prompt and "</time>" in prompt
-        assert "<environment>" in prompt
-        assert re.search(r"\d{4}-\d{2}-\d{2} \(\w+\)", prompt)
 
     async def test_a_resume_keeps_the_prompt_and_notices_drift(
         self, wired, tmp_path: Path

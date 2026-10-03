@@ -97,6 +97,12 @@ class TestSessionStore:
         return SessionStore(base_dir=tmp_path / "sessions")
 
     def test_save_find_and_delete(self, store):
+        """find 认的是 id 而不是项目——一个链接带 id 来，查找是 store 自己的
+        事；delete 按项目删，并报它到底删没删。"""
+        store.save("/somewhere/deep", _session("session_x", workdir="/somewhere/deep"))
+        assert store.find("session_x").workdir == "/somewhere/deep"
+        assert store.find("session_missing") is None
+
         store.save("/project", _session())
         loaded = store.find("session_abc")
         assert loaded is not None
@@ -130,12 +136,6 @@ class TestSessionStore:
             ("session_s2", "/p"),
             ("session_s1", "/p"),
         ]
-
-    def test_find_by_id_alone(self, store):
-        """A link carries an id, not a project — the store has to do the looking."""
-        store.save("/somewhere/deep", _session("session_x", workdir="/somewhere/deep"))
-        assert store.find("session_x").workdir == "/somewhere/deep"
-        assert store.find("session_missing") is None
 
 
 class TestPortability:
@@ -255,32 +255,6 @@ class TestPortability:
 
 
 class TestPluginMessagesField:
-    def test_round_trip(self):
-        messages = [
-            {
-                "type": "plugin_message",
-                "run_id": "run_1",
-                "seq": 3,
-                "kind": "rag/index",
-                "data": {"done": 12, "total": 40},
-                "block_id": "rag-1",
-                "sealed": False,
-            },
-            {
-                "type": "plugin_message",
-                "run_id": "run_1",
-                "seq": 4,
-                "kind": "",
-                "data": {},
-                "block_id": "rag-1",
-                "sealed": True,
-            },
-        ]
-        session = _session(plugin_messages=messages)
-
-        assert Session.from_dict(session.to_dict()) == session
-        assert Session.from_dict(session.to_dict()).plugin_messages == messages
-
     def test_malformed_values_leave_a_usable_field(self):
         """坏条目整条丢掉，整个字段形状不对则一篇没有——字段本身仍可用。"""
         cases = [
@@ -302,13 +276,36 @@ class TestPluginMessagesField:
 
 
 class TestFrozenRequestFields:
-    """会话冻结的请求面（prompt、工具接口）与插件自有状态。
+    """会话冻结的请求面（prompt、工具接口）、插件自有状态与插件消息。
 
-    三者都是可迁入迁出的可选字段：新会话从插件现场拿，旧文件没有它们也能读。
+    四者都是可迁入迁出的可选字段：新会话从插件现场拿，旧文件没有它们也能读。
     """
 
     def test_round_trip(self):
+        """可迁字段逐个原样往返：插件消息带自己的全部形态，冻结的请求面与
+        插件状态一个不少。"""
+        messages = [
+            {
+                "type": "plugin_message",
+                "run_id": "run_1",
+                "seq": 3,
+                "kind": "rag/index",
+                "data": {"done": 12, "total": 40},
+                "block_id": "rag-1",
+                "sealed": False,
+            },
+            {
+                "type": "plugin_message",
+                "run_id": "run_1",
+                "seq": 4,
+                "kind": "",
+                "data": {},
+                "block_id": "rag-1",
+                "sealed": True,
+            },
+        ]
         session = _session(
+            plugin_messages=messages,
             system_prompt="<system-prompt>frozen</system-prompt>",
             tool_schemas=[{"function": {"name": "read"}}],
             plugin_state={
@@ -317,6 +314,7 @@ class TestFrozenRequestFields:
         )
 
         assert Session.from_dict(session.to_dict()) == session
+        assert Session.from_dict(session.to_dict()).plugin_messages == messages
 
     def test_absent_for_legacy_files(self):
         """旧文件一个可迁字段都没有：每个字段拿自己的缺省值。"""

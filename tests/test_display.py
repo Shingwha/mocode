@@ -59,6 +59,8 @@ def _plain(text: str) -> str:
 
 class TestFormatting:
     def test_a_line_renders_its_icon_text_and_note(self):
+        """图标、文本、注记在同一行上各就各位；什么都不加时行首干净，
+        认不出来的样式也原样上色失败，只有一个注记时不留空的分隔符。"""
         display = _make_display()
         got = display.format(
             lines.Line(
@@ -68,31 +70,32 @@ class TestFormatting:
         )
         assert _plain(got) == "✓ read  a.py · lines=3"
 
-    def test_a_bare_line_renders_unmarked(self):
-        """答案行前面什么都不加；认不出来的样式也原样上色失败——都不加前缀。"""
+        # 答案行前面什么都不加；认不出来的样式也原样上色失败——都不加前缀
         assert _plain(_make_display().format(lines.Line(text="hello"))) == "hello"
         assert _plain(_make_display().format(lines.Line(text="x", style="nope"))) == "x"
 
-    def test_a_note_alone_does_not_leave_a_dangling_separator(self):
-        got = _make_display().format(lines.Line(icon="✓", icon_style="success", note="lines=3"))
+        # 注记单独在：分隔符不挂在空内容后面
+        got = display.format(
+            lines.Line(icon="✓", icon_style="success", note="lines=3")
+        )
         assert _plain(got) == "✓ lines=3"
 
 
 class TestClamping:
     """A block row has to be exactly one terminal row, or its offsets lie."""
 
-    def test_what_fits_is_left_alone_and_overlong_ends_in_an_ellipsis(self):
+    def test_what_fits_is_measured_and_overlong_ends_in_an_ellipsis(self):
+        """宽度按显示列数算：ASCII 与宽字符（中日韩）一视同仁——放得下的
+        原样留下，放不下的收尾成一个省略号。"""
         assert clamp_visible("read  a.py", 40) == "read  a.py"
         assert _plain(clamp_visible("x" * 100, 10)) == "x" * 9 + "…"
+        assert _plain(clamp_visible("中文测试宽度", 8)) == "中文测…"
 
     def test_styling_survives_and_is_closed(self):
         got = clamp_visible("\033[2m" + "x" * 100 + "\033[0m", 10)
         assert got.startswith("\033[2m")
         assert got.endswith("\033[0m")
         assert _plain(got) == "x" * 9 + "…"
-
-    def test_wide_characters_are_measured_not_counted(self):
-        assert _plain(clamp_visible("中文测试宽度", 8)) == "中文测…"
 
 
 class TestStreaming:
@@ -111,7 +114,9 @@ class TestStreaming:
 
         assert _plain(capsys.readouterr().out) == "先看看\n再说\n"
 
-    def test_switching_kind_closes_the_open_block(self, capsys):
+    def test_the_open_block_is_closed_by_whatever_comes_next(self, capsys):
+        """流的生命周期：换 kind、落一行，都先把开着的那块收掉——已经写上
+        去的文本原样保留，不会被下一块吞掉。"""
         display = _make_display()
 
         display.stream("thinking", kind="reasoning")
@@ -119,9 +124,6 @@ class TestStreaming:
         display.end_stream()
 
         assert _plain(capsys.readouterr().out) == "thinking\nanswer\n"
-
-    def test_a_line_output_closes_an_open_stream(self, capsys):
-        display = _make_display()
 
         display.stream("partial", kind="answer")
         display.render(lines.Line(text="next line"))

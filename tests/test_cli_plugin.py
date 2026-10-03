@@ -63,9 +63,12 @@ def _app(tmp_path: Path, plugins: Path):
 
 
 class TestBothSurfacesInOneDirectory:
-    def test_one_directory_feeds_the_agent_and_the_terminal(self, tmp_path: Path):
+    async def test_one_directory_feeds_the_agent_and_the_terminal(
+        self, tmp_path: Path
+    ):
         """同一个目录装两张面孔：host 命名段喂 agent（工具），mocode.cli
-        命名段只喂这个前端（命令与它自己的插件）。"""
+        命名段只喂这个前端（命令、它自己的插件、构建时拿得到的会话）；host
+        既不导入终端命名段，也不知道里面有什么；命令说的是会话自己的流。"""
         plugins = tmp_path / "plugins"
         write_plugin(plugins, "acme", HOST_CODE, cli=CLI_CODE)
 
@@ -74,21 +77,8 @@ class TestBothSurfacesInOneDirectory:
         assert "ping" in app.conversation.tools.names()
         assert "/shout" in {c.name for c in app.commands.all()}
         assert "acme.cli" in [p.name for p in app.plugins]
-
-    def test_a_cli_plugin_is_built_against_the_terminal(self, tmp_path: Path):
-        """It can reach the commands, the screen and the conversation."""
-        plugins = tmp_path / "plugins"
-        write_plugin(plugins, "acme", cli=CLI_CODE)
-
-        app = _app(tmp_path, plugins)
-
         assert app.seen_conversation is True
 
-    async def test_its_command_speaks_on_the_conversations_stream(self, tmp_path: Path):
-
-        plugins = tmp_path / "plugins"
-        write_plugin(plugins, "acme", cli=CLI_CODE)
-        app = _app(tmp_path, plugins)
         reader = app.conversation.subscribe()
 
         await app.commands.dispatch("/shout hello", conversation=app.conversation)
@@ -96,13 +86,7 @@ class TestBothSurfacesInOneDirectory:
         notice = reader.take()
         assert notice is not None and notice.message == "shout: hello"
 
-    def test_only_the_terminal_reads_the_terminal_namespace(self, tmp_path: Path):
-        """The host neither imports it nor knows what is in it."""
-        plugins = tmp_path / "plugins"
-        write_plugin(plugins, "acme", HOST_CODE, cli=CLI_CODE)
-
-        app = _app(tmp_path, plugins)
-
+        # The host neither imports it nor knows what is in it.
         assert [p.name for p in app.runtime.plugins_for(tmp_path)] == [
             "filesystem", "shell", "skills", "mcp", "codemode", "default-prompts",
             "session", "help", "effort", "cache-protect", "acme",
@@ -170,7 +154,11 @@ class TestThePackageForm:
         "title.py": "TITLE = 'assembled from a submodule'\n",
     }
 
-    def test_a_cli_namespace_package_loads(self, tmp_path: Path):
+    def test_a_cli_namespace_package_loads_and_the_single_file_wins_over_it(
+        self, tmp_path: Path
+    ):
+        """包形式的入口是 ``__init__.py``（子模块跟着走）；单文件与包同时
+        存在时单文件赢。"""
         from mocode.cli.plugin import load_cli_plugins
 
         plugins = tmp_path / "plugins"
@@ -181,10 +169,6 @@ class TestThePackageForm:
         assert [p.name for p in loaded] == ["packaged.cli"]
         assert loaded[0].description == "assembled from a submodule"
 
-    def test_the_single_file_wins_when_both_exist(self, tmp_path: Path):
-        from mocode.cli.plugin import load_cli_plugins
-
-        plugins = tmp_path / "plugins"
         write_plugin(plugins, "acme", CLI_CODE, cli=CLI_CODE, cli_package=self.CLI_PACKAGE)
 
         assert [p.name for p in load_cli_plugins([plugins / "acme"])] == ["acme.cli"]
