@@ -108,7 +108,7 @@ class TestContainerSurface:
 
 
 class TestPrompt:
-    def test_build_orders_by_priority_and_renders_nested_sections(self):
+    def test_build_renders_the_prompt_tree(self):
         result = (
             Prompt()
             .register(Section("z", "second", priority=20))
@@ -132,19 +132,17 @@ class TestPrompt:
         assert '<tool name="bash">\nRun bash\n</tool>' in result
         assert '<tool name="read">\nRead files\n</tool>' in result
 
-    def test_a_sections_knobs_render_live_and_carry_lineage(self):
-        """render 压过 content 并从上下文读数；derived_from 原样携带。"""
-        section = Section(
+        # section 自己的旋钮：render 压过 content 并从上下文读数……
+        knob = Section(
             "both",
             lambda _ctx: "from content",
             render=lambda ctx: f"from render: n={ctx.get('n', 0)}",
         )
+        knob_result = Prompt().register(knob).build()
+        assert "from render: n=0" in knob_result
+        assert "from content" not in knob_result
 
-        result = Prompt().register(section).build()
-
-        assert "from render: n=0" in result
-        assert "from content" not in result
-
+        # ……derived_from 原样携带，渲染层不解释它。
         carried = Section("sdk", "text", derived_from="tools")
         assert carried.derived_from == "tools"
         assert "text" in Prompt().register(carried).build()
