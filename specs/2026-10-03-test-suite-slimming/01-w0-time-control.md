@@ -1,4 +1,5 @@
 # Spec TIME-CTROL · 时序地基（波次 W0）
+> 状态：✅ 2026-10-03 @ test/slim-w0-time-control（已合并）
 
 > 分支 `test/slim-w0-time-control`；前置：无（从合并时刻最新 main 切）
 > 深读：`specs/2026-10-03-test-suite-slimming/00-overview.md`、`tests/conftest.py`、

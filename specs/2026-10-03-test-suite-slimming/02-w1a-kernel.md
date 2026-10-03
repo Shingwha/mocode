@@ -1,4 +1,5 @@
 # Spec KERNEL · 内核测试重构（波次 W1-A，并行组 A）
+> 状态：✅ 2026-10-03 @ test/slim-w1a-kernel（三轮：256→235→155→152，已合并）
 
 > 分支 `test/slim-w1a-kernel`；前置：W0 已合并进 main，本分支从该时刻 main 切出
 > 深读：`specs/2026-10-03-test-suite-slimming/00-overview.md`、`01-w0-time-control.md`、

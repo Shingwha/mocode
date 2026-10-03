@@ -1,4 +1,5 @@
 # Spec BUILTINS · 内置插件测试重构（波次 W1-C，并行组 C）
+> 状态：✅ 2026-10-03 @ test/slim-w1c-builtins（三轮：441→406→160→123，已合并）
 
 > 分支 `test/slim-w1c-builtins`；前置：W0 已合并进 main，本分支从该时刻 main 切出
 > 深读：`specs/2026-10-03-test-suite-slimming/00-overview.md`、`01-w0-time-control.md`、

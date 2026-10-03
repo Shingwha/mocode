@@ -1,6 +1,7 @@
 # 00 — 总纲：测试套件精简、提速、去脆弱
+> 状态：✅ 2026-10-03 完成（全量 500 passed；安静机 ~15s / 本机负载中位 ~20s，方差见总报告）
 
-> 组：`specs/2026-10-03-test-suite-slimming/` · 日期 2026-10-03 · 状态：进行中
+> 组：`specs/2026-10-03-test-suite-slimming/` · 日期 2026-10-03
 > Git / worktree 协议见 spec-team SKILL.md「Git / worktree 协议」一节，本组不重复。
 
 ## 目标与范围

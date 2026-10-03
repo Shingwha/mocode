@@ -1,4 +1,5 @@
 # Spec FINALIZE · 终验与收尾（波次 W2，lead 亲自执行）
+> 状态：✅ 2026-10-03 lead 亲自执行（守卫硬失败、空洞补齐、孤儿门禁、计时终验、文档、登记）
 
 > 分支 `test/slim-w2-finalize`；前置：W1-A / W1-B / W1-C 均已合并进 main
 > 本工单由 lead 逐条执行，不派 worker。
