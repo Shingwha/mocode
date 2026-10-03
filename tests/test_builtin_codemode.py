@@ -157,7 +157,7 @@ class TestRunScript:
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    async def test_the_empty_script_and_a_syntax_error_are_refused(self):
+    async def test_refusals_and_propagations(self):
         # blank and whitespace-only are the same refusal
         for script in ("", "   \n\t\n  "):
             with pytest.raises(CodemodeError, match="script is empty"):
@@ -167,9 +167,8 @@ class TestRunScript:
             await run_script("def broken(:", {})
         assert "<codemode>" in str(exc_info.value)
 
-    async def test_exceptions_and_the_exit_propagate(self):
-        # ValueError is on the restricted whitelist; the message and type
-        # reach the caller, which renders the script-failed result.
+        # a ValueError from the whitelist propagates, with its message and
+        # type — the caller renders the script-failed result
         with pytest.raises(ValueError, match="boom"):
             await run_script("raise ValueError('boom')", {})
         # The injected exit() raises _ScriptExit; run_script lets it through
@@ -395,13 +394,15 @@ class TestToolBox:
             await box.x_y({"value": "x"})
         assert (await box["x-y"]({"value": "x"})).content == "echo:x"
 
-    async def test_an_unknown_tool_and_codemode_itself_are_refused(self):
+        # and an unknown name is the plain unknown-tool refusal
         box = _box(echo_tool())
         with pytest.raises(
             CodemodeError, match=r"unknown tool 'nope'; use search_tools\(\) or all_tools\(\)"
         ):
             box["nope"]
 
+        # codemode itself is never callable from a script — under its full
+        # name or through the short form
         registry = ToolRegistry()
         registry.register(echo_tool("codemode"))
         agent = make_agent()
@@ -410,7 +411,6 @@ class TestToolBox:
             box["codemode"]
         with pytest.raises(CodemodeError, match="codemode cannot be called from a script"):
             box.codemode
-
     async def test_a_failing_call_raises_with_its_result(self):
         box = _box(_failing_tool())
         with pytest.raises(ToolCallError) as exc_info:
@@ -487,7 +487,7 @@ class TestFacadeFallback:
         ):
             box.nope
 
-    def test_facade_bound_names_work(self):
+    async def test_facade_bound_names_work_and_a_tool_wins(self):
         env, box, output = self._env()
         box.text("via facade")
         box.print("a", 1)
@@ -496,7 +496,7 @@ class TestFacadeFallback:
         assert [t["name"] for t in box.all_tools()] == ["echo"]
         box.store("k", 1)
         assert env["load"]("k") == 1  # the same underlying store
-    async def test_a_registered_tool_wins_over_the_facade(self):
+
         # An MCP tool whose short name is "store" resolves as a tool — the
         # built-in only fills the gaps the registered surface leaves.
         agent = make_agent(echo_tool(), echo_tool("mcp__k__store"))
@@ -636,14 +636,14 @@ class TestParallel:
             with pytest.raises(ValueError, match="concurrency"):
                 await parallel(box.echo({"value": "x"}), concurrency=bad)
 
-    async def test_concurrency_one_serializes_calls(self):
+    async def test_the_concurrency_limit(self):
+        # a batch of one serializes its calls, in argument order
         log = []
         box = _box(_order_tool("a", log), _order_tool("b", log))
         rs = await parallel(box.a({}), box.b({}), concurrency=1)
         assert [r.ok for r in rs] == [True, True]
         assert log == ["a:start", "a:end", "b:start", "b:end"]
 
-    async def test_concurrency_overrides_the_global_semaphore(self):
         # The global cap is one, but the batch asks for eight: both calls
         # still get in flight — the per-batch limit replaces the global one.
         started: list = []
@@ -725,14 +725,10 @@ class TestDiscovery:
         assert env["describe_tool"]("missing") is None
         assert toolbox.calls == 0
 
-    def test_the_catalogue_is_a_snapshot(self):
         # Field-findings P1-2: sorted(all_tools()) fails because entries are
         # dicts — the names table is names_only's job. A script mutating the
         # returned list must not corrupt the snapshot either, and a tool that
         # registers later is not in it.
-        agent = make_agent(echo_tool())
-        output = _FakeOutput()
-        env, _ = build_env(agent.tool_registry, agent.dispatcher, "c", output, Store({}))
         entries = env["all_tools"]()
         entries.clear()
         assert [t["name"] for t in env["all_tools"]()] == ["echo"]
@@ -905,7 +901,7 @@ class TestOutput:
             "[image: image]",
         ]
 
-    def test_render_body_joins_items(self):
+        # the body is the items joined, and an empty one renders empty
         out = Output()
         out.text("a")
         out.text("b")
@@ -982,7 +978,7 @@ class TestBuildResult:
         assert result.content == "Script failed in 3ms\nScript error: CodemodeError: empty"
         assert result.details["ok"] is False
 
-    def test_truncation_flows_into_result(self):
+        # and a truncation flows into the details beside the notice
         out = Output()
         out.text("x" * 500)
         result = build_result(ok=True, ms=1, output=out, error=None, tool_calls=0, max_chars=100)
@@ -1006,7 +1002,8 @@ class TestRank:
             {"name": "mcp__git_ops__search_things", "description": "search ops"},
         ]
 
-    def test_an_empty_query_keeps_registration_order_and_respects_the_limit(self):
+    def test_name_hits_and_all_token_matches_outrank(self):
+        # an empty query keeps registration order and respects the limit
         assert [t["name"] for t in rank("", self._entries())] == [
             "read_file",
             "bash",
@@ -1014,8 +1011,6 @@ class TestRank:
             "mcp__git_ops__search_things",
         ]
         assert len(rank("", self._entries(), limit=2)) == 2
-
-    def test_name_hits_and_all_token_matches_outrank(self):
         # "search" hits two names; "code" hits one description — that one
         # matches every token and takes the top slot; unmatched tools drop out
         assert rank("bash", self._entries())[0]["name"] == "bash"
@@ -1186,6 +1181,14 @@ class TestRunTool:
         )
         assert result.content.endswith('["echo:a", "echo:b"]')
         assert result.details["tool_calls"] == 2
+
+        # the injected exit() ends the run successfully — the code after it
+        # never runs
+        result = await self._run(host, 'text("a")\nexit()\ntext("b")')
+        assert result.details["ok"] is True
+        assert result.content.endswith("\na")
+        result = await self._run(host, "return {'n': 1}")
+        assert result.content.endswith('\n{"n": 1}')
 
     async def test_parallel_in_a_script_captures_and_types_its_failures(self, plugin_host):
         registry = ToolRegistry()
@@ -1470,14 +1473,6 @@ class TestRunTool:
         assert result.details["ok"] is False
         assert "codemode cannot be called from a script" in result.content
 
-    async def test_exit_and_return_land_in_the_result(self, plugin_host):
-        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
-        result = await self._run(host, 'text("a")\nexit()\ntext("b")')
-        assert result.details["ok"] is True
-        assert result.content.endswith("\na")
-        result = await self._run(host, "return {'n': 1}")
-        assert result.content.endswith('\n{"n": 1}')
-
     async def test_print_and_image_ride_the_output_pipeline(self, plugin_host):
         # D8: print was whitelisted but wrote to the host's stdout, where no
         # script reader could ever see it. Three shapes — string, several
@@ -1540,12 +1535,12 @@ class TestRunTool:
 
 
 class TestOptions:
-    def test_effective_options_merges_comment_and_args(self):
+    def test_effective_options_merge_the_comment_and_the_args(self):
+        # the comment line is the base, explicit options win, an
+        # unparseable comment is ignored, and an empty script has none
         script = '# @options: {"timeout_ms": 5000, "max_output_chars": 100}\ntext("x")'
         merged = effective_options(script, {"timeout_ms": 9000})
         assert merged == {"timeout_ms": 9000, "max_output_chars": 100}
-
-    def test_effective_options_ignores_bad_comment(self):
         script = "# @options: {not json}\n"
         assert effective_options(script, {"timeout_ms": 1}) == {"timeout_ms": 1}
         assert effective_options("", None) == {}

@@ -114,9 +114,10 @@ def stdio_entry(command: str = "tool", **extra) -> dict:
     return {"type": "stdio", "command": command, **extra}
 
 class TestLoadServers:
-    async def test_no_configured_servers_an_empty_table_and_inline_ones(self, tmp_path):
+    def test_the_files_precedence_and_a_projects_wholesale_replacement(self, tmp_path):
+        # nothing configured is an empty table; an inline config.json entry
+        # carries its source
         assert load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home") == {}
-
         merged = load_servers(
             mcp_config={"servers": {"demo": {"command": "run"}}},
             cwd=tmp_path,
@@ -126,7 +127,6 @@ class TestLoadServers:
         assert merged["demo"].command == "run"
         assert merged["demo"].source == "config.json"
 
-    def test_the_files_precedence_and_a_projects_wholesale_replacement(self, tmp_path):
         home = tmp_path / "home"
         write_mcp_json(home / "mcp.json", {"mcpServers": {"s": stdio_entry("home")}})
         write_mcp_json(
@@ -167,6 +167,24 @@ class TestLoadServers:
             plugin_sources=[plugin_dir],
         )
         assert merged["s"].command == "inline"
+
+        # a relative cwd resolves against its own file's directory, and an
+        # absolute one is kept as it is
+        project = tmp_path / "proj"
+        write_mcp_json(
+            project / ".mocode" / "mcp.json",
+            {"mcpServers": {"demo": stdio_entry(cwd="./data")}},
+        )
+        write_mcp_json(home / "mcp.json", {"mcpServers": {"other": stdio_entry(cwd="sub")}})
+        merged = load_servers(mcp_config={}, cwd=project, home=home)
+        assert merged["demo"].cwd == str((project / ".mocode" / "data").resolve())
+        assert merged["other"].cwd == str((home / "sub").resolve())
+        merged = load_servers(
+            mcp_config={"servers": {"demo": stdio_entry(cwd=str(tmp_path))}},
+            cwd=project,
+            home=tmp_path / "home",
+        )
+        assert merged["demo"].cwd == str(tmp_path)
 
     def test_names_differing_only_in_separator_are_one_server(self, tmp_path, capsys):
         home = tmp_path / "home"
@@ -244,7 +262,7 @@ class TestLoadServers:
         assert merged["v4"].transport == "sse"  # a loopback may stay http
         assert merged["v6"].url == "http://[::1]:9000/sse"
 
-    def test_variables_expand_and_missing_ones_are_emptied_and_reported(
+    def test_variables_and_placeholders(
         self, tmp_path, capsys
     ):
         merged = load_servers(
@@ -289,7 +307,8 @@ class TestLoadServers:
         for word in ("MCP_TEST_MISSING", "MCP_MISSING_VAR", "'!command'"):
             assert word in err
 
-    def test_plugin_tokens_mean_nothing_in_mocode_files(self, tmp_path, capsys):
+        # plugin tokens mean nothing in a mocode file — an entry that uses
+        # one is skipped, not half-expanded
         merged = load_servers(
             mcp_config={
                 "servers": {
@@ -356,28 +375,6 @@ class TestLoadServers:
         for word in ("'enabled'", "'timeout'", "'exposure'", "'toolExposure'", "'description'"):
             assert word in err
 
-    def test_cwd_resolves_against_its_file_directory(self, tmp_path):
-        project = tmp_path / "proj"
-        write_mcp_json(
-            project / ".mocode" / "mcp.json",
-            {"mcpServers": {"demo": stdio_entry(cwd="./data")}},
-        )
-        home = tmp_path / "home"
-        write_mcp_json(
-            home / "mcp.json", {"mcpServers": {"other": stdio_entry(cwd="sub")}}
-        )
-        merged = load_servers(mcp_config={}, cwd=project, home=home)
-        assert merged["demo"].cwd == str((project / ".mocode" / "data").resolve())
-        assert merged["other"].cwd == str((home / "sub").resolve())
-
-        # an absolute path is kept as it is
-        merged = load_servers(
-            mcp_config={"servers": {"demo": stdio_entry(cwd=str(tmp_path))}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        assert merged["demo"].cwd == str(tmp_path)
-
     def test_a_broken_file_or_a_shape_wrong_table_is_reported(self, tmp_path, capsys):
         write_mcp_json(tmp_path / ".mocode" / "mcp.json", "{not json")
         merged = load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home")
@@ -394,7 +391,9 @@ class TestPluginFileRules:
     def _plugin_mcp(self, servers: dict, **top) -> dict:
         return {"$schema": MCP_SCHEMA_1_0_0, "mcpServers": servers, **top}
 
-    def test_a_valid_plugin_file_loads_and_creates_its_data_dir(self, tmp_path):
+    def test_a_plugin_file_is_all_or_nothing(self, tmp_path, capsys):
+        # a valid file loads, defaults its cwd to the plugin root, and gets
+        # its data directory created
         plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": stdio_entry()}))
         merged = load_servers(
@@ -407,7 +406,6 @@ class TestPluginFileRules:
         assert cfg.plugin_data == plugin_dir / PLUGIN_DATA_DIR
         assert (plugin_dir / PLUGIN_DATA_DIR).is_dir()
 
-    def test_a_bad_schema_or_unknown_fields_skip_the_whole_file(self, tmp_path, capsys):
         plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(plugin_dir / "mcp.json", {"mcpServers": {"srv": stdio_entry()}})
         other_dir = tmp_path / "plugins" / "other"
@@ -1318,7 +1316,7 @@ class TestReadingAndListing:
             await asyncio.wait_for(tool.run_async({}), BOUND)
         assert err.value.code == "missing_param"
 
-    async def test_a_read_lands_in_content_or_details(self, runtime_factory):
+    async def test_a_read_and_a_listing_through_the_tools(self, runtime_factory):
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         await connect(runtime, "demo", make_resource_server())
         tool = ctx.tools.get("read_mcp_resource")
@@ -1376,7 +1374,8 @@ class TestReadingAndListing:
         assert err.value.code == "mcp_error"
         assert "legacy" in err.value.message
 
-    async def test_the_listing_lists_and_its_cursor_pages(self, runtime_factory):
+        # the listing tools carry the entries and page through a cursor —
+        # and an empty listing says so
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         await connect(runtime, "demo", make_resource_server())
         tool = ctx.tools.get("list_mcp_resources")
@@ -1397,8 +1396,6 @@ class TestReadingAndListing:
         ]
         assert "greeting://{name}" in result.content
 
-        # a paged server: the cursor passes through and the next cursor
-        # comes back — and an empty listing says so
         runtime, ctx = runtime_factory({"paged": inproc_entry()})
         await connect(runtime, "paged", paged_server())
         templates = ctx.tools.get("list_mcp_resource_templates")
