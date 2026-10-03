@@ -309,27 +309,27 @@ class TestSchemaChecker:
         assert tool.run({"v": value}) == "ok"
 
     @pytest.mark.parametrize(
-        "declared,value",
+        "declared,values",
         [
-            ("string", 3),
-            ("integer", 3.5),
-            ("number", "3"),
-            ("boolean", "yes"),
-            ("array", {"a": 1}),
-            ("object", [1]),
-            ("null", 0),
-            # Python 的 bool 是 int 子类，JSON 的布尔不是数——两类都拒。
-            ("integer", True),
-            ("number", True),
+            ("string", (3,)),
+            # Python 的 bool 是 int 子类，JSON 的布尔不是数——整型与数字
+            # 两类都拒，与该类型的普通错值并入同一行，回到每类型一行。
+            ("integer", (3.5, True)),
+            ("number", ("3", True)),
+            ("boolean", ("yes",)),
+            ("array", ({"a": 1},)),
+            ("object", ([1],)),
+            ("null", (0,)),
         ],
     )
-    def test_values_of_another_type_are_rejected(self, declared, value):
+    def test_values_of_another_type_are_rejected(self, declared, values):
         tool = _tool_with(
             {"type": "object", "properties": {"v": {"type": declared}}}
         )
-        with pytest.raises(ToolError) as exc:
-            tool.run({"v": value})
-        assert exc.value.code == "invalid_type"
+        for value in values:
+            with pytest.raises(ToolError) as exc:
+                tool.run({"v": value})
+            assert exc.value.code == "invalid_type"
 
     def test_the_checker_walks_the_whole_object_node(self):
         """一遍遍历：根层与嵌套的 required、嵌套类型、数组成员、默认值。"""
