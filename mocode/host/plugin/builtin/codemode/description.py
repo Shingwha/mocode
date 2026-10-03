@@ -13,24 +13,26 @@ script is an async function body: top-level `await`/`return` are legal —
 never wrap code in `asyncio.run()`/`main()`; `asyncio.ensure_future` tasks
 are never awaited, so await everything explicitly.
 
-A complete example — unfamiliar schema described first, batch with one
-failure kept as data, state stored, summary returned:
+A complete example — describe first, then a dependency-ordered fan-out, a
+summary returned:
 
-    d = describe_tool("mcp__anysearch__search")        # schema + full text
-    text(d["schema"])                                  # see its fields
-    hits = await parallel(                             # failures become data
-        tools.search(query="anysearch rate limits"),
-        tools.extract(url="https://example.com"),
-    )
-    for r in hits.ok:                                  # in call order
-        text(r.content)
-    for r in hits.failed:
-        text("skipped: " + r.error)                    # never sinks the batch
-    if hits.ok:
-        r = hits.ok[0]
-        brief = {"title": r.content.splitlines()[0]}
-        store("note", brief)                           # small JSON state
-        return brief
+    d = describe_tool("mcp__issues__list_issues")       # schema + full text
+    text(d["schema"])
+    issues = await tools.mcp__issues__list_issues(team="Pi", state="open", limit=50)
+    items = issues.json()[:10]                          # structured, not text
+    rows = await parallel(*[                            # failures become data
+        tools.mcp__issues__list_comments(issueId=i["id"]) for i in items
+    ])
+    scored = []
+    for i, r in zip(items, rows):                       # rows keep call order
+        if not r.ok:
+            continue
+        n = len(r.json())
+        text(f"{i['id']}: {n} comments")
+        scored.append((i["id"], i["title"], n))
+    scored.sort(key=lambda x: x[2], reverse=True)
+    store("issue_activity", scored)                     # cross-call state
+    return {"total": len(items), "scored": len(scored), "top": scored[:5]}
 
 Calls: `tools.<name>(args)` — arguments as keywords or one dict:
 `await tools.read(path="README.md", limit=80)` or
