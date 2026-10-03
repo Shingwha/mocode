@@ -980,6 +980,47 @@ for line in sys.stdin:
     pass
 '''
 
+MANY_SERVER = r'''
+import json, sys, os
+
+def send(msg):
+    sys.stdout.write(json.dumps(msg) + "\n")
+    sys.stdout.flush()
+
+pidfile = os.environ.get("MCP_TEST_PIDFILE")
+if pidfile:
+    open(pidfile, "w").write(str(os.getpid()))
+
+TOOLS = [
+    {"name": "tool_%02d" % i, "description": "Tool %02d" % i,
+     "inputSchema": {"type": "object", "properties": {}}}
+    for i in range(40)
+]
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        req = json.loads(line)
+    except ValueError:
+        continue
+    method, rid = req.get("method"), req.get("id")
+    if method == "server/discover":
+        send({"jsonrpc": "2.0", "id": rid, "result": {
+            "resultType": "complete",
+            "supportedVersions": ["2026-07-28", "2025-11-25"],
+            "capabilities": {"tools": {}},
+            "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "many-srv", "version": "2.0"}},
+            "instructions": "Many server instructions."}})
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "tools": TOOLS, "ttlMs": 0, "cacheScope": "public"}})
+    elif method == "tools/call":
+        send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text": "ok"}], "structuredContent": {"ok": True}}})
+    else:
+        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}})
+'''
+
 BOUND = 15  # seconds — every session operation in this file stays bounded
 
 
@@ -1869,6 +1910,122 @@ class TestPluginLifecycle:
         assert "off" not in text
         # hidden still registered — just unreachable
         assert host.ctx.tools.get("mcp__hid__search") is not None
+        host.close()
+
+    async def test_connected_servers_list_their_tool_names(
+        self, plugin_host, tmp_path
+    ):
+        """The D12 catalogue: a connected server lists its tools' raw names
+        on an indented continuation line — names only, no schemas."""
+        modern = write_server(tmp_path, "pl_list_modern.py", MODERN_SERVER)
+        legacy = write_server(tmp_path, "pl_list_legacy.py", LEGACY_SERVER)
+        servers = {
+            **_demo_servers(tmp_path, modern, alpha={}),
+            **_demo_servers(tmp_path, legacy, beta={}),
+        }
+        write_mcp_json(tmp_path / ".mocode" / "mcp.json", {"mcpServers": servers})
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
+        text = section.render({})
+        assert "- alpha: direct" in text
+        assert "  tools: ask, fail, pic, search" in text
+        assert "- beta: direct" in text
+        assert "  tools: echo" in text
+        host.close()
+
+    async def test_the_tool_list_truncates_at_thirty_names(
+        self, plugin_host, tmp_path
+    ):
+        """Past thirty names the list gives up counting and points at
+        search_tools() — the truncated raws stay out of the section."""
+        script = write_server(tmp_path, "pl_many.py", MANY_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {"mcpServers": _demo_servers(tmp_path, script, many={})},
+        )
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
+        text = section.render({})
+        head = ", ".join(f"tool_{i:02d}" for i in range(30))
+        assert f"  tools: {head} … +10 more (search_tools() in a codemode script)" in text
+        assert "tool_30" not in text
+        assert "tool_39" not in text
+        host.close()
+
+    async def test_a_server_still_connecting_keeps_the_one_line_form(
+        self, plugin_host, tmp_path
+    ):
+        """No catalogue without a connection: the timed-out server keeps the
+        plain `- name: how` line and no `tools:` line at all."""
+        script = write_server(tmp_path, "pl_slow.py", SILENT_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {"mcpServers": _demo_servers(tmp_path, script, slow={})},
+        )
+        host = plugin_host(
+            plugins=[PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={"plugins": {"mcp": {"connect_timeout_s": 1}}},
+        )
+        await asyncio.wait_for(host.materialize(), BOUND)
+        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
+        text = section.render({})
+        assert "- slow: direct" in text
+        assert "tools:" not in text
+        host.close()
+
+    async def test_a_hidden_server_leaves_no_trace_in_the_section(
+        self, plugin_host, tmp_path
+    ):
+        """Hidden skips the whole row (decision D12) — neither the server
+        line nor its registered tools' names may appear."""
+        shown = write_server(tmp_path, "pl_shown.py", MODERN_SERVER)
+        buried = write_server(tmp_path, "pl_buried.py", MANY_SERVER)
+        servers = {
+            **_demo_servers(tmp_path, shown, shown={}),
+            **_demo_servers(tmp_path, buried, buried={"exposure": "hidden"}),
+        }
+        write_mcp_json(tmp_path / ".mocode" / "mcp.json", {"mcpServers": servers})
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
+        text = section.render({})
+        assert "  tools: ask, fail, pic, search" in text
+        assert "buried" not in text
+        assert "tool_00" not in text
+        # hidden still registered — just unreachable
+        assert host.ctx.tools.get("mcp__buried__tool_00") is not None
+        host.close()
+
+    async def test_a_per_tool_hidden_entry_stays_out_of_the_list(
+        self, plugin_host, tmp_path
+    ):
+        """``toolExposure: hidden`` registers the tool and disables it — the
+        catalogue lists callable names only, so the hidden raw name stays
+        out while its server remains listed."""
+        script = write_server(tmp_path, "pl_pthidden.py", MODERN_SERVER)
+        write_mcp_json(
+            tmp_path / ".mocode" / "mcp.json",
+            {
+                "mcpServers": _demo_servers(
+                    tmp_path,
+                    script,
+                    demo={"toolExposure": {"fail": "hidden"}},
+                )
+            },
+        )
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        registry = host.ctx.tools
+        assert registry.get("mcp__demo__fail") is not None  # registered
+        assert "mcp__demo__fail" not in registry.names(audience="program")
+        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
+        text = section.render({})
+        assert "  tools: ask, pic, search" in text
+        assert "fail" not in text
         host.close()
 
     async def test_no_servers_renders_no_section(self, plugin_host):
