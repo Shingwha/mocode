@@ -10,16 +10,13 @@ from pathlib import Path
 import pytest
 
 from mocode.core.tool import Tool, ToolError, ToolRegistry
-from mocode.host.plugin.builtin.codemode.api import (
-    Store,
-    ToolBox,
+from mocode.host.plugin.builtin.codemode.env import build_env
+from mocode.host.plugin.builtin.codemode.result import (
+    Batch,
+    Result,
     ToolCallError,
-    _mcp_short_name,
-    build_env,
-    describe_tool_entry,
-    tool_entries,
+    parallel,
 )
-from mocode.host.plugin.builtin.codemode.result import Batch, Result, ToolCallError, parallel
 from mocode.host.plugin.builtin.codemode.runtime import (
     _RESTRICTED_KEYS,
     RESTRICTED,
@@ -27,6 +24,13 @@ from mocode.host.plugin.builtin.codemode.runtime import (
     _ScriptExit,
     run_script,
     script_error_line,
+)
+from mocode.host.plugin.builtin.codemode.store import Store
+from mocode.host.plugin.builtin.codemode.toolbox import (
+    ToolBox,
+    _mcp_short_name,
+    describe_tool_entry,
+    tool_entries,
 )
 
 from .conftest import echo_tool, make_agent
@@ -428,6 +432,76 @@ class TestToolBox:
         assert finished and all(e.origin == "program" for e in finished)
         assert all(e.parent_call_id == "parent-9" for e in finished)
         assert finished[0].call_id.startswith("parent-9:")
+
+    def test_dir_lists_registered_tools_only(self):
+        # dir(tools) is the callable catalogue: registered names, sorted,
+        # and none of the forgiven built-ins.
+        box = _box(echo_tool(), echo_tool("mcp__k__bash"))
+        assert dir(box) == ["echo", "mcp__k__bash"]
+        assert "describe_tool" not in dir(box)
+        assert "store" not in dir(box)
+
+
+class TestFacadeFallback:
+    """D15 — the facade forgives: the built-in names resolve through
+    ``tools.<name>`` to the very objects the bare names bind to, while the
+    catalogue (dir, all_tools) still lists registered tools only."""
+
+    def _env(self):
+        agent = make_agent(echo_tool())
+        output = _FakeOutput()
+        env, box = build_env(
+            agent.tool_registry, agent.dispatcher, "c", output, Store({})
+        )
+        return env, box, output
+
+    def test_every_builtin_name_resolves_through_the_facade(self):
+        env, box, _ = self._env()
+        for name in (
+            "describe_tool",
+            "all_tools",
+            "search_tools",
+            "store",
+            "load",
+            "text",
+            "console",
+            "image",
+            "print",
+            "exit",
+        ):
+            assert getattr(box, name) is env[name], name
+            assert box[name] is env[name], name
+
+    async def test_facade_bound_names_work(self):
+        env, box, output = self._env()
+        box.text("via facade")
+        box.print("a", 1)
+        assert output.items == ["via facade", "a 1"]
+        assert box.describe_tool("echo")["name"] == "echo"
+        assert [t["name"] for t in box.all_tools()] == ["echo"]
+        box.store("k", 1)
+        assert env["load"]("k") == 1  # the same underlying store
+
+    async def test_a_registered_tool_wins_over_the_facade(self):
+        # An MCP tool whose short name is "store" resolves as a tool — the
+        # built-in only fills the gaps the registered surface leaves.
+        agent = make_agent(echo_tool(), echo_tool("mcp__k__store"))
+        output = _FakeOutput()
+        env, box = build_env(
+            agent.tool_registry, agent.dispatcher, "c", output, Store({})
+        )
+        bound = box.store
+        assert bound is not env["store"]
+        outcome = await bound({"value": "x"})
+        assert outcome.content == "echo:x"
+
+    def test_unknown_tool_message_unchanged_by_the_facade(self):
+        _, box, _ = self._env()
+        with pytest.raises(
+            CodemodeError,
+            match=r"unknown tool 'nope'; use search_tools\(\) or all_tools\(\)",
+        ):
+            box.nope
 
 
 class TestMcpShortNames:
