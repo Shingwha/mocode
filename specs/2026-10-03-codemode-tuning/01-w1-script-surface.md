@@ -80,7 +80,7 @@ commit：`feat(codemode): capture print and filter describe_tool`
 2. `uv run pytest tests/test_builtin_codemode.py tests/test_builtin_mcp_codemode.py -q` 全绿。
 3. `git diff --stat a77c45c` 只含 `builtin/codemode/api.py`、`builtin/codemode/runtime.py`、`tests/test_builtin_codemode.py`；`git diff a77c45c -- mocode/core mocode/host/plugin/host.py mocode/host/plugin/builtin/mocode pyproject.toml uv.lock README.md docs specs` 为空（注：`builtin/mcp/**` 也不许碰）。
 4. `uv run python -X importtime -c "import mocode"` 无 `mcp`；import 计时 3 次 <1ms。
-5. field-findings 附录 A 重放：第 4/5/6 条在新表面下不再报错；第 3 条 `sorted(all_tools(names_only=True))` 合法。
+5. field-findings 附录 A 重放：第 4/5/6 条在新表面下不再报错；第 3 条 `sorted(search_tools("", names_only=True))` 合法（**lead 更正 2026-10-03**：原写 `all_tools(names_only=True)` 系笔误——D3 冻结的 `names_only` 在 `search_tools` 上，`all_tools()` 保持无参最小表面）。
 
 ## 4. 禁触清单
 
