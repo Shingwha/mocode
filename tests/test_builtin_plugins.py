@@ -41,7 +41,9 @@ def _cmd(conversation: Conversation, name: str):
 
 
 class TestDefaultPrompts:
-    async def test_the_four_sections_render(self, conversation: Conversation):
+    async def test_the_four_sections_render_and_no_tool_schema_travels(
+        self, conversation: Conversation
+    ):
         prompt = conversation.agent.system_prompt
 
         assert "<guidelines>" in prompt
@@ -51,17 +53,16 @@ class TestDefaultPrompts:
         assert f"cwd: {conversation.cwd}" in prompt
         assert "today:" in prompt
         assert "os:" in prompt
+        # Tool schemas travel with every request; the prompt must not list
+        # them.
+        assert "<tool" not in prompt
 
-    async def test_the_prompt_does_not_repeat_the_tools(self, conversation: Conversation):
-        """Tool schemas travel with every request; the prompt must not list them."""
-        assert "<tool" not in conversation.agent.system_prompt
-
-    async def test_agents_md_merges_global_and_project_and_its_absence_is_hinted(
-        self, mc: MoCode
+    async def test_agents_md_merges_global_and_project_and_a_rebuild_re_reads_it(
+        self, mc: MoCode, monkeypatch
     ):
-        project = mc.home.parent
         # a missing tree renders a hint, not a silence — and a hint is a
         # shape, not a sentence
+        project = mc.home.parent
         conversation = mc.new_conversation(cwd=project)
         await conversation.prepare()
         assert "AGENTS.md" in conversation.agent.system_prompt
@@ -74,9 +75,8 @@ class TestDefaultPrompts:
         assert "user-wide rule" in conversation.agent.system_prompt
         assert "project rule" in conversation.agent.system_prompt
 
-    async def test_a_rebuild_re_reads_agents_md_and_refreshes_the_date(
-        self, mc: MoCode, monkeypatch
-    ):
+        # and a rebuild re-reads the file — a rule written after the first
+        # surface shows up — with the frozen clock's date reaching the prompt
         from mocode.host.plugin.builtin import default_prompts
 
         class frozen:
@@ -113,7 +113,17 @@ class TestDefaultPrompts:
 
 
 class TestSessionPlugin:
-    async def test_exports_the_session_into_the_project(self, conversation: Conversation):
+    async def test_exports_the_session_into_the_project_and_nothing_when_empty(
+        self, conversation: Conversation
+    ):
+        # nothing to export: one warn notice and no file written
+        _result, events = await run_command(_cmd(conversation, "/export"), conversation)
+
+        assert [n.level for n in notices(events)] == ["warn"]
+        assert list(Path(conversation.cwd).glob("session_*")) == []
+
+        # with a message on the table the file is written — json first, then
+        # the markdown form when asked for it
         conversation.messages.append({"role": "user", "content": "hi"})
 
         result, events = await run_command(_cmd(conversation, "/export"), conversation)
@@ -128,12 +138,6 @@ class TestSessionPlugin:
         await run_command(_cmd(conversation, "/export"), conversation, args="md")
 
         assert len(list(Path(conversation.cwd).glob("session_*.md"))) == 1
-
-    async def test_nothing_to_export(self, conversation: Conversation):
-        _result, events = await run_command(_cmd(conversation, "/export"), conversation)
-
-        assert [n.level for n in notices(events)] == ["warn"]
-        assert list(Path(conversation.cwd).glob("session_*")) == []
 
     async def test_clear_starts_a_new_session_and_keeps_the_old_one(
         self, conversation: Conversation
@@ -168,8 +172,8 @@ class TestEffortPlugin:
     conversation, and never writes config.json — the same contract the
     session and help commands are held to."""
 
-    async def test_no_arg_reports_current_level_and_the_table(
-        self, conversation: Conversation
+    async def test_no_arg_reports_the_table_and_a_level_arg_switches_it(
+        self, conversation: Conversation, monkeypatch
     ):
         result, events = await run_command(_cmd(conversation, "/effort"), conversation)
 
@@ -181,9 +185,7 @@ class TestEffortPlugin:
         assert level == "(server default)"
         assert available.split(", ") == ["low", "medium", "high"]
 
-    async def test_a_level_arg_switches_it_for_this_conversation_only(
-        self, conversation: Conversation, monkeypatch
-    ):
+        # a level argument switches it for this conversation only
         result, events = await run_command(
             _cmd(conversation, "/effort"), conversation, args="high"
         )
