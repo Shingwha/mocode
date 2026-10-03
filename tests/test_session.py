@@ -65,14 +65,14 @@ def _fenced(text: str) -> str:
 
 
 class TestSession:
-    def test_create(self):
-        s = _session(messages=[{"role": "user", "content": "hi"}])
-        assert s.id == "session_abc"
-        assert len(s.messages) == 1
-        assert s.title == ""
-        assert s.metadata == {}
+    def test_a_session_round_trips_and_defaults_are_empty(self):
+        """默认干净：没有标题、没有元数据；声明过的字段逐个原样往返。"""
+        fresh = _session(messages=[{"role": "user", "content": "hi"}])
+        assert fresh.id == "session_abc"
+        assert len(fresh.messages) == 1
+        assert fresh.title == ""
+        assert fresh.metadata == {}
 
-    def test_to_dict_roundtrip(self):
         s = _session(
             messages=[{"role": "user", "content": "hi"}],
             title="test",
@@ -96,42 +96,39 @@ class TestSessionStore:
     def store(self, tmp_path):
         return SessionStore(base_dir=tmp_path / "sessions")
 
-    def test_save_and_find(self, store):
+    def test_save_find_and_delete(self, store):
         store.save("/project", _session())
         loaded = store.find("session_abc")
         assert loaded is not None
         assert loaded.id == "session_abc"
 
-    def test_list_sorted_most_recent_first(self, store):
-        store.save("/p", _session("session_s1", updated_at="2025-01-01T00:00:00"))
-        store.save("/p", _session("session_s2", updated_at="2025-01-02T00:00:00"))
-        sessions = store.list("/p")
-        assert [s.id for s in sessions] == ["session_s2", "session_s1"]
+        assert store.delete("/p", "session_nope") is False
+        assert store.delete("/project", "session_abc") is True
+        assert store.find("session_abc") is None
 
-    def test_projects_do_not_see_each_other(self, store):
+    def test_listing_nothing_is_empty_and_projects_do_not_see_each_other(self, store):
+        assert store.list("/nope") == []
+        assert store.list_all() == []
+
         store.save("/p", _session("session_a", workdir="/p"))
         store.save("/other", _session("session_b", workdir="/other"))
         assert [s.id for s in store.list("/p")] == ["session_a"]
 
-    def test_delete(self, store):
-        store.save("/p", _session("session_s1"))
-        assert store.delete("/p", "session_s1") is True
-        assert store.find("session_s1") is None
+    def test_listing_is_most_recent_first_and_spans_projects(self, store):
+        """A UI groups by project, so the record has to carry its own —
+        列表按最近更新排，全量列表跨项目也带得出 workdir。"""
+        store.save("/p", _session("session_s1", workdir="/p", updated_at="2025-01-01T00:00:00"))
+        store.save("/p", _session("session_s2", workdir="/p", updated_at="2025-01-02T00:00:00"))
+        assert [s.id for s in store.list("/p")] == ["session_s2", "session_s1"]
 
-    def test_listing_nothing_is_empty(self, store):
-        assert store.list("/nope") == []
-        assert store.list_all() == []
-
-    def test_list_all_spans_projects(self, store):
-        """A UI groups by project, so the record has to carry its own."""
-        store.save("/p", _session("session_a", workdir="/p", updated_at="2025-01-01T00:00:00"))
-        store.save("/other", _session("session_b", workdir="/other", updated_at="2025-01-02T00:00:00"))
-
-        everything = store.list_all()
-
-        assert [(s.id, s.workdir) for s in everything] == [
+        store.save(
+            "/other",
+            _session("session_b", workdir="/other", updated_at="2025-01-03T00:00:00"),
+        )
+        assert [(s.id, s.workdir) for s in store.list_all()] == [
             ("session_b", "/other"),
-            ("session_a", "/p"),
+            ("session_s2", "/p"),
+            ("session_s1", "/p"),
         ]
 
     def test_find_by_id_alone(self, store):
@@ -153,7 +150,7 @@ class TestPortability:
         messages, _title = result
         assert messages == session.messages
 
-    def test_import_nonexistent(self, tmp_path):
+        # 不存在的文件、或根本不是导出格式的文件：读不出来，而不是崩
         assert load_session_file(tmp_path / "nope.json") is None
         assert load_session_file(tmp_path / "wrong.txt") is None
 
@@ -184,6 +181,15 @@ class TestPortability:
         assert blocks.index(prompt) < blocks.index(messages[0])
         # 一个 turn 小节把消息括起来（连同概览与 system prompt 共三节 L2）
         assert len([b for b in blocks if b[0] == 2]) == 3
+
+        # 空会话：没有任何消息层级的小节；system prompt 一节仍是最后一节
+        empty_path = tmp_path / "empty.md"
+        export_session_md(_session(), empty_path, system_prompt="Be brief.")
+
+        empty_blocks = _sections(empty_path.read_text(encoding="utf-8"))
+        assert _frontmatter(empty_path.read_text(encoding="utf-8"))["message_count"] == "0"
+        assert [b for b in empty_blocks if b[0] == 3] == []
+        assert empty_blocks[-1][2] == "Be brief."
 
     def test_export_to_md_with_tool_calls(self, tmp_path):
         session = _session(
@@ -247,18 +253,6 @@ class TestPortability:
             "The answer is 42."
         )
 
-    def test_export_to_md_empty_session(self, tmp_path):
-        path = tmp_path / "export.md"
-
-        export_session_md(_session(), path, system_prompt="Be brief.")
-
-        md = path.read_text(encoding="utf-8")
-        assert _frontmatter(md)["message_count"] == "0"
-        blocks = _sections(md)
-        # 没有消息：没有任何消息层级的小节；system prompt 一节仍是最后一节
-        assert [b for b in blocks if b[0] == 3] == []
-        assert blocks[-1][2] == "Be brief."
-
 
 class TestPluginMessagesField:
     def test_round_trip(self):
@@ -287,33 +281,24 @@ class TestPluginMessagesField:
         assert Session.from_dict(session.to_dict()) == session
         assert Session.from_dict(session.to_dict()).plugin_messages == messages
 
-    @pytest.mark.parametrize(
-        "raw, expected",
-        [
-            pytest.param(
-                [{"kind": "kept"}, "junk", 42, None, ["x"]],
-                [{"kind": "kept"}],
-                id="bad-entries-are-dropped",
-            ),
-            pytest.param(
-                {"kind": "not-a-list"},
-                [],
-                id="a-wrong-shaped-field-is-dropped",
-            ),
-        ],
-    )
-    def test_malformed_values_leave_a_usable_field(self, raw, expected):
-        session = Session.from_dict(
-            {
-                "id": "session_x",
-                "created_at": "t",
-                "updated_at": "t",
-                "workdir": "/project",
-                "messages": [],
-                "plugin_messages": raw,
-            }
-        )
-        assert session.plugin_messages == expected
+    def test_malformed_values_leave_a_usable_field(self):
+        """坏条目整条丢掉，整个字段形状不对则一篇没有——字段本身仍可用。"""
+        cases = [
+            ([{"kind": "kept"}, "junk", 42, None, ["x"]], [{"kind": "kept"}]),
+            ({"kind": "not-a-list"}, []),
+        ]
+        for raw, expected in cases:
+            session = Session.from_dict(
+                {
+                    "id": "session_x",
+                    "created_at": "t",
+                    "updated_at": "t",
+                    "workdir": "/project",
+                    "messages": [],
+                    "plugin_messages": raw,
+                }
+            )
+            assert session.plugin_messages == expected
 
 
 class TestFrozenRequestFields:
@@ -333,16 +318,8 @@ class TestFrozenRequestFields:
 
         assert Session.from_dict(session.to_dict()) == session
 
-    @pytest.mark.parametrize(
-        "field, default",
-        [
-            pytest.param("plugin_messages", [], id="plugin-messages"),
-            pytest.param("system_prompt", "", id="system-prompt"),
-            pytest.param("tool_schemas", [], id="tool-schemas"),
-            pytest.param("plugin_state", {}, id="plugin-state"),
-        ],
-    )
-    def test_absent_for_legacy_files(self, field, default):
+    def test_absent_for_legacy_files(self):
+        """旧文件一个可迁字段都没有：每个字段拿自己的缺省值。"""
         legacy = Session.from_dict(
             {
                 "id": "session_old",
@@ -352,4 +329,10 @@ class TestFrozenRequestFields:
                 "messages": [],
             }
         )
-        assert getattr(legacy, field) == default
+        for field, default in [
+            ("plugin_messages", []),
+            ("system_prompt", ""),
+            ("tool_schemas", []),
+            ("plugin_state", {}),
+        ]:
+            assert getattr(legacy, field) == default, field
