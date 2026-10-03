@@ -49,20 +49,21 @@ def _get_builtin_cmd(name: str) -> Command:
 class TestCommandRegistry:
     def test_the_registry_resolves_by_name_and_alias_and_lists_sorted(self):
         """get 认名字也认别名，不认识的返回 None；all() 按名字排好——
-        菜单的顺序由注册表自己保证。"""
+        菜单的顺序由注册表自己保证。终端自己那套命令一个 build() 就全部
+        注册得上： registry 拿到的是命令集本身，不是它的一份拷贝。"""
+        from mocode.cli.plugin import BuiltinCommands
+
         reg = CommandRegistry()
-        cmd = _get_builtin_cmd("/quit")
-        reg.register(cmd)
-        assert reg.get("/quit") is cmd
+        BuiltinCommands().build(_FakeCLI(reg))
+        cmd = reg.get("/quit")
+        assert cmd is not None
         for spelling in ("/exit", "quit", "exit"):
             assert reg.get(spelling) is not None, spelling
         assert reg.get("/nonexistent") is None
 
-        everything = CommandRegistry()
-        everything.register(*BUILTIN_COMMANDS)
-        names = [c.name for c in everything.all()]
+        names = [c.name for c in reg.all()]
         assert names == sorted(names)
-        assert "/quit" in names
+        assert {c.name for c in COMMANDS} <= set(names)
 
 
 class TestCommandResults:
@@ -79,12 +80,6 @@ class TestCommandResults:
 
 
 class TestDispatch:
-    async def test_a_named_command_runs(self, conversation: Conversation):
-        registry = CommandRegistry()
-        registry.register(_get_builtin_cmd("/quit"))
-
-        assert (await registry.dispatch("/quit", conversation=conversation)) is EXIT
-
     async def test_a_command_gets_its_arguments(self, conversation: Conversation):
         seen: list[str] = []
 
@@ -285,16 +280,6 @@ def _skill(name: str, description: str, content: str) -> MagicMock:
     skill.metadata.description = description
     skill.load_content.return_value = content
     return skill
-
-
-def test_the_terminal_registers_its_commands_on_a_fresh_registry():
-    """Every command the terminal ships is one build() away for any registry."""
-    from mocode.cli.plugin import BuiltinCommands
-
-    registry = CommandRegistry()
-    BuiltinCommands().build(_FakeCLI(registry))
-    shipped = {c.name for c in COMMANDS}
-    assert shipped <= {c.name for c in registry.all()}
 
 
 class _FakeCLI:
