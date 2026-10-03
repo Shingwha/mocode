@@ -38,8 +38,6 @@ from mcp.server import MCPServer
 from mcp.server.lowlevel import Server as LowLevelServer
 from mcp.server.subscriptions import InMemorySubscriptionBus
 from mcp.shared.exceptions import MCPError
-from mcp.shared.memory import create_client_server_memory_streams
-from mcp.shared.message import SessionMessage
 from mcp.shared.subscriptions import ToolsListChanged
 from mcp.types import (
     ListResourceTemplatesResult,
@@ -47,7 +45,6 @@ from mcp.types import (
     ListToolsResult,
     ReadResourceResult,
 )
-import mcp_types as sdk_types
 
 from mocode.core.agent import AgentConfig
 from mocode.core.dispatch import ToolDispatcher
@@ -92,6 +89,7 @@ from mocode.host.plugin.builtin.mcp.tools import (
 )
 from mocode.host.plugin.context import BuildContext
 
+from ._mcp_fake import ByToolName, Drop, Late, Silent, Unsupported, WirePeer
 from .conftest import settle, wait_until
 
 BOUND = 15  # seconds — every session operation in this file stays bounded
@@ -808,133 +806,6 @@ class TestResolveExposure:
         assert availability_for("hidden") == ("both", True)
 
 
-# ── an in-process wire peer — the protocol-shape seam ────────
-
-
-async def _peer_timer(seconds: float) -> None:
-    """How the fake peer waits out a scripted delay.
-
-    A slow server's latency is the behaviour under test here — the same job
-    the subprocess fakes' own ``time.sleep`` did — so the wait goes through
-    :func:`settle`, the sanctioned entry for exactly that.
-    """
-    await settle(seconds)
-
-
-class Unsupported:
-    """A ``-32022`` discover refusal naming the versions the peer speaks."""
-
-    def __init__(self, supported: list[str]) -> None:
-        self.supported = supported
-
-
-class Late:
-    """A route answered after a delay — the slow-call timeout's shape."""
-
-    def __init__(self, seconds: float, result: dict) -> None:
-        self.seconds = seconds
-        self.result = result
-
-
-class Drop:
-    """A route that closes the stream instead of answering — a dropped peer."""
-
-
-class Silent:
-    """A route that never answers — a peer that hangs up on nothing."""
-
-
-class WirePeer:
-    """A scripted JSON-RPC server over the SDK's in-memory streams.
-
-    ``routes`` maps a method to what it answers: a ``dict`` result,
-    :class:`Late` for a delayed one, :class:`Silent` for no answer at all,
-    :class:`Unsupported` for the ``-32022`` era refusal, :class:`Drop` to
-    close the stream underneath the client. An unlisted method answers
-    ``-32601`` — which is exactly what makes a pre-discover server fall
-    back to the handshake. ``seen`` records the methods that arrived, so a
-    test asserts on the requests that were really made.
-    """
-
-    def __init__(self, routes: dict[str, object]) -> None:
-        self.routes = routes
-        self.seen: list[str] = []
-
-    async def _serve(self, read, write) -> None:
-        while True:
-            message = await read.receive()
-            body = message.message
-            if isinstance(body, sdk_types.JSONRPCNotification):
-                self.seen.append(body.method)
-                continue
-            assert isinstance(body, sdk_types.JSONRPCRequest), body
-            method, rid = body.method, body.id
-            self.seen.append(method)
-            out = self.routes.get(method, "unknown")
-            if out == "unknown":
-                await write.send(
-                    SessionMessage(
-                        sdk_types.JSONRPCError(
-                            jsonrpc="2.0",
-                            id=rid,
-                            error=sdk_types.ErrorData(
-                                code=-32601, message=f"unknown method {method}"
-                            ),
-                        )
-                    )
-                )
-                continue
-            if isinstance(out, Silent):
-                continue
-            if isinstance(out, ByToolName):
-                out = out.answers[body.params.get("name")]
-            if isinstance(out, Late):
-                # the delay is the behaviour under test (a slow server), so
-                # the peer waits on a real timer — and the guard's caller
-                # frame is this fake, not the test that drives it.
-                await _peer_timer(out.seconds)
-                out = out.result
-            if isinstance(out, Drop):
-                await write.aclose()
-                return
-            if isinstance(out, Unsupported):
-                await write.send(
-                    SessionMessage(
-                        sdk_types.JSONRPCError(
-                            jsonrpc="2.0",
-                            id=rid,
-                            error=sdk_types.ErrorData(
-                                code=-32022,
-                                message="unsupported version",
-                                data={
-                                    "supported": out.supported,
-                                    "requested": "2026-07-28",
-                                },
-                            ),
-                        )
-                    )
-                )
-                continue
-            await write.send(
-                SessionMessage(
-                    sdk_types.JSONRPCResponse(jsonrpc="2.0", id=rid, result=out)
-                )
-            )
-
-    async def __aenter__(self):
-        self._cm = create_client_server_memory_streams()
-        self._streams = await self._cm.__aenter__()
-        self._task = asyncio.ensure_future(self._serve(*self._streams[1]))
-        return self._streams[0]
-
-    async def __aexit__(self, *exc) -> bool:
-        self._task.cancel()
-        await asyncio.gather(self._task, return_exceptions=True)
-        await self._cm.__aexit__(*exc)
-        return False
-
-
-
 #: The handshake-era answer for a peer that answers only ``initialize``.
 LEGACY_HANDSHAKE = {
     "protocolVersion": "2025-11-25",
@@ -942,13 +813,6 @@ LEGACY_HANDSHAKE = {
     "serverInfo": {"name": "wire-legacy-srv", "version": "1.0"},
     "instructions": "Legacy wire instructions.",
 }
-
-
-class ByToolName:
-    """A route that answers by the tool the request names."""
-
-    def __init__(self, answers) -> None:
-        self.answers = answers
 
 
 def _call_answer(name: str) -> dict:
@@ -988,7 +852,6 @@ def _call_answer(name: str) -> dict:
         "content": [{"type": "text", "text": "hello"}],
         "structuredContent": {"ok": True},
     }
-
 
 #: A modern-era peer: discover, tools/list and the shapes the tool mapping
 #: reads back (a failing ``fail``, an input-requiring ``ask``, a non-text

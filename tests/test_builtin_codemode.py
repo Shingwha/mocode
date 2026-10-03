@@ -34,7 +34,14 @@ from mocode.host.plugin.builtin.codemode.toolbox import (
     tool_entries,
 )
 
-from .conftest import echo_tool, make_agent, settle
+from mocode.core.events import Notice, ToolCallFinished, ToolCallStarted
+from mocode.host.plugin.builtin.mcp import PLUGIN as MCP_PLUGIN
+from mocode.testing import call_tool, say
+
+from ._mcp_fake import WirePeer
+from .conftest import echo_tool, make_agent, settle, wait_until
+
+BOUND = 15  # seconds — every await in this file stays bounded
 
 
 class _FakeOutput:
@@ -562,6 +569,19 @@ class TestFacadeFallback:
             match=r"unknown tool 'nope'; use search_tools\(\) or all_tools\(\)",
         ):
             box.nope
+
+
+async def _registered(host, name: str) -> bool:
+    """Whether the model- or program-facing registry holds *name*.
+
+    A codemode-exposure server connects in the background, so the
+    registration is a condition to wait for rather than a moment to guess.
+    """
+    return await wait_until(
+        lambda: host.ctx.tools.get(name) is not None,
+        bound=BOUND,
+        what=f"{name} to register",
+    )
 
 
 class TestMcpShortNames:
@@ -1906,3 +1926,308 @@ class TestEndToEnd:
         ]
         assert len(tool_messages) == 1  # only codemode's result, denial included
         assert "denied" in str(tool_messages[0]["content"])
+
+# ── mcp + codemode — the cross-plugin contract ──────────────
+
+#: What the scripted model's codemode call runs: one MCP call, output kept.
+SCRIPT_CALL_ECHO = 'text((await tools.mcp__echo__echo({"x": "hi"})).content)'
+
+#: The echo server's tools, as the wire peer answers them.
+ECHO_TOOLS = [
+    {
+        "name": "echo",
+        "description": "Echo the arguments back",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": ["x"],
+        },
+    }
+]
+
+
+def _echo_peer() -> Any:
+    """A modern-era wire peer carrying the one ``echo`` tool.
+
+    The cross-plugin contract is about how codemode *reaches* an MCP tool,
+    so what matters is that the tool arrives over the wire with the shapes
+    the mcp plugin registers — not that a child process carried it.
+    """
+    from mocode.host.plugin.builtin.mcp.client import McpSession
+
+    return WirePeer(
+        {
+            "server/discover": {
+                "resultType": "complete",
+                "supportedVersions": ["2026-07-28"],
+                "capabilities": {"tools": {}},
+                "ttlMs": 0,
+                "cacheScope": "public",
+                "instructions": "Echo server instructions.",
+            },
+            "tools/list": {
+                "resultType": "complete",
+                "tools": ECHO_TOOLS,
+                "ttlMs": 0,
+                "cacheScope": "public",
+            },
+            "tools/call": {
+                "resultType": "complete",
+                "content": [
+                    {"type": "text", "text": 'echo:{"x": "hi"}'}
+                ],
+                "structuredContent": {"args": {"x": "hi"}},
+            },
+        }
+    )
+
+
+def _peer_servers(monkeypatch, **peers: Any) -> None:
+    """Substitute the session factory at the mcp runtime's module boundary.
+
+    The same seam ``tests.test_builtin_mcp`` uses: the collaborator being
+    replaced is the factory, so ``McpRuntime.start()`` — the plugin's own
+    connect-and-register path — still runs in full.
+    """
+    from mocode.host.plugin.builtin.mcp import runtime as runtime_module
+
+    real = runtime_module.McpSession
+
+    def factory(config, **kwargs):
+        peer = peers.get(config.name)
+        if peer is None:
+            return real(config, **kwargs)
+        return real(config, server=peer, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "McpSession", factory)
+
+
+def _servers_table(**entries: Any) -> dict:
+    """The ``plugins.mcp.servers`` table for the echo fake."""
+    return {
+        "echo": {"command": "python", "args": ["-c", "pass"], **entries},
+    }
+
+
+class TestMcpShortNames:
+    """The mcp short-name group: what a codemode script may call.
+
+    A tool registered from an MCP server reaches a script under its full
+    name and under its short form — the tier the toolbox's resolution
+    offers, whatever the server was called.
+    """
+
+    async def test_a_script_calls_an_mcp_tool_by_its_short_name(
+        self, plugin_host, monkeypatch, tmp_path
+    ):
+        _peer_servers(monkeypatch, echo=_echo_peer())
+        host = plugin_host(
+            plugins=[MCP_PLUGIN, PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={
+                "plugins": {"mcp": {"servers": _servers_table()}, "codemode": {"enabled": True}}
+            },
+        )
+        # materialize() runs the plugins' prepare() — the mcp runtime's own
+        # connect path
+        await asyncio.wait_for(host.materialize(), BOUND)
+        # the echo server connects in the background once codemode owns the
+        # default exposure — its tool arrives with that connect
+        assert await _registered(host, "mcp__echo__echo")
+        assert "mcp__echo__echo" not in host.ctx.tools.names(audience="model")
+
+        tool = host.ctx.tools.get("codemode")
+        ctx = ToolCallContext(
+            tool_name="codemode",
+            tool_args={"script": SCRIPT_CALL_ECHO},
+            tool_call_id="cm1",
+        )
+        result = await asyncio.wait_for(
+            tool.run_async({"script": SCRIPT_CALL_ECHO}, ctx), BOUND
+        )
+        assert result.details["ok"] is True
+        assert 'echo:{"x": "hi"}' in result.content
+        # the call the script made is counted as the script's own
+        assert result.details["tool_calls"] == 1
+        host.close()
+
+
+class TestCrossPluginContract:
+    """The program-origin contract, end to end: a codemode script's MCP calls
+    are observable on the event stream as program-origin events nested under
+    the codemode call, and no tool message for them ever reaches the model."""
+
+    async def _run_turn(self, plugin_host, monkeypatch, tmp_path):
+        _peer_servers(monkeypatch, echo=_echo_peer())
+        host = plugin_host(
+            plugins=[MCP_PLUGIN, PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={
+                "plugins": {"mcp": {"servers": _servers_table()}, "codemode": {"enabled": True}}
+            },
+            responses=[
+                call_tool("codemode", {"script": SCRIPT_CALL_ECHO}, call_id="cm1"),
+                say("done"),
+            ],
+        )
+        # materialize() runs the plugins' prepare() — the mcp runtime's own
+        # connect — so the echo server's tool arrives with it
+        await asyncio.wait_for(host.materialize(), BOUND)
+        # a codemode-exposure server connects in the background, so its tool
+        # registering is a condition to wait for, not a moment to guess
+        assert await _registered(host, "mcp__echo__echo")
+
+        reader = host.ctx.subscribe()
+        answer = await host.ctx.agent.chat("echo through the script tool")
+        seen = []
+        while (event := reader.take()) is not None:
+            seen.append(event)
+        return host, answer, seen
+
+    async def test_a_script_mcp_call_is_on_the_channel_but_never_a_message(
+        self, plugin_host, monkeypatch, tmp_path
+    ):
+        host, answer, seen = await self._run_turn(plugin_host, monkeypatch, tmp_path)
+        assert answer == "done"
+
+        # The script's MCP call was observable — as a program-origin event
+        # nested under the codemode call.
+        started = [
+            e
+            for e in seen
+            if isinstance(e, ToolCallStarted) and e.name == "mcp__echo__echo"
+        ]
+        finished = [
+            e
+            for e in seen
+            if isinstance(e, ToolCallFinished) and e.name == "mcp__echo__echo"
+        ]
+        assert len(started) == len(finished) == 1
+        assert started[0].origin == "program"
+        assert started[0].parent_call_id == "cm1"
+        assert started[0].call_id == "cm1:1"
+        assert finished[0].origin == "program"
+        assert finished[0].parent_call_id == "cm1"
+        assert finished[0].status == "ok"
+        assert 'echo:{"x": "hi"}' in finished[0].result
+
+        # codemode's own call is ordinary model origin.
+        cm = [
+            e
+            for e in seen
+            if isinstance(e, ToolCallFinished) and e.name == "codemode"
+        ]
+        assert len(cm) == 1 and cm[0].origin == "model"
+
+        # The turn counts only the model's call.
+        assert host.ctx.agent.tool_call_count == 1
+
+        # messages carry exactly one tool result — codemode's. The MCP call
+        # never entered the conversation, and the nested id stays invisible.
+        tool_messages = [
+            m for m in host.ctx.agent.messages if m["role"] == "tool"
+        ]
+        assert len(tool_messages) == 1
+        content = str(tool_messages[0]["content"])
+        assert content.startswith("Script completed in ")
+        assert 'echo:{"x": "hi"}' in content
+        assert "cm1:1" not in content
+        assert "mcp__echo__echo" not in content
+        host.close()
+
+
+class TestCrossPluginExposure:
+    """How the mcp plugin's exposure decisions and the codemode plugin's
+    presence interact."""
+
+    async def test_the_default_assembly_builds_both_anchors(self, mc, tmp_path):
+        conversation = mc.new_conversation(cwd=tmp_path)
+        tools = conversation.tools
+        assert tools.get("mcp_status") is not None
+        assert tools.get("codemode") is not None
+        # codemode is offered to the model; the MCP surface is program-only.
+        model = tools.names(audience="model")
+        assert "codemode" in model
+        assert "mcp_status" not in model
+        assert [n for n in model if n.startswith("mcp__")] == []
+        assert "mcp_status" in tools.names(audience="program")
+
+    async def test_codemode_only_tools_warn_once_while_codemode_is_off(
+        self, plugin_host, monkeypatch, tmp_path
+    ):
+        """The mcp plugin's one-shot warning is an event on the channel, and
+        it is the shape the conversation sees — not a flag on the runtime."""
+        _peer_servers(monkeypatch, echo=_echo_peer())
+        host = plugin_host(
+            plugins=[MCP_PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={"plugins": {"mcp": {"servers": _servers_table(exposure="codemode")}}},
+        )
+        reader = host.ctx.subscribe(since=0)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        warnings = await _cross_warning(reader)
+        assert len(warnings) == 1
+        assert warnings[0].level == "warn"
+        assert "reachable only through codemode" in warnings[0].message
+        # one conversation, one warning — a second emission never lands
+        # one conversation, one warning: the second read of the same channel
+        # finds no further warning — the one-shot is a fact about the
+        # runtime's flag, not a window to sit out
+        again = [
+            e
+            for e in _take_all(reader)
+            if isinstance(e, Notice) and "reachable only through codemode" in e.message
+        ]
+        assert again == []
+        host.close()
+
+    async def test_codemode_enabled_suppresses_the_warning(
+        self, plugin_host, monkeypatch, tmp_path
+    ):
+        _peer_servers(monkeypatch, echo=_echo_peer())
+        host = plugin_host(
+            plugins=[MCP_PLUGIN, PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={
+                "plugins": {
+                    "mcp": {"servers": _servers_table(exposure="codemode")},
+                    "codemode": {"enabled": True},
+                }
+            },
+        )
+        reader = host.ctx.subscribe(since=0)
+        await asyncio.wait_for(host.materialize(), BOUND)
+
+        assert await _cross_warning(reader, bound=0.2) == []
+        host.close()
+
+
+async def _cross_warning(reader, *, bound: float = BOUND) -> list:
+    """The codemode warnings on the channel, waiting for the first one.
+
+    One drain that polls, so a warning that arrives while this waits is seen
+    the moment it does — no guessed window. A *negative* assertion (no
+    warning at all) asks for a short bound: with the codemode plugin on, the
+    runtime returns before it can emit, and a short wait is enough to show
+    nothing arrives.
+    """
+    deadline = asyncio.get_running_loop().time() + bound
+    while True:
+        for event in list(_take_all(reader)):
+            if isinstance(event, Notice) and "reachable only through codemode" in event.message:
+                return [event]
+        if asyncio.get_running_loop().time() >= deadline:
+            return []
+        await settle(0.01)
+
+
+def _take_all(reader) -> list:
+    """Everything the subscriber has so far — read, not polled."""
+    seen = []
+    while (event := reader.take()) is not None:
+        seen.append(event)
+    return seen
