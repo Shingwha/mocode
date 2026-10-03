@@ -26,9 +26,11 @@ _TOKEN = re.compile(r"[a-z0-9_]+")
 
 
 def normalize(name: str) -> str:
-    """The script-identifier form of a tool name: every character outside
-    ``[A-Za-z0-9_]`` becomes ``_`` (pi's rule), so ``mcp__dev-radius__search``
-    is reachable as ``tools.mcp__dev_radius__search``."""
+    """The folded form of a name: every character outside
+    ``[A-Za-z0-9_]`` becomes ``_`` (pi's rule). Registered names arrive
+    folded, so this is how another spelling is compared against one — the
+    toolbox's did-you-mean candidates, and :func:`rank`'s namespace
+    filter."""
     return re.sub(r"[^0-9A-Za-z_]", "_", name)
 
 
