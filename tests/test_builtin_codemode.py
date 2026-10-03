@@ -5,20 +5,18 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import json
 from pathlib import Path
 
 import pytest
 
 from mocode.core.tool import Tool, ToolError, ToolRegistry
-from mocode.host.plugin.builtin.codemode.api import (
-    Store,
-    ToolBox,
+from mocode.host.plugin.builtin.codemode.env import build_env
+from mocode.host.plugin.builtin.codemode.result import (
+    Batch,
+    Result,
     ToolCallError,
-    ToolOutcome,
-    _mcp_short_name,
-    build_env,
-    describe_tool_entry,
-    tool_entries,
+    parallel,
 )
 from mocode.host.plugin.builtin.codemode.runtime import (
     _RESTRICTED_KEYS,
@@ -27,6 +25,13 @@ from mocode.host.plugin.builtin.codemode.runtime import (
     _ScriptExit,
     run_script,
     script_error_line,
+)
+from mocode.host.plugin.builtin.codemode.store import Store
+from mocode.host.plugin.builtin.codemode.toolbox import (
+    ToolBox,
+    _mcp_short_name,
+    describe_tool_entry,
+    tool_entries,
 )
 
 from .conftest import echo_tool, make_agent
@@ -174,7 +179,6 @@ class TestRunScript:
         "name",
         [
             "open",
-            "__import__",
             "eval",
             "exec",
             "compile",
@@ -225,7 +229,8 @@ class TestRunScript:
 
     def test_restricted_whitelist_snapshot(self):
         # The frozen set stays, every builtin exception class joins by the
-        # issubclass rule, dir comes along — and nothing else is in there.
+        # issubclass rule, dir comes along, and __import__ is the gated
+        # gate — nothing else is in there.
         builtin_exceptions = {
             name
             for name, value in vars(builtins).items()
@@ -233,13 +238,29 @@ class TestRunScript:
         }
         assert set(_RESTRICTED_KEYS) <= set(RESTRICTED)
         assert builtin_exceptions <= set(RESTRICTED)
-        assert set(RESTRICTED) == set(_RESTRICTED_KEYS) | builtin_exceptions | {"dir"}
+        assert set(RESTRICTED) == set(_RESTRICTED_KEYS) | builtin_exceptions | {
+            "dir",
+            "__import__",
+        }
         assert not {
             "BaseException",
             "KeyboardInterrupt",
             "SystemExit",
             "GeneratorExit",
         } & set(RESTRICTED)
+        # the gate itself: whitelisted names import, the rest point at tools.*
+        assert RESTRICTED["__import__"]("json") is json
+        with pytest.raises(ImportError, match="tools.* facade"):
+            RESTRICTED["__import__"]("os")
+
+    async def test_gated_import_is_reachable_by_direct_call(self):
+        # A script naming __import__ hits the same gate as the import
+        # statement does.
+        assert await run_script(
+            "return __import__('json').dumps({'a': 1})", {}
+        ) == '{"a": 1}'
+        with pytest.raises(ImportError, match="not available"):
+            await run_script("return __import__('os')", {})
 
     async def test_restricted_has_no_exit(self):
         # Python's own exit/quit are absent; the injected exit() is the only one.
@@ -278,6 +299,58 @@ class TestScriptErrorLine:
         with pytest.raises(CodemodeError) as exc_info:
             await run_script("", {})
         assert script_error_line(exc_info.value) is None
+
+
+class TestImportGate:
+    """D14 — import is gated to the injected modules; both ``import`` and
+    ``from ... import ...`` pass, everything else fails with the tools
+    facade in the message."""
+
+    async def test_import_three_modules_in_one_statement(self):
+        # field-findings P0-1 replay: the muscle-memory import line works.
+        assert await run_script(
+            "import re, asyncio, json\nreturn json.dumps({'ok': bool(re)})",
+            {},
+        ) == '{"ok": true}'
+
+    async def test_from_import(self):
+        assert await run_script(
+            "from asyncio import gather\nreturn gather.__name__", {}
+        ) == "gather"
+
+    async def test_from_import_with_alias(self):
+        assert await run_script(
+            "from json import dumps as d\nreturn d({'a': 1})", {}
+        ) == '{"a": 1}'
+
+    async def test_import_rejected_with_tools_pointer(self):
+        with pytest.raises(ImportError, match=r"import of 'os' is not available"):
+            await run_script("import os", {})
+        with pytest.raises(ImportError, match=r"tools.\* facade"):
+            await run_script("import os", {})
+
+    async def test_from_import_rejected(self):
+        with pytest.raises(ImportError, match="not available"):
+            await run_script("from os import path", {})
+
+    async def test_submodule_import_rejected(self):
+        # The gate matches exact module names — no submodules.
+        with pytest.raises(ImportError, match="not available"):
+            await run_script("import asyncio.exceptions", {})
+
+    async def test_import_error_is_catchable_by_name(self):
+        # ImportError is a whitelisted builtin exception, so scripts can
+        # probe for an optional module without dying.
+        assert await run_script(
+            "try:\n    import os\nexcept ImportError:\n    return 'caught'",
+            {},
+        ) == "caught"
+
+    def test_injected_modules_match_the_import_whitelist(self):
+        from mocode.host.plugin.builtin.codemode.env import _MODULES
+        from mocode.host.plugin.builtin.codemode.runtime import IMPORT_WHITELIST
+
+        assert set(_MODULES) == set(IMPORT_WHITELIST)
 
 
 # ── T2: api — ToolBox, discovery, store ─────────────────────
@@ -429,6 +502,76 @@ class TestToolBox:
         assert all(e.parent_call_id == "parent-9" for e in finished)
         assert finished[0].call_id.startswith("parent-9:")
 
+    def test_dir_lists_registered_tools_only(self):
+        # dir(tools) is the callable catalogue: registered names, sorted,
+        # and none of the forgiven built-ins.
+        box = _box(echo_tool(), echo_tool("mcp__k__bash"))
+        assert dir(box) == ["echo", "mcp__k__bash"]
+        assert "describe_tool" not in dir(box)
+        assert "store" not in dir(box)
+
+
+class TestFacadeFallback:
+    """D15 — the facade forgives: the built-in names resolve through
+    ``tools.<name>`` to the very objects the bare names bind to, while the
+    catalogue (dir, all_tools) still lists registered tools only."""
+
+    def _env(self):
+        agent = make_agent(echo_tool())
+        output = _FakeOutput()
+        env, box = build_env(
+            agent.tool_registry, agent.dispatcher, "c", output, Store({})
+        )
+        return env, box, output
+
+    def test_every_builtin_name_resolves_through_the_facade(self):
+        env, box, _ = self._env()
+        for name in (
+            "describe_tool",
+            "all_tools",
+            "search_tools",
+            "store",
+            "load",
+            "text",
+            "console",
+            "image",
+            "print",
+            "exit",
+        ):
+            assert getattr(box, name) is env[name], name
+            assert box[name] is env[name], name
+
+    async def test_facade_bound_names_work(self):
+        env, box, output = self._env()
+        box.text("via facade")
+        box.print("a", 1)
+        assert output.items == ["via facade", "a 1"]
+        assert box.describe_tool("echo")["name"] == "echo"
+        assert [t["name"] for t in box.all_tools()] == ["echo"]
+        box.store("k", 1)
+        assert env["load"]("k") == 1  # the same underlying store
+
+    async def test_a_registered_tool_wins_over_the_facade(self):
+        # An MCP tool whose short name is "store" resolves as a tool — the
+        # built-in only fills the gaps the registered surface leaves.
+        agent = make_agent(echo_tool(), echo_tool("mcp__k__store"))
+        output = _FakeOutput()
+        env, box = build_env(
+            agent.tool_registry, agent.dispatcher, "c", output, Store({})
+        )
+        bound = box.store
+        assert bound is not env["store"]
+        outcome = await bound({"value": "x"})
+        assert outcome.content == "echo:x"
+
+    def test_unknown_tool_message_unchanged_by_the_facade(self):
+        _, box, _ = self._env()
+        with pytest.raises(
+            CodemodeError,
+            match=r"unknown tool 'nope'; use search_tools\(\) or all_tools\(\)",
+        ):
+            box.nope
+
 
 class TestMcpShortNames:
     """The short-name rule: strip the mcp prefix, split on the LAST ``__``."""
@@ -449,42 +592,174 @@ class TestMcpShortNames:
         assert _mcp_short_name(full) == short
 
 
-class TestToolOutcomeMapping:
-    """D7 — the outcome answers the Mapping protocol, attributes unchanged."""
+class TestResult:
+    """D17 — the outcome is a first-class Result: ok/tool/error accessors,
+    json()/structured helpers and a readable repr on top of the Mapping
+    protocol."""
 
-    def _outcome(self) -> ToolOutcome:
-        return ToolOutcome(content="c", details={"exit_code": 0}, error_code=None)
+    def _result(self) -> Result:
+        return Result(
+            ok=True,
+            content="c",
+            details={"exit_code": 0},
+            tool="echo",
+            error_code=None,
+        )
+
+    def test_accessors(self):
+        result = self._result()
+        assert result.ok is True
+        assert result.content == "c"
+        assert result.details == {"exit_code": 0}
+        assert result.tool == "echo"
+        assert result.status == "ok"
+        assert result.error_code is None
+        assert result.error is None
+        assert str(result) == "c"
+
+    def test_repr_ok_shows_tool_and_size(self):
+        assert repr(self._result()) == "<Result ok echo 1 chars>"
+        page = Result(ok=True, content="x" * 3141, tool="read")
+        assert repr(page) == "<Result ok read 3.1k chars>"
+
+    def test_repr_error_shows_tool_and_reason(self):
+        failed = Result(ok=False, tool="fail", error="fail: error: execution_error: nope")
+        assert repr(failed) == "<Result error fail: fail: error: execution_error: nope>"
+
+    def test_json_parses_content(self):
+        assert Result(content='{"a": 1, "b": [2]}').json() == {"a": 1, "b": [2]}
+        assert Result(content="[1, 2]").json() == [1, 2]
+
+    def test_json_failure_returns_a_diagnostic_string(self):
+        result = Result(content="not json at all")
+        message = result.json()
+        assert isinstance(message, str)
+        assert "not valid JSON" in message
+        assert "not json at all" in message  # the content snippet is included
+
+    def test_structured_reads_the_mcp_details_key(self):
+        structured = {"rows": [{"id": 1}]}
+        result = Result(content="rows", details={"structured_content": structured})
+        assert result.structured == structured
+        assert Result(content="plain").structured is None
+
+
+class TestResultMapping:
+    """D7 — the result answers the Mapping protocol, attributes unchanged."""
+
+    def _result(self) -> Result:
+        return Result(content="c", details={"exit_code": 0}, error_code=None)
 
     def test_the_four_methods(self):
-        outcome = self._outcome()
-        assert outcome.get("content") == "c"
-        assert outcome.get("details") == {"exit_code": 0}
-        assert outcome.get("status") == "ok"
-        assert outcome.get("error_code") is None
-        assert outcome["content"] == "c"
-        assert list(outcome.keys()) == ["content", "details", "status", "error_code"]
-        assert "status" in outcome
-        assert "nope" not in outcome
+        result = self._result()
+        assert result.get("content") == "c"
+        assert result.get("details") == {"exit_code": 0}
+        assert result.get("status") == "ok"
+        assert result.get("error_code") is None
+        assert result["content"] == "c"
+        assert list(result.keys()) == ["content", "details", "status", "error_code"]
+        assert "status" in result
+        assert "nope" not in result
 
     def test_get_defaults(self):
-        outcome = self._outcome()
-        assert outcome.get("nope") is None
-        assert outcome.get("nope", "fallback") == "fallback"
+        result = self._result()
+        assert result.get("nope") is None
+        assert result.get("nope", "fallback") == "fallback"
 
     def test_unknown_key_raises_key_error(self):
         with pytest.raises(KeyError):
-            self._outcome()["nope"]
+            self._result()["nope"]
 
     def test_dict_round_trip_matches_to_dict(self):
-        assert dict(self._outcome()) == self._outcome().to_dict()
+        assert dict(self._result()) == self._result().to_dict()
 
     def test_attributes_and_str_unchanged(self):
-        outcome = self._outcome()
-        assert outcome.content == "c"
-        assert outcome.details == {"exit_code": 0}
-        assert outcome.status == "ok"
-        assert outcome.error_code is None
-        assert str(outcome) == "c"
+        result = self._result()
+        assert result.content == "c"
+        assert result.details == {"exit_code": 0}
+        assert result.status == "ok"
+        assert result.error_code is None
+        assert str(result) == "c"
+
+
+class TestParallel:
+    """D18 — batch calls are first-class: per-call failure capture, order
+    preserved, a per-batch concurrency that overrides the global cap."""
+
+    async def test_all_success_keeps_argument_order(self):
+        box = _box(echo_tool())
+        rs = await parallel(
+            box.echo({"value": "a"}),
+            box.echo({"value": "b"}),
+            box.echo({"value": "c"}),
+        )
+        assert isinstance(rs, Batch)
+        assert len(rs) == 3
+        assert [r.content for r in rs] == ["echo:a", "echo:b", "echo:c"]
+        assert rs.ok == list(rs)
+        assert rs.failed == []
+        assert box.calls == 3
+
+    async def test_mixed_failure_is_captured_not_raised(self):
+        box = _box(echo_tool(), _failing_tool())
+        rs = await parallel(box.echo({"value": "ok"}), box.fail({}))
+        assert [r.ok for r in rs] == [True, False]  # argument order kept
+        assert [r.content for r in rs.ok] == ["echo:ok"]
+        bad = rs.failed[0]
+        assert bad.tool == "fail"
+        assert bad.status == "error"
+        assert bad.error_code == "execution_error"
+        assert "nope" in bad.error
+        assert box.calls == 2
+
+    async def test_all_failures(self):
+        box = _box(_failing_tool())
+        rs = await parallel(box.fail({}), box.fail({}))
+        assert rs.ok == []
+        assert len(rs.failed) == 2
+        assert all(r.error for r in rs.failed)
+
+    async def test_non_awaitable_argument_raises(self):
+        box = _box(echo_tool())
+        with pytest.raises(TypeError, match="expects awaitables"):
+            await parallel(box.echo)  # the bound call, never awaited
+        with pytest.raises(TypeError, match="expects awaitables"):
+            await parallel("not a coroutine")
+
+    async def test_bad_concurrency_raises(self):
+        box = _box(echo_tool())
+        for bad in (0, -1, 2.0, True, "8"):
+            with pytest.raises(ValueError, match="concurrency"):
+                await parallel(box.echo({"value": "x"}), concurrency=bad)
+
+    async def test_concurrency_one_serializes_calls(self):
+        log = []
+        box = _box(_order_tool("a", log), _order_tool("b", log))
+        rs = await parallel(box.a({}), box.b({}), concurrency=1)
+        assert [r.ok for r in rs] == [True, True]
+        assert log == ["a:start", "a:end", "b:start", "b:end"]
+
+    async def test_concurrency_overrides_the_global_semaphore(self):
+        # The global cap is one, but the batch asks for eight: both calls
+        # still get in flight — the per-batch limit replaces the global one.
+        started: list = []
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        agent = make_agent(
+            _gate_tool("gate_a", started, both_started, release),
+            _gate_tool("gate_b", started, both_started, release),
+        )
+        box = ToolBox(
+            agent.tool_registry, agent.dispatcher, "c", semaphore=asyncio.Semaphore(1)
+        )
+        task = asyncio.create_task(
+            parallel(box.gate_a({}), box.gate_b({}), concurrency=8)
+        )
+        await asyncio.wait_for(both_started.wait(), 5)
+        release.set()
+        rs = await task
+        assert [r.ok for r in rs] == [True, True]
+        assert sorted(started) == ["gate_a", "gate_b"]
 
 
 class TestDiscovery:
@@ -572,6 +847,58 @@ class TestDiscovery:
         assert [t["name"] for t in env["all_tools"]()] == ["echo"]
         assert [t["name"] for t in env["search_tools"]("late")] == []
         assert env["search_tools"]("late", names_only=True) == []
+
+
+class TestCatalogueTrim:
+    """D13 — catalogue entries preview their description at 80 characters
+    (exactly-80 stays, empties get no ellipsis); ranking still reads the
+    full text."""
+
+    _LONG = "alpha " * 30 + "needle"  # 186 chars; "needle" hides past the cut
+
+    @staticmethod
+    def _desc_tool(name: str, description: str) -> Tool:
+        return Tool(
+            name=name,
+            description=description,
+            schema={"type": "object", "properties": {}},
+            func=lambda args: name,
+        )
+
+    def _env(self):
+        agent = make_agent(
+            self._desc_tool("with_long_description", self._LONG),
+            self._desc_tool("exact_eighty", "x" * 80),
+            self._desc_tool("empty_description", ""),
+        )
+        output = _FakeOutput()
+        env, _ = build_env(
+            agent.tool_registry, agent.dispatcher, "c", output, Store({})
+        )
+        return env
+
+    def test_all_tools_previews_at_eighty_chars(self):
+        entries = {e["name"]: e["description"] for e in self._env()["all_tools"]()}
+        assert entries["with_long_description"] == self._LONG[:80] + "…"
+        assert entries["exact_eighty"] == "x" * 80  # exactly 80 is not cut
+        assert entries["empty_description"] == ""  # empties get no ellipsis
+
+    def test_search_tools_entries_are_previewed_too(self):
+        hits = self._env()["search_tools"]("alpha")
+        assert {h["name"] for h in hits} == {"with_long_description"}
+        assert hits[0]["description"] == self._LONG[:80] + "…"
+
+    def test_ranking_reads_the_full_description(self):
+        # "needle" sits past character 80 — the tool still wins the query,
+        # and only the returned entry is the cut preview.
+        hits = self._env()["search_tools"]("needle")
+        assert [h["name"] for h in hits] == ["with_long_description"]
+        assert "needle" not in hits[0]["description"]
+
+    def test_full_text_stays_available_via_describe_tool(self):
+        env = self._env()
+        full = env["describe_tool"]("with_long_description")
+        assert full["description"] == self._LONG
 
 
 class TestScriptPrint:
@@ -715,16 +1042,28 @@ class TestTruncateBody:
         assert truncate_body("hello", 0) == ("hello", None)
         assert truncate_body("hello", -5) == ("hello", None)
 
-    def test_long_body_head_tail_marker_and_file(self):
+    def test_long_body_head_tail_notice_and_file(self):
         body = "".join(str(i % 10) for i in range(1000))
         text, path = truncate_body(body, 100)
         assert path is not None
         head, tail = body[:50], body[-50:]
-        assert text == head + "\n…900 chars truncated…\n" + tail
+        assert text.startswith(head)
+        assert text.endswith(tail)
         full = Path(path)
         assert full.name.startswith("mocode-codemode-") and full.suffix == ".txt"
         assert full.read_text(encoding="utf-8") == body
         full.unlink()
+
+    def test_notice_is_imperative_and_self_contained(self):
+        # D16: the notice must be unmissable — the omitted character count,
+        # the file path, an explicit read-first instruction and the
+        # tools.read hint all in one line.
+        body = "x" * 500
+        text, path = truncate_body(body, 100)
+        assert "⚠ 400 chars truncated" in text
+        assert "before relying on this output, read the full result" in text
+        assert path in text
+        assert "tools.read" in text
 
     def test_odd_limit_keeps_max_minus_one(self):
         text, _ = truncate_body("x" * 10, 7)
@@ -783,7 +1122,9 @@ class TestBuildResult:
         result = build_result(ok=True, ms=1, output=out, error=None, tool_calls=0, max_chars=100)
         assert result.details["truncated"] is True
         assert result.details["full_output_path"] is not None
-        assert "…400 chars truncated…" in result.content
+        assert "⚠ 400 chars truncated" in result.content
+        assert "before relying on this output, read the full result" in result.content
+        assert "tools.read" in result.content
         assert "\nFull output: " in result.content
         Path(result.details["full_output_path"]).unlink()
 
@@ -882,25 +1223,62 @@ class TestPlugin:
         assert "cannot call itself" in DESCRIPTION
 
     def test_description_pins_contract_phrases(self):
-        # W3: one pin per behavior in the spec's contract list, so a
-        # rewording that loses a behavior fails here. Phrases, not a full
-        # snapshot — the surrounding words stay free to move.
-        assert "do not `import`" in DESCRIPTION  # names are injected
+        # v2: one pin per behavior in the v2 contract, so a rewording that
+        # loses a behavior fails here. Phrases, not a full snapshot — the
+        # surrounding words stay free to move.
+        # the script shape
+        assert "top-level `await`" in DESCRIPTION
+        assert "never wrap" in DESCRIPTION and "asyncio.run()" in DESCRIPTION
         assert "`asyncio.ensure_future`" in DESCRIPTION  # background tasks
-        assert "short name" in DESCRIPTION  # MCP short names
-        assert "candidates" in DESCRIPTION  # ambiguity lists them
-        assert "exact names win" in DESCRIPTION  # exact beats short
-        assert ".error_code" in DESCRIPTION  # the four outcome fields
+        # Result is first-class
+        assert ".ok" in DESCRIPTION
+        assert ".json()" in DESCRIPTION
+        assert ".structured" in DESCRIPTION
+        assert ".tool" in DESCRIPTION
         assert 'res.get("content")' in DESCRIPTION  # Mapping access
+        assert "ToolCallError" in DESCRIPTION
+        assert "FAILED CALL RAISES" in DESCRIPTION  # asymmetry, big letters
+        # parallel / Batch
+        assert "parallel(" in DESCRIPTION
+        assert ".ok`/`.failed" in DESCRIPTION
+        assert "concurrency=N" in DESCRIPTION
+        assert "return_exceptions=True" in DESCRIPTION
+        # naming tiers and the forgiving facade
+        assert 'tools["mcp__dev_radius__search"]' in DESCRIPTION
+        assert "short name" in DESCRIPTION
+        assert "candidates" in DESCRIPTION  # ambiguity lists them
+        assert "exact names win" in DESCRIPTION
+        assert "cannot call itself" in DESCRIPTION
+        assert "dir(tools)" in DESCRIPTION
+        assert "tools.describe_tool" in DESCRIPTION
+        # output and the imperative truncation notice
+        assert "print(...)" in DESCRIPTION  # print reaches the output
+        assert "max_output_chars" in DESCRIPTION
+        assert "before relying on this output" in DESCRIPTION
+        assert "tools.read" in DESCRIPTION
+        # store limits and the large-payload idiom
+        assert "256KB" in DESCRIPTION and "1MB" in DESCRIPTION
+        assert "no pre-truncation" in DESCRIPTION
+        assert "store` the path" in DESCRIPTION
+        # discovery surface
         assert "names_only=False" in DESCRIPTION  # discovery signature
         assert "script-start snapshot" in DESCRIPTION  # all_tools() snapshot
-        assert "print(...)" in DESCRIPTION  # print reaches the output
-        assert "max_output_chars" in DESCRIPTION  # truncation
+        assert "80-character previews" in DESCRIPTION  # catalogue trim
+        # gated import
+        assert "gated" in DESCRIPTION
+        assert "from asyncio import gather" in DESCRIPTION
+        assert "ImportError" in DESCRIPTION
+        # deadline and concurrency
+        assert "@options" in DESCRIPTION
         assert "timed_out" in DESCRIPTION  # explicit deadline path
         assert "partial output is lost" in DESCRIPTION  # dispatcher fallback
-        assert "max_concurrency" in DESCRIPTION  # concurrency cap
-        assert "default unlimited" in DESCRIPTION  # ...off unless configured
+        assert "max_concurrency" in DESCRIPTION
+        assert "default unlimited" in DESCRIPTION
+        # error locations
+        assert "(line N)" in DESCRIPTION
+        # hard cut: the old surface is gone
         assert "ALL_TOOLS" not in DESCRIPTION  # renamed to all_tools() (D3)
+        assert "ToolOutcome" not in DESCRIPTION  # renamed to Result (D17)
         assert "mcp__dev-radius" not in DESCRIPTION  # folded-name example
 
     def test_build_registers_model_only_tool(self, plugin_host):
@@ -956,6 +1334,22 @@ class TestRunTool:
             "\nreturn [o.content for o in outcomes]",
         )
         assert result.content.endswith('["echo:a", "echo:b"]')
+        assert result.details["tool_calls"] == 2
+
+    async def test_parallel_in_script_captures_failures(self, plugin_host):
+        registry = ToolRegistry()
+        registry.register(echo_tool())
+        registry.register(_failing_tool())
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await self._run(
+            host,
+            "rs = await parallel(tools.echo({'value': 'a'}), tools.fail({}))\n"
+            "text('%d ok / %d failed' % (len(rs.ok), len(rs.failed)))\n"
+            "text(rs.failed[0].error)",
+        )
+        assert result.details["ok"] is True
+        assert "1 ok / 1 failed" in result.content
+        assert "nope" in result.content
         assert result.details["tool_calls"] == 2
 
     async def test_script_branches_on_exception_types_after_gather(self, plugin_host):
@@ -1276,6 +1670,9 @@ class TestRunTool:
         path = Path(result.details["full_output_path"])
         assert path.read_text(encoding="utf-8") == "x" * 500
         path.unlink()
+        assert "⚠ 400 chars truncated" in result.content
+        assert "before relying on this output, read the full result" in result.content
+        assert "tools.read" in result.content
         assert "\nFull output: " in result.content
 
     async def test_recursion_guard_in_script(self, plugin_host):

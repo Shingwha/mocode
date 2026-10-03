@@ -14,7 +14,13 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["normalize", "rank"]
+__all__ = ["normalize", "preview", "rank"]
+
+#: Catalogue entries preview their description at this many characters —
+#: a description of exactly this length stays untouched, an empty one gets
+#: no ellipsis, and ranking always reads the full text (the trim happens
+#: at the catalogue's return boundary only).
+_DESCRIPTION_PREVIEW_CHARS = 80
 
 _TOKEN = re.compile(r"[a-z0-9_]+")
 
@@ -24,6 +30,17 @@ def normalize(name: str) -> str:
     ``[A-Za-z0-9_]`` becomes ``_`` (pi's rule), so ``mcp__dev-radius__search``
     is reachable as ``tools.mcp__dev_radius__search``."""
     return re.sub(r"[^0-9A-Za-z_]", "_", name)
+
+
+def preview(entry: dict) -> dict:
+    """A catalogue entry with its description trimmed for the catalogue:
+    past ``_DESCRIPTION_PREVIEW_CHARS`` the text is cut and an ellipsis
+    marks the cut. The full description stays one ``describe_tool(name)``
+    away."""
+    description = entry["description"]
+    if len(description) > _DESCRIPTION_PREVIEW_CHARS:
+        description = description[:_DESCRIPTION_PREVIEW_CHARS] + "…"
+    return {"name": entry["name"], "description": description}
 
 
 def _tokens(text: str) -> list[str]:

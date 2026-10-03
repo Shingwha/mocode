@@ -26,6 +26,7 @@ import textwrap
 __all__ = [
     "CODEMODE_FILENAME",
     "CodemodeError",
+    "IMPORT_WHITELIST",
     "RESTRICTED",
     "_ScriptExit",
     "run_script",
@@ -79,6 +80,51 @@ def _whitelisted_names() -> list[str]:
 
 
 RESTRICTED: dict = {name: getattr(builtins, name) for name in _whitelisted_names()}
+
+
+#: The modules a script may import — the same nine the env injects as
+#: read-only globals. The gate matches exact module names only: no
+#: submodules (``import asyncio.exceptions`` is refused) and no relative
+#: imports.
+IMPORT_WHITELIST = frozenset(
+    {
+        "asyncio",
+        "json",
+        "re",
+        "math",
+        "datetime",
+        "textwrap",
+        "collections",
+        "itertools",
+        "functools",
+    }
+)
+
+
+def _gated_import(name, globals=None, locals=None, fromlist=(), level=0):
+    """The script's ``__import__`` — the whitelist above, nothing else.
+
+    ``import asyncio`` and ``from asyncio import gather`` succeed because
+    the whitelisted modules are already imported in this process; anything
+    else raises ImportError pointing at the tools facade, so the script
+    fails fast with the way out in the message. The import statement reads
+    ``__import__`` from the frame's builtins, which is why the gate is a
+    part of RESTRICTED rather than an entry in the env globals.
+    """
+    if level == 0 and name in IMPORT_WHITELIST:
+        return builtins.__import__(name, globals, locals, fromlist, level)
+    allowed = ", ".join(sorted(IMPORT_WHITELIST))
+    raise ImportError(
+        f"import of {name!r} is not available in a codemode script — only "
+        f"the injected modules may be imported ({allowed}); for file, "
+        "network or system access use the tools.* facade"
+    )
+
+
+#: The one name RESTRICTED adds beyond the collected whitelist — the gate
+#: above, so ``import x`` (which looks ``__import__`` up in the frame's
+#: builtins) and a bare ``__import__("x")`` call take the same path.
+RESTRICTED["__import__"] = _gated_import
 
 
 #: The synthetic filename scripts are compiled under. Every frame the
