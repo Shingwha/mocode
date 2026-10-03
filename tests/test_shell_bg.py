@@ -7,13 +7,17 @@ matched), ``kill_shell`` stops a job. Output waits in bounded rings, a
 background deadline is enforced by a watchdog, and everything dies with the
 conversation. Foreground behaviour is untouched — those tests live in
 ``test_tools.py`` and must keep passing unchanged.
+
+Every child here is a *bounded sleep child*: long enough that the job is
+still running when a test observes it, short enough that the suite never
+spends real time on one. The test side waits on events — the job's own
+``done``, an output sink, the turn's end — never on a duration.
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
-import signal
 import sys
 from pathlib import Path
 
@@ -40,6 +44,11 @@ from mocode.testing import call_tool, collect, say, terminal
 
 BG = {"run_in_background": True}
 
+#: How long a bounded sleep child sleeps — outlives every bound a test
+#: observes (a wait timeout, the watchdog deadline, the handle assertion)
+#: while costing the suite a fraction of a second.
+CHILD = 0.5
+
 
 @pytest.fixture
 def session(tmp_path: Path) -> BashSession:
@@ -63,26 +72,32 @@ async def _done(session: BashSession, shell_id: str) -> None:
 
 
 class TestBackgroundStart:
-    async def test_returns_a_handle_immediately(self, tools, session):
-        """The handle is in hand before the command has produced anything.
+    async def test_the_handle_comes_back_first_and_the_job_runs_to_completion(
+        self, tools, session
+    ):
+        """The handle is in hand before the command has produced anything —
+        and the job it names then runs to completion.
 
         Observed, not timed: the sink below fires from the job's collector,
         which cannot have run yet when the start call returns — the task it
         runs in is only created on the way out. A stopwatch could only ever
         guess at that; the unset event is the fact.
         """
+        bash, _, _ = tools
         said = asyncio.Event()
 
         async def watch(text: str, stream: str) -> None:
             said.set()
 
-        result = await session.start_background("echo up; sleep 5", on_output=watch)
+        result = await session.start_background(
+            f"echo up; sleep {CHILD}", on_output=watch
+        )
 
         assert not said.is_set()  # the call came back before the child spoke
         assert result.content == "started shell_1 (running in background)"
         assert result.details == {
             "shell_id": "shell_1",
-            "command": "echo up; sleep 5",
+            "command": f"echo up; sleep {CHILD}",
             "status": "running",
         }
         assert "exit_code" not in result.details
@@ -90,28 +105,20 @@ class TestBackgroundStart:
         # not on an assumed duration.
         await asyncio.wait_for(said.wait(), 5)
         assert session.jobs["shell_1"].running
-        await session.kill("shell_1")
-
-    async def test_the_job_runs_and_finishes(self, tools, session):
-        bash, _, _ = tools
-
-        shell_id = await _start(bash, "echo hi")
-
-        await _done(session, shell_id)
-        job = session.jobs[shell_id]
-        assert job.status == "completed"
-        assert job.exit_code == 0
+        # …and it finishes on its own, status and exit code carried.
+        await _done(session, "shell_1")
+        assert session.jobs["shell_1"].status == "completed"
+        assert session.jobs["shell_1"].exit_code == 0
 
 
 class TestBashOutput:
-    async def test_reading_is_consuming_no_line_comes_back_twice(
+    async def test_reading_is_consuming_and_a_filter_takes_only_its_matches(
         self, tools, session
     ):
         bash, output, _ = tools
-
-        # The job outlives the read below by orders of magnitude, and the
-        # read's own claim ("no new output", "running") is observed state.
-        shell_id = await _start(bash, "sleep 0.4; echo a; echo b")
+        # the job's lines arrive after the read below — observed state, not a
+        # guess about durations
+        shell_id = await _start(bash, "sleep 0.3; echo one; echo ERR bad; echo OK two")
 
         first = await output.run_async({"shell_id": shell_id}, None)
         assert first.details["lines"] == []
@@ -119,18 +126,19 @@ class TestBashOutput:
         assert first.details["status"] == "running"
         assert "exit_code" not in first.details or first.details["exit_code"] is None
 
+        # the wait blocks on the job's own done event, and the lines it hands
+        # back are then consumed by reading them
         second = await output.run_async({"shell_id": shell_id, "wait": True}, None)
-        assert second.details["lines"] == ["a", "b"]
+        assert second.details["lines"] == ["one", "ERR bad", "OK two"]
         assert second.details["status"] == "completed"
         assert second.details["exit_code"] == 0
 
+        # reading is consuming — no line comes back twice
         third = await output.run_async({"shell_id": shell_id}, None)
         assert third.details["lines"] == []
-        assert third.content == "(no new output)"
 
     async def test_a_filter_consumes_only_the_matching_lines(self, tools, session):
         bash, output, _ = tools
-
         shell_id = await _start(
             bash, "echo ERR bad; echo OK one; echo ERR worse; echo OK two"
         )
@@ -147,19 +155,38 @@ class TestBashOutput:
         rest = await output.run_async({"shell_id": shell_id}, None)
         assert rest.details["lines"] == ["ERR bad", "ERR worse"]
 
-    async def test_a_bad_filter_regex_is_a_tool_error(self, tools, session):
-        bash, output, _ = tools
+    async def test_a_bad_filter_and_an_unknown_shell_are_tool_errors(
+        self, tools, session
+    ):
+        _, output, kill = tools
+        with pytest.raises(ToolError) as exc:
+            await output.run_async({"shell_id": "shell_9"}, None)
+        assert exc.value.code == "not_found"
+        with pytest.raises(ToolError) as exc:
+            await kill.run_async({"shell_id": "shell_9"}, None)
+        assert exc.value.code == "not_found"
 
+        # a filter the re module refuses is a parameter error, not a crash
+        bash, output, _ = tools
         shell_id = await _start(bash, "echo hi")
         with pytest.raises(ToolError) as exc:
             await output.run_async({"shell_id": shell_id, "filter": "([a"}, None)
         assert exc.value.code == "invalid_param"
         await session.kill(shell_id)
 
-    async def test_wait_blocks_until_the_job_completes(self, tools, session):
+    async def test_a_wait_blocks_until_done_and_a_bounded_wait_reports_running(
+        self, tools, session
+    ):
         bash, output, _ = tools
+        shell_id = await _start(bash, f"sleep {CHILD}; echo done")
 
-        shell_id = await _start(bash, "sleep 0.5; echo done")
+        # A job that outlives the wait fifty times over, so the wait's own
+        # bound — a tenth of a second — is the only thing that expires.
+        bounded = await output.run_async(
+            {"shell_id": shell_id, "wait": True, "timeout": 0.1}, None
+        )
+        assert bounded.details["status"] == "running"
+
         # Issue the read first and let it reach its wait; the job is observed
         # still running, so what the read returns below is a blocked-then-
         # completed read, not a guess about durations. One loop turn is all
@@ -174,33 +201,9 @@ class TestBashOutput:
         assert result.details["lines"] == ["done"]
         assert result.details["status"] == "completed"
 
-    async def test_wait_with_a_timeout_reports_the_still_running_job(
-        self, tools, session
-    ):
-        bash, output, _ = tools
-
-        # A job that outlives the wait fifty times over, so the wait's own
-        # bound — a tenth of a second — is the only thing that expires.
-        shell_id = await _start(bash, "sleep 5")
-
-        result = await output.run_async(
-            {"shell_id": shell_id, "wait": True, "timeout": 0.1}, None
-        )
-        assert result.details["status"] == "running"
-        await session.kill(shell_id)
-
-    async def test_an_unknown_shell_is_not_found(self, tools):
-        _, output, kill = tools
-        with pytest.raises(ToolError) as exc:
-            await output.run_async({"shell_id": "shell_9"}, None)
-        assert exc.value.code == "not_found"
-        with pytest.raises(ToolError) as exc:
-            await kill.run_async({"shell_id": "shell_9"}, None)
-        assert exc.value.code == "not_found"
-
 
 class TestTheRings:
-    def test_a_ring_bounds_by_lines_and_counts_the_dropped(self):
+    def test_a_ring_bounds_by_lines_and_by_bytes_and_counts_the_dropped(self):
         ring = _Ring(max_lines=3)
         for i in range(5):
             ring.append(f"line{i}\n")
@@ -211,23 +214,11 @@ class TestTheRings:
         ]
         assert ring.discarded == 2
 
-    def test_a_ring_bounds_by_bytes_too(self):
         ring = _Ring(max_lines=100, max_bytes=10)
         for text in ("aaaa\n", "bbbb\n", "cccc\n"):
             ring.append(text)
         assert [line.strip() for line in ring.lines] == ["bbbb", "cccc"]
         assert ring.discarded == 1
-
-    def test_a_filtered_take_keeps_the_unmatched(self):
-        import re
-
-        ring = _Ring()
-        for text in ("one\n", "two\n", "three\n"):
-            ring.append(text)
-        matched = ring.take_matching(re.compile("t.o"))
-        assert [line.strip() for line in matched] == ["two"]
-        assert [line.strip() for line in ring.lines] == ["one", "three"]
-        assert ring.discarded == 0
 
     async def test_a_flooded_job_reports_what_the_ring_dropped(self, tools, session):
         bash, output, _ = tools
@@ -243,10 +234,12 @@ class TestTheRings:
 
 
 class TestKillAndCleanup:
-    async def test_kill_shell_stops_the_job(self, tools, session):
+    async def test_kill_stops_a_running_job_and_reports_a_finished_one(
+        self, tools, session
+    ):
         bash, output, kill = tools
 
-        shell_id = await _start(bash, "sleep 5")
+        shell_id = await _start(bash, f"sleep {CHILD}")
         result = await kill.run_async({"shell_id": shell_id}, None)
 
         assert result.content == "killed shell_1"
@@ -257,21 +250,18 @@ class TestKillAndCleanup:
         after = await output.run_async({"shell_id": shell_id}, None)
         assert after.details["status"] == "killed"
 
-    async def test_killing_a_finished_job_reports_its_status(self, tools, session):
-        bash, _, kill = tools
-
-        shell_id = await _start(bash, "echo hi")
-        await _done(session, shell_id)
-
-        result = await kill.run_async({"shell_id": shell_id}, None)
-        assert result.content == "shell_1 already completed"
+        # a job that already finished reports that instead of killing twice
+        finished = await _start(bash, "echo hi")
+        await _done(session, finished)
+        result = await kill.run_async({"shell_id": finished}, None)
+        assert result.content == "shell_2 already completed"
         assert result.details["status"] == "completed"
 
-    async def test_restart_kills_every_background_job(self, tools, session):
+    async def test_restart_and_shutdown_leave_no_job_behind(self, tools, session):
         bash, _, _ = tools
 
-        first = await _start(bash, "sleep 5")
-        second = await _start(bash, "sleep 5")
+        first = await _start(bash, f"sleep {CHILD}")
+        second = await _start(bash, f"sleep {CHILD}")
         jobs = [session.jobs[first], session.jobs[second]]
 
         result = await bash.run_async({"command": "x", "restart": True}, None)
@@ -280,11 +270,8 @@ class TestKillAndCleanup:
         assert session.jobs == {}
         assert all(job.status == "killed" for job in jobs)
 
-    async def test_shutdown_clears_the_jobs(self, tools, session):
-        bash, _, _ = tools
-
-        await _start(bash, "sleep 5")
-        await _start(bash, "sleep 5")
+        # …and a shutdown clears whatever the restarted session started
+        await _start(bash, f"sleep {CHILD}")
         session.shutdown()
 
         assert session.jobs == {}
@@ -294,8 +281,8 @@ class TestKillAndCleanup:
         bash = conversation.tools.get("bash")
         session = bash.session
 
-        await bash.run_async({"command": "sleep 5", **BG}, None)
-        await bash.run_async({"command": "sleep 5", **BG}, None)
+        await bash.run_async({"command": f"sleep {CHILD}", **BG}, None)
+        await bash.run_async({"command": f"sleep {CHILD}", **BG}, None)
         jobs = list(session.jobs.values())
         assert len(jobs) == 2
 
@@ -311,47 +298,20 @@ class TestKillAndCleanup:
 
 
 class TestLimits:
-    async def test_the_concurrency_cap_rejects_new_background_jobs(
-        self, tools, session
-    ):
-        bash, _, _ = tools
-        session.configure({"max_background": 2})
-
-        await _start(bash, "sleep 2")
-        await _start(bash, "sleep 2")
-        with pytest.raises(ToolError) as exc:
-            await bash.run_async({"command": "sleep 2", **BG}, None)
-        assert exc.value.code == "limit"
-        assert "limit 2" in exc.value.message
-        await session.kill("shell_1")
-        await session.kill("shell_2")
-
-    async def test_the_cap_comes_from_the_plugin_config(self, mc, tmp_path: Path):
-        mc.config.plugins["shell"] = {"max_background": 1}
+    async def test_the_background_cap_rejects_new_jobs(self, mc, tmp_path: Path):
+        mc.config.plugins["shell"] = {"max_background": 2}
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
 
-        first = await bash.run_async({"command": "sleep 2", **BG}, None)
-        assert first.details["shell_id"] == "shell_1"
+        await _start(bash, f"sleep {CHILD}")
+        await _start(bash, f"sleep {CHILD}")
         with pytest.raises(ToolError) as exc:
-            await bash.run_async({"command": "sleep 2", **BG}, None)
+            await bash.run_async({"command": f"sleep {CHILD}", **BG}, None)
         assert exc.value.code == "limit"
+        assert "limit 2" in exc.value.message
         session = bash.session
         await session.kill("shell_1")
-
-    async def test_a_background_deadline_times_the_job_out(self, tools, session):
-        bash, _, _ = tools
-
-        # The deadline is the subject, so keep one real-time integration: the
-        # watchdog gets a tenth of a second to stop a job that could not
-        # otherwise end for five, and the wait is on the job's done event.
-        result = await bash.run_async(
-            {"command": "sleep 5", "timeout": 0.1, **BG}, None
-        )
-        job = session.jobs[result.details["shell_id"]]
-
-        await asyncio.wait_for(job.done.wait(), 5)
-        assert job.status == "timed_out"
+        await session.kill("shell_2")
 
     async def test_configure_ignores_bad_values(self, session):
         session.configure({"max_background": "many", "background_timeout": -5})
@@ -359,6 +319,32 @@ class TestLimits:
         assert session.background_timeout == 3600
         session.configure({"max_background": 3, "background_timeout": 0})
         assert (session.max_background, session.background_timeout) == (3, 0)
+
+    async def test_a_background_deadline_times_the_job_out(self, mc, tmp_path: Path):
+        conversation = mc.new_conversation(cwd=tmp_path)
+        bash = conversation.tools.get("bash")
+
+        # The deadline is the subject, so keep one real-time integration: the
+        # watchdog gets a tenth of a second to stop a job that could not
+        # otherwise end for half a second, and the wait is on the job's done
+        # event.
+        result = await bash.run_async(
+            {"command": f"sleep {CHILD}", "timeout": 0.1, **BG}, None
+        )
+        session = bash.session
+        job = session.jobs[result.details["shell_id"]]
+
+        await asyncio.wait_for(job.done.wait(), 5)
+        assert job.status == "timed_out"
+
+        # and the watchdog's kill is announced like any other finish
+        reader = conversation.agent.channel.subscribe(
+            since=0, keep=lambda event: isinstance(event, PluginMessage)
+        )
+        message = await asyncio.wait_for(reader.get(), 5)
+        assert message.kind == "shell/background-done"
+        assert message.data["jobs"][0]["status"] == "timed_out"
+        conversation.close(save=False)
 
 
 class TestSessionSemantics:
@@ -387,7 +373,7 @@ class TestEarlyOutput:
         of the call that started the job — and the ring keeps it too: the
         event is a report, not a consumption."""
         conversation, _ = wired(
-            call_tool("bash", {"command": "echo early; sleep 5", **BG}),
+            call_tool("bash", {"command": f"echo early; sleep {CHILD}", **BG}),
             call_tool("bash", {"command": "echo second"}, call_id="c2"),
             "done",
         )
@@ -456,9 +442,11 @@ class TestCompletionNotification:
                 break
         return found
 
-    async def test_jobs_finishing_together_announce_as_one(
+    async def test_a_burst_of_finishers_announces_as_one_block(
         self, mc, tmp_path: Path
     ):
+        """The two sides of the coalescing window: same-moment finishers
+        share one announcement, a later burst gets a block of its own."""
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
 
@@ -466,8 +454,8 @@ class TestCompletionNotification:
         # so they finish inside one coalescing window; the assertion below
         # (one announcement, listing both) is what makes that fail loudly if
         # they ever drift apart instead of passing quietly.
-        await bash.run_async({"command": "sleep 0.5; echo a", **BG}, None)
-        await bash.run_async({"command": "sleep 0.5; echo b", **BG}, None)
+        await bash.run_async({"command": f"sleep 0.3; echo a", **BG}, None)
+        await bash.run_async({"command": f"sleep 0.3; echo b", **BG}, None)
 
         messages = await self._messages(conversation, count=1)
         assert len(messages) == 1, "two same-moment finishers, one announcement"
@@ -479,20 +467,11 @@ class TestCompletionNotification:
         assert all(job["status"] == "completed" for job in message.data["jobs"])
         assert all(job["exit_code"] == 0 for job in message.data["jobs"])
         assert "echo a" in message.data["jobs"][0]["command"]
-        conversation.close(save=False)
 
-    async def test_each_burst_is_its_own_block(self, mc, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=tmp_path)
-        bash = conversation.tools.get("bash")
-
-        # The bursts are separated by an observed event — the first
-        # announcement arrives before the second job even starts — not by a
+        # A burst separated by an observed event — the first announcement
+        # arrived before the next job even starts — is its own block, not a
         # hoped-for gap between two sleeps.
-        await bash.run_async({"command": "sleep 0.3", **BG}, None)
-        messages = await self._messages(conversation, count=1)
-        assert len(messages) == 1 and messages[0].block_id == "shell-bg-1"
-
-        await bash.run_async({"command": "sleep 0.3", **BG}, None)
+        await bash.run_async({"command": f"sleep {CHILD}", **BG}, None)
         messages = await self._messages(conversation, count=2)
         assert [m.block_id for m in messages] == ["shell-bg-1", "shell-bg-2"]
         conversation.close(save=False)
@@ -501,14 +480,14 @@ class TestCompletionNotification:
         """The model reads what it started; the announcement waits for idle —
         its empty run_id proves it was said between turns."""
         conversation, _ = wired(
-            call_tool("bash", {"command": "sleep 1"}), "done"
+            call_tool("bash", {"command": f"sleep {CHILD}"}), "done"
         )
         bash = conversation.tools.get("bash")
 
         # The background job finishes inside the foreground call's running
-        # time — a three-times margin — so what is held back is the
+        # time — a comfortable margin — so what is held back is the
         # announcement, not the job.
-        await bash.run_async({"command": "sleep 0.3", **BG}, None)
+        await bash.run_async({"command": f"sleep 0.2", **BG}, None)
         await collect(conversation.stream("go"))
 
         messages = await self._messages(conversation, count=1)
@@ -525,7 +504,7 @@ class TestCompletionNotification:
         a window longer would only prove the window, not the behaviour.
         """
         conversation, _ = wired(
-            call_tool("bash", {"command": "echo up; sleep 5", **BG}),
+            call_tool("bash", {"command": f"echo up; sleep {CHILD}", **BG}),
             call_tool(
                 "kill_shell",
                 {"shell_id": "shell_1"},
@@ -549,23 +528,6 @@ class TestCompletionNotification:
         assert [e.status for e in killed] == ["ok"]
         conversation.close(save=False)
 
-    async def test_a_timed_out_job_is_announced(self, mc, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=tmp_path)
-        bash = conversation.tools.get("bash")
-
-        # The watchdog deadline is the subject: a tenth of a second is a real
-        # wait a real timer fires, and the job could not have ended any other
-        # way for five seconds.
-        await bash.run_async(
-            {"command": "sleep 5", "timeout": 0.1, **BG}, None
-        )
-
-        messages = await self._messages(conversation, count=1, timeout=5.0)
-        assert len(messages) == 1
-        job = messages[0].data["jobs"][0]
-        assert job["status"] == "timed_out"
-        conversation.close(save=False)
-
 
 class TestTerminate:
     """The process-group kill — the Windows branch runs here for real; the
@@ -576,13 +538,13 @@ class TestTerminate:
             pytest.skip("the Windows branch of _terminate")
         bash, _, _ = tools
 
-        shell_id = await _start(bash, "sleep 5")
+        shell_id = await _start(bash, f"sleep {CHILD}")
         job = session.jobs[shell_id]
         _terminate(job.proc)
         await asyncio.wait_for(job.proc.wait(), 5)
         assert job.proc.returncode is not None
 
-    def test_posix_kills_the_whole_group(self, monkeypatch):
+    def test_posix_kills_the_group_then_falls_back(self, monkeypatch):
         calls: list[tuple[int, int]] = []
 
         def fake_killpg(pgid: int, sig: int) -> None:
@@ -592,48 +554,30 @@ class TestTerminate:
         monkeypatch.setattr(os, "killpg", fake_killpg, raising=False)
 
         class Proc:
-            pid = 4321
-            returncode = None
-            killed = False
+            def __init__(self, *, pid: int = 4321, returncode=None):
+                self.pid = pid
+                self.returncode = returncode
+                self.killed = False
 
             def kill(self) -> None:
                 self.killed = True
 
-        proc = Proc()
-        _terminate(proc)  # type: ignore[arg-type]
-        assert calls == [(4321, _SIGKILL)]
-        assert proc.killed is False
+        # a finished process is left alone — before any group is consulted
+        finished = Proc(returncode=0)
+        _terminate(finished)  # type: ignore[arg-type]
+        assert finished.killed is False and calls == []
 
-    def test_posix_falls_back_to_the_child_when_the_group_is_gone(
-        self, monkeypatch
-    ):
+        # the group is the first target, and the child is spared
+        leader = Proc()
+        _terminate(leader)  # type: ignore[arg-type]
+        assert calls == [(4321, _SIGKILL)]
+        assert leader.killed is False
+
+        # the group already gone: the direct kill is the fallback
         def gone(pgid: int, sig: int) -> None:
             raise ProcessLookupError()
 
-        monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(os, "killpg", gone, raising=False)
-
-        class Proc:
-            pid = 4321
-            returncode = None
-            killed = False
-
-            def kill(self) -> None:
-                self.killed = True
-
-        proc = Proc()
-        _terminate(proc)  # type: ignore[arg-type]
-        assert proc.killed is True
-
-    def test_a_finished_process_is_left_alone(self):
-        class Proc:
-            pid = 1
-            returncode = 0
-            killed = False
-
-            def kill(self) -> None:
-                self.killed = True
-
-        proc = Proc()
-        _terminate(proc)  # type: ignore[arg-type]
-        assert proc.killed is False
+        orphan = Proc()
+        _terminate(orphan)  # type: ignore[arg-type]
+        assert orphan.killed is True
