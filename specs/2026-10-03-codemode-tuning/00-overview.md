@@ -1,4 +1,4 @@
-✅ 2026-10-03 建组（基线 master `a77c45c`，960 passed；W1/W2/W3 已合并 1020 passed；W4 待派工）
+✅ 2026-10-03 全组完成（W1/W2/W3/W4 全部合并，最终 1025 passed exit 0；field-findings 附录 A 七条重放验证通过；命名路线与 prompt 名单经用户拍板；不 push，等用户指令）
 
 # Spec Group · codemode 调优（2026-10-03）
 

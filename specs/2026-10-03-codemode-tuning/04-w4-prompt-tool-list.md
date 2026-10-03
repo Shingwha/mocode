@@ -1,4 +1,4 @@
-⏸️ 待派工 — 前置 W3 合并
+✅ 2026-10-03 @ feat/mcp-prompt-tools（已合并 master `4107c5d`；1025 passed exit 0，lead 复核；名单取 program-audience 投影与沙箱可调用集同源——hidden 工具不会出现，"目录即承诺"）
 
 # Spec 04 · W4：`mcp_servers` 段列 server + 工具名（波次 W4）
 
