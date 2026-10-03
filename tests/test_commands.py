@@ -158,7 +158,10 @@ class TestResumeCommand:
     ):
         _result, events = await run_command(_get_builtin_cmd("/resume"), conversation)
 
-        assert [n.message for n in notices(events)] == ["No sessions found."]
+        # 一条 info 级公告，说明没有可恢复的会话——存在性与级别是契约，
+        # 整句话术可改写。
+        assert [n.level for n in notices(events)] == ["info"]
+        assert re.search(r"no sessions", notices(events)[0].message, re.I)
 
     async def test_a_bare_resume_without_a_terminal_does_nothing(
         self, conversation: Conversation
@@ -192,7 +195,13 @@ class TestModelCommand:
         self, make_mc, tmp_path: Path, monkeypatch
     ):
         """Value is always the model id; the title is the display name when
-        the entry declares one, and the id otherwise."""
+        the entry declares one, and the id otherwise.
+
+        选择器是终端自己的模态框，只能从 ``mocode.cli.dialogs.select`` 这个
+        模块 seam 替换成脚本应答（模态框无法在测试里真正弹出）——patch 接缝在
+        此声明。断言的是选项的结构（value 恒为 id、title 的取舍、current 标记）
+        与切换事实，选择器标题与公告话术可改写。
+        """
         config = Config(
             provider="p",
             model="a",
@@ -221,18 +230,20 @@ class TestModelCommand:
         assert result is CONTINUE
         assert conversation.model_name == "b"
         provider_title, provider_choices, _ = seen[0]
-        assert provider_title == "Select a provider:"
+        assert "provider" in provider_title.lower()
         assert [(c.title, c.value, c.description) for c in provider_choices] == [
             ("P", "p", "a, b")
         ]
         model_title, model_choices, model_default = seen[1]
-        assert model_title == "Select a model for P:"
+        assert "P" in model_title
         assert [(c.title, c.value, c.description) for c in model_choices] == [
             ("Alpha", "a", "current"),
             ("b", "b", None),
         ]
         assert model_default == "a"
-        assert [n.message for n in notices(events)] == ["Switched to P / b"]
+        # 公告要点名切换去哪：provider 标签与 model id 两个记号都在
+        [notice] = [n.message for n in notices(events)]
+        assert "P" in notice and re.search(r"\bb\b", notice)
 
 
 class TestSkillCommand:

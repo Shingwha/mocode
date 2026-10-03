@@ -209,13 +209,16 @@ class TestThePackageForm:
 class TestTheTerminalsOwnCommands:
     def test_they_are_contributed_by_the_terminal_plugin(self, tmp_path: Path):
         """One way to contribute to the terminal — MoCode is not an exception."""
-        from mocode.cli.plugin import BuiltinCommands, NAMESPACE
+        from mocode.cli.plugin import NAMESPACE
 
         plugins = tmp_path / "plugins"
         app = _app(tmp_path, plugins)
+        another = _app(tmp_path, plugins)
 
         assert NAMESPACE == "mocode.cli"
-        # A fresh instance per app: two terminals never share one plugin object.
-        assert isinstance(app.plugins[0], BuiltinCommands)
-        assert app.plugins[0] is not app.plugins[0].__class__()
+        # 公开行为：终端自己的插件以名字 "cli" 在场，每个 app 一个全新实例——
+        # 两个终端从不共享同一个插件对象；其贡献就是终端自己的命令集。
+        first = next(p for p in app.plugins if p.name == "cli")
+        second = next(p for p in another.plugins if p.name == "cli")
+        assert first is not second
         assert "/model" in {c.name for c in app.commands.all()}
