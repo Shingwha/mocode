@@ -39,7 +39,7 @@ from mocode.testing import (
     tool_call_response,
 )
 
-from .conftest import echo_tool, make_agent
+from .conftest import FakeClock, advance, echo_tool, make_agent
 
 
 
@@ -521,35 +521,36 @@ class TestStopReasons:
         assert len(answers) == len(assistant["tool_calls"])
 
     async def test_a_wall_clock_budget_ends_the_turn(self, monkeypatch):
+        """The work itself burns past the turn's wall-clock budget.
+
+        接缝说明：产品在模块级读 ``time.monotonic()``（``AgentConfig`` 没有
+        时钟注入点），所以替换模块 ``time`` 是测试给假时钟的唯一路径——
+        这里用 conftest 的 FakeClock 手推。若产品以后接受注入时钟，这个
+        monkeypatch 会随之消失，属预期内的重构。
+        """
         import mocode.core.agent as agent_module
         import mocode.core.provider as provider_module
 
-        class FastClock:
-            """Ten seconds pass after the third read: the turn-start read,
-            the first checkpoint and the orchestrator's attempt-top check all
-            agree (within budget, the provider call goes out), and the next
-            checkpoint — iteration two's top — is already past it."""
-
-            def __init__(self) -> None:
-                self.now = 1000.0
-                self.reads = 0
-
-            def monotonic(self) -> float:
-                self.reads += 1
-                if self.reads > 3:
-                    self.now += 10.0
-                return self.now
-
-        clock = FastClock()
+        clock = FakeClock()
         monkeypatch.setattr(agent_module, "time", clock)
         # The deadline reaches the retry orchestrator, so it reads the same
         # clock the loop does.
         monkeypatch.setattr(provider_module, "time", clock)
-        agent = make_agent(echo_tool(), config=AgentConfig(max_turn_seconds=5))
+
+        def burner(args):
+            advance(clock, 10.0)  # 这一步真活把 5s 预算烧穿了
+            return "echo:x"
+
+        agent = make_agent(
+            Tool("echo", "d", {"type": "object", "properties": {}}, burner),
+            config=AgentConfig(max_turn_seconds=5),
+        )
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
         events = await collect(agent.stream("hi"))
 
+        # 预算内的请求照发；下一步 checkpoint 已在预算之外，turn 以
+        # time_budget 收场，只跑了一个迭代。
         assert events[-1].stop_reason == "time_budget"
         assert events[-1].iterations == 1
 
@@ -563,19 +564,12 @@ class TestStopReasons:
         import mocode.core.agent as agent_module
         import mocode.core.provider as provider_module
 
-        class Clock:
-            def __init__(self) -> None:
-                self.now = 0.0
-
-            def monotonic(self) -> float:
-                return self.now
-
         rate = type("RateLimitError", (Exception,), {})
 
         class BurningProvider(MockProvider):
             """Each attempt consumes simulated wall clock before failing."""
 
-            def __init__(self, responses, clock, burn: float):
+            def __init__(self, responses, clock: FakeClock, burn: float):
                 super().__init__(responses)
                 self._clock = clock
                 self._burn = burn
@@ -585,14 +579,14 @@ class TestStopReasons:
 
             async def stream(self, messages, system, tools, max_tokens, effort):
                 self.calls.append({"messages": list(messages)})
-                self._clock.now += self._burn
+                advance(self._clock, self._burn)  # 每次尝试先烧掉一段假墙钟
                 outcome = self.responses.pop(0)
                 if isinstance(outcome, BaseException):
                     raise outcome
                 async for chunk in response_to_chunks(outcome):
                     yield chunk
 
-        clock = Clock()
+        clock = FakeClock()
         monkeypatch.setattr(agent_module, "time", clock)
         monkeypatch.setattr(provider_module, "time", clock)
         provider = BurningProvider(
