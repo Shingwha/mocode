@@ -10,6 +10,7 @@ own working directory, two histories, two models.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 
 import pytest
@@ -188,7 +189,10 @@ class TestConcurrency:
         class Stopped(MockProvider):
             async def stream(self, *args):
                 entered.set()  # the request is in flight — safe to cancel
-                await asyncio.sleep(30)
+                # A gate that never opens: the turn parks here until it is
+                # cancelled, which is the thing under test. An event, not a
+                # sleep — nothing about the overlap depends on a duration.
+                await asyncio.Event().wait()
                 yield  # pragma: no cover - never reached
 
         stopped = mc.new_conversation(cwd=project(tmp_path, "a"))
@@ -551,15 +555,24 @@ class TestLifecycle:
         assert mc.store.list_all() == []
 
     def test_rebuild_prompt_re_reads_the_project(self, mc: MoCode, tmp_path: Path):
+        """AGENTS.md 是当场重读的文件：重建时用户级与项目级两份规则都重新
+        注入 agents section。断言的是 section 在场、两份内容均到达——不钉任何
+        一句产品文案。"""
         workdir = project(tmp_path, "a")
+        mc.home.mkdir(parents=True, exist_ok=True)
+        (mc.home / "AGENTS.md").write_text("user-level rule", encoding="utf-8")
         conversation = mc.new_conversation(cwd=workdir)
-        assert "Always use tabs." not in conversation.agent.system_prompt
+        conversation.rebuild_prompt()
+        assert "user-level rule" in conversation.agent.system_prompt
+        assert "project-level rule" not in conversation.agent.system_prompt
 
-        (workdir / "AGENTS.md").write_text("Always use tabs.", encoding="utf-8")
-
+        (workdir / "AGENTS.md").write_text("project-level rule", encoding="utf-8")
         conversation.rebuild_prompt()
 
-        assert "Always use tabs." in conversation.agent.system_prompt
+        prompt = conversation.agent.system_prompt
+        assert "<agents>" in prompt  # 承载两份规则的 section 在场
+        assert "user-level rule" in prompt
+        assert "project-level rule" in prompt
 
     def test_an_imported_conversation_keeps_its_own_agent_config(self, mc: MoCode, tmp_path: Path):
         conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
@@ -571,26 +584,38 @@ class TestLifecycle:
 
 
 class TestPluginsAreLoadedOnce:
-    def test_a_project_loads_its_plugins_once(self, tmp_path: Path, monkeypatch):
-        from mocode.host import runtime as runtime_module
+    def test_a_project_loads_its_plugins_once(self, tmp_path: Path):
+        """一个项目只加载一次：第二个 conversation 复用第一个加载的插件集。
 
-        calls: list[Path] = []
-        real = runtime_module.load_plugins
-
-        def counting(*, plugin_dirs, config, reserved=()):
-            calls.append(list(plugin_dirs))
-            return real(plugin_dirs=plugin_dirs, config=config, reserved=reserved)
-
-        monkeypatch.setattr(runtime_module, "load_plugins", counting)
-        # the default dirs, not the fixture's empty list: this test is
-        # about what a project's own .mocode/plugins resolves to.
+        公开 seam 即可观察这件事——两个 conversation 的 host 持有同一个插件
+        实例。没有模块级 ``plugin =`` 实例的插件每次加载都会重新构造，所以
+        "重新加载过"必然是不同的对象；实例同一性即"只加载一次"的事实，无需读
+        任何私有缓存、无需 patch 任何内部函数。默认目录（而非夹具的空列表）
+        也正是被测对象：项目自己的 ``.mocode/plugins`` 如何解析。
+        """
         mc = MoCode(config=make_config(), home=tmp_path / "home")
         workdir = project(tmp_path, "a")
+        write_plugin(
+            workdir / ".mocode" / "plugins",
+            "greet",
+            """
+            from mocode.plugins import Plugin
 
-        mc.new_conversation(cwd=workdir)
-        mc.new_conversation(cwd=workdir)
 
-        assert len(calls) == 1
+            class Greet(Plugin):
+                name = "greet"
+            """,
+        )
+
+        first = mc.new_conversation(cwd=workdir)
+        second = mc.new_conversation(cwd=workdir)
+
+        loaded = next(p for p in mc.plugins_for(workdir) if p.name == "greet")
+        hosts = [
+            next(p for p in conversation.host.plugins if p.name == "greet")
+            for conversation in (first, second)
+        ]
+        assert hosts[0] is hosts[1] is loaded
 
     def test_different_projects_load_their_own(self, tmp_path: Path):
         # the default dirs, not the fixture's empty list: this test is
@@ -651,37 +676,39 @@ class TestTheSurfaceMaterializes:
         assert "read" in conversation.tools.names()  # registrations still happen
 
     async def test_prepare_runs_each_plugins_prepare_once(
-        self, mc: MoCode, tmp_path: Path, wired
+        self, tmp_path: Path, make_mc, wired
     ):
-        calls: list[str] = []
-        from mocode.host.plugin.base import Plugin
+        """每个 conversation 的 prepare() 只跑一次：幂等，一次 turn 也不重跑。
 
-        class Counting(Plugin):
-            name = "counting"
+        计数器是一个从插件目录加载的真插件——公开的发现/构建路径就是被测路径，
+        无需清空任何私有缓存、无需替换任何内部函数。"""
+        calls = tmp_path / "prepare-calls.txt"
+        plugins_dir = tmp_path / "plugins"
+        write_plugin(
+            plugins_dir,
+            "counting",
+            f"""
+            from pathlib import Path
 
-            async def prepare(self, ctx) -> None:
-                calls.append("prepare")
+            from mocode.plugins import Plugin
 
-        mc._plugins.clear()
-        original = mc._loaded_for
 
-        def _with_counting(cwd):
-            loaded = original(cwd)
-            loaded.plugins.append(Counting())
-            return loaded
+            class Counting(Plugin):
+                name = "counting"
 
-        mc._loaded_for = _with_counting  # type: ignore[method-assign]
-        try:
-            conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"))
-            await conversation.prepare()
-            await conversation.prepare()  # idempotent
-            await conversation.chat("hello")
+                async def prepare(self, ctx) -> None:
+                    Path({str(calls)!r}).open("a").write("prepare\\n")
+            """,
+        )
+        mc = make_mc(plugin_dirs=[plugins_dir])
+        conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"), mc=mc)
+        await conversation.prepare()
+        await conversation.prepare()  # idempotent
+        await conversation.chat("hello")
 
-            assert calls == ["prepare"]
-            assert conversation.agent.system_prompt != ""
-            assert conversation.tools.pinned
-        finally:
-            mc._loaded_for = original  # type: ignore[method-assign]
+        assert calls.read_text(encoding="utf-8") == "prepare\n"
+        assert conversation.agent.system_prompt != ""
+        assert conversation.tools.pinned
 
     async def test_the_first_turn_carries_the_surface_with_no_notice(
         self, wired, tmp_path: Path
@@ -749,11 +776,16 @@ class TestThePromptFreezesAcrossAResume:
     prefix cache survives — and tells the model what changed instead."""
 
     async def test_the_prompt_carries_time_and_os(self, mc: MoCode, tmp_path: Path):
+        """prompt 里最易腐烂的两节——time 与 environment——在场。断言 section
+        名与日期的形状（``YYYY-MM-DD (Weekday)``），不断言某个具体真实日期：
+        真实时钟的值会腐烂，形状不会。"""
         conversation = mc.new_conversation(cwd=project(tmp_path, "a"))
         await conversation.prepare()
 
-        assert "today:" in conversation.agent.system_prompt
-        assert "os:" in conversation.agent.system_prompt
+        prompt = conversation.agent.system_prompt
+        assert "<time>" in prompt and "</time>" in prompt
+        assert "<environment>" in prompt
+        assert re.search(r"\d{4}-\d{2}-\d{2} \(\w+\)", prompt)
 
     async def test_a_resume_keeps_the_prompt_and_notices_drift(
         self, wired, tmp_path: Path

@@ -418,7 +418,12 @@ class TestLiveBlock:
     async def test_a_block_taller_than_the_screen_stops_claiming_rows(
         self, capsys, monkeypatch
     ):
-        """Rows above the fold have scrolled away; their offsets mean nothing."""
+        """Rows above the fold have scrolled away; their offsets mean nothing.
+
+        屏幕高度是终端自己的事实，而 Display 只通过模块函数
+        ``mocode.cli.display.terminal_height`` 读它——产品未提供构造注入点，
+        这里从该 seam 换入固定高度（patch 接缝在此声明，不是私有属性）。
+        """
         monkeypatch.setattr("mocode.cli.display.terminal_height", lambda: 3)
 
         await _run_parallel(_make_display(live=True), ["a", "b", "c"])
