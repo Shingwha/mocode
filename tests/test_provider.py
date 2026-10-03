@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from mocode.core.provider import StreamAccumulator
 from mocode.providers.openai import OpenAIProvider
 
@@ -69,33 +67,23 @@ async def _stream(provider, messages=None, system="sys", tools=None, max_tokens=
 class TestRequestShape:
     """wire payload 的字段级契约：一个字段要么在场、要么缺席。
 
-    单字段断言合并进矩阵——红了看参数 id 即知是哪个字段的哪种形态；
-    ``expected=None`` 表示该字段必须根本不出现在请求里。"""
+    四种形态合进一张字段表：``expected=None`` 表示该字段必须根本不出现在
+    请求里；红了看断言消息即知是哪个字段的哪种形态。"""
 
-    @pytest.mark.parametrize(
-        "stream_kwargs, field, expected",
-        [
-            pytest.param(
-                {}, "max_tokens", None, id="no-cap-means-no-max_tokens-field"
-            ),
-            pytest.param(
-                {"max_tokens": 4096}, "max_tokens", 4096, id="an-explicit-cap-is-sent"
-            ),
-            pytest.param(
-                {}, "reasoning_effort", None, id="no-effort-means-no-reasoning_effort"
-            ),
-            pytest.param(
-                {"effort": "high"}, "reasoning_effort", "high", id="effort-travels-verbatim"
-            ),
-        ],
-    )
-    async def test_one_field_of_the_request(self, stream_kwargs, field, expected):
-        sent: list[dict] = []
-        await _stream(_provider(sent), **stream_kwargs)
-        if expected is None:
-            assert field not in sent[0]
-        else:
-            assert sent[0][field] == expected
+    async def test_one_field_of_the_request(self):
+        cases = [
+            ({}, "max_tokens", None),
+            ({"max_tokens": 4096}, "max_tokens", 4096),
+            ({}, "reasoning_effort", None),
+            ({"effort": "high"}, "reasoning_effort", "high"),
+        ]
+        for stream_kwargs, field, expected in cases:
+            sent: list[dict] = []
+            await _stream(_provider(sent), **stream_kwargs)
+            if expected is None:
+                assert field not in sent[0], f"{field} absent for {stream_kwargs}"
+            else:
+                assert sent[0][field] == expected, f"{field} for {stream_kwargs}"
 
     async def test_system_prompt_is_prepended(self):
         sent: list[dict] = []
@@ -122,9 +110,9 @@ class TestChunkMapping:
         assert "".join(c.reasoning for c in chunks) == "why"
         assert chunks[-1].finish_reason == "stop"
 
-    async def test_empty_deltas_are_dropped(self):
-        sent: list[dict] = []
-        provider = _provider(sent, [_delta(), _delta("real")])
+        # 什么都不带的 delta 整条丢掉，不在输出里占位
+        dropped: list[dict] = []
+        provider = _provider(dropped, [_delta(), _delta("real")])
         assert [c.text for c in await _stream(provider)] == ["real"]
 
     async def test_usage_only_chunk_is_kept(self):
@@ -182,16 +170,14 @@ class TestStreamAccumulator:
         calls = acc.build().tool_calls
         assert [(c.id, c.name, c.arguments) for c in calls] == [("c1", "echo", '{"a":1}')]
 
-    def test_interleaved_tool_calls_stay_separate(self):
-        from mocode.core.provider import Chunk, ToolCallDelta
-
-        acc = self._feed(
+        # 交错到达的另一路调用：下标才是归属，到达顺序不是
+        interleaved = self._feed(
             Chunk(tool_calls=[ToolCallDelta(index=0, id="c1", name="a")]),
             Chunk(tool_calls=[ToolCallDelta(index=1, id="c2", name="b")]),
             Chunk(tool_calls=[ToolCallDelta(index=1, arguments="{}")]),
             Chunk(tool_calls=[ToolCallDelta(index=0, arguments="{}")]),
         )
-        assert [c.name for c in acc.build().tool_calls] == ["a", "b"]
+        assert [c.name for c in interleaved.build().tool_calls] == ["a", "b"]
 
     def test_parallel_calls_in_one_chunk(self):
         """One delta may carry several call fragments; none may be lost."""
@@ -221,13 +207,13 @@ class TestUnansweredToolCalls:
     """An endpoint refuses a tool call whose answer is gone from the history,
     so the outgoing payload is cleaned of them — assert on what is sent."""
 
-    async def test_a_history_nothing_is_missing_from_travels_unchanged(self):
+    async def test_an_orphaned_tool_call_loses_its_field(self):
+        """The answer vanished, so the call goes with it — a field, not a
+        message；答案一条不缺的历史原样出门。"""
         sent: list[dict] = []
         await _stream(_provider(sent), messages=[{"role": "user", "content": "hi"}])
         assert sent[0]["messages"][1:] == [{"role": "user", "content": "hi"}]
 
-    async def test_an_orphaned_tool_call_loses_its_field(self):
-        """The answer vanished, so the call goes with it — a field, not a message."""
         sent: list[dict] = []
         await _stream(
             _provider(sent),
