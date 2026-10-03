@@ -1,30 +1,65 @@
-"""The mcp builtin plugin — configuration, naming, sessions, runtime and the
-plugin lifecycle, tested against the official SDK's client.
+"""The mcp builtin plugin — configuration, naming, wire, resources, tools and
+the plugin lifecycle, against the official SDK's client.
 
 Two seams, one per job. The protocol shape (era negotiation, wire-form
-results, error mapping) is exercised through an **in-process
-``mcp.server.MCPServer``** — the SDK's own test shape — connected to through
-``McpSession(server=...)``. The stdio transport (spawn, environment, stderr
-tail, child teardown, reconnect) is exercised through **subprocess fake
-servers**: Python scripts written into ``tmp_path`` and launched with
-``sys.executable`` — no shell. Those scripts write their own pid into a
-pidfile whose path arrives in the environment, so a test can watch the
-direct child it spawned; POSIX-only process semantics branch on
-``sys.platform``. Every async path is bounded by a timeout so a broken fake
-server can never hang the suite on Windows.
+results, error mapping, pagination, the resource methods, the modern
+tool-change subscription) is exercised through an **in-process wire peer**:
+a scripted JSON-RPC server over the SDK's memory streams
+(:class:`WirePeer`), plus the SDK's own in-process ``MCPServer`` /
+``InMemorySubscriptionBus`` shapes. Nothing here spawns a child.
 
-Note for the fakes: at protocol 2026-07-28 the SDK requires ``ttlMs`` and
-``cacheScope`` in a ``tools/list`` result, so the modern fakes carry them.
+The child process itself — spawn, environment, stderr tail, teardown that
+reaps it — is the *other* seam and lives in
+``tests/test_builtin_mcp_process.py``. The loopback HTTP transports live
+here, because what they prove is what the plugin builds out of an entry's
+``transport`` / ``url`` / ``headers``.
+
+Every async path is bounded so a broken peer can never hang the suite on
+Windows. Waiting on an event that travels through the wire goes through
+``tests.conftest.wait_until`` — no hand-rolled polling, no bare sleeps.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
-import sys
+import queue
+import socket
+import threading
+import time
+from collections.abc import Iterator
+from functools import partial
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 
 import pytest
+import pytest_asyncio
+from mcp.server import MCPServer
+from mcp.server.lowlevel import Server as LowLevelServer
+from mcp.server.subscriptions import InMemorySubscriptionBus
+from mcp.shared.exceptions import MCPError
+from mcp.shared.memory import create_client_server_memory_streams
+from mcp.shared.message import SessionMessage
+from mcp.shared.subscriptions import ToolsListChanged
+from mcp.types import (
+    ListResourceTemplatesResult,
+    ListResourcesResult,
+    ListToolsResult,
+    ReadResourceResult,
+)
+import mcp_types as sdk_types
 
+from mocode.host.plugin.builtin.mcp.client import (
+    ERA_LEGACY,
+    ERA_MODERN,
+    STATE_CLOSED,
+    STATE_CONNECTED,
+    STATE_DISCONNECTED,
+    STATE_ERROR,
+    McpError,
+    McpSession,
+)
 from mocode.host.plugin.builtin.mcp.config import (
     MCP_SCHEMA_1_0_0,
     PLUGIN_DATA_DIR,
@@ -39,8 +74,21 @@ from mocode.host.plugin.builtin.mcp.naming import (
     fold_server_name,
     normalize,
     resolve_exposure,
+    resolve_server_exposure,
     tool_full_name,
 )
+from mocode.host.plugin.builtin.mcp.subscriptions import BACKOFF_INITIAL, watch_tools
+from mocode.host.plugin.builtin.mcp.tools import (
+    RESOURCE_TOOL_NAMES,
+    mcp_status_tool,
+    mcp_tool,
+)
+from mocode.host.plugin.context import BuildContext
+from mocode.host.plugin.builtin.mcp.runtime import McpRuntime
+
+from .conftest import settle, wait_until
+
+BOUND = 15  # seconds — every session operation in this file stays bounded
 
 
 def write_mcp_json(path: Path, data: dict | str) -> Path:
@@ -53,7 +101,6 @@ def write_mcp_json(path: Path, data: dict | str) -> Path:
 
 def stdio_entry(command: str = "tool", **extra) -> dict:
     return {"type": "stdio", "command": command, **extra}
-
 
 class TestLoadServers:
     def test_no_configured_servers_yields_an_empty_table(self, tmp_path):
@@ -303,8 +350,6 @@ class TestLoadServers:
         for name in bad:
             if name != "good":
                 assert name in err
-
-
 class TestMocodeExtensions:
     def test_env_vars_expand_from_the_environment(self, tmp_path):
         merged = load_servers(
@@ -443,8 +488,6 @@ class TestMocodeExtensions:
         merged = load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home")
         assert merged == {}
         assert "must be an object" in capsys.readouterr().err
-
-
 class TestPluginFileRules:
     def _plugin_mcp(self, servers: dict, **top) -> dict:
         return {"$schema": MCP_SCHEMA_1_0_0, "mcpServers": servers, **top}
@@ -642,8 +685,6 @@ class TestPluginFileRules:
         err = capsys.readouterr().err
         assert err.count("entry skipped") == 5
         assert "${VAR}" in err
-
-
 class TestNormalize:
     def test_everything_outside_alnum_and_underscore_folds(self):
         assert normalize("dev-radius") == "dev_radius"
@@ -761,395 +802,270 @@ class TestResolveExposure:
         assert availability_for("hidden") == ("both", True)
 
 
-# ── fake servers: in-process and subprocess ─────────────────
-
-import asyncio
-import json
-import os
-import textwrap
-import time
-
-import pytest
-import pytest_asyncio
-from mcp.server import MCPServer
-
-from mocode.host.plugin.builtin.mcp.client import (
-    ERA_LEGACY,
-    ERA_MODERN,
-    STATE_CLOSED,
-    STATE_CONNECTED,
-    STATE_DISCONNECTED,
-    STATE_ERROR,
-    McpError,
-    McpSession,
-)
-
-MODERN_SERVER = r'''
-import json, sys, os, time
-
-def send(msg):
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
-
-pidfile = os.environ.get("MCP_TEST_PIDFILE")
-if pidfile:
-    open(pidfile, "w").write(str(os.getpid()))
-sys.stderr.write("modern server starting\n")
-sys.stderr.flush()
-
-PAGE_1 = [
-    {"name": "search", "description": "Search things",
-     "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}},
-    {"name": "fail", "description": "Always fails",
-     "inputSchema": {"type": "object", "properties": {}}},
-]
-PAGE_2 = [
-    {"name": "ask", "description": "Needs user input",
-     "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "pic", "description": "Returns an image",
-     "inputSchema": {"type": "object", "properties": {}}},
-]
-
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        req = json.loads(line)
-    except ValueError:
-        continue
-    method, rid = req.get("method"), req.get("id")
-    params = req.get("params") or {}
-    if method == "server/discover":
-        send({"jsonrpc": "2.0", "id": rid, "result": {
-            "resultType": "complete",
-            "supportedVersions": ["2026-07-28", "2025-11-25"],
-            "capabilities": {"tools": {}},
-            "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "modern-srv", "version": "2.0"}},
-            "instructions": "Modern server instructions."}})
-    elif method == "tools/list":
-        if "_meta" not in params:
-            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": "missing _meta"}})
-        elif params.get("cursor") == "page-2":
-            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "tools": PAGE_2, "ttlMs": 0, "cacheScope": "public"}})
-        else:
-            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "tools": PAGE_1, "nextCursor": "page-2", "ttlMs": 0, "cacheScope": "public"}})
-    elif method == "tools/call":
-        name = params.get("name")
-        if "_meta" not in params:
-            send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": "missing _meta"}})
-        elif name == "fail":
-            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text": "boom"}], "isError": True}})
-        elif name == "ask":
-            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "input_required",
-                "inputRequests": {"login": {"method": "elicitation/create", "params": {
-                    "mode": "form", "message": "log in",
-                    "requestedSchema": {"type": "object", "properties": {}}}}},
-                "requestState": "opaque"}})
-        elif name == "sleep":
-            time.sleep(3)
-            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text": "woke up"}]}})
-        elif name == "pic":
-            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [
-                {"type": "text", "text": "here:"},
-                {"type": "image", "data": "QUJD", "mimeType": "image/png"}],
-                "structuredContent": {"n": 1}}})
-        elif name == "env":
-            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text",
-                "text": json.dumps({"MARKER": os.environ.get("MARKER"),
-                                    "ENTRY_K": os.environ.get("ENTRY_K"),
-                                    "PLUGIN_ROOT": os.environ.get("PLUGIN_ROOT"),
-                                    "PATH_SET": "PATH" in os.environ})}]}})
-        else:
-            send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text": "hello"}], "structuredContent": {"ok": True}}})
-    else:
-        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}})
-'''
-
-LEGACY_SERVER = r'''
-import json, sys, os
-
-def send(msg):
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
-
-pidfile = os.environ.get("MCP_TEST_PIDFILE")
-if pidfile:
-    open(pidfile, "w").write(str(os.getpid()))
-sys.stderr.write("legacy server starting\n")
-sys.stderr.flush()
-
-TOOLS = [
-    {"name": "echo", "description": "Echo arguments",
-     "inputSchema": {"type": "object", "properties": {"x": {"type": "string"}}, "required": ["x"]}},
-]
-
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        req = json.loads(line)
-    except ValueError:
-        continue
-    method, rid = req.get("method"), req.get("id")
-    params = req.get("params") or {}
-    if method == "notifications/initialized":
-        continue
-    if method == "initialize":
-        send({"jsonrpc": "2.0", "id": rid, "result": {
-            "protocolVersion": "2025-11-25",
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "legacy-srv", "version": "1.0"},
-            "instructions": "Legacy server instructions."}})
-    elif method == "tools/list":
-        send({"jsonrpc": "2.0", "id": rid, "result": {"tools": TOOLS}})
-    elif method == "tools/call":
-        name = params.get("name")
-        if name == "add_tool":
-            TOOLS.append({"name": "late", "description": "Arrived later",
-                          "inputSchema": {"type": "object", "properties": {}}})
-            send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
-            send({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "added"}]}})
-        elif name == "remove_tool":
-            TOOLS[:] = [t for t in TOOLS if t["name"] != "late"]
-            send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
-            send({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "removed"}]}})
-        else:
-            send({"jsonrpc": "2.0", "id": rid, "result": {"content": [{"type": "text", "text": "echo:" + str(params.get("arguments"))}], "structuredContent": {"legacy": True}}})
-    else:
-        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}})
-'''
-
-HYBRID_SERVER = r'''
-import json, sys
-
-def send(msg):
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
-
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        req = json.loads(line)
-    except ValueError:
-        continue
-    method, rid = req.get("method"), req.get("id")
-    if method == "server/discover":
-        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32022, "message": "unsupported version", "data": {"supported": ["2025-11-25"], "requested": "2026-07-28"}}})
-    elif method == "notifications/initialized":
-        continue
-    elif method == "initialize":
-        send({"jsonrpc": "2.0", "id": rid, "result": {
-            "protocolVersion": "2025-11-25",
-            "capabilities": {"tools": {}},
-            "serverInfo": {"name": "hybrid-srv", "version": "1.0"}}})
-    elif method == "tools/list":
-        send({"jsonrpc": "2.0", "id": rid, "result": {"tools": []}})
-    else:
-        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}})
-'''
-
-DISJOINT_SERVER = r'''
-import json, sys
-
-def send(msg):
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
-
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        req = json.loads(line)
-    except ValueError:
-        continue
-    method, rid = req.get("method"), rid = req.get("id")
-    if method == "server/discover":
-        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32022, "message": "unsupported version", "data": {"supported": ["2026-08-30"], "requested": "2026-07-28"}}})
-    else:
-        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}})
-'''
-
-SILENT_SERVER = r'''
-import sys
-for line in sys.stdin:
-    pass
-'''
-
-MANY_SERVER = r'''
-import json, sys, os
-
-def send(msg):
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
-
-pidfile = os.environ.get("MCP_TEST_PIDFILE")
-if pidfile:
-    open(pidfile, "w").write(str(os.getpid()))
-
-TOOLS = [
-    {"name": "tool_%02d" % i, "description": "Tool %02d" % i,
-     "inputSchema": {"type": "object", "properties": {}}}
-    for i in range(40)
-]
-
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        req = json.loads(line)
-    except ValueError:
-        continue
-    method, rid = req.get("method"), req.get("id")
-    if method == "server/discover":
-        send({"jsonrpc": "2.0", "id": rid, "result": {
-            "resultType": "complete",
-            "supportedVersions": ["2026-07-28", "2025-11-25"],
-            "capabilities": {"tools": {}},
-            "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "many-srv", "version": "2.0"}},
-            "instructions": "Many server instructions."}})
-    elif method == "tools/list":
-        send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "tools": TOOLS, "ttlMs": 0, "cacheScope": "public"}})
-    elif method == "tools/call":
-        send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text": "ok"}], "structuredContent": {"ok": True}}})
-    else:
-        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}})
-'''
-
-BOUND = 15  # seconds — every session operation in this file stays bounded
+# ── an in-process wire peer — the protocol-shape seam ────────
 
 
-def write_server(tmp_path: Path, name: str, code: str) -> Path:
-    path = tmp_path / name
-    path.write_text(textwrap.dedent(code), encoding="utf-8")
-    return path
+async def _peer_timer(seconds: float) -> None:
+    """How the fake peer waits out a scripted delay.
 
-
-def _child_pidfile(tmp_path: Path, name: str) -> Path:
-    """Where the *name* fake server writes its own pid."""
-    return tmp_path / f"{name}.pid"
-
-
-def server_config(
-    script: Path,
-    *,
-    name: str = "demo",
-    timeout: float = 30.0,
-    pidfile: Path | None = None,
-    **kwargs,
-) -> McpServerConfig:
-    """A stdio config for a fake *script*: its pidfile (so a test can watch
-    the direct child) plus any environment overlay the test needs."""
-    kwargs.setdefault("source", "test")
-    env = dict(kwargs.pop("env", {}))
-    if pidfile is not None:
-        env.setdefault("MCP_TEST_PIDFILE", str(pidfile))
-    return McpServerConfig(
-        name=name,
-        command=sys.executable,
-        args=[str(script)],
-        timeout=timeout,
-        env=env,
-        **kwargs,
-    )
-
-
-def _read_pid(pidfile: Path) -> int:
-    """The fake server's own pid, once it has written it."""
-    for _ in range(200):
-        if pidfile.exists():
-            return int(pidfile.read_text().strip())
-        time.sleep(0.05)
-    raise AssertionError(f"{pidfile} never appeared")
-
-
-def child_alive(pid: int) -> bool:
-    """Whether the direct child *pid* is still running.
-
-    The SDK spawns the child inside a Job Object on Windows, which closes
-    the ``PROCESS_ALL_ACCESS`` handle ``os.kill(pid, 0)`` asks for — so the
-    probe there is a ``SYNCHRONIZE`` handle instead. POSIX: signal 0.
+    A slow server's latency is the behaviour under test here — the same job
+    the subprocess fakes' own ``time.sleep`` did — so the wait goes through
+    :func:`settle`, the sanctioned entry for exactly that.
     """
-    if sys.platform == "win32":
-        import ctypes
+    await settle(seconds)
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        handle = kernel32.OpenProcess(0x00100000, False, pid)
-        if not handle:
-            return False
-        kernel32.CloseHandle(handle)
-        return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+
+class Unsupported:
+    """A ``-32022`` discover refusal naming the versions the peer speaks."""
+
+    def __init__(self, supported: list[str]) -> None:
+        self.supported = supported
+
+
+class Late:
+    """A route answered after a delay — the slow-call timeout's shape."""
+
+    def __init__(self, seconds: float, result: dict) -> None:
+        self.seconds = seconds
+        self.result = result
+
+
+class Drop:
+    """A route that closes the stream instead of answering — a dropped peer."""
+
+
+class Silent:
+    """A route that never answers — a peer that hangs up on nothing."""
+
+
+class WirePeer:
+    """A scripted JSON-RPC server over the SDK's in-memory streams.
+
+    ``routes`` maps a method to what it answers: a ``dict`` result,
+    :class:`Late` for a delayed one, :class:`Silent` for no answer at all,
+    :class:`Unsupported` for the ``-32022`` era refusal, :class:`Drop` to
+    close the stream underneath the client. An unlisted method answers
+    ``-32601`` — which is exactly what makes a pre-discover server fall
+    back to the handshake. ``seen`` records the methods that arrived, so a
+    test asserts on the requests that were really made.
+    """
+
+    def __init__(self, routes: dict[str, object]) -> None:
+        self.routes = routes
+        self.seen: list[str] = []
+
+    async def _serve(self, read, write) -> None:
+        while True:
+            message = await read.receive()
+            body = message.message
+            if isinstance(body, sdk_types.JSONRPCNotification):
+                self.seen.append(body.method)
+                continue
+            assert isinstance(body, sdk_types.JSONRPCRequest), body
+            method, rid = body.method, body.id
+            self.seen.append(method)
+            out = self.routes.get(method, "unknown")
+            if out == "unknown":
+                await write.send(
+                    SessionMessage(
+                        sdk_types.JSONRPCError(
+                            jsonrpc="2.0",
+                            id=rid,
+                            error=sdk_types.ErrorData(
+                                code=-32601, message=f"unknown method {method}"
+                            ),
+                        )
+                    )
+                )
+                continue
+            if isinstance(out, Silent):
+                continue
+            if isinstance(out, ByToolName):
+                out = out.answers[body.params.get("name")]
+            if isinstance(out, Late):
+                # the delay is the behaviour under test (a slow server), so
+                # the peer waits on a real timer — and the guard's caller
+                # frame is this fake, not the test that drives it.
+                await _peer_timer(out.seconds)
+                out = out.result
+            if isinstance(out, Drop):
+                await write.aclose()
+                return
+            if isinstance(out, Unsupported):
+                await write.send(
+                    SessionMessage(
+                        sdk_types.JSONRPCError(
+                            jsonrpc="2.0",
+                            id=rid,
+                            error=sdk_types.ErrorData(
+                                code=-32022,
+                                message="unsupported version",
+                                data={
+                                    "supported": out.supported,
+                                    "requested": "2026-07-28",
+                                },
+                            ),
+                        )
+                    )
+                )
+                continue
+            await write.send(
+                SessionMessage(
+                    sdk_types.JSONRPCResponse(jsonrpc="2.0", id=rid, result=out)
+                )
+            )
+
+    async def __aenter__(self):
+        self._cm = create_client_server_memory_streams()
+        self._streams = await self._cm.__aenter__()
+        self._task = asyncio.ensure_future(self._serve(*self._streams[1]))
+        return self._streams[0]
+
+    async def __aexit__(self, *exc) -> bool:
+        self._task.cancel()
+        await asyncio.gather(self._task, return_exceptions=True)
+        await self._cm.__aexit__(*exc)
         return False
-    except PermissionError:
-        return True
-    return True
 
 
-async def wait_gone(pid: int, attempts: int = 200) -> bool:
-    """Wait (bounded) for a direct child to be reaped."""
-    for _ in range(attempts):
-        if not child_alive(pid):
-            return True
-        await asyncio.sleep(0.05)
-    return False
+
+#: The handshake-era answer for a peer that answers only ``initialize``.
+LEGACY_HANDSHAKE = {
+    "protocolVersion": "2025-11-25",
+    "capabilities": {"tools": {}},
+    "serverInfo": {"name": "wire-legacy-srv", "version": "1.0"},
+    "instructions": "Legacy wire instructions.",
+}
 
 
-# ── an in-process server — the protocol-shape seam ───────────
+class ByToolName:
+    """A route that answers by the tool the request names."""
+
+    def __init__(self, answers) -> None:
+        self.answers = answers
 
 
-def _greet(name: str) -> str:
-    return f"hi {name}"
+def _call_answer(name: str) -> dict:
+    """What a modern peer's ``tools/call`` answers for tool *name*."""
+    if name == "fail":
+        return {
+            "resultType": "complete",
+            "content": [{"type": "text", "text": "boom"}],
+            "isError": True,
+        }
+    if name == "ask":
+        return {
+            "resultType": "input_required",
+            "inputRequests": {
+                "login": {
+                    "method": "elicitation/create",
+                    "params": {
+                        "mode": "form",
+                        "message": "log in",
+                        "requestedSchema": {"type": "object", "properties": {}},
+                    },
+                }
+            },
+            "requestState": "opaque",
+        }
+    if name == "pic":
+        return {
+            "resultType": "complete",
+            "content": [
+                {"type": "text", "text": "here:"},
+                {"type": "image", "data": "QUJD", "mimeType": "image/png"},
+            ],
+            "structuredContent": {"n": 1},
+        }
+    return {
+        "resultType": "complete",
+        "content": [{"type": "text", "text": "hello"}],
+        "structuredContent": {"ok": True},
+    }
 
 
-def _plain() -> str:
-    return "plain"
+#: A modern-era peer: discover, tools/list and the shapes the tool mapping
+#: reads back (a failing ``fail``, an input-requiring ``ask``, a non-text
+#: ``pic``). Its ``tools/call`` answers by the tool the request names —
+#: :func:`modern_peer` builds the whole table.
+MODERN_PEER = {
+    "server/discover": {
+        "resultType": "complete",
+        "supportedVersions": ["2026-07-28"],
+        "capabilities": {"tools": {}},
+        "ttlMs": 0,
+        "cacheScope": "public",
+        "_meta": {
+            "io.modelcontextprotocol/serverInfo": {"name": "wire-srv", "version": "1.0"}
+        },
+        "instructions": "Wire server instructions.",
+    },
+    "tools/list": {
+        "resultType": "complete",
+        "tools": [
+            {
+                "name": "search",
+                "description": "Search things",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {"q": {"type": "string"}},
+                    "required": ["q"],
+                },
+            },
+            {
+                "name": "fail",
+                "description": "Always fails",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "ask",
+                "description": "Needs user input",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+            {
+                "name": "pic",
+                "description": "Returns an image",
+                "inputSchema": {"type": "object", "properties": {}},
+            },
+        ],
+        "ttlMs": 0,
+        "cacheScope": "public",
+    },
+    "tools/call": ByToolName(
+        {
+            "search": _call_answer("search"),
+            "fail": _call_answer("fail"),
+            "ask": _call_answer("ask"),
+            "pic": _call_answer("pic"),
+        }
+    ),
+}
 
 
-def make_server(
-    *,
-    name: str = "inproc",
-    version: str = "9.9.9",
-    instructions: str = "In-proc instructions.",
-) -> MCPServer:
-    """An in-process MCP server — the SDK's own test shape: a modern server
-    with two tools, one of them with a schema."""
-    server = MCPServer(name=name, version=version, instructions=instructions)
-    server.add_tool(_greet, name="greet", description="Say hi")
-    server.add_tool(_plain, name="plain")
-    return server
+#: The same peer without a ``server/discover`` route: the unlisted method
+#: answers ``-32601``, which is what makes the client fall back to the
+#: handshake and settle on the legacy era.
+LEGACY_PEER = {
+    key: value for key, value in MODERN_PEER.items() if key != "server/discover"
+}
+
+
+def peer_config(name: str = "demo", **kwargs) -> McpServerConfig:
+    """The bookkeeping an in-proc peer session needs — the peer overrides
+    the target, so only the identity and the request budget matter."""
+    return McpServerConfig(name=name, source="test", **kwargs)
 
 
 @pytest_asyncio.fixture
-async def session_factory(tmp_path):
-    """Build McpSessions — over an in-process server (protocol shape) or a
-    fake script (stdio integration); close them all on teardown."""
+async def session_factory():
+    """Build McpSessions — over a wire peer (protocol shape) or an in-process
+    ``MCPServer``; close them all on teardown."""
     created: list[McpSession] = []
 
     def factory(
-        code: str | None = None,
-        *,
-        name: str = "demo",
-        timeout: float = 30.0,
-        server: MCPServer | None = None,
-        **kwargs,
+        peer: object = None, *, name: str = "demo", timeout: float = 30.0, **kwargs
     ) -> McpSession:
-        if server is None:
-            assert code is not None, "a stdio session needs a fake server script"
-            script = write_server(tmp_path, f"server_{len(created)}.py", code)
-            cfg = server_config(
-                script, name=name, timeout=timeout, pidfile=_child_pidfile(tmp_path, name)
-            )
-        else:
-            cfg = server_config(Path("unused"), name=name, timeout=timeout)
-        session = McpSession(cfg, server=server, **kwargs)
+        session = McpSession(peer_config(name, timeout=timeout), server=peer, **kwargs)
         created.append(session)
         return session
 
@@ -1163,12 +1079,12 @@ async def session_factory(tmp_path):
 
 class TestModernSession:
     async def test_the_negotiated_era_and_the_session_facts(self, session_factory):
-        session = session_factory(server=make_server())
+        session = session_factory(WirePeer(MODERN_PEER))
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         assert session.era == ERA_MODERN
         assert session.protocol_version == "2026-07-28"
-        assert session.server_info == {"name": "inproc", "version": "9.9.9"}
-        assert session.instructions == "In-proc instructions."
+        assert session.server_info == {"name": "wire-srv", "version": "1.0"}
+        assert session.instructions == "Wire server instructions."
         assert session.state == STATE_CONNECTED
         assert session.last_error is None
         assert session.server_capabilities is not None
@@ -1180,63 +1096,50 @@ class TestModernSession:
         async def on_connected(session, tools):
             connected.append(tools)
 
-        session = session_factory(server=make_server(), on_connected=on_connected)
+        session = session_factory(WirePeer(MODERN_PEER), on_connected=on_connected)
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         tools = session.tools
-        assert [t["name"] for t in tools] == ["greet", "plain"]
+        assert [t["name"] for t in tools] == ["search", "fail", "ask", "pic"]
         assert len(connected) == 1 and connected[0] == tools
         by_name = {t["name"]: t for t in tools}
-        assert by_name["greet"]["description"] == "Say hi"
-        schema = by_name["greet"]["inputSchema"]
+        assert by_name["search"]["description"] == "Search things"
+        schema = by_name["search"]["inputSchema"]
         assert schema["type"] == "object"
-        assert "name" in schema["properties"]  # a JSON Schema object node
-        # a tool with no description reads back as the empty string
-        assert by_name["plain"]["description"] == ""
+        assert "q" in schema["properties"]  # a JSON Schema object node
+        assert schema["required"] == ["q"]
 
     async def test_call_results_come_back_as_wire_form_dicts(self, session_factory):
-        session = session_factory(server=make_server())
+        session = session_factory(WirePeer(MODERN_PEER))
         await asyncio.wait_for(session.connect_and_register(), BOUND)
-        result = await asyncio.wait_for(session.call_tool("greet", {"name": "mocode"}), BOUND)
+        result = await asyncio.wait_for(session.call_tool("search"), BOUND)
         assert result["isError"] is False
-        assert result["content"] == [{"type": "text", "text": "hi mocode"}]
-        assert result["structuredContent"] == {"result": "hi mocode"}
+        assert result["content"] == [{"type": "text", "text": "hello"}]
+        assert result["structuredContent"] == {"ok": True}
 
-    async def test_a_slow_call_times_out(self, session_factory, tmp_path):
-        cfg = server_config(
-            write_server(tmp_path, "modern_slow.py", MODERN_SERVER),
-            name="slow",
-            timeout=0.4,
-            pidfile=_child_pidfile(tmp_path, "slow"),
-        )
-        session = McpSession(cfg)
+    async def test_a_slow_call_times_out(self, session_factory):
+        routes = dict(MODERN_PEER)
+        routes["tools/call"] = Late(5.0, _call_answer("search"))
+        session = session_factory(WirePeer(routes), name="slow", timeout=0.4)
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         with pytest.raises(McpError) as err:
-            await asyncio.wait_for(session.call_tool("sleep"), BOUND)
+            await asyncio.wait_for(session.call_tool("search"), BOUND)
         assert err.value.code == "mcp_timeout"
         assert session.last_error and "timed out" in session.last_error
-        await asyncio.wait_for(session.close(), BOUND)
 
-    async def test_input_required_raises_its_own_error(self, session_factory, tmp_path):
-        cfg = server_config(
-            write_server(tmp_path, "modern_ask.py", MODERN_SERVER),
-            name="ask",
-            pidfile=_child_pidfile(tmp_path, "ask"),
+    async def test_input_required_raises_its_own_error(self, session_factory):
+        session = session_factory(
+            WirePeer({**MODERN_PEER, "tools/call": _call_answer("ask")}), name="ask"
         )
-        session = McpSession(cfg)
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         with pytest.raises(McpError) as err:
             await asyncio.wait_for(session.call_tool("ask"), BOUND)
         assert err.value.code == "mcp_input_required"
         assert "elicitation is not supported" in str(err.value)
-        await asyncio.wait_for(session.close(), BOUND)
 
-    async def test_non_text_content_blocks_pass_through(self, session_factory, tmp_path):
-        cfg = server_config(
-            write_server(tmp_path, "modern_pic.py", MODERN_SERVER),
-            name="pic",
-            pidfile=_child_pidfile(tmp_path, "pic"),
+    async def test_non_text_content_blocks_pass_through(self, session_factory):
+        session = session_factory(
+            WirePeer({**MODERN_PEER, "tools/call": _call_answer("pic")}), name="pic"
         )
-        session = McpSession(cfg)
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         result = await asyncio.wait_for(session.call_tool("pic"), BOUND)
         block = result["content"][1]
@@ -1244,1001 +1147,104 @@ class TestModernSession:
         assert block["mimeType"] == "image/png"
         assert block["data"] == "QUJD"
         assert result["structuredContent"] == {"n": 1}
-        await asyncio.wait_for(session.close(), BOUND)
 
-    async def test_the_environment_reaches_the_child(self, session_factory, tmp_path):
-        cfg = server_config(
-            write_server(tmp_path, "modern_env.py", MODERN_SERVER),
-            name="env",
-            pidfile=_child_pidfile(tmp_path, "env"),
-            env={"MARKER": "from-parent", "ENTRY_K": "from-entry"},
-        )
-        session = McpSession(cfg)
+    async def test_a_dropped_peer_disconnects_and_the_session_marks_it(
+        self, session_factory
+    ):
+        routes = dict(MODERN_PEER)
+        routes["tools/call"] = Drop()
+        session = session_factory(WirePeer(routes), name="drop")
         await asyncio.wait_for(session.connect_and_register(), BOUND)
-        result = await asyncio.wait_for(session.call_tool("env"), BOUND)
-        seen = json.loads(result["content"][0]["text"])
-        # the whole process environment plus the entry overlay — the SDK
-        # layers its env over a trimmed platform default, so both must be
-        # passed explicitly (decision D8)
-        assert seen == {
-            "MARKER": "from-parent",
-            "ENTRY_K": "from-entry",
-            "PLUGIN_ROOT": None,
-            "PATH_SET": True,
-        }
-        await asyncio.wait_for(session.close(), BOUND)
-
-    async def test_stderr_is_collected_into_a_tail(self, session_factory, tmp_path):
-        cfg = server_config(
-            write_server(tmp_path, "modern_err.py", MODERN_SERVER),
-            name="err",
-            pidfile=_child_pidfile(tmp_path, "err"),
-        )
-        session = McpSession(cfg)
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        await asyncio.wait_for(session.list_tools(), BOUND)
-        assert "modern server starting" in session.stderr_tail
-        await asyncio.wait_for(session.close(), BOUND)
-
-    async def test_close_terminates_the_child(self, session_factory, tmp_path):
-        pidfile = _child_pidfile(tmp_path, "close")
-        cfg = server_config(
-            write_server(tmp_path, "modern_close.py", MODERN_SERVER),
-            name="close",
-            pidfile=pidfile,
-        )
-        session = McpSession(cfg)
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        pid = _read_pid(pidfile)
-        assert child_alive(pid)
-        await asyncio.wait_for(session.close(), BOUND)
-        assert await wait_gone(pid)
-        assert session.state == STATE_CLOSED
-
-    async def test_shutdown_terminates_the_child(self, session_factory, tmp_path):
-        pidfile = _child_pidfile(tmp_path, "kill")
-        cfg = server_config(
-            write_server(tmp_path, "modern_kill.py", MODERN_SERVER),
-            name="kill",
-            pidfile=pidfile,
-        )
-        session = McpSession(cfg)
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        pid = _read_pid(pidfile)
-        session.shutdown()  # sync, non-blocking — the unwind is scheduled
-        assert await wait_gone(pid)
-        assert session.state == STATE_CLOSED
-
-    async def test_a_dropped_server_disconnects_then_reconnects(self, session_factory, tmp_path):
-        pidfile = _child_pidfile(tmp_path, "drop")
-        cfg = server_config(
-            write_server(tmp_path, "modern_drop.py", MODERN_SERVER),
-            name="drop",
-            pidfile=pidfile,
-        )
-        session = McpSession(cfg)
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        pid = _read_pid(pidfile)
-        # a request in flight when the child dies must fail, not hang
-        task = asyncio.create_task(session.call_tool("sleep"))
-        await asyncio.sleep(0.3)
-        if sys.platform == "win32":
-            os.kill(pid, 9)
-        else:
-            os.kill(pid, 15)
+        # a request in flight when the peer dies must fail, not hang
         with pytest.raises(McpError) as err:
-            await asyncio.wait_for(task, BOUND)
+            await asyncio.wait_for(session.call_tool("search"), BOUND)
         assert err.value.code == "mcp_transport"
         assert "disconnected" in str(err.value)
         assert session.state == STATE_DISCONNECTED
-        # the SDK's client cannot be re-entered: the next call reconnects
-        result = await asyncio.wait_for(session.call_tool("search", {"q": "x"}), BOUND)
-        assert result["content"][0]["text"] == "hello"
-        assert session.era == ERA_MODERN
-        assert session.protocol_version == "2026-07-28"
-        await asyncio.wait_for(session.close(), BOUND)
 
-    async def test_a_call_after_close_is_refused(self, session_factory, tmp_path):
-        cfg = server_config(
-            write_server(tmp_path, "modern_after.py", MODERN_SERVER),
-            name="after",
-            pidfile=_child_pidfile(tmp_path, "after"),
-        )
-        session = McpSession(cfg)
+    async def test_a_call_after_close_is_refused(self, session_factory):
+        session = session_factory(WirePeer(MODERN_PEER))
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         await asyncio.wait_for(session.close(), BOUND)
         with pytest.raises(McpError) as err:
-            await asyncio.wait_for(session.call_tool("search", {"q": "x"}), BOUND)
+            await asyncio.wait_for(session.call_tool("search"), BOUND)
         assert err.value.code == "mcp_closed"
-
-    async def test_an_unstartable_command_is_an_error(self, tmp_path):
-        cfg = server_config(
-            tmp_path / "missing.py",
-            name="broken",
-            pidfile=_child_pidfile(tmp_path, "broken"),
-        )
-        cfg.command = "definitely-not-a-real-binary-mocode"
-        session = McpSession(cfg)
-        try:
-            with pytest.raises(McpError) as err:
-                await asyncio.wait_for(session.connect_and_register(), BOUND)
-            assert "failed to start" in str(err.value)
-            assert session.state == STATE_ERROR
-            assert session.last_error
-        finally:
-            session.shutdown()
 
 
 class TestLegacySession:
-    async def test_the_handshake_negotiates_the_legacy_era(self, session_factory, tmp_path):
-        cfg = server_config(
-            write_server(tmp_path, "legacy_connect.py", LEGACY_SERVER),
-            name="legacy",
-            pidfile=_child_pidfile(tmp_path, "legacy"),
+    async def test_the_handshake_negotiates_the_legacy_era(self, session_factory):
+        session = session_factory(
+            WirePeer({**LEGACY_PEER, "initialize": LEGACY_HANDSHAKE}), name="legacy",
         )
-        session = McpSession(cfg)
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         assert session.era == ERA_LEGACY
         assert session.protocol_version == "2025-11-25"
-        assert session.server_info == {"name": "legacy-srv", "version": "1.0"}
-        assert session.instructions == "Legacy server instructions."
+        assert session.server_info == {"name": "wire-legacy-srv", "version": "1.0"}
+        assert session.instructions == "Legacy wire instructions."
         assert session.state == STATE_CONNECTED
-        assert [t["name"] for t in session.tools] == ["echo"]
-        await asyncio.wait_for(session.close(), BOUND)
+        assert [t["name"] for t in session.tools] == ["search", "fail", "ask", "pic"]
 
-    async def test_calls_come_back_as_wire_form_dicts(self, session_factory, tmp_path):
-        """The handshake era speaks the same wire form; a legacy server that
-        echoed arguments comes back as text and structuredContent."""
-        cfg = server_config(
-            write_server(tmp_path, "legacy_call.py", LEGACY_SERVER),
-            name="legacy2",
-            pidfile=_child_pidfile(tmp_path, "legacy2"),
-        )
-        session = McpSession(cfg)
+    async def test_calls_come_back_as_wire_form_dicts(self, session_factory):
+        routes = {
+            **LEGACY_PEER,
+            "initialize": LEGACY_HANDSHAKE,
+            "tools/call": {
+                "content": [{"type": "text", "text": "echo:{'x': '1'}"}],
+                "structuredContent": {"legacy": True},
+            },
+        }
+        session = session_factory(WirePeer(routes), name="legacy2")
         await asyncio.wait_for(session.connect_and_register(), BOUND)
-        result = await asyncio.wait_for(session.call_tool("echo", {"x": "1"}), BOUND)
+        result = await asyncio.wait_for(session.call_tool("search"), BOUND)
         assert result["content"][0]["text"] == "echo:{'x': '1'}"
         assert result["structuredContent"] == {"legacy": True}
         assert result["isError"] is False
-        await asyncio.wait_for(session.close(), BOUND)
-
-    async def test_the_list_changed_notification_fires_the_callback(self, session_factory, tmp_path):
-        seen: list[str] = []
-
-        async def on_tools_changed(session: McpSession) -> None:
-            tools = await session.list_tools()
-            seen.extend(t["name"] for t in tools)
-
-        cfg = server_config(
-            write_server(tmp_path, "legacy_notify.py", LEGACY_SERVER),
-            name="legacy3",
-            pidfile=_child_pidfile(tmp_path, "legacy3"),
-        )
-        session = McpSession(cfg, on_tools_changed=on_tools_changed)
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        await asyncio.wait_for(session.call_tool("add_tool"), BOUND)
-        for _ in range(200):
-            if "late" in seen:
-                break
-            await asyncio.sleep(0.05)
-        assert "late" in seen
-        await asyncio.wait_for(session.close(), BOUND)
 
 
 class TestEraNegotiation:
     async def test_a_modern_server_negotiates_the_current_version(self, session_factory):
-        session = session_factory(server=make_server())
+        session = session_factory(WirePeer(MODERN_PEER))
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         assert session.era == ERA_MODERN
         assert session.protocol_version == "2026-07-28"
 
-    async def test_a_discover_failure_falls_back_to_the_handshake(self, session_factory, tmp_path):
+    async def test_an_unanswered_discover_falls_back_to_the_handshake(
+        self, session_factory
+    ):
         """A server that does not answer the modern probe is legacy — the
         standard forbids deciding the era on a single error code."""
-        cfg = server_config(
-            write_server(tmp_path, "neg_legacy.py", LEGACY_SERVER),
+        session = session_factory(
+            WirePeer(
+                {
+                    **MODERN_PEER,
+                    "server/discover": Unsupported(["2025-11-25"]),
+                    "initialize": LEGACY_HANDSHAKE,
+                }
+            ),
             name="neg1",
-            pidfile=_child_pidfile(tmp_path, "neg1"),
         )
-        session = McpSession(cfg)
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         assert session.era == ERA_LEGACY
         assert session.protocol_version == "2025-11-25"
-        await asyncio.wait_for(session.close(), BOUND)
+        assert session.server_info == {"name": "wire-legacy-srv", "version": "1.0"}
 
-    async def test_an_unsupported_version_error_falls_back_to_the_handshake(self, session_factory, tmp_path):
-        cfg = server_config(
-            write_server(tmp_path, "neg_hybrid.py", HYBRID_SERVER),
-            name="neg2",
-            pidfile=_child_pidfile(tmp_path, "neg2"),
-        )
-        session = McpSession(cfg)
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        assert session.era == ERA_LEGACY
-        assert session.protocol_version == "2025-11-25"
-        assert session.server_info == {"name": "hybrid-srv", "version": "1.0"}
-        await asyncio.wait_for(session.close(), BOUND)
-
-    async def test_a_server_sharing_no_version_fails_the_connection(self, session_factory, tmp_path):
-        cfg = server_config(
-            write_server(tmp_path, "neg_disjoint.py", DISJOINT_SERVER),
+    async def test_a_server_sharing_no_version_fails_the_connection(
+        self, session_factory
+    ):
+        session = session_factory(
+            WirePeer({**MODERN_PEER, "server/discover": Unsupported(["2026-08-30"])}),
             name="neg3",
-            pidfile=_child_pidfile(tmp_path, "neg3"),
         )
-        session = McpSession(cfg)
         with pytest.raises(McpError) as err:
             await asyncio.wait_for(session.connect_and_register(), BOUND)
         assert err.value.code == "mcp_error"
         assert session.state == STATE_ERROR
         assert session.last_error
-        await asyncio.wait_for(session.close(), BOUND)
 
-    async def test_a_silent_server_fails_the_connect_under_a_bound(self, session_factory, tmp_path):
-        cfg = server_config(
-            write_server(tmp_path, "neg_silent.py", SILENT_SERVER),
-            name="neg4",
-            pidfile=_child_pidfile(tmp_path, "neg4"),
+    async def test_a_silent_peer_fails_the_connect_under_a_bound(self, session_factory):
+        session = session_factory(
+            WirePeer({"server/discover": Silent(), "initialize": Silent()}), name="neg4"
         )
-        session = McpSession(cfg)
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
             await asyncio.wait_for(session.connect_and_register(), 2)
         assert session.state != STATE_CONNECTED
-        await asyncio.wait_for(session.close(), BOUND)
-
-
-def make_resource_server() -> MCPServer:
-    """An in-process server with one concrete resource and one template —
-    the shape the resource tools read through."""
-    server = MCPServer(name="withres", version="1.2.3")
-
-    @server.resource("note://today")
-    def today() -> str:
-        "today's note"
-
-        return "ship it"
-
-    @server.resource("greeting://{name}")
-    def greeting(name: str) -> str:
-        "a greeting"
-
-        return f"hello {name}"
-
-    return server
-
-
-class TestResourceMethods:
-    """The session's resource pass-throughs, wire-form — the tools built on
-    them (a later wave) only split contents and map errors."""
-
-    async def test_listing_resources_and_templates_is_wire_form(self, session_factory):
-        session = session_factory(server=make_resource_server())
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        assert session.server_capabilities.resources is not None
-
-        resources = await asyncio.wait_for(session.list_resources(), BOUND)
-        entries = resources["resources"]
-        assert [r["uri"] for r in entries] == ["note://today"]
-        assert entries[0]["name"] == "today"
-        assert entries[0]["mimeType"] == "text/plain"
-
-        templates = await asyncio.wait_for(session.list_resource_templates(), BOUND)
-        assert [t["uriTemplate"] for t in templates["resourceTemplates"]] == [
-            "greeting://{name}"
-        ]
-
-    async def test_reading_a_resource_returns_its_contents(self, session_factory):
-        session = session_factory(server=make_resource_server())
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        result = await asyncio.wait_for(session.read_resource("greeting://ada"), BOUND)
-        assert result["contents"] == [
-            {
-                "uri": "greeting://ada",
-                "mimeType": "text/plain",
-                "text": "hello ada",
-            }
-        ]
-
-    async def test_reading_a_missing_resource_is_an_mcp_error(self, session_factory):
-        session = session_factory(server=make_resource_server())
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        with pytest.raises(McpError) as err:
-            await asyncio.wait_for(session.read_resource("note://absent"), BOUND)
-        assert err.value.code == "mcp_error"
-
-
-# ── runtime + tool registration ─────────────────────────────
-
-from mocode.core.events import Notice
-from mocode.core.tool import ToolError
-from mocode.host.config import Config
-from mocode.host.plugin.builtin.mcp.runtime import McpRuntime
-from mocode.host.plugin.builtin.mcp.tools import mcp_status_tool, mcp_tool
-from mocode.host.plugin.context import BuildContext
-
-
-def make_runtime(
-    tmp_path: Path,
-    servers: dict,
-    *,
-    mcp_extra: dict | None = None,
-    codemode_enabled: bool = False,
-) -> McpRuntime:
-    plugins = {"mcp": {"servers": servers, **(mcp_extra or {})}}
-    if codemode_enabled:
-        plugins["codemode"] = {"enabled": True}
-    config = Config(provider="p", model="m", plugins=plugins)
-    ctx = BuildContext(home=tmp_path / "home", cwd=tmp_path, config=config)
-    return McpRuntime(ctx)
-
-
-def script_entry(script: Path, **extra) -> dict:
-    return {"command": sys.executable, "args": [str(script)], **extra}
-
-
-@pytest_asyncio.fixture
-async def runtime_factory(tmp_path):
-    """Build runtimes over fake servers; shut them down on teardown."""
-    created: list[McpRuntime] = []
-
-    def factory(servers: dict, *, mcp_extra: dict | None = None,
-                codemode_enabled: bool = False) -> McpRuntime:
-        runtime = make_runtime(
-            tmp_path, servers, mcp_extra=mcp_extra, codemode_enabled=codemode_enabled
-        )
-        created.append(runtime)
-        return runtime
-
-    yield factory
-    for runtime in created:
-        for session in runtime.sessions.values():
-            try:
-                await asyncio.wait_for(session.close(), BOUND)
-            except Exception:
-                session.shutdown()
-        runtime.shutdown()
-
-
-class TestToolMapping:
-    async def test_tools_register_with_full_names_and_schemas(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_modern.py", MODERN_SERVER)
-        runtime = runtime_factory({"demo": script_entry(script)})
-        await asyncio.wait_for(runtime.start(), BOUND)
-
-        registry = runtime._ctx.tools
-        assert "mcp__demo__search" in registry
-        tool = registry.get("mcp__demo__search")
-        assert tool.availability == "both"  # default exposure: auto → direct (no codemode)
-        assert tool.schema["required"] == ["q"]
-        assert tool.tags == frozenset({"mcp", "mcp:demo"})
-        assert tool.mcp == {"server": "demo", "tool": "search"}
-        assert tool.mcp_raw_name == "search"
-        assert tool.source == "host"  # a bare BuildContext stamps nothing
-
-    async def test_a_successful_call_maps_into_content_and_details(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_call.py", MODERN_SERVER)
-        runtime = runtime_factory({"demo": script_entry(script)})
-        await asyncio.wait_for(runtime.start(), BOUND)
-        tool = runtime._ctx.tools.get("mcp__demo__search")
-
-        result = await asyncio.wait_for(tool.run_async({"q": "hi"}), BOUND)
-        assert result.content == "hello"
-        assert result.details["server"] == "demo"
-        assert result.details["tool"] == "search"
-        assert result.details["structured_content"] == {"ok": True}
-        assert result.details["is_error"] is False
-
-    async def test_an_is_error_result_raises_mcp_error(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_fail.py", MODERN_SERVER)
-        runtime = runtime_factory({"demo": script_entry(script)})
-        await asyncio.wait_for(runtime.start(), BOUND)
-        tool = runtime._ctx.tools.get("mcp__demo__fail")
-        with pytest.raises(ToolError) as err:
-            await asyncio.wait_for(tool.run_async({}), BOUND)
-        assert err.value.code == "mcp_error"
-        assert "boom" in err.value.message
-
-    async def test_input_required_raises_its_own_code(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_ask.py", MODERN_SERVER)
-        runtime = runtime_factory({"demo": script_entry(script)})
-        await asyncio.wait_for(runtime.start(), BOUND)
-        tool = runtime._ctx.tools.get("mcp__demo__ask")
-        with pytest.raises(ToolError) as err:
-            await asyncio.wait_for(tool.run_async({}), BOUND)
-        assert err.value.code == "mcp_input_required"
-
-    async def test_image_blocks_land_in_details_with_a_placeholder(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_pic.py", MODERN_SERVER)
-        runtime = runtime_factory({"demo": script_entry(script)})
-        await asyncio.wait_for(runtime.start(), BOUND)
-        tool = runtime._ctx.tools.get("mcp__demo__pic")
-        result = await asyncio.wait_for(tool.run_async({}), BOUND)
-        assert result.content == "here:\n[image: image/png]"
-        assert result.details["images"][0]["data"] == "QUJD"
-
-    async def test_missing_schema_and_description_fall_back(self, runtime_factory, tmp_path):
-        runtime = runtime_factory({})
-        session = McpSession(server_config(tmp_path / "x.py"))
-        tool = mcp_tool(runtime, session, "demo", {"name": "raw"}, "both", False)
-        assert tool.schema == {"type": "object", "properties": {}}
-        assert tool.description == "MCP tool raw from demo"
-
-    async def test_collision_gets_the_hash_suffix_and_raw_name(self, runtime_factory, tmp_path):
-        import hashlib
-
-        runtime = runtime_factory({})
-        session = McpSession(server_config(tmp_path / "x.py"))
-        runtime.assignments["demo"] = assign_tool_names("demo", ["a-b", "a_b"])
-        raw = {"name": "a_b"}
-        tool = mcp_tool(runtime, session, "demo", raw, "both", False)
-        assert tool.name == "mcp__demo__a_b_" + hashlib.sha1(b"a_b").hexdigest()[:6]
-        assert tool.mcp_raw_name == "a_b"
-
-    def test_mcp_status_tool_holds_the_runtime(self, runtime_factory):
-        runtime = runtime_factory({"off": script_entry("whatever", enabled=False)})
-        tool = mcp_status_tool(runtime)
-        assert tool.name == "mcp_status"
-        assert tool.availability == "program"
-        assert tool.mcp_runtime is runtime
-        assert tool.schema == {"type": "object", "properties": {}}
-
-    async def test_mcp_status_reports_every_server(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_status.py", MODERN_SERVER)
-        runtime = runtime_factory(
-            {
-                "demo": script_entry(script),
-                "off": script_entry(script, enabled=False),
-                "broken": script_entry(script, command="no-such-binary-mocode"),
-            }
-        )
-        await asyncio.wait_for(runtime.start(), BOUND)
-        tool = mcp_status_tool(runtime)
-        result = await asyncio.wait_for(tool.run_async({}), BOUND)
-        servers = {s["name"]: s for s in result.details["servers"]}
-        assert servers["demo"]["state"] == "connected"
-        assert servers["demo"]["tools"] == 4
-        assert servers["off"]["state"] == "disabled"
-        assert servers["broken"]["state"] == "error"
-        assert servers["broken"]["error"]
-        assert "demo: connected (4 tools)" in result.content
-
-
-class TestExposureMapping:
-    async def test_codemode_exposure_is_program_only(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_exp_cm.py", MODERN_SERVER)
-        runtime = runtime_factory({"demo": script_entry(script, exposure="codemode")})
-        await asyncio.wait_for(runtime.start(), BOUND)
-        registry = runtime._ctx.tools
-        assert "mcp__demo__search" in registry
-        assert "mcp__demo__search" not in registry.names(audience="model")
-        assert "mcp__demo__search" in registry.names(audience="program")
-
-    async def test_hidden_exposure_registers_then_disables(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_exp_hd.py", MODERN_SERVER)
-        runtime = runtime_factory({"demo": script_entry(script, exposure="hidden")})
-        await asyncio.wait_for(runtime.start(), BOUND)
-        registry = runtime._ctx.tools
-        assert registry.get("mcp__demo__search") is not None  # registered
-        assert "mcp__demo__search" not in registry.names(audience="model")
-        assert "mcp__demo__search" not in registry.names(audience="program")
-
-    async def test_tool_exposure_overrides_per_tool(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_exp_te.py", MODERN_SERVER)
-        runtime = runtime_factory(
-            {
-                "demo": script_entry(
-                    script,
-                    exposure="codemode",
-                    toolExposure={"search": "direct", "pic": "hidden"},
-                )
-            }
-        )
-        await asyncio.wait_for(runtime.start(), BOUND)
-        registry = runtime._ctx.tools
-        assert "mcp__demo__search" in registry.names(audience="model")
-        assert "mcp__demo__ask" not in registry.names(audience="model")
-        assert registry.get("mcp__demo__pic") is not None
-        assert "mcp__demo__pic" not in registry.names(audience="model")
-
-    async def test_default_exposure_auto_follows_codemode(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_exp_auto.py", MODERN_SERVER)
-        runtime = runtime_factory(
-            {"demo": script_entry(script)}, codemode_enabled=True
-        )
-        await asyncio.wait_for(runtime.start(), BOUND)
-        registry = runtime._ctx.tools
-        assert runtime.default_exposure == "codemode"
-        assert "mcp__demo__search" not in registry.names(audience="model")
-
-
-class TestSyncTools:
-    async def test_list_changed_adds_and_removes_tools(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_sync.py", LEGACY_SERVER)
-        runtime = runtime_factory({"demo": script_entry(script)})
-        await asyncio.wait_for(runtime.start(), BOUND)
-        registry = runtime._ctx.tools
-        assert "mcp__demo__late" not in registry
-
-        session = runtime.sessions["demo"]
-        await asyncio.wait_for(session.call_tool("add_tool"), BOUND)
-        await asyncio.sleep(0.3)
-        assert "mcp__demo__late" in registry
-
-        await asyncio.wait_for(session.call_tool("remove_tool"), BOUND)
-        await asyncio.sleep(0.3)
-        assert "mcp__demo__late" not in registry
-
-    async def test_a_failing_direct_server_marks_error_without_raising(self, runtime_factory, tmp_path):
-        runtime = runtime_factory({"bad": script_entry("x", command="no-such-binary-mocode")})
-        await asyncio.wait_for(runtime.start(), BOUND)  # must not raise
-        status = {s["name"]: s for s in runtime.status()}
-        assert status["bad"]["state"] == "error"
-        assert status["bad"]["error"]
-
-    async def test_a_silent_server_times_out_the_connect(self, runtime_factory, tmp_path):
-        """The runtime's connect timeout bounds a server that never answers:
-        the session is marked with an error, the suite keeps moving."""
-        script = write_server(tmp_path, "rt_silent.py", SILENT_SERVER)
-        runtime = runtime_factory(
-            {"slow": script_entry(script)}, mcp_extra={"connect_timeout_s": 1}
-        )
-        await asyncio.wait_for(runtime.start(), BOUND)
-        status = {s["name"]: s for s in runtime.status()}
-        assert status["slow"]["state"] == "error"
-        assert "timed out" in status["slow"]["error"]
-        assert status["slow"]["tools"] == 0
-
-    async def test_codemode_disabled_marks_warning_sent(self, runtime_factory, tmp_path):
-        """With program-only tools and codemode off, the one-shot warning is
-        marked (a bare context has no agent to emit to — T6 covers the real
-        Notice through a conversation)."""
-        script = write_server(tmp_path, "rt_warn.py", MODERN_SERVER)
-        runtime = runtime_factory({"demo": script_entry(script, exposure="codemode")})
-        await asyncio.wait_for(runtime.start(), BOUND)
-        assert runtime._codemode_warned is True
-
-    async def test_codemode_enabled_suppresses_the_warning(self, runtime_factory, tmp_path):
-        script = write_server(tmp_path, "rt_warn2.py", MODERN_SERVER)
-        runtime = runtime_factory(
-            {"demo": script_entry(script, exposure="codemode")},
-            codemode_enabled=True,
-        )
-        await asyncio.wait_for(runtime.start(), BOUND)
-        assert runtime._codemode_warned is False
-
-
-# ── plugin lifecycle ────────────────────────────────────────
-
-from mocode.host.plugin.builtin.mcp import PLUGIN, McpPlugin, McpRuntime
-from mocode.host.plugin.builtin.mcp.naming import resolve_server_exposure
-
-
-def _demo_servers(tmp_path: Path, script: Path, **servers) -> dict:
-    """mcpServers table for <cwd>/.mocode/mcp.json — each server's env names
-    its pidfile, so a test can watch the direct child the plugin spawned."""
-    table = {}
-    for name, extra in servers.items():
-        env = {"MCP_TEST_PIDFILE": str(_child_pidfile(tmp_path, name))}
-        env.update(extra.pop("env", {}))
-        table[name] = {"command": sys.executable, "args": [str(script)], "env": env, **extra}
-    return table
-
-
-class TestPluginLifecycle:
-    def test_build_registers_the_anchor_tool_with_the_runtime(self, plugin_host):
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=False)
-        assert not host.failures
-        status = host.ctx.tools.get("mcp_status")
-        assert status is not None
-        assert isinstance(status.mcp_runtime, McpRuntime)
-        # program-only: the model is never offered the anchor
-        assert "mcp_status" not in host.ctx.tools.names(audience="model")
-        assert "mcp_status" in host.ctx.tools.names(audience="program")
-
-    def test_the_plugin_instance_is_stateless(self):
-        assert McpPlugin().name == "mcp"
-        assert McpPlugin().description == "Connect to MCP servers and expose their tools"
-        assert PLUGIN.name == "mcp"
-
-    async def test_prepare_connects_and_the_section_joins_the_prompt(
-        self, plugin_host, tmp_path
-    ):
-        script = write_server(tmp_path, "pl_modern.py", MODERN_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {
-                "mcpServers": _demo_servers(
-                    tmp_path, script, demo={"description": "Search things"}
-                )
-            },
-        )
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-
-        registry = host.ctx.tools
-        assert "mcp__demo__search" in registry.names(audience="model")
-        assert host.ctx.agent.system_prompt.count("<mcp_servers>") == 1
-        assert "- demo: direct — Search things" in host.ctx.agent.system_prompt
-
-        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
-        assert section.priority == 46
-        assert section.derived_from == "tools"
-        assert section.pinned is False
-
-        host.close()
-        runtime = registry.get("mcp_status").mcp_runtime
-        pid = _read_pid(_child_pidfile(tmp_path, "demo"))
-        assert await wait_gone(pid)  # close() killed the child
-        assert runtime.sessions["demo"].state == STATE_CLOSED
-
-    async def test_the_section_uses_server_instructions_without_a_description(
-        self, plugin_host, tmp_path
-    ):
-        script = write_server(tmp_path, "pl_instr.py", MODERN_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {"mcpServers": _demo_servers(tmp_path, script, demo={})},
-        )
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        assert "- demo: direct — Modern server instructions." in (
-            host.ctx.agent.system_prompt
-        )
-        host.close()
-
-    async def test_hidden_and_disabled_servers_stay_out_of_the_section(
-        self, plugin_host, tmp_path
-    ):
-        script = write_server(tmp_path, "pl_hidden.py", MODERN_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {
-                "mcpServers": _demo_servers(
-                    tmp_path,
-                    script,
-                    shown={},
-                    hid={"exposure": "hidden"},
-                    off={"enabled": False},
-                )
-            },
-        )
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
-        text = section.render({})
-        assert "- shown: direct" in text
-        assert "hid" not in text
-        assert "off" not in text
-        # hidden still registered — just unreachable
-        assert host.ctx.tools.get("mcp__hid__search") is not None
-        host.close()
-
-    async def test_connected_servers_list_their_tool_names(
-        self, plugin_host, tmp_path
-    ):
-        """The D12 catalogue: a connected server lists its tools' raw names
-        on an indented continuation line — names only, no schemas."""
-        modern = write_server(tmp_path, "pl_list_modern.py", MODERN_SERVER)
-        legacy = write_server(tmp_path, "pl_list_legacy.py", LEGACY_SERVER)
-        servers = {
-            **_demo_servers(tmp_path, modern, alpha={}),
-            **_demo_servers(tmp_path, legacy, beta={}),
-        }
-        write_mcp_json(tmp_path / ".mocode" / "mcp.json", {"mcpServers": servers})
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
-        text = section.render({})
-        assert "- alpha: direct" in text
-        assert "  tools: ask, fail, pic, search" in text
-        assert "- beta: direct" in text
-        assert "  tools: echo" in text
-        host.close()
-
-    async def test_the_tool_list_truncates_at_thirty_names(
-        self, plugin_host, tmp_path
-    ):
-        """Past thirty names the list gives up counting and points at
-        search_tools() — the truncated raws stay out of the section."""
-        script = write_server(tmp_path, "pl_many.py", MANY_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {"mcpServers": _demo_servers(tmp_path, script, many={})},
-        )
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
-        text = section.render({})
-        head = ", ".join(f"tool_{i:02d}" for i in range(30))
-        assert f"  tools: {head} … +10 more (search_tools() in a codemode script)" in text
-        assert "tool_30" not in text
-        assert "tool_39" not in text
-        host.close()
-
-    async def test_a_server_still_connecting_keeps_the_one_line_form(
-        self, plugin_host, tmp_path
-    ):
-        """No catalogue without a connection: the timed-out server keeps the
-        plain `- name: how` line and no `tools:` line at all."""
-        script = write_server(tmp_path, "pl_slow.py", SILENT_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {"mcpServers": _demo_servers(tmp_path, script, slow={})},
-        )
-        host = plugin_host(
-            plugins=[PLUGIN],
-            build=True,
-            assemble=True,
-            config_kwargs={"plugins": {"mcp": {"connect_timeout_s": 1}}},
-        )
-        await asyncio.wait_for(host.materialize(), BOUND)
-        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
-        text = section.render({})
-        assert "- slow: direct" in text
-        assert "tools:" not in text
-        host.close()
-
-    async def test_a_hidden_server_leaves_no_trace_in_the_section(
-        self, plugin_host, tmp_path
-    ):
-        """Hidden skips the whole row (decision D12) — neither the server
-        line nor its registered tools' names may appear."""
-        shown = write_server(tmp_path, "pl_shown.py", MODERN_SERVER)
-        buried = write_server(tmp_path, "pl_buried.py", MANY_SERVER)
-        servers = {
-            **_demo_servers(tmp_path, shown, shown={}),
-            **_demo_servers(tmp_path, buried, buried={"exposure": "hidden"}),
-        }
-        write_mcp_json(tmp_path / ".mocode" / "mcp.json", {"mcpServers": servers})
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
-        text = section.render({})
-        assert "  tools: ask, fail, pic, search" in text
-        assert "buried" not in text
-        assert "tool_00" not in text
-        # hidden still registered — just unreachable
-        assert host.ctx.tools.get("mcp__buried__tool_00") is not None
-        host.close()
-
-    async def test_a_per_tool_hidden_entry_stays_out_of_the_list(
-        self, plugin_host, tmp_path
-    ):
-        """``toolExposure: hidden`` registers the tool and disables it — the
-        catalogue lists callable names only, so the hidden raw name stays
-        out while its server remains listed."""
-        script = write_server(tmp_path, "pl_pthidden.py", MODERN_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {
-                "mcpServers": _demo_servers(
-                    tmp_path,
-                    script,
-                    demo={"toolExposure": {"fail": "hidden"}},
-                )
-            },
-        )
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        registry = host.ctx.tools
-        assert registry.get("mcp__demo__fail") is not None  # registered
-        assert "mcp__demo__fail" not in registry.names(audience="program")
-        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
-        text = section.render({})
-        assert "  tools: ask, pic, search" in text
-        assert "fail" not in text
-        host.close()
-
-    async def test_no_servers_renders_no_section(self, plugin_host):
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
-        assert section.render({}) == ""
-        assert "<mcp_servers>" not in host.ctx.agent.system_prompt
-        host.close()
-
-    async def test_codemode_warning_notice_emits_once_per_conversation(
-        self, plugin_host, tmp_path
-    ):
-        script = write_server(tmp_path, "pl_warn.py", MODERN_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {
-                "mcpServers": _demo_servers(
-                    tmp_path, script, demo={"exposure": "codemode"}
-                )
-            },
-        )
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        reader = host.ctx.subscribe(since=0)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        runtime = host.ctx.tools.get("mcp_status").mcp_runtime
-        for _ in range(200):
-            if runtime._codemode_warned:
-                break
-            await asyncio.sleep(0.05)
-        assert runtime._codemode_warned
-        # let a possible second emission land, then count
-        await asyncio.sleep(0.5)
-        seen = []
-        while (event := reader.take()) is not None:
-            seen.append(event)
-        warnings = [
-            e
-            for e in seen
-            if isinstance(e, Notice) and "reachable only through codemode" in e.message
-        ]
-        assert len(warnings) == 1
-        assert warnings[0].level == "warn"
-        assert warnings[0].message.startswith("4 MCP tools")
-        host.close()
-
-    async def test_codemode_enabled_suppresses_the_notice(self, plugin_host, tmp_path):
-        script = write_server(tmp_path, "pl_cm.py", MODERN_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {
-                "mcpServers": _demo_servers(
-                    tmp_path, script, demo={"exposure": "codemode"}
-                )
-            },
-        )
-        host = plugin_host(
-            plugins=[PLUGIN],
-            build=True,
-            assemble=True,
-            config_kwargs={"plugins": {"codemode": {"enabled": True}}},
-        )
-        reader = host.ctx.subscribe(since=0)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        runtime = host.ctx.tools.get("mcp_status").mcp_runtime
-        await asyncio.sleep(0.5)
-        assert runtime._codemode_warned is False
-        seen = []
-        while (event := reader.take()) is not None:
-            seen.append(event)
-        assert not [e for e in seen if isinstance(e, Notice)]
-        host.close()
-
-    def test_resolve_server_exposure(self):
-        assert resolve_server_exposure(_cfg(exposure="hidden"), "direct") == "hidden"
-        assert resolve_server_exposure(_cfg(exposure="bogus"), "codemode") == "codemode"
-        assert resolve_server_exposure(_cfg(), "deferred") == "deferred"
-        assert resolve_server_exposure(_cfg(), "garbage") == "direct"
-
-
-# ── end to end through the dispatcher ───────────────────────
-
-from mocode.core.agent import AgentConfig
-from mocode.core.dispatch import ToolDispatcher
-from mocode.core.events import ToolCallFinished, ToolCallStarted
-from mocode.core.hook import HookRunner
-
-
-async def _dispatch(host, name: str, args: dict, *, origin: str = "model"):
-    """One call through the real dispatcher pipeline; events come back too."""
-    events: list = []
-
-    async def publish(event, *, fold: bool) -> None:
-        events.append((event, fold))
-
-    dispatcher = ToolDispatcher(host.ctx.tools, HookRunner(), AgentConfig(), publish)
-    result = await asyncio.wait_for(
-        dispatcher.run(name, args, origin=origin), BOUND
-    )
-    return result, events
-
-
-async def _wait_registered(runtime: McpRuntime, key: str, full_name: str) -> None:
-    for _ in range(200):
-        if full_name in runtime._registered.get(key, {}):
-            return
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"{full_name} never registered")
-
-
-class TestEndToEnd:
-    async def test_the_model_reaches_a_direct_tool_through_the_dispatcher(
-        self, plugin_host, tmp_path
-    ):
-        script = write_server(tmp_path, "e2e_direct.py", MODERN_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {"mcpServers": _demo_servers(tmp_path, script, demo={})},
-        )
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-
-        result, events = await _dispatch(host, "mcp__demo__search", {"q": "x"})
-        assert result.status == "ok"
-        assert result.content == "hello"
-        assert result.details["structured_content"] == {"ok": True}
-        started = [e for e, _ in events if isinstance(e, ToolCallStarted)]
-        finished = [e for e, _ in events if isinstance(e, ToolCallFinished)]
-        assert len(started) == len(finished) == 1
-        assert finished[0].status == "ok"
-        host.close()
-
-    async def test_program_origin_reaches_codemode_tools_and_the_model_cannot(
-        self, plugin_host, tmp_path
-    ):
-        script = write_server(tmp_path, "e2e_cm.py", MODERN_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {
-                "mcpServers": _demo_servers(
-                    tmp_path, script, demo={"exposure": "codemode"}
-                )
-            },
-        )
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        runtime = host.ctx.tools.get("mcp_status").mcp_runtime
-        await _wait_registered(runtime, "demo", "mcp__demo__search")
-
-        # a program call (what a codemode script would make) succeeds
-        result, _ = await _dispatch(
-            host, "mcp__demo__search", {"q": "x"}, origin="program"
-        )
-        assert result.status == "ok"
-        # the model's origin cannot see or run it
-        result, _ = await _dispatch(host, "mcp__demo__search", {"q": "x"})
-        assert result.status == "denied"
-        # the anchor answers program calls too
-        result, _ = await _dispatch(host, "mcp_status", {}, origin="program")
-        assert result.status == "ok"
-        assert result.details["servers"][0]["name"] == "demo"
-        result, _ = await _dispatch(host, "mcp_status", {})
-        assert result.status == "denied"
-        host.close()
-
-    async def test_hidden_tools_refuse_every_origin(self, plugin_host, tmp_path):
-        script = write_server(tmp_path, "e2e_hidden.py", MODERN_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {
-                "mcpServers": _demo_servers(
-                    tmp_path, script, demo={"exposure": "hidden"}
-                )
-            },
-        )
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        for origin in ("model", "program"):
-            result, _ = await _dispatch(
-                host, "mcp__demo__search", {"q": "x"}, origin=origin
-            )
-            assert result.status == "denied"
-        host.close()
-
-    async def test_close_kills_every_child(self, plugin_host, tmp_path):
-        script_a = write_server(tmp_path, "e2e_a.py", MODERN_SERVER)
-        script_b = write_server(tmp_path, "e2e_b.py", LEGACY_SERVER)
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {
-                "mcpServers": _demo_servers(
-                    tmp_path, script_a, a={}, b={"args": [str(script_b)]}
-                )
-            },
-        )
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        runtime = host.ctx.tools.get("mcp_status").mcp_runtime
-        pids = [_read_pid(_child_pidfile(tmp_path, "a")), _read_pid(_child_pidfile(tmp_path, "b"))]
-        assert len(runtime.sessions) == 2
-        assert all(child_alive(pid) for pid in pids)
-
-        host.close()
-        for pid in pids:
-            assert await wait_gone(pid)
-
-    def test_the_package_exports_the_plugin_surface(self):
-        from mocode.host.plugin.builtin.mcp import (
-            PLUGIN as exported,
-            McpPlugin,
-            McpRuntime,
-        )
-
-        assert isinstance(exported, McpPlugin)
-        assert exported.name == "mcp"
-        assert McpRuntime is not None
