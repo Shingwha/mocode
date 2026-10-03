@@ -18,6 +18,19 @@
 `tests/test_shell_bg.py`、`tests/test_tools.py`、`tests/test_builtin_plugins.py`、
 `tests/test_testing.py`、`tests/_mcp_fake.py`。
 
+## 开工第一步
+
+```bash
+cd ~/.worktrees/mocode/test-slim-w1c-builtins && uv sync
+uv run pytest -q 2>&1 | grep -A17 "BARE SLEEPS"   # 你的清零工单（基线：你的组约 330 次，全仓主战场）
+```
+
+W1 四个新 API 已由 W0 交付在 `tests/conftest.py`：`settle` / `wait_until` /
+`FakeClock` + `advance` / `real_time`，直接 import 使用；命名不许再自造第二套
+（subscriptions 的本地 `wait_until`、codemode 的本地 `_wait_for`/POLL 都要收敛到 conftest）。
+注意调用点归属：产品代码里的 sleep（`shell/session.py`、`mcp/subscriptions.py`）不是你的
+脆弱性，只改 tests/ 侧的等待方式（总纲不变量 1 的归属规则）。
+
 **文件合并写死**：MCP 5 文件合并为 2 个——
 
 - `tests/test_builtin_mcp.py`：配置加载/命名/exposure/era 协商/in-proc 会话与资源方法/

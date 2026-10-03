@@ -16,6 +16,19 @@
 `tests/test_channel.py`、`tests/test_events.py`、`tests/test_retry.py`、
 `tests/test_state.py`。
 
+## 开工第一步
+
+```bash
+cd ~/.worktrees/mocode/test-slim-w1a-kernel && uv sync
+uv run pytest -q 2>&1 | grep -A17 "BARE SLEEPS"   # 你的清零工单（基线：全仓 368 次/65 测试，你的组约 14 次）
+uv run pytest tests/test_dispatch.py -q --durations=0 2>&1 | grep teardown | sort -rn | head -8
+```
+
+第二行的背景：`test_dispatch.py` 有 5 个 0.94–0.95s 的 **teardown**（timeout 测试的
+TestToolPolicy / TestOutcomeParity / TestBareCoreDispatcher），与被测超时同量级——T2 顺带
+定位是不是 teardown 里等真实计时器收尾；**不许改产品代码**，定位后按"改测试侧等待方式"
+处理或上报。
+
 `test_state.py` 的 8 个测试（RunState 折叠）并入 `test_events.py` 的 RunState 组，
 随后删除 `test_state.py`（git rm，commit message 说明去向）。
 

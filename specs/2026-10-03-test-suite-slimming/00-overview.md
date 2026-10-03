@@ -34,9 +34,19 @@
 
 ## 全局不变量（每个 agent 逐条遵守，写完自检）
 
-1. **零裸睡当同步**：禁止 `time.sleep` / `asyncio.sleep` 做等待（守卫会失败该测试）。等待一律
+> W0 已交付：`tests/conftest.py` 的 `settle` / `wait_until` / `FakeClock` + `advance` /
+> `real_time` 四个 API，autouse 守卫 `_sleep_guard` 处于 **recording 模式**（只记录不失败）。
+> 每个 W1 agent 的第一个动作：跑一次全量，把输出的 BARE SLEEPS 清单当作本组的清零工单。
+> 全仓开局：368 次裸睡 / 65 个测试（subscriptions 262、mcp 21、codemode 20、dispatch 7、
+> agent_loop 5、channel 2，其余长尾）。
+
+1. **零裸睡当同步**：禁止 `time.sleep` / `asyncio.sleep` 做等待（守卫最终会失败该测试）。等待一律
    `wait_until(predicate, bound=…)` 条件轮询或 `asyncio.Event` 事件门控；确需真实等待（子进程
    fake 内部的 sleep、shell 看门狗时限这类"等待即被测行为"）才用 `settle()` / `real_time()`。
+   **调用点归属规则**：守卫清单按调用帧的文件聚合。裸睡发生在**产品代码**里、被测试触发时
+   （如 `host/plugin/builtin/shell/session.py` 的轮询、`mcp/subscriptions.py` 的重试、
+   `core/provider.py` 的真退避），那是产品行为、不是测试脆弱性——W2 翻硬失败时只失败
+   **调用点在 `tests/` 下**的裸睡，产品侧改动上报 lead，不越界。
 2. **零墙钟断言**：禁止 `assert elapsed < X` 类 stopwatch 断言。用事件（unset event 即事实）、
    死锁边界（`asyncio.wait_for(..., bound)` 把挂起变成失败）或 FakeClock 证明。
 3. **零提示词/文案字符串断言**：system prompt 测**结构**——section 名集合、工具名集合与顺序、

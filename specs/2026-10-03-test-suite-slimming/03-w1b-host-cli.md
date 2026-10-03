@@ -18,6 +18,16 @@
 `tests/test_display.py`、`tests/test_lines.py`、`tests/test_plugin_env.py`、
 `tests/test_plugin_install.py`、`tests/test_cache_protect.py`。
 
+## 开工第一步
+
+```bash
+cd ~/.worktrees/mocode/test-slim-w1b-host-cli && uv sync
+uv run pytest -q 2>&1 | grep -A17 "BARE SLEEPS"   # 你的清零工单（基线：你的组约 4 次：conversations/plugin_install 各 1、display/channel 长尾）
+```
+
+W1 四个新 API 已由 W0 交付在 `tests/conftest.py`：`settle` / `wait_until` /
+`FakeClock` + `advance` / `real_time`，直接 import 使用；命名不许再自造第二套。
+
 ## 工单（按序执行，每项一个 commit，每 commit 独立过门禁）
 
 ### T1 参数化合并机械重复
