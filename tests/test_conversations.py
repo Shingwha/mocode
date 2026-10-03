@@ -189,7 +189,10 @@ class TestConcurrency:
         class Stopped(MockProvider):
             async def stream(self, *args):
                 entered.set()  # the request is in flight — safe to cancel
-                await asyncio.sleep(30)
+                # A gate that never opens: the turn parks here until it is
+                # cancelled, which is the thing under test. An event, not a
+                # sleep — nothing about the overlap depends on a duration.
+                await asyncio.Event().wait()
                 yield  # pragma: no cover - never reached
 
         stopped = mc.new_conversation(cwd=project(tmp_path, "a"))
