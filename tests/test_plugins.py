@@ -156,7 +156,8 @@ class TestDiscovery:
         assert [s.name for s in discover([solo_root])] == ["solo"]
 
     def test_directories_that_are_not_plugins_are_skipped(self, tmp_path: Path):
-        """没有清单的目录不是插件；占了保留名的也不是。"""
+        """没有清单的目录不是插件；占了保留名的也不是；反过来，只有 skills/
+        的目录仍然是插件——只是没有代码可加载。"""
         junk = tmp_path / "junk"
         junk.mkdir()
         (junk / "plugin.py").write_text("", encoding="utf-8")
@@ -165,12 +166,10 @@ class TestDiscovery:
         write_plugin(tmp_path, "shell", GREET_CODE)
         assert discover([tmp_path], reserved={"shell"}) == []
 
-    def test_a_plugin_without_code_is_still_a_plugin(self, tmp_path: Path):
-        """`skills/` alone is a plugin — the standard's portable component."""
         write_plugin(tmp_path, "kit", skills=["deploy"])
-        spec = discover([tmp_path])[0]
-        assert spec.module is None
-        assert load_plugin(spec) is None
+        [kit] = discover([tmp_path], reserved={"shell"})
+        assert kit.module is None
+        assert load_plugin(kit) is None
 
     def test_local_wins_over_global(self, tmp_path: Path):
         local, global_ = tmp_path / "local", tmp_path / "global"
@@ -294,7 +293,13 @@ class TestPackagePlugins:
 
     def test_a_namespace_without_an_entry_point_is_reported(self, tmp_path: Path, capsys):
         """命名段里没有入口点的两种形态都点名报出来：包目录缺 __init__、
-        散落的模块。"""
+        散落的模块。空命名目录不是 near-miss——没什么可修，也什么都不说。"""
+        empty = write_plugin(tmp_path, "empty")
+        (empty / HOST_NAMESPACE).mkdir()
+
+        assert discover([tmp_path])[0].module is None
+        assert capsys.readouterr().err == ""
+
         no_init = write_plugin(tmp_path, "no-init")
         package = no_init / HOST_NAMESPACE / "plugin"
         package.mkdir(parents=True)
@@ -311,14 +316,6 @@ class TestPackagePlugins:
         err = capsys.readouterr().err
         assert "plugin/__init__.py" in err
         assert "helpers.py" in err
-
-    def test_a_namespace_that_ships_nothing_stays_quiet(self, tmp_path: Path, capsys):
-        """An empty namespace directory is not a near-miss — nothing to fix."""
-        plugin_dir = write_plugin(tmp_path, "empty")
-        (plugin_dir / HOST_NAMESPACE).mkdir()
-
-        assert discover([tmp_path])[0].module is None
-        assert capsys.readouterr().err == ""
 
     def test_a_broken_package_leaves_no_submodules_behind(
         self, tmp_path: Path, capsys
@@ -370,6 +367,19 @@ class TestPluginHost:
         agent = host.assemble(provider=MockProvider(), config=AgentConfig())
         await host.materialize()
 
+        # 内建集本身固定且有序：名字表即加载顺序
+        assert [p.name for p in builtin_plugins()] == [
+            "filesystem",
+            "shell",
+            "skills",
+            "mcp",
+            "codemode",
+            "default-prompts",
+            "session",
+            "help",
+            "effort",
+            "cache-protect",
+        ]
         assert sorted(ctx.tools.names()) == [
             "bash",
             "bash_output",
@@ -508,20 +518,6 @@ class TestPluginHost:
 
 
 class TestPluginSet:
-    def test_builtin_registry_is_stable(self):
-        assert [p.name for p in builtin_plugins()] == [
-            "filesystem",
-            "shell",
-            "skills",
-            "mcp",
-            "codemode",
-            "default-prompts",
-            "session",
-            "help",
-            "effort",
-            "cache-protect",
-        ]
-
     def test_loaded_once_and_built_per_conversation(
         self, tmp_path: Path, plugin_host
     ):
@@ -570,9 +566,13 @@ class TestPluginSet:
 
 
 class TestHostContext:
-    def test_registries_are_created_on_demand_and_accept_commands(self, tmp_path: Path):
-        """新 context 的注册表是空的，也接受注册。"""
+    def test_build_context_has_no_agent_and_assembly_grows_it(self, tmp_path: Path):
+        """The stage split, as a runtime fact: no agent during build(), the
+        same object carries one after assembly — and a fresh context's
+        registries are empty until something registers."""
         ctx = _ctx(tmp_path)
+        assert not hasattr(ctx, "agent")
+
         assert ctx.tools.names() == []
         assert ctx.commands.all() == []
 
@@ -583,12 +583,6 @@ class TestHostContext:
 
         ctx.commands.register(Command("/x", "test", handler=_noop))
         assert [c.name for c in ctx.commands.all()] == ["/x"]
-
-    def test_build_context_has_no_agent_and_assembly_grows_it(self, tmp_path: Path):
-        """The stage split, as a runtime fact: no agent during build(), the
-        same object carries one after assembly."""
-        ctx = _ctx(tmp_path)
-        assert not hasattr(ctx, "agent")
 
         grown = PluginHost(ctx, []).assemble(
             provider=MockProvider(), config=AgentConfig()
