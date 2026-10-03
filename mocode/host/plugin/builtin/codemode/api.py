@@ -23,22 +23,22 @@ import json
 import math
 import re
 import textwrap
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from .....core.tool import ToolRegistry
+from .result import Result, ToolCallError
 from .runtime import CodemodeError, _ScriptExit
 from .search import normalize, rank
 
 if TYPE_CHECKING:
-    from .....core.dispatch import DispatchResult, ToolDispatcher
+    from .....core.dispatch import ToolDispatcher
     from .output import Output
 
 __all__ = [
+    "Result",
     "Store",
     "ToolBox",
     "ToolCallError",
-    "ToolOutcome",
     "build_env",
     "describe_tool_entry",
     "tool_entries",
@@ -56,68 +56,6 @@ _MODULES = {
     "itertools": itertools,
     "functools": functools,
 }
-
-
-class ToolCallError(Exception):
-    """A script's tool call came back with a non-ok status.
-
-    ``str()`` is ``"<name>: <content>"`` — the line a script logs when it
-    catches the failure — and ``.result`` is the raw
-    :class:`DispatchResult`, so scripts (and tests) can inspect the status,
-    details and error code.
-    """
-
-    def __init__(self, name: str, result: "DispatchResult"):
-        self.name = name
-        self.result = result
-        super().__init__(f"{name}: {result.content}")
-
-
-#: The four keys of :class:`ToolOutcome` the Mapping protocol answers, in
-#: field order.
-_OUTCOME_FIELDS = ("content", "details", "status", "error_code")
-
-
-@dataclass
-class ToolOutcome:
-    """What a successful ``tools.<name>(...)`` returns inside a script.
-
-    The four fields stay attributes; the object also answers the Mapping
-    protocol — :meth:`get`, :meth:`__getitem__`, :meth:`keys`,
-    :meth:`__contains__` — so ``res["content"]`` / ``res.get("details")``
-    / ``dict(res)`` work alongside ``res.content``. The attribute surface
-    and :meth:`to_dict` are unchanged.
-    """
-
-    content: str
-    details: dict = field(default_factory=dict)
-    status: str = "ok"
-    error_code: str | None = None
-
-    def __str__(self) -> str:
-        return self.content
-
-    def to_dict(self) -> dict:
-        return {
-            "content": self.content,
-            "details": self.details,
-            "status": self.status,
-            "error_code": self.error_code,
-        }
-
-    def __getitem__(self, key: str):
-        if key not in _OUTCOME_FIELDS:
-            raise KeyError(key)
-        return getattr(self, key)
-
-    def get(self, key: str, default=None):
-        return getattr(self, key) if key in _OUTCOME_FIELDS else default
-
-    def keys(self) -> list[str]:
-        return list(_OUTCOME_FIELDS)
-
-    def __contains__(self, key) -> bool:
-        return key in _OUTCOME_FIELDS
 
 
 #: The MCP naming prefix — the full name of an MCP tool is
@@ -265,9 +203,11 @@ class ToolBox:
             self.calls += 1
             if result.status != "ok":
                 raise ToolCallError(resolved, result)
-            return ToolOutcome(
+            return Result(
+                ok=True,
                 content=result.content,
                 details=result.details,
+                tool=resolved,
                 status=result.status,
                 error_code=result.error_code,
             )

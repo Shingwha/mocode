@@ -14,12 +14,12 @@ from mocode.host.plugin.builtin.codemode.api import (
     Store,
     ToolBox,
     ToolCallError,
-    ToolOutcome,
     _mcp_short_name,
     build_env,
     describe_tool_entry,
     tool_entries,
 )
+from mocode.host.plugin.builtin.codemode.result import Result
 from mocode.host.plugin.builtin.codemode.runtime import (
     _RESTRICTED_KEYS,
     RESTRICTED,
@@ -449,42 +449,94 @@ class TestMcpShortNames:
         assert _mcp_short_name(full) == short
 
 
-class TestToolOutcomeMapping:
-    """D7 — the outcome answers the Mapping protocol, attributes unchanged."""
+class TestResult:
+    """D17 — the outcome is a first-class Result: ok/tool/error accessors,
+    json()/structured helpers and a readable repr on top of the Mapping
+    protocol."""
 
-    def _outcome(self) -> ToolOutcome:
-        return ToolOutcome(content="c", details={"exit_code": 0}, error_code=None)
+    def _result(self) -> Result:
+        return Result(
+            ok=True,
+            content="c",
+            details={"exit_code": 0},
+            tool="echo",
+            error_code=None,
+        )
+
+    def test_accessors(self):
+        result = self._result()
+        assert result.ok is True
+        assert result.content == "c"
+        assert result.details == {"exit_code": 0}
+        assert result.tool == "echo"
+        assert result.status == "ok"
+        assert result.error_code is None
+        assert result.error is None
+        assert str(result) == "c"
+
+    def test_repr_ok_shows_tool_and_size(self):
+        assert repr(self._result()) == "<Result ok echo 1 chars>"
+        page = Result(ok=True, content="x" * 3141, tool="read")
+        assert repr(page) == "<Result ok read 3.1k chars>"
+
+    def test_repr_error_shows_tool_and_reason(self):
+        failed = Result(ok=False, tool="fail", error="fail: error: execution_error: nope")
+        assert repr(failed) == "<Result error fail: fail: error: execution_error: nope>"
+
+    def test_json_parses_content(self):
+        assert Result(content='{"a": 1, "b": [2]}').json() == {"a": 1, "b": [2]}
+        assert Result(content="[1, 2]").json() == [1, 2]
+
+    def test_json_failure_returns_a_diagnostic_string(self):
+        result = Result(content="not json at all")
+        message = result.json()
+        assert isinstance(message, str)
+        assert "not valid JSON" in message
+        assert "not json at all" in message  # the content snippet is included
+
+    def test_structured_reads_the_mcp_details_key(self):
+        structured = {"rows": [{"id": 1}]}
+        result = Result(content="rows", details={"structured_content": structured})
+        assert result.structured == structured
+        assert Result(content="plain").structured is None
+
+
+class TestResultMapping:
+    """D7 — the result answers the Mapping protocol, attributes unchanged."""
+
+    def _result(self) -> Result:
+        return Result(content="c", details={"exit_code": 0}, error_code=None)
 
     def test_the_four_methods(self):
-        outcome = self._outcome()
-        assert outcome.get("content") == "c"
-        assert outcome.get("details") == {"exit_code": 0}
-        assert outcome.get("status") == "ok"
-        assert outcome.get("error_code") is None
-        assert outcome["content"] == "c"
-        assert list(outcome.keys()) == ["content", "details", "status", "error_code"]
-        assert "status" in outcome
-        assert "nope" not in outcome
+        result = self._result()
+        assert result.get("content") == "c"
+        assert result.get("details") == {"exit_code": 0}
+        assert result.get("status") == "ok"
+        assert result.get("error_code") is None
+        assert result["content"] == "c"
+        assert list(result.keys()) == ["content", "details", "status", "error_code"]
+        assert "status" in result
+        assert "nope" not in result
 
     def test_get_defaults(self):
-        outcome = self._outcome()
-        assert outcome.get("nope") is None
-        assert outcome.get("nope", "fallback") == "fallback"
+        result = self._result()
+        assert result.get("nope") is None
+        assert result.get("nope", "fallback") == "fallback"
 
     def test_unknown_key_raises_key_error(self):
         with pytest.raises(KeyError):
-            self._outcome()["nope"]
+            self._result()["nope"]
 
     def test_dict_round_trip_matches_to_dict(self):
-        assert dict(self._outcome()) == self._outcome().to_dict()
+        assert dict(self._result()) == self._result().to_dict()
 
     def test_attributes_and_str_unchanged(self):
-        outcome = self._outcome()
-        assert outcome.content == "c"
-        assert outcome.details == {"exit_code": 0}
-        assert outcome.status == "ok"
-        assert outcome.error_code is None
-        assert str(outcome) == "c"
+        result = self._result()
+        assert result.content == "c"
+        assert result.details == {"exit_code": 0}
+        assert result.status == "ok"
+        assert result.error_code is None
+        assert str(result) == "c"
 
 
 class TestDiscovery:
