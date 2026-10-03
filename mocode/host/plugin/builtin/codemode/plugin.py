@@ -144,6 +144,7 @@ def codemode_tool(host: "HostContext") -> Tool:
             tool_calls=toolbox.calls,
             max_chars=options.get("max_output_chars")
             or config.get("max_output_chars", 12000),
+            script=script,
         )
 
     return Tool(

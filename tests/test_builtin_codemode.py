@@ -26,6 +26,7 @@ from mocode.host.plugin.builtin.codemode.runtime import (
     CodemodeError,
     _ScriptExit,
     run_script,
+    script_error_line,
 )
 
 from .conftest import echo_tool, make_agent
@@ -194,6 +195,34 @@ class TestRunScript:
         assert RESTRICTED != __builtins__ if isinstance(__builtins__, dict) else True
         assert "open" not in RESTRICTED
         assert "len" in RESTRICTED
+
+
+class TestScriptErrorLine:
+    """D10 — the wrapper offset: script line = reported line - 1."""
+
+    async def test_error_in_script_own_code(self):
+        with pytest.raises(ValueError, match="boom") as exc_info:
+            await run_script("text('a')\ntext('b')\nraise ValueError('boom')", {"text": lambda v: None})
+        assert script_error_line(exc_info.value) == 3
+
+    async def test_error_in_nested_function_still_codemode(self):
+        script = "def helper():\n    raise ValueError('inner')\n\nhelper()"
+        with pytest.raises(ValueError, match="inner") as exc_info:
+            await run_script(script, {})
+        assert script_error_line(exc_info.value) == 2
+
+    async def test_syntax_error_line(self):
+        with pytest.raises(SyntaxError) as exc_info:
+            await run_script("text('a')\ndef broken(:", {"text": lambda v: None})
+        assert script_error_line(exc_info.value) == 2
+
+    async def test_error_outside_script_has_no_line(self):
+        # No traceback at all (a bare exception) and a CodemodeError raised
+        # by run_script itself both point outside the script's frames.
+        assert script_error_line(ValueError("bare")) is None
+        with pytest.raises(CodemodeError) as exc_info:
+            await run_script("", {})
+        assert script_error_line(exc_info.value) is None
 
 
 # ── T2: api — ToolBox, discovery, store ─────────────────────
@@ -877,8 +906,50 @@ class TestRunTool:
         result = await self._run(host, 'text("before")\nraise ValueError("boom")')
         assert result.content.startswith("Script failed in ")
         assert "\nbefore\n" in result.content
-        assert result.content.endswith("Script error: ValueError: boom")
+        assert result.content.endswith(
+            'Script error (line 2): ValueError: boom\nraise ValueError("boom")'
+        )
         assert result.details["ok"] is False
+
+    async def test_error_reports_script_line_and_source(self, plugin_host):
+        # D10: the wrapper's header line shifts reported lines by one; the
+        # error names the real script line and shows that line's source.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, 'text("a")\ntext("b")\nraise ValueError("boom")')
+        assert result.details["ok"] is False
+        assert "Script error (line 3): ValueError: boom\n" in result.content
+        assert 'raise ValueError("boom")' in result.content
+
+    async def test_error_line_inside_nested_function(self, plugin_host):
+        # A failure in a function the script defined still lives in a
+        # <codemode> frame — the reported line is the raise inside helper().
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        script = "def helper():\n    raise ValueError('inner')\n\nhelper()"
+        result = await self._run(host, script)
+        assert result.details["ok"] is False
+        assert "Script error (line 2): ValueError: inner\n" in result.content
+        assert "raise ValueError('inner')" in result.content
+
+    async def test_syntax_error_reports_real_line(self, plugin_host):
+        # The SyntaxError off-by-one: Python reports against the compiled
+        # source, whose first line is the wrapper header — line 3 there is
+        # line 2 of the script.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, 'text("a")\ndef broken(:')
+        assert result.details["ok"] is False
+        assert "Script error (line 2): SyntaxError:" in result.content
+        assert "\ndef broken(:" in result.content
+
+    async def test_tool_call_error_reports_no_line(self, plugin_host):
+        # The failure surfaced inside the tool box (ToolCallError), not in
+        # the script's own code — the plain format stays.
+        registry = ToolRegistry()
+        registry.register(_failing_tool())
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await self._run(host, "await tools.fail({})")
+        assert result.details["ok"] is False
+        assert "Script error: ToolCallError: fail: error: execution_error: nope" in result.content
+        assert "Script error (line" not in result.content
 
     async def test_failing_tool_call_fails_script(self, plugin_host):
         registry = ToolRegistry()
@@ -1119,7 +1190,9 @@ class TestEndToEnd:
         content = str(tool_messages[0]["content"])
         assert content.startswith("Script failed in ")
         assert "partial" in content
-        assert content.endswith("Script error: ValueError: broken")
+        assert content.endswith(
+            'Script error (line 2): ValueError: broken\nraise ValueError("broken")'
+        )
         assert host.ctx.plugin_state("codemode") == {}
 
     async def test_denied_visibility_never_reaches_messages(self, plugin_host):

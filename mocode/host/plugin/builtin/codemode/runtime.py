@@ -23,7 +23,14 @@ from __future__ import annotations
 import builtins
 import textwrap
 
-__all__ = ["CodemodeError", "RESTRICTED", "_ScriptExit", "run_script"]
+__all__ = [
+    "CODEMODE_FILENAME",
+    "CodemodeError",
+    "RESTRICTED",
+    "_ScriptExit",
+    "run_script",
+    "script_error_line",
+]
 
 
 class CodemodeError(Exception):
@@ -74,6 +81,47 @@ def _whitelisted_names() -> list[str]:
 RESTRICTED: dict = {name: getattr(builtins, name) for name in _whitelisted_names()}
 
 
+#: The synthetic filename scripts are compiled under. Every frame the
+#: script's own code occupies names it in a traceback.
+CODEMODE_FILENAME = "<codemode>"
+
+#: The wrapper is exactly one line tall — ``async def __codemode__():`` — so
+#: a line number reported against the compiled source is one more than the
+#: line in the script the user wrote.
+_WRAPPER_LINES = 1
+
+
+def script_error_line(error: BaseException) -> int | None:
+    """The 1-based line of the script *error* points at, or ``None``.
+
+    A :class:`SyntaxError` carries its position on the compiled source. Any
+    exception the script raised is located by the innermost frame of its
+    traceback: it names :data:`CODEMODE_FILENAME` only while the failure is
+    in the script's own code — a function nested in the script qualifies, an
+    error surfacing inside the tool box (``ToolCallError``) or the plugin
+    (``CodemodeError``) does not, and keeps the plain error format. The
+    wrapper offset (see :func:`run_script`) is subtracted either way.
+    """
+    if isinstance(error, SyntaxError):
+        line = error.lineno
+        if line is None:
+            return None
+        found = line
+    else:
+        tb = error.__traceback__
+        innermost = None
+        while tb is not None:
+            innermost = tb
+            tb = tb.tb_next
+        if innermost is None:
+            return None
+        if innermost.tb_frame.f_code.co_filename != CODEMODE_FILENAME:
+            return None
+        found = innermost.tb_lineno
+    line = found - _WRAPPER_LINES
+    return line if line >= 1 else None
+
+
 async def run_script(script: str, env: dict) -> object:
     """Compile *script* as an async function body and run it in *env*.
 
@@ -93,7 +141,7 @@ async def run_script(script: str, env: dict) -> object:
     source = (
         "async def __codemode__():\n" + textwrap.indent(script, "    ") + "\n"
     )
-    code = compile(source, "<codemode>", "exec")
+    code = compile(source, CODEMODE_FILENAME, "exec")
     env["__builtins__"] = RESTRICTED
     exec(code, env)  # single dict: the function's __globals__ is env
     return await env["__codemode__"]()
