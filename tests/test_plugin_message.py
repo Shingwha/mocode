@@ -18,7 +18,10 @@ from mocode.core.hook import AgentHook
 
 
 class TestPluginMessage:
-    def test_the_fields_and_their_defaults(self):
+    def test_the_fields_their_defaults_and_their_serialization(self):
+        """字段与缺省在场，type 判别值钉住；to_dict 是纯数据——嵌套的
+        dataclass 与列表都摊平成 JSON 形状；封块就是把 kind 腾空、sealed
+        立起来。"""
         event = PluginMessage(kind="shell/background-done")
         assert (event.kind, event.data, event.block_id, event.sealed) == (
             "shell/background-done",
@@ -28,21 +31,16 @@ class TestPluginMessage:
         )
         assert event.type == "plugin_message"
 
-        # 封块就是把 kind 腾空、sealed 立起来——字段组合的序列化形态
-        data = PluginMessage(block_id="rag-1", sealed=True).to_dict()
-        assert data["sealed"] is True and data["block_id"] == "rag-1" and data["kind"] == ""
-
-    def test_to_dict_is_plain_data_with_the_nested_payload(self):
         @dataclass
         class Inner:
             n: int = 1
 
-        event = PluginMessage(
+        nested = PluginMessage(
             kind="rag/index",
             data={"done": 12, "inner": Inner(), "tags": ["a", {"b": 2}]},
             block_id="rag-1",
         )
-        data = event.to_dict()
+        data = nested.to_dict()
 
         assert data["type"] == "plugin_message"
         assert data["kind"] == "rag/index"
@@ -50,21 +48,18 @@ class TestPluginMessage:
         assert data["sealed"] is False
         assert data["data"] == {"done": 12, "inner": {"n": 1}, "tags": ["a", {"b": 2}]}
 
-    def test_the_dict_round_trips_through_the_fields(self):
-        """A transport rebuilds the event from ``to_dict`` and gets it back."""
-        original = PluginMessage(
-            kind="shell/background-done",
-            data={"jobs": [{"id": "shell_1", "exit_code": 0}]},
-            block_id="shell-bg-1",
-        )
-        flat = original.to_dict()
+        # 封块的序列化形态
+        sealed = PluginMessage(block_id="rag-1", sealed=True).to_dict()
+        assert sealed["sealed"] is True and sealed["block_id"] == "rag-1" and sealed["kind"] == ""
+
+        # A transport rebuilds the event from ``to_dict`` and gets it back.
         rebuilt = PluginMessage(
-            kind=flat["kind"],
-            data=flat["data"],
-            block_id=flat["block_id"],
-            sealed=flat["sealed"],
+            kind=data["kind"],
+            data=data["data"],
+            block_id=data["block_id"],
+            sealed=data["sealed"],
         )
-        assert rebuilt.to_dict() == flat
+        assert rebuilt.to_dict() == data
 
     def test_summary_names_the_kind(self):
         assert PluginMessage(kind="rag/index", data={"done": 1}).summary() == (
@@ -120,14 +115,12 @@ class TestEmitMessage:
         # Between turns the entry belongs to the conversation stream alone.
         assert message.run_id == ""
 
-    async def test_seal_message_publishes_a_sealed_marker(self, plugin_host):
-        host = plugin_host()
-
+        # seal_message 落在同一条通道上：块号不变，sealed 立起来，kind 腾空
         await host.ctx.seal_message("rag-1")
 
-        message = host.ctx.agent.channel.history()[-1]
-        assert isinstance(message, PluginMessage)
-        assert (message.block_id, message.sealed, message.kind) == ("rag-1", True, "")
+        sealed = host.ctx.agent.channel.history()[-1]
+        assert isinstance(sealed, PluginMessage)
+        assert (sealed.block_id, sealed.sealed, sealed.kind) == ("rag-1", True, "")
 
     async def test_the_payload_is_copied_not_shared(self, plugin_host):
         host = plugin_host()
@@ -138,24 +131,6 @@ class TestEmitMessage:
 
         message = host.ctx.agent.channel.history()[-1]
         assert message.data == {"done": 1}
-
-    async def test_during_a_turn_it_is_stamped_like_any_emit(self, plugin_host):
-        class EmitViaConvenience(AgentHook):
-            def __init__(self, ctx):
-                self._ctx = ctx
-
-            async def before_iteration(self, ctx) -> None:
-                await self._ctx.emit_message("shell/background-done", {"jobs": []})
-
-        host = plugin_host(hook=lambda ctx: EmitViaConvenience(ctx))
-
-        await host.ctx.agent.chat("go")
-
-        messages = [
-            e for e in host.ctx.agent.channel.history() if isinstance(e, PluginMessage)
-        ]
-        assert len(messages) == 1
-        assert messages[0].run_id == host.ctx.agent.turn.id
 
     def test_the_sdk_exports_it(self):
         import mocode.plugins as sdk

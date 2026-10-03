@@ -287,20 +287,17 @@ class TestAResume:
         assert "read" in _tool_names(provider.calls[0]["tools"])
         assert _tool_states(updates(second)[-1]["content"]) == {"read": "disabled"}
 
-    async def test_a_resume_with_no_change_says_nothing(
-        self, mc: MoCode, tmp_path: Path, wired
-    ):
-        workdir = project(tmp_path, "a")
-        conversation, _ = wired("one", cwd=workdir)
-        await conversation.chat("hi")
-        session = conversation.save()
+        # 存档之后世界没动：同一条 resume 路径，一条公告都没有
+        still, _ = wired("one", cwd=workdir)
+        await still.chat("hi")
+        untouched = still.save()
 
-        second = mc.new_conversation(cwd=workdir)
-        await second.load_session(session)
-        wire(second, "two")
-        await second.chat("again")
+        third = mc.new_conversation(cwd=workdir)
+        await third.load_session(untouched)
+        wire(third, "two")
+        await third.chat("again")
 
-        assert updates(second) == []
+        assert updates(third) == []
 
 
 class TestTheHostsSwitch:
@@ -334,7 +331,9 @@ class TestTheHostsSwitch:
 
 
 class TestUnified:
-    def test_a_one_line_change_is_a_one_line_diff(self):
+    def test_the_diff_measures_the_change_in_both_directions(self):
+        """一行改动是一行 diff，报头点名被 diff 的块；新增越过空侧而来，
+        删除向空侧而去——正文按标记量出改动。"""
         from mocode.host.plugin.builtin.cache_protect import unified
 
         block = unified("the system prompt", "a\nb\nc", "a\nB\nc")
@@ -345,19 +344,16 @@ class TestUnified:
         assert "-b" in body
         assert "+B" in body
 
-    def test_an_addition_diffs_against_nothing_and_a_removal_diffs_to_nothing(self):
-        """新增与删除都是越过空侧的 diff。"""
-        from mocode.host.plugin.builtin.cache_protect import unified
-
+        # 新增与删除都是越过空侧的 diff
         addition = unified("tool 'grep'", "", '{\n  "name": "grep"\n}')
-        body = [
+        added = [
             line
             for line in addition.splitlines()
             if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
         ]
 
         assert "@@ -0,0 +1," in addition
-        assert body and all(line.startswith("+") for line in body)
+        assert added and all(line.startswith("+") for line in added)
 
         removal = unified("section 'time'", "today: old", "")
 

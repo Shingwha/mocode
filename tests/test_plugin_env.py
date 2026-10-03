@@ -36,15 +36,14 @@ def _fake_venv(plugin_dir: Path, *, windows: bool = True) -> Path:
 
 
 class TestSitePackages:
-    def test_both_platform_layouts(self, tmp_path: Path):
-        """site-packages 的位置是平台事实：两套布局各指各的地方。"""
+    def test_the_platform_layouts_or_none(self, tmp_path: Path):
+        """site-packages 的位置是平台事实：两套布局各指各的地方；没有
+        .venv、或 .venv 还空着：一个包都没有，解析为无。"""
         windows = _fake_venv(tmp_path / "w", windows=True)
         assert PluginVenv(tmp_path / "w").site_packages() == windows
         posix = _fake_venv(tmp_path / "p", windows=False)
         assert PluginVenv(tmp_path / "p").site_packages() == posix
 
-    def test_no_site_packages_means_none(self, tmp_path: Path):
-        """没有 .venv、或 .venv 还空着：一个包都没有，解析为无。"""
         assert PluginVenv(tmp_path).site_packages() is None
 
         venv = tmp_path / "venv"
@@ -55,7 +54,8 @@ class TestSitePackages:
 
 class TestAttach:
     def test_appends_at_the_end_of_sys_path_and_is_idempotent(self, tmp_path: Path):
-        """挂到 sys.path 末尾，再来一次是空操作——不重复挂载。"""
+        """挂到 sys.path 末尾，再来一次是空操作——不重复挂载；一个 .venv
+        都没有则什么都不挂。"""
         site = _fake_venv(tmp_path)
         venv = PluginVenv(tmp_path)
 
@@ -67,8 +67,7 @@ class TestAttach:
         assert venv.attach() is None
         assert sys.path.count(str(site)) == 1
 
-    def test_no_venv_attaches_nothing(self, tmp_path: Path):
-        assert PluginVenv(tmp_path).attach() is None
+        assert PluginVenv(tmp_path / "elsewhere").attach() is None
 
 
 class TestTheBridge:
@@ -119,7 +118,9 @@ class TestSync:
         )
         return tmp_path
 
-    def test_runs_uv_sync_in_the_plugin_directory(self, tmp_path, monkeypatch):
+    def test_runs_uv_sync_in_the_plugin_directory_or_carries_uvs_last_word(
+        self, tmp_path, monkeypatch
+    ):
         plugin_dir = self._declared(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: "C:/fake/uv")
         calls = []
@@ -137,9 +138,7 @@ class TestSync:
         assert kwargs["cwd"] == plugin_dir
         assert "environment ready" in report
 
-    def test_failure_carries_uvs_last_word(self, tmp_path, monkeypatch):
-        plugin_dir = self._declared(tmp_path)
-        monkeypatch.setattr("shutil.which", lambda name: "C:/fake/uv")
+        # 失败了：异常带着 uv 自己最后那句话
         result = type(
             "R", (), {"returncode": 2, "stderr": "line\nno version pinned", "stdout": ""}
         )()
