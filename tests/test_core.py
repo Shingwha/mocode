@@ -104,26 +104,31 @@ class TestContainerSurface:
         registry.register(tool).disable("t").register(tool)
         assert registry.names() == ["t"]
 
+    def test_select_filters_by_tag_and_shares_instances(self):
+        registry = ToolRegistry()
+        registry.register(Tool("a", "d", {}, lambda x: "a", tags={"fs"}))
+        registry.register(Tool("b", "d", {}, lambda x: "b", tags={"shell"}))
+        registry.register(Tool("c", "d", {}, lambda x: "c"))
+
+        assert registry.select(include_tags={"fs"}).names() == ["a"]
+        assert registry.select(exclude_tags={"fs"}).names() == ["b", "c"]
+        assert registry.select(exclude_names={"c"}).names() == ["a", "b"]
+        # 过滤出来的是同一个实例，不是拷贝。
+        assert registry.select().get("a") is registry.get("a")
+
 
 class TestPrompt:
-    def test_xml_format_and_priority_order(self):
+    def test_xml_format_priority_order_and_insertion_ties(self):
         result = (
             Prompt()
             .register(Section("z", "second", priority=20))
             .register(Section("a", "first", priority=10))
+            .register(Section("tie", "tied", priority=10))
             .build()
         )
         assert "<system-prompt>" in result
-        assert result.index("first") < result.index("second")
-
-    def test_insertion_order_within_a_priority(self):
-        result = (
-            Prompt()
-            .register(Section("first", "aaa", priority=10))
-            .register(Section("second", "bbb", priority=10))
-            .build()
-        )
-        assert result.index("aaa") < result.index("bbb")
+        # 同级按注册先后：first 先于 tie，两者都先于低优先级的 second。
+        assert result.index("first") < result.index("tie") < result.index("second")
 
     def test_a_disabled_section_is_hidden(self):
         prompt = (
@@ -149,21 +154,17 @@ class TestPrompt:
         assert '<tool name="bash">\nRun bash\n</tool>' in result
         assert '<tool name="read">\nRead files\n</tool>' in result
 
-    def test_a_render_field_produces_the_text(self):
-        section = Section("sdk", render=lambda ctx: f"tools known: {ctx.get('n', 0)}")
-
-        result = Prompt().register(section).build()
-
-        assert "tools known: 0" in result
-
-    def test_render_beats_a_callable_content(self):
+    def test_a_render_field_beats_a_callable_content_and_reads_the_context(self):
         section = Section(
             "both",
             lambda _ctx: "from content",
-            render=lambda _ctx: "from render",
+            render=lambda ctx: f"from render: n={ctx.get('n', 0)}",
         )
 
-        assert "from render" in Prompt().register(section).build()
+        result = Prompt().register(section).build()
+
+        assert "from render: n=0" in result
+        assert "from content" not in result
 
     def test_a_pinned_section_renders_once_and_holds_its_bytes(self):
         state = {"n": 1}
@@ -201,7 +202,7 @@ class TestPrompt:
 
 
 class TestTool:
-    def test_sync_and_async_execution(self):
+    async def test_sync_and_async_execution(self):
         def sync(args):
             return f"sync:{args['v']}"
 
@@ -213,43 +214,19 @@ class TestTool:
             "properties": {"v": {"type": "string", "description": "v"}},
             "required": ["v"],
         }
+        # run() 与 run_async() 是同一条执行路径：同步函数经 await 也一样跑。
         assert Tool("s", "d", schema, sync).run({"v": "x"}) == "sync:x"
+        assert await Tool("s", "d", schema, sync).run_async({"v": "x"}) == "sync:x"
 
         tool = Tool("a", "d", schema, async_)
         assert tool.is_async is True
         assert tool.wants_context is False
-
-    async def test_async_tool_runs(self):
-        async def run(args):
-            return f"async:{args['v']}"
-
-        tool = Tool(
-            "a",
-            "d",
-            {
-                "type": "object",
-                "properties": {"v": {"type": "string", "description": "v"}},
-                "required": ["v"],
-            },
-            run,
-        )
         assert await tool.run_async({"v": "x"}) == "async:x"
 
-    async def test_a_sync_tool_runs_through_run_async_too(self):
-        def run(args):
-            return f"sync:{args['v']}"
-
-        tool = Tool(
-            "s",
-            "d",
-            {
-                "type": "object",
-                "properties": {"v": {"type": "string", "description": "v"}},
-                "required": ["v"],
-            },
-            run,
-        )
-        assert await tool.run_async({"v": "x"}) == "sync:x"
+    def test_metadata_declares_capability_and_the_summary_field(self):
+        tool = Tool("echo", "d", {}, lambda a: "ok", tags={"fs", "demo"}, summary_key="value")
+        assert tool.tags == frozenset({"fs", "demo"})
+        assert tool.summary_key == "value"
 
     def test_a_tool_declares_its_context_explicitly(self):
         def plain(args):
@@ -279,17 +256,20 @@ class TestTool:
         assert tool.run({}) == "bare"
         assert tool.run({}, ToolCallContext()) == "ctx"
 
-    def test_declaring_a_context_the_function_cannot_take_fails_at_construction(self):
+    def test_a_context_declaration_the_signature_contradicts_fails_at_construction(
+        self,
+    ):
         def plain(args):
             return "plain"
 
-        with pytest.raises(TypeError, match="with_context=True needs"):
-            Tool("p", "d", {}, plain, with_context=True)
-
-    def test_a_second_required_parameter_without_the_declaration_fails_at_construction(self):
         def forgot(args, ctx):
             return "never runs"
 
+        # 声明了 with_context，函数却接不住第二个参数。
+        with pytest.raises(TypeError, match="with_context=True needs"):
+            Tool("p", "d", {}, plain, with_context=True)
+
+        # 函数接得住，却没声明——签名探测答不上来它是不是上下文。
         with pytest.raises(TypeError, match="with_context=True"):
             Tool("f", "d", {}, forgot)
 
@@ -357,17 +337,20 @@ class TestSchemaDeclaration:
         with pytest.raises(TypeError, match="JSON Schema object node"):
             Tool("t", "T", ["not", "a", "schema"], lambda a: "ok")
 
-    def test_summary_key_defaults_to_the_first_required_parameter(self):
-        schema = {
-            "type": "object",
-            "properties": {"z": {"type": "string"}, "a": {"type": "string"}},
-            "required": ["z", "a"],
-        }
-        assert _tool_with(schema).summary_key == "z"
-
-    def test_summary_key_falls_back_to_the_first_property(self):
-        schema = {"type": "object", "properties": {"z": {"type": "string"}}}
-        assert _tool_with(schema).summary_key == "z"
+    def test_summary_key_picks_the_first_required_then_the_first_property(self):
+        # required 里的第一个；没有 required 时退到第一个 property。
+        with_required = _tool_with(
+            {
+                "type": "object",
+                "properties": {"z": {"type": "string"}, "a": {"type": "string"}},
+                "required": ["z", "a"],
+            }
+        )
+        with_property_only = _tool_with(
+            {"type": "object", "properties": {"z": {"type": "string"}}}
+        )
+        assert with_required.summary_key == "z"
+        assert with_property_only.summary_key == "z"
 
 
 class TestSchemaChecker:

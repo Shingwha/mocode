@@ -15,17 +15,12 @@ def _deltas(n: int) -> list[Notice]:
 
 
 class TestPublishing:
-    async def test_seq_is_monotonic_across_turns(self):
-        channel = EventChannel()
-        for i in range(3):
-            assert await channel.publish(Notice(message=str(i))) == i + 1
-        assert channel.seq == 3
-
-    async def test_events_are_stamped_with_their_seq(self):
+    async def test_seq_counts_up_and_is_stamped_on_each_event(self):
         channel = EventChannel()
         events = _deltas(3)
-        for event in events:
-            await channel.publish(event)
+        for i, event in enumerate(events):
+            assert await channel.publish(event) == i + 1
+        assert channel.seq == 3
         assert [e.seq for e in events] == [1, 2, 3]
 
     async def test_publishing_without_readers_is_fine(self):
@@ -52,7 +47,7 @@ class TestSubscriptions:
 
         assert (await sub.get()).message == "new"
 
-    async def test_since_replays_the_backlog(self):
+    async def test_since_replays_the_backlog_and_continues_live(self):
         channel = EventChannel()
         for event in _deltas(3):
             await channel.publish(event)
@@ -61,14 +56,9 @@ class TestSubscriptions:
 
         assert [e.message for e in [await sub.get(), await sub.get()]] == ["1", "2"]
         assert sub.dropped == 0
-
-    async def test_replay_then_live_has_no_gap_and_no_repeat(self):
-        channel = EventChannel()
-        await channel.publish(Notice(message="a"))
-        sub = channel.subscribe(since=0)
-        await channel.publish(Notice(message="b"))
-
-        assert [e.message for e in [await sub.get(), await sub.get()]] == ["a", "b"]
+        # 回放接着直播：补看之后到的，不断档也不重复。
+        await channel.publish(Notice(message="3"))
+        assert (await sub.get()).message == "3"
 
     async def test_a_subscription_that_fell_behind_is_told_so(self):
         channel = EventChannel(replay=4)
@@ -106,23 +96,20 @@ class TestSubscriptions:
 class TestInline:
     async def test_the_publisher_waits_for_an_inline_subscriber(self):
         channel = EventChannel()
-        seen: list[str] = []
+        finished: list[str] = []
 
-        def _recorder():
-            async def record(event) -> None:
-                # A single yield, not a wait: the point is that the publisher
-                # awaits even a subscriber that has to suspend once to finish
-                # its work. The synchronization is the publish contract here.
-                await asyncio.sleep(0)
-                seen.append(event.message)
+        async def record(event) -> None:
+            # A genuine suspension — a hop to another thread — not a sleep:
+            # the point is that publish() does not return before the
+            # subscriber's work is complete.
+            await asyncio.to_thread(lambda: None)
+            finished.append(event.message)
 
-            return record
-
-        channel.inline(_recorder())
-        await channel.publish(Notice(message="a"))
-        await channel.publish(Notice(message="b"))
-
-        assert seen == ["a", "b"]
+        channel.inline(record)
+        assert await channel.publish(Notice(message="a")) == 1
+        assert await channel.publish(Notice(message="b")) == 2
+        # 每次 publish 返回时，订阅者的活都已真正干完。
+        assert finished == ["a", "b"]
 
     async def test_inline_delivery_precedes_the_buffered_one(self):
         """A hook sees the event before a reader can act on it."""
