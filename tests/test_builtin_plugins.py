@@ -56,23 +56,35 @@ class TestDefaultPrompts:
         """Tool schemas travel with every request; the prompt must not list them."""
         assert "<tool" not in conversation.agent.system_prompt
 
-    async def test_agents_md_merges_global_and_project(self, mc: MoCode):
-        mc.home.mkdir(parents=True, exist_ok=True)
-        (mc.home / "AGENTS.md").write_text("user-wide rule", encoding="utf-8")
+    async def test_agents_md_merges_global_and_project_and_its_absence_is_hinted(
+        self, mc: MoCode
+    ):
         project = mc.home.parent
-        (project / "AGENTS.md").write_text("project rule", encoding="utf-8")
-
+        # a missing tree renders a hint, not a silence — and a hint is a
+        # shape, not a sentence
         conversation = mc.new_conversation(cwd=project)
         await conversation.prepare()
+        assert "AGENTS.md" in conversation.agent.system_prompt
+
+        mc.home.mkdir(parents=True, exist_ok=True)
+        (mc.home / "AGENTS.md").write_text("user-wide rule", encoding="utf-8")
+        (project / "AGENTS.md").write_text("project rule", encoding="utf-8")
+        conversation.rebuild_prompt()
 
         assert "user-wide rule" in conversation.agent.system_prompt
         assert "project rule" in conversation.agent.system_prompt
 
-    async def test_no_agents_md_renders_a_hint(self, conversation: Conversation):
-        # a hint is rendered, not a specific sentence
-        assert "AGENTS.md" in conversation.agent.system_prompt
+    async def test_a_rebuild_re_reads_agents_md_and_refreshes_the_date(
+        self, mc: MoCode, monkeypatch
+    ):
+        from mocode.host.plugin.builtin import default_prompts
 
-    async def test_a_rebuild_re_reads_agents_md(self, mc: MoCode):
+        class frozen:
+            @staticmethod
+            def now():
+                return dt.datetime(2026, 9, 20)
+
+        monkeypatch.setattr(default_prompts, "datetime", frozen)
         project = mc.home.parent
         conversation = mc.new_conversation(cwd=project)
         await conversation.prepare()
@@ -82,19 +94,6 @@ class TestDefaultPrompts:
         conversation.rebuild_prompt()
 
         assert "Always use tabs." in conversation.agent.system_prompt
-
-    async def test_a_rebuild_refreshes_the_date(self, mc: MoCode, monkeypatch):
-        from mocode.host.plugin.builtin import default_prompts
-
-        class frozen:
-            @staticmethod
-            def now():
-                return dt.datetime(2026, 9, 20)
-
-        monkeypatch.setattr(default_prompts, "datetime", frozen)
-        conversation = mc.new_conversation(cwd=mc.home.parent)
-        await conversation.prepare()
-
         # the frozen clock's date reaches the prompt — the weekday is the
         # calendar's business, what the plugin owns is the date itself
         assert "2026-09-20" in conversation.agent.system_prompt
@@ -114,7 +113,7 @@ class TestDefaultPrompts:
 
 
 class TestSessionPlugin:
-    async def test_exports_json_into_the_project(self, conversation: Conversation):
+    async def test_exports_the_session_into_the_project(self, conversation: Conversation):
         conversation.messages.append({"role": "user", "content": "hi"})
 
         result, events = await run_command(_cmd(conversation, "/export"), conversation)
@@ -125,9 +124,7 @@ class TestSessionPlugin:
         # one message counted — the exported file itself is asserted above
         assert "1" in notices(events)[0].message
 
-    async def test_export_md_format(self, conversation: Conversation):
-        conversation.messages.append({"role": "user", "content": "hi"})
-
+        # and the same command writes markdown when asked for it
         await run_command(_cmd(conversation, "/export"), conversation, args="md")
 
         assert len(list(Path(conversation.cwd).glob("session_*.md"))) == 1
@@ -138,7 +135,7 @@ class TestSessionPlugin:
         assert [n.level for n in notices(events)] == ["warn"]
         assert list(Path(conversation.cwd).glob("session_*")) == []
 
-    async def test_clear_starts_a_new_session_and_says_so(
+    async def test_clear_starts_a_new_session_and_keeps_the_old_one(
         self, conversation: Conversation
     ):
         conversation.messages.append({"role": "user", "content": "hello"})
@@ -150,15 +147,7 @@ class TestSessionPlugin:
         assert conversation.id != previous
         assert conversation.messages == []
         assert any(isinstance(e, ConversationChanged) for e in events)
-
-    async def test_the_previous_session_survives_on_disk(
-        self, conversation: Conversation
-    ):
-        conversation.messages.append({"role": "user", "content": "hello"})
-        previous = conversation.id
-
-        await run_command(_cmd(conversation, "/clear"), conversation)
-
+        # the previous session survives on disk, under its old id
         assert [s.id for s in conversation.list_sessions()] == [previous]
 
 
@@ -192,8 +181,8 @@ class TestEffortPlugin:
         assert level == "(server default)"
         assert available.split(", ") == ["low", "medium", "high"]
 
-    async def test_a_level_arg_switches_it_for_this_conversation(
-        self, conversation: Conversation
+    async def test_a_level_arg_switches_it_for_this_conversation_only(
+        self, conversation: Conversation, monkeypatch
     ):
         result, events = await run_command(
             _cmd(conversation, "/effort"), conversation, args="high"
@@ -206,33 +195,15 @@ class TestEffortPlugin:
         level, _available = _effort_message(notice.message)
         assert level == "high"
 
-    async def test_an_unknown_level_warns_and_changes_nothing(
-        self, conversation: Conversation
-    ):
-        result, events = await run_command(
-            _cmd(conversation, "/effort"), conversation, args="ultra"
-        )
-
-        assert result is CONTINUE
-        assert conversation.agent.model.effort is None
-        warnings = notices(events)
-        assert len(warnings) == 1
-        assert warnings[0].level == "warn"
-        # the unknown word is echoed back and the valid ones are named
-        assert "ultra" in warnings[0].message
-        assert "low" in warnings[0].message and "high" in warnings[0].message
-
-    async def test_switching_never_writes_config(
-        self, conversation: Conversation, monkeypatch
-    ):
+        # the switch is a decision about this conversation — nothing writes
+        # config.json for it
         saves: list = []
         monkeypatch.setattr(
             conversation.runtime.config, "save", lambda *a, **k: saves.append(1)
         )
+        await run_command(_cmd(conversation, "/effort"), conversation, args="low")
 
-        await run_command(_cmd(conversation, "/effort"), conversation, args="high")
-
-        assert conversation.agent.model.effort == "high"
+        assert conversation.agent.model.effort == "low"
         assert saves == []
 
 

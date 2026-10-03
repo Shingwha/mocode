@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 import textwrap
 from pathlib import Path
 
@@ -21,57 +20,7 @@ import mcp_types as sdk_types
 from mcp.shared.memory import create_client_server_memory_streams
 from mcp.shared.message import SessionMessage
 
-#: A minimal modern-era MCP server with one tool, ``echo``, that answers
-#: ``tools/call`` with its arguments serialized as JSON.
-ECHO_SERVER = r'''
-import json, sys, os
-
-def send(msg):
-    sys.stdout.write(json.dumps(msg) + "\n")
-    sys.stdout.flush()
-
-pidfile = os.environ.get("MCP_TEST_PIDFILE")
-if pidfile:
-    open(pidfile, "w").write(str(os.getpid()))
-sys.stderr.write("echo server starting\n")
-sys.stderr.flush()
-
-TOOLS = [
-    {"name": "echo", "description": "Echo the arguments back",
-     "inputSchema": {"type": "object", "properties": {"x": {"type": "string"}},
-                     "required": ["x"]}},
-]
-
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    try:
-        req = json.loads(line)
-    except ValueError:
-        continue
-    method, rid = req.get("method"), req.get("id")
-    params = req.get("params") or {}
-    if method == "server/discover":
-        send({"jsonrpc": "2.0", "id": rid, "result": {
-            "resultType": "complete",
-            "supportedVersions": ["2026-07-28"],
-            "capabilities": {"tools": {}},
-            "_meta": {"io.modelcontextprotocol/serverInfo": {"name": "echo-srv", "version": "1.0"}},
-            "instructions": "Echo server instructions."}})
-    elif method == "tools/list":
-        send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "tools": TOOLS, "ttlMs": 0, "cacheScope": "public"}})
-    elif method == "tools/call":
-        send({"jsonrpc": "2.0", "id": rid, "result": {
-            "resultType": "complete",
-            "content": [{"type": "text", "text": "echo:" + json.dumps(params.get("arguments") or {})}],
-            "structuredContent": {"args": params.get("arguments") or {}}}})
-    else:
-        send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(method)}})
-'''
-
-
-def write_server(tmp_path: Path, name: str, code: str = ECHO_SERVER) -> Path:
+def write_server(tmp_path: Path, name: str, code: str) -> Path:
     """Write a fake server script into *tmp_path*; return its path."""
     path = tmp_path / name
     path.write_text(textwrap.dedent(code), encoding="utf-8")
@@ -83,11 +32,6 @@ def write_mcp_json(path: Path, servers: dict) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
     return path
-
-
-def stdio_entry(script: Path, **extra) -> dict:
-    """A stdio server entry pointing at a fake script."""
-    return {"type": "stdio", "command": sys.executable, "args": [str(script)], **extra}
 
 
 def pidfile_env(tmp_path: Path, name: str) -> dict:

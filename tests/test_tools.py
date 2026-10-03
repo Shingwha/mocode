@@ -21,29 +21,22 @@ from .conftest import skill_dir
 
 
 class TestBashSession:
-    async def test_runs_a_command(self, tmp_path: Path):
-        result = await BashSession(tmp_path).execute("echo hello", timeout=10)
-        assert result.content == "hello"
-
-    async def test_the_exit_code_travels_as_a_detail(self, tmp_path: Path):
+    async def test_a_command_runs_and_its_exit_code_travels(self, tmp_path: Path):
         session = BashSession(tmp_path)
+        assert (await session.execute("echo hello", timeout=10)).content == "hello"
         assert (await session.execute("true", timeout=10)).details == {"exit_code": 0}
         assert (await session.execute("exit 3", timeout=10)).details == {"exit_code": 3}
 
-    async def test_cd_persists(self, tmp_path: Path):
+    async def test_state_persists_and_a_restart_clears_it(self, tmp_path: Path):
         session = BashSession(tmp_path)
+        # the working directory and the environment are session state: both
+        # survive a command and both are cleared by a restart
         result = await session.execute(f"cd {tmp_path}", timeout=10)
         assert str(tmp_path) in result.content
         assert session.cwd == str(tmp_path)
-
-    async def test_env_vars_persist_across_commands(self, tmp_path: Path):
-        session = BashSession(tmp_path)
         await session.execute("export MY_TEST_VAR=world", timeout=10)
         assert (await session.execute("echo $MY_TEST_VAR", timeout=10)).content == "world"
 
-    async def test_restart_clears_state(self, tmp_path: Path):
-        session = BashSession(tmp_path)
-        await session.execute("export MY_TEST_VAR=hello", timeout=10)
         session.restart()
         assert (await session.execute("echo $MY_TEST_VAR", timeout=10)).content == "(empty)"
 
@@ -74,24 +67,25 @@ class TestBashSession:
         assert "one" in result.content and "oops" in result.content
 
     async def test_timeout_kills_the_command(self, tmp_path: Path):
-        result = await BashSession(tmp_path).execute("sleep 5", timeout=1)
-        assert result.content == "(timed out after 1s)"
+        result = await BashSession(tmp_path).execute("sleep 5", timeout=0.3)
+        # the timeout is the subject — what is asserted is that the command
+        # died at the deadline, with the number read out of the message
+        assert result.content.startswith("(timed out after ")
+        assert result.content.endswith("s)")
+        assert float(result.content.rsplit(" ", 1)[1][:-2]) == 0.3
         assert "exit_code" not in result.details
 
 
 class TestBashTool:
-    def test_the_tool_asks_for_its_context_so_it_can_stream(self, tmp_path: Path):
+    def test_the_tool_shape_and_its_timeout_policy(self, tmp_path: Path):
+        from mocode.core.tool import ToolPolicy
+
         tool = bash_tool(tmp_path)
         assert tool.wants_context is True
         assert tool.is_async is True
         assert tool.result_key == "exit_code"
-
-    def test_the_model_timeout_argument_is_policy_not_bookkeeping(self, tmp_path: Path):
-        """The dispatcher enforces the deadline; the tool just maps the
-        argument onto a ToolPolicy and reads the resolved value back."""
-        from mocode.core.tool import ToolPolicy
-
-        tool = bash_tool(tmp_path)
+        # the dispatcher enforces the deadline; the tool just maps the
+        # argument onto a ToolPolicy and reads the resolved value back
         assert tool.policy({"timeout": 7}) == ToolPolicy(timeout=7)
         assert tool.policy({}) == ToolPolicy(timeout=None)  # fall to config
 
@@ -127,7 +121,7 @@ class TestBashTool:
 
 
 class TestReadTool:
-    def test_a_directory_is_listed_instead_of_erroring(self, tmp_path: Path):
+    def test_a_directory_is_listed_with_counts(self, tmp_path: Path):
         (tmp_path / "subdir").mkdir()
         (tmp_path / "hello.py").write_text("print('hi')", encoding="utf-8")
 
@@ -139,23 +133,16 @@ class TestReadTool:
         summary = result.split("\n", 1)[0]
         assert "subdir/" in result and "hello.py" in result
         assert "1" in summary and "directories" in summary and "files" in summary
+        # the way out of a listing is named, and no line count is shown for
+        # what has none
+        assert "directory" in result.lower()
+        assert "shell" in result
+        assert read_tool(tmp_path).run({"path": str(tmp_path)}).details == {}
 
-    def test_a_file_reports_how_many_lines_came_back(self, tmp_path: Path):
-        path = tmp_path / "a.py"
-        path.write_text("one\ntwo\nthree\n", encoding="utf-8")
-
-        result = read_tool(tmp_path).run({"path": str(path)})
-
-        assert result.details == {"lines": 3, "total_lines": 3}
-        assert "one" in result.content
-
-    def test_a_partial_read_reports_both_numbers(self, tmp_path: Path):
-        path = tmp_path / "big.py"
-        path.write_text("\n".join(str(i) for i in range(50)), encoding="utf-8")
-
-        result = read_tool(tmp_path).run({"path": str(path), "offset": 1, "limit": 10})
-
-        assert result.details == {"lines": 10, "total_lines": 50}
+    def test_an_empty_directory_is_reported(self, tmp_path: Path):
+        result = read_tool(tmp_path).run({"path": str(tmp_path)}).content
+        summary = result.split("\n", 1)[0]
+        assert "0" in summary and "directories" in summary and "files" in summary
 
     def test_noise_directories_are_skipped(self, tmp_path: Path):
         (tmp_path / "__pycache__").mkdir()
@@ -166,33 +153,33 @@ class TestReadTool:
         assert "__pycache__" not in result
         assert "real.py" in result
 
-    def test_an_empty_directory_is_reported(self, tmp_path: Path):
-        result = read_tool(tmp_path).run({"path": str(tmp_path)}).content
-        summary = result.split("\n", 1)[0]
-        assert "0" in summary and "directories" in summary and "files" in summary
+    def test_a_file_read_reports_its_line_numbers(self, tmp_path: Path):
+        path = tmp_path / "a.py"
+        path.write_text("one\ntwo\nthree\n", encoding="utf-8")
 
-    def test_the_result_explains_the_path_is_a_directory(self, tmp_path: Path):
-        result = read_tool(tmp_path).run({"path": str(tmp_path)}).content.lower()
-        assert "directory" in result
-        assert "shell" in result  # the way out is named, no specific tool is
+        result = read_tool(tmp_path).run({"path": str(path)})
 
-    def test_a_directory_reports_no_line_count(self, tmp_path: Path):
-        """``result_key`` is lines, and a listing has none — nothing is shown."""
-        assert read_tool(tmp_path).run({"path": str(tmp_path)}).details == {}
+        assert result.details == {"lines": 3, "total_lines": 3}
+        assert "one" in result.content
+
+        # a partial read reports both its own count and the file's
+        path = tmp_path / "big.py"
+        path.write_text("\n".join(str(i) for i in range(50)), encoding="utf-8")
+        partial = read_tool(tmp_path).run({"path": str(path), "offset": 1, "limit": 10})
+        assert partial.details == {"lines": 10, "total_lines": 50}
 
 
 class TestSkills:
-    def test_metadata_keeps_unknown_frontmatter_keys(self):
-        meta = SkillMetadata.from_dict({"name": "x", "description": "d", "version": "1"})
-        assert (meta.name, meta.description, meta.attrs) == ("x", "d", {"version": "1"})
-
-    def test_a_skill_loads_its_body_without_frontmatter(self, tmp_path: Path):
+    def test_a_skill_loads_its_body_and_keeps_unknown_metadata(self, tmp_path: Path):
         path = skill_dir(tmp_path, "my-skill", "test", "Hello world\n")
 
         skill = Skill.from_dir(path)
 
         assert skill.load_content() == "Hello world"
         assert skill.base_dir == str(path)
+        # frontmatter the schema does not name survives on the metadata
+        meta = SkillMetadata.from_dict({"name": "x", "description": "d", "version": "1"})
+        assert (meta.name, meta.description, meta.attrs) == ("x", "d", {"version": "1"})
 
     def test_a_skill_without_a_name_is_skipped(self, tmp_path: Path):
         skill_dir = tmp_path / "nameless"
@@ -200,7 +187,7 @@ class TestSkills:
         (skill_dir / "SKILL.md").write_text("---\ndescription: no name\n---\n", encoding="utf-8")
         assert Skill.from_dir(skill_dir) is None
 
-    def test_discovery_prefers_the_directory_over_a_registered_skill(self, tmp_path: Path):
+    def test_the_manager_prefers_the_directory_and_ignores_missing_ones(self, tmp_path: Path):
         skill_dir(tmp_path, "fastapi", "on disk")
 
         manager = SkillManager([tmp_path])
@@ -210,24 +197,20 @@ class TestSkills:
 
         assert manager.get("fastapi").metadata.description == "on disk"
         assert manager.names() == ["fastapi"]
-
-    def test_a_missing_skills_directory_is_ignored(self, tmp_path: Path):
         assert SkillManager([tmp_path / "nope"]).all() == []
 
-    def test_the_tool_returns_content_and_where_to_find_it(self, tmp_path: Path):
+    def test_the_tool_returns_content_and_errors_on_unknown(self, tmp_path: Path):
         path = skill_dir(tmp_path, "fastapi", "FastAPI tips", "Use dependency injection.")
 
         result = skill_tool(SkillManager([tmp_path])).run({"name": "fastapi"})
 
         assert str(path) in result
         assert "Use dependency injection." in result
+        assert parse_frontmatter("---\nname: test\ndescription: desc\n---\n\nBody here") == (
+            {"name": "test", "description": "desc"},
+            "Body here",
+        )
 
-    def test_an_unknown_skill_is_not_found(self, tmp_path: Path):
         with pytest.raises(ToolError) as exc:
             skill_tool(SkillManager([tmp_path])).run({"name": "nope"})
         assert exc.value.code == "not_found"
-
-    def test_skill_md_frontmatter_is_parsed(self):
-        fm, body = parse_frontmatter("---\nname: test\ndescription: desc\n---\n\nBody here")
-        assert fm == {"name": "test", "description": "desc"}
-        assert body == "Body here"

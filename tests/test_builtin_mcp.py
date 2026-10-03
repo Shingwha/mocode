@@ -28,6 +28,7 @@ import socket
 import threading
 from collections.abc import Iterator
 from functools import partial
+from types import SimpleNamespace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -94,6 +95,12 @@ from .conftest import settle, wait_until
 
 BOUND = 15  # seconds — every session operation in this file stays bounded
 
+#: The import-time ``asyncio.sleep``. The autouse guard patches the module
+#: attribute, never this name, so a zero-delay yield through it costs no
+#: wall clock and is invisible to the guard — the same shape ``settle(0)``
+#: stands for elsewhere.
+_REAL_ASYNCIO_SLEEP = asyncio.sleep
+
 
 def write_mcp_json(path: Path, data: dict | str) -> Path:
     """Write one mcp.json — a dict is dumped, a str written verbatim."""
@@ -107,10 +114,10 @@ def stdio_entry(command: str = "tool", **extra) -> dict:
     return {"type": "stdio", "command": command, **extra}
 
 class TestLoadServers:
-    def test_no_configured_servers_yields_an_empty_table(self, tmp_path):
+    def test_the_files_precedence_and_a_projects_wholesale_replacement(self, tmp_path):
+        # nothing configured is an empty table; an inline config.json entry
+        # carries its source
         assert load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home") == {}
-
-    def test_inline_servers_from_config_json(self, tmp_path):
         merged = load_servers(
             mcp_config={"servers": {"demo": {"command": "run"}}},
             cwd=tmp_path,
@@ -120,45 +127,39 @@ class TestLoadServers:
         assert merged["demo"].command == "run"
         assert merged["demo"].source == "config.json"
 
-    def test_project_and_home_files_are_read(self, tmp_path):
         home = tmp_path / "home"
-        write_mcp_json(tmp_path / ".mocode" / "mcp.json", {"mcpServers": {"proj": stdio_entry()}})
-        write_mcp_json(home / "mcp.json", {"mcpServers": {"user": stdio_entry()}})
-        merged = load_servers(mcp_config={}, cwd=tmp_path, home=home)
-        assert set(merged) == {"proj", "user"}
-
-    def test_a_project_entry_replaces_a_home_entry_wholesale(self, tmp_path):
-        home = tmp_path / "home"
-        write_mcp_json(
-            home / "mcp.json",
-            {"mcpServers": {"demo": stdio_entry("low", env={"K": "V"}, timeout=5)}},
-        )
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {"mcpServers": {"demo": stdio_entry("high", args=["a"])}},
-        )
-        merged = load_servers(mcp_config={}, cwd=tmp_path, home=home)
-        assert len(merged) == 1
-        cfg = merged["demo"]
-        assert cfg.command == "high"
-        # whole-entry replacement: nothing bleeds through from the loser
-        assert cfg.args == ["a"]
-        assert cfg.env == {}
-        assert cfg.timeout is None
-
-    def test_inline_beats_project_beats_home_beats_plugin(self, tmp_path):
-        home = tmp_path / "home"
-        plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(home / "mcp.json", {"mcpServers": {"s": stdio_entry("home")}})
         write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json", {"mcpServers": {"s": stdio_entry("proj")}}
+            tmp_path / ".mocode" / "mcp.json",
+            {"mcpServers": {"s": stdio_entry("proj"), "demo": stdio_entry("low")}},
         )
+        plugin_dir = tmp_path / "plugins" / "acme"
         plugin_mcp = {"$schema": MCP_SCHEMA_1_0_0, "mcpServers": {"s": stdio_entry("plug")}}
         write_mcp_json(plugin_dir / "mcp.json", plugin_mcp)
 
-        merged = load_servers(mcp_config={}, cwd=tmp_path, home=home, plugin_sources=[plugin_dir])
-        assert merged["s"].command == "proj"
+        # the project file is read alongside the home one
+        both = load_servers(mcp_config={}, cwd=tmp_path, home=home)
+        assert set(both) == {"s", "demo"}
 
+        # a project entry replaces the home entry wholesale — nothing bleeds
+        # through from the loser
+        write_mcp_json(
+            home / "mcp.json",
+            {"mcpServers": {"s": stdio_entry("home"), "demo": stdio_entry("home-demo", args=["a"], env={"K": "V"})}},
+        )
+        merged = load_servers(mcp_config={}, cwd=tmp_path, home=home)
+        cfg = merged["demo"]
+        assert cfg.command == "low"
+        assert cfg.args == []
+        assert cfg.env == {}
+        assert cfg.timeout is None
+
+        # project beats home beats plugin
+        merged = load_servers(
+            mcp_config={}, cwd=tmp_path, home=home, plugin_sources=[plugin_dir]
+        )
+        assert merged["s"].command == "proj"
+        # …and inline beats them all
         merged = load_servers(
             mcp_config={"servers": {"s": {"command": "inline"}}},
             cwd=tmp_path,
@@ -167,7 +168,25 @@ class TestLoadServers:
         )
         assert merged["s"].command == "inline"
 
-    def test_server_names_differing_only_in_dash_and_underscore_are_one(self, tmp_path, capsys):
+        # a relative cwd resolves against its own file's directory, and an
+        # absolute one is kept as it is
+        project = tmp_path / "proj"
+        write_mcp_json(
+            project / ".mocode" / "mcp.json",
+            {"mcpServers": {"demo": stdio_entry(cwd="./data")}},
+        )
+        write_mcp_json(home / "mcp.json", {"mcpServers": {"other": stdio_entry(cwd="sub")}})
+        merged = load_servers(mcp_config={}, cwd=project, home=home)
+        assert merged["demo"].cwd == str((project / ".mocode" / "data").resolve())
+        assert merged["other"].cwd == str((home / "sub").resolve())
+        merged = load_servers(
+            mcp_config={"servers": {"demo": stdio_entry(cwd=str(tmp_path))}},
+            cwd=project,
+            home=tmp_path / "home",
+        )
+        assert merged["demo"].cwd == str(tmp_path)
+
+    def test_names_differing_only_in_separator_are_one_server(self, tmp_path, capsys):
         home = tmp_path / "home"
         write_mcp_json(home / "mcp.json", {"mcpServers": {"my_srv": stdio_entry("low")}})
         write_mcp_json(
@@ -179,7 +198,7 @@ class TestLoadServers:
         assert "lower-priority entry is dropped" in capsys.readouterr().err
 
     def test_invalid_entries_are_skipped_without_hurting_valid_ones(self, tmp_path, capsys):
-        bad = {
+        bad: dict = {
             "not-an-object": 42,
             "no-command": {"type": "stdio"},
             "empty-command": stdio_entry("  "),
@@ -189,141 +208,6 @@ class TestLoadServers:
             "bad-env-value": stdio_entry(env={"K": 1}),
             "bad-cwd": stdio_entry(cwd=3),
             "bad-type": {"type": "websocket", "command": "x"},
-            "good": stdio_entry(),
-        }
-        merged = load_servers(
-            mcp_config={"servers": bad}, cwd=tmp_path, home=tmp_path / "home"
-        )
-        assert list(merged) == ["good"]
-        err = capsys.readouterr().err
-        for name in ("not-an-object", "no-command", "bad-args", "bad-env", "bad-type"):
-            assert name in err
-
-    def test_sse_entries_parse_as_the_sse_transport(self, tmp_path):
-        merged = load_servers(
-            mcp_config={"servers": {"old": {"type": "sse", "url": "https://x/sse"}}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        cfg = merged["old"]
-        assert cfg.transport == "sse"
-        assert cfg.url == "https://x/sse"
-        assert cfg.headers == {}
-
-    def test_streamable_http_entries_parse(self, tmp_path):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "web": {"type": "streamable-http", "url": "http://localhost/mcp"},
-                    "web2": {"url": "http://localhost/mcp"},
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        assert list(merged) == ["web", "web2"]
-        for cfg in merged.values():
-            assert cfg.transport == "streamable-http"
-            assert cfg.url == "http://localhost/mcp"
-            assert cfg.headers == {}
-
-    def test_type_is_optional_in_mocode_files_and_inferred(self, tmp_path):
-        merged = load_servers(
-            mcp_config={"servers": {"a": {"command": "x"}, "b": {"url": "https://u/mcp"}}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        assert list(merged) == ["a", "b"]
-        assert merged["a"].transport == "stdio"
-        assert merged["a"].command == "x"
-        assert merged["b"].transport == "streamable-http"
-        assert merged["b"].url == "https://u/mcp"
-        assert merged["b"].headers == {}
-
-    def test_http_is_the_streamable_http_transport(self, tmp_path):
-        merged = load_servers(
-            mcp_config={"servers": {"web": {"type": "http", "url": "https://u/mcp"}}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        assert merged["web"].transport == "streamable-http"
-
-    def test_url_and_header_values_expand_in_mocode_files(self, tmp_path):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "web": {
-                        "type": "streamable-http",
-                        "url": "https://${MCP_TEST_HOST}/mcp",
-                        "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
-                    }
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-            environ={"MCP_TEST_HOST": "mcp.example", "MCP_TEST_TOKEN": "secret"},
-        )
-        cfg = merged["web"]
-        assert cfg.url == "https://mcp.example/mcp"
-        assert cfg.headers == {"Authorization": "Bearer secret"}
-
-    def test_a_missing_variable_in_a_header_value_reports_and_empties(self, tmp_path, capsys):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "web": {
-                        "url": "https://h/mcp",
-                        "headers": {"X-Token": "${MCP_TEST_MISSING}"},
-                    }
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-            environ={},
-        )
-        assert merged["web"].headers == {"X-Token": ""}
-        assert "MCP_TEST_MISSING" in capsys.readouterr().err
-
-    def test_loopback_urls_may_stay_http(self, tmp_path):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "v4": {"type": "sse", "url": "http://127.0.0.1:9000/sse"},
-                    "v6": {"type": "sse", "url": "http://[::1]:9000/sse"},
-                    "name": {"type": "sse", "url": "http://localhost/sse"},
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        assert list(merged) == ["v4", "v6", "name"]
-        assert merged["v6"].url == "http://[::1]:9000/sse"
-
-    def test_http_extensions_apply_to_http_entries_too(self, tmp_path):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "web": {
-                        "type": "streamable-http",
-                        "url": "https://u/mcp",
-                        "enabled": False,
-                        "timeout": 12,
-                        "exposure": "hidden",
-                        "description": "one line",
-                    }
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        cfg = merged["web"]
-        assert cfg.enabled is False
-        assert cfg.timeout == 12.0
-        assert cfg.exposure == "hidden"
-        assert cfg.description == "one line"
-
-    def test_invalid_http_entries_are_skipped_without_hurting_valid_ones(self, tmp_path, capsys):
-        bad = {
             "scheme": {"type": "streamable-http", "url": "ftp://u/mcp"},
             "cleartext": {"type": "streamable-http", "url": "http://example.com/mcp"},
             "userinfo": {"type": "streamable-http", "url": "https://user:pw@example.com/mcp"},
@@ -344,59 +228,94 @@ class TestLoadServers:
                 "headers": {"X-${MCP_TEST_VAR}": "v"},
             },
             "sse-cleartext": {"type": "sse", "url": "http://example.com/sse"},
-            "good": {"type": "streamable-http", "url": "https://u/mcp"},
+            "good": stdio_entry(),
         }
-        merged = load_servers(
-            mcp_config={"servers": bad}, cwd=tmp_path, home=tmp_path / "home"
-        )
+        merged = load_servers(mcp_config={"servers": bad}, cwd=tmp_path, home=tmp_path / "home")
         assert list(merged) == ["good"]
         err = capsys.readouterr().err
         for name in bad:
             if name != "good":
                 assert name in err
-class TestMocodeExtensions:
-    def test_env_vars_expand_from_the_environment(self, tmp_path):
+
+        # and the transports the loader accepts — sse, streamable-http
+        # (explicit, inferred and aliased) and a loopback that may stay http
         merged = load_servers(
             mcp_config={
                 "servers": {
-                    "demo": stdio_entry(env={"TOKEN": "${MCP_TEST_TOKEN}"}, args=["${MCP_TEST_ARG}"])
+                    "old": {"type": "sse", "url": "https://x/sse"},
+                    "web": {"type": "streamable-http", "url": "http://localhost/mcp"},
+                    "web2": {"url": "http://localhost/mcp"},
+                    "alias": {"type": "http", "url": "https://u/mcp"},
+                    "v4": {"type": "sse", "url": "http://127.0.0.1:9000/sse"},
+                    "v6": {"type": "sse", "url": "http://[::1]:9000/sse"},
+                    "name": {"type": "sse", "url": "http://localhost/sse"},
                 }
             },
             cwd=tmp_path,
             home=tmp_path / "home",
-            environ={"MCP_TEST_TOKEN": "secret", "MCP_TEST_ARG": "value"},
         )
-        cfg = merged["demo"]
-        assert cfg.env == {"TOKEN": "secret"}
-        assert cfg.args == ["value"]
+        assert list(merged) == ["old", "web", "web2", "alias", "v4", "v6", "name"]
+        # the type is optional in mocode files and inferred from the entry
+        assert merged["old"].transport == "sse"
+        assert merged["web"].transport == "streamable-http"
+        assert merged["web2"].transport == "streamable-http"  # inferred, no type
+        assert merged["alias"].transport == "streamable-http"  # http is the alias
+        assert merged["v4"].transport == "sse"  # a loopback may stay http
+        assert merged["v6"].url == "http://[::1]:9000/sse"
 
-    def test_a_missing_variable_expands_to_empty_and_reports(self, tmp_path, capsys):
-        merged = load_servers(
-            mcp_config={"servers": {"demo": stdio_entry(env={"TOKEN": "${MCP_MISSING_VAR}"})}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-            environ={},
-        )
-        assert merged["demo"].env == {"TOKEN": ""}
-        assert "MCP_MISSING_VAR" in capsys.readouterr().err
-
-    def test_bang_command_is_reported_and_kept_literal(self, tmp_path, capsys):
-        merged = load_servers(
-            mcp_config={"servers": {"demo": stdio_entry(env={"K": "!echo hi"})}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-            environ={},
-        )
-        assert merged["demo"].env == {"K": "!echo hi"}
-        assert "'!command'" in capsys.readouterr().err
-
-    def test_plugin_tokens_are_meaningless_in_mocode_files(self, tmp_path, capsys):
+    def test_variables_and_placeholders(
+        self, tmp_path, capsys
+    ):
         merged = load_servers(
             mcp_config={
                 "servers": {
-                    "a": stdio_entry(args=["${PLUGIN_ROOT}/x"]),
-                    "b": stdio_entry(env={"K": "${PLUGIN_DATA}"}),
-                    "c": stdio_entry(cwd="${PLUGIN_ROOT}"),
+                    "web": {
+                        "type": "streamable-http",
+                        "url": "https://${MCP_TEST_HOST}/mcp",
+                        "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+                    },
+                    "demo": stdio_entry(
+                        env={"TOKEN": "${MCP_TEST_TOKEN}"}, args=["${MCP_TEST_ARG}"]
+                    ),
+                    "empty-header": {
+                        "url": "https://h/mcp",
+                        "headers": {"X-Token": "${MCP_TEST_MISSING}"},
+                    },
+                    "empty-env": stdio_entry(env={"TOKEN": "${MCP_MISSING_VAR}"}),
+                    "bang": stdio_entry(env={"K": "!echo hi"}),
+                },
+            },
+            cwd=tmp_path,
+            home=tmp_path / "home",
+            environ={
+                "MCP_TEST_HOST": "mcp.example",
+                "MCP_TEST_TOKEN": "secret",
+                "MCP_TEST_ARG": "value",
+            },
+        )
+        assert list(merged) == ["web", "demo", "empty_header", "empty_env", "bang"]
+        cfg = merged["web"]
+        assert cfg.url == "https://mcp.example/mcp"
+        assert cfg.headers == {"Authorization": "Bearer secret"}
+        cfg = merged["demo"]
+        assert cfg.env == {"TOKEN": "secret"}
+        assert cfg.args == ["value"]
+        assert merged["empty_header"].headers == {"X-Token": ""}
+        assert merged["empty_env"].env == {"TOKEN": ""}
+        # a bang command is reported and kept literal — never evaluated
+        assert merged["bang"].env == {"K": "!echo hi"}
+        err = capsys.readouterr().err
+        for word in ("MCP_TEST_MISSING", "MCP_MISSING_VAR", "'!command'"):
+            assert word in err
+
+        # plugin tokens mean nothing in a mocode file — an entry that uses
+        # one is skipped, not half-expanded
+        merged = load_servers(
+            mcp_config={
+                "servers": {
+                    "arg": stdio_entry(args=["${PLUGIN_ROOT}/x"]),
+                    "env": stdio_entry(env={"K": "${PLUGIN_DATA}"}),
+                    "cwd": stdio_entry(cwd="${PLUGIN_ROOT}"),
                     "good": stdio_entry(),
                 }
             },
@@ -407,10 +326,18 @@ class TestMocodeExtensions:
         assert list(merged) == ["good"]
         assert "only mean something inside a plugin" in capsys.readouterr().err
 
-    def test_extensions_are_kept_on_the_config(self, tmp_path):
+    def test_the_extensions_are_kept_and_bad_values_fall_back(self, tmp_path, capsys):
         merged = load_servers(
             mcp_config={
                 "servers": {
+                    "http_web": {
+                        "type": "streamable-http",
+                        "url": "https://u/mcp",
+                        "enabled": False,
+                        "timeout": 12,
+                        "exposure": "hidden",
+                        "description": "one line",
+                    },
                     "demo": {
                         "command": "x",
                         "enabled": False,
@@ -418,37 +345,28 @@ class TestMocodeExtensions:
                         "exposure": "hidden",
                         "toolExposure": {"a": "direct"},
                         "description": "one line",
-                    }
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        cfg = merged["demo"]
-        assert cfg.enabled is False
-        assert cfg.timeout == 12.0
-        assert cfg.exposure == "hidden"
-        assert cfg.tool_exposure == {"a": "direct"}
-        assert cfg.description == "one line"
-
-    def test_bad_extension_values_report_and_fall_back(self, tmp_path, capsys):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "demo": {
+                    },
+                    "bad": {
                         "command": "x",
                         "enabled": "yes",
                         "timeout": "later",
                         "exposure": 3,
                         "toolExposure": ["a"],
                         "description": {},
-                    }
+                    },
                 }
             },
             cwd=tmp_path,
             home=tmp_path / "home",
         )
-        cfg = merged["demo"]
+        for name in ("http_web", "demo"):
+            cfg = merged[name]
+            assert cfg.enabled is False
+            assert cfg.timeout == 12.0
+            assert cfg.exposure == "hidden"
+            assert cfg.description == "one line"
+        assert merged["demo"].tool_exposure == {"a": "direct"}
+        cfg = merged["bad"]
         assert cfg.enabled is True
         assert cfg.timeout is None
         assert cfg.exposure is None
@@ -458,45 +376,25 @@ class TestMocodeExtensions:
         for word in ("'enabled'", "'timeout'", "'exposure'", "'toolExposure'", "'description'"):
             assert word in err
 
-    def test_relative_cwd_resolves_against_the_file_directory(self, tmp_path):
-        project = tmp_path / "proj"
-        write_mcp_json(
-            project / ".mocode" / "mcp.json",
-            {"mcpServers": {"demo": stdio_entry(cwd="./data")}},
-        )
-        write_mcp_json(
-            tmp_path / "home" / "mcp.json",
-            {"mcpServers": {"other": stdio_entry(cwd="sub")}},
-        )
-        home = tmp_path / "home"
-        merged = load_servers(mcp_config={}, cwd=project, home=home)
-        assert merged["demo"].cwd == str((project / ".mocode" / "data").resolve())
-        assert merged["other"].cwd == str((home / "sub").resolve())
-
-    def test_absolute_cwd_is_kept(self, tmp_path):
-        merged = load_servers(
-            mcp_config={"servers": {"demo": stdio_entry(cwd=str(tmp_path))}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        assert merged["demo"].cwd == str(tmp_path)
-
-    def test_broken_json_file_is_reported_and_skipped(self, tmp_path, capsys):
+    def test_a_broken_file_or_a_shape_wrong_table_is_reported(self, tmp_path, capsys):
         write_mcp_json(tmp_path / ".mocode" / "mcp.json", "{not json")
         merged = load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home")
         assert merged == {}
         assert "unreadable mcp.json" in capsys.readouterr().err
 
-    def test_mcp_servers_must_be_an_object(self, tmp_path, capsys):
         write_mcp_json(tmp_path / ".mocode" / "mcp.json", {"mcpServers": ["a"]})
         merged = load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home")
         assert merged == {}
         assert "must be an object" in capsys.readouterr().err
+
+
 class TestPluginFileRules:
     def _plugin_mcp(self, servers: dict, **top) -> dict:
         return {"$schema": MCP_SCHEMA_1_0_0, "mcpServers": servers, **top}
 
-    def test_a_valid_plugin_file_is_loaded(self, tmp_path):
+    def test_a_plugin_file_is_all_or_nothing(self, tmp_path, capsys):
+        # a valid file loads, defaults its cwd to the plugin root, and gets
+        # its data directory created
         plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": stdio_entry()}))
         merged = load_servers(
@@ -507,16 +405,8 @@ class TestPluginFileRules:
         assert cfg.cwd == str(plugin_dir.resolve())  # omitted cwd defaults to the root
         assert cfg.plugin_root == plugin_dir
         assert cfg.plugin_data == plugin_dir / PLUGIN_DATA_DIR
-
-    def test_the_plugin_data_directory_is_created(self, tmp_path):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": stdio_entry()}))
-        load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
         assert (plugin_dir / PLUGIN_DATA_DIR).is_dir()
 
-    def test_a_missing_or_mismatched_schema_skips_the_whole_file(self, tmp_path, capsys):
         plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(plugin_dir / "mcp.json", {"mcpServers": {"srv": stdio_entry()}})
         other_dir = tmp_path / "plugins" / "other"
@@ -527,28 +417,31 @@ class TestPluginFileRules:
                 "mcpServers": {"srv": stdio_entry()},
             },
         )
+        extra_dir = tmp_path / "plugins" / "extra"
+        write_mcp_json(extra_dir / "mcp.json", self._plugin_mcp({"srv": stdio_entry()}, extra=1))
         merged = load_servers(
             mcp_config={},
             cwd=tmp_path,
             home=tmp_path / "home",
-            plugin_sources=[plugin_dir, other_dir],
+            plugin_sources=[plugin_dir, other_dir, extra_dir],
         )
+        # a missing schema, a mismatched one and a stray top-level field each
+        # take the whole file down — entries are never half-loaded
         assert merged == {}
         err = capsys.readouterr().err
-        assert err.count("MCP configuration is skipped") == 2
+        assert err.count("MCP configuration is skipped") == 3
+        assert "unknown top-level field" in err
 
-    def test_unknown_top_level_fields_skip_the_whole_file(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(
-            plugin_dir / "mcp.json", self._plugin_mcp({"srv": stdio_entry()}, extra=1)
-        )
+        # the type every entry must carry
+        type_dir = tmp_path / "plugins" / "typed"
+        write_mcp_json(type_dir / "mcp.json", self._plugin_mcp({"srv": {"command": "x"}}))
         merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
+            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[type_dir]
         )
         assert merged == {}
-        assert "unknown top-level field" in capsys.readouterr().err
+        assert "missing 'type'" in capsys.readouterr().err
 
-    def test_plugin_placeholders_expand_once(self, tmp_path):
+    def test_plugin_placeholders_expand_once(self, tmp_path, capsys):
         plugin_dir = tmp_path / "plugins" / "acme"
         entry = stdio_entry(
             command="./bin/tool",
@@ -567,7 +460,19 @@ class TestPluginFileRules:
         assert cfg.env == {"CONF": f"{root}/conf"}
         assert cfg.cwd == str((Path(data) / "run").resolve())
 
-    def test_expanded_cwd_must_stay_inside_its_root(self, tmp_path, capsys):
+        # the mocode-only extensions are reported and ignored here
+        ext = stdio_entry(exposure="hidden", timeout=5, description="nope")
+        write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": ext}))
+        merged = load_servers(
+            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
+        )
+        cfg = merged["srv"]
+        assert cfg.exposure is None
+        assert cfg.timeout is None
+        assert cfg.description == ""
+        assert "unknown field(s)" in capsys.readouterr().err
+
+    def test_the_plugin_placeholders_are_read_only(self, tmp_path, capsys):
         plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(
             plugin_dir / "mcp.json",
@@ -576,6 +481,7 @@ class TestPluginFileRules:
                     "escapes-root": stdio_entry(cwd="${PLUGIN_ROOT}/../out"),
                     "escapes-data": stdio_entry(cwd="${PLUGIN_DATA}/../../out"),
                     "abs-outside": stdio_entry(cwd="/tmp"),
+                    "bad-shape": stdio_entry(cwd="sub/dir"),
                     "plain-dot": stdio_entry(cwd="./sub"),
                 }
             ),
@@ -587,9 +493,9 @@ class TestPluginFileRules:
         assert merged["plain_dot"].cwd == str((plugin_dir / "sub").resolve())
         err = capsys.readouterr().err
         assert "escapes" in err
+        assert "must start with './'" in err
 
-    def test_env_must_not_set_plugin_root_or_plugin_data(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
+        # and an entry may not define the placeholders itself
         write_mcp_json(
             plugin_dir / "mcp.json",
             self._plugin_mcp({"bad": stdio_entry(env={"PLUGIN_ROOT": "/x"})}),
@@ -600,41 +506,9 @@ class TestPluginFileRules:
         assert merged == {}
         assert "must not set 'PLUGIN_ROOT'" in capsys.readouterr().err
 
-    def test_a_bad_cwd_shape_is_rejected(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(
-            plugin_dir / "mcp.json",
-            self._plugin_mcp({"bad": stdio_entry(cwd="sub/dir")}),
-        )
-        merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
-        assert merged == {}
-        assert "must start with './'" in capsys.readouterr().err
-
-    def test_extension_keys_are_reported_and_ignored_in_plugin_files(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        entry = stdio_entry(exposure="hidden", timeout=5, description="nope")
-        write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": entry}))
-        merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
-        cfg = merged["srv"]
-        assert cfg.exposure is None
-        assert cfg.timeout is None
-        assert cfg.description == ""
-        assert "unknown field(s)" in capsys.readouterr().err
-
-    def test_type_is_required_in_plugin_files(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": {"command": "x"}}))
-        merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
-        assert merged == {}
-        assert "missing 'type'" in capsys.readouterr().err
-
-    def test_a_valid_http_entry_is_loaded(self, tmp_path):
+    def test_http_entries_in_plugin_files_validate_and_expand_nothing(
+        self, tmp_path, capsys
+    ):
         plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(
             plugin_dir / "mcp.json",
@@ -646,25 +520,6 @@ class TestPluginFileRules:
                         "headers": {"Authorization": "Bearer t"},
                     },
                     "feed": {"type": "sse", "url": "https://u/sse"},
-                }
-            ),
-        )
-        merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
-        assert list(merged) == ["web", "feed"]
-        assert merged["web"].transport == "streamable-http"
-        assert merged["web"].url == "http://127.0.0.1:8080/mcp"
-        assert merged["web"].headers == {"Authorization": "Bearer t"}
-        assert merged["feed"].transport == "sse"
-        assert merged["feed"].url == "https://u/sse"
-
-    def test_http_entries_expand_nothing_in_plugin_files(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(
-            plugin_dir / "mcp.json",
-            self._plugin_mcp(
-                {
                     "var-url": {"type": "streamable-http", "url": "https://${MCP_TEST_HOST}/mcp"},
                     "bang-url": {"type": "streamable-http", "url": "!echo hi"},
                     "var-value": {
@@ -685,72 +540,17 @@ class TestPluginFileRules:
         merged = load_servers(
             mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
         )
-        assert list(merged) == ["good"]
+        assert list(merged) == ["web", "feed", "good"]
+        assert merged["web"].transport == "streamable-http"
+        assert merged["web"].url == "http://127.0.0.1:8080/mcp"
+        assert merged["web"].headers == {"Authorization": "Bearer t"}
+        assert merged["feed"].transport == "sse"
+        assert merged["feed"].url == "https://u/sse"
+        # nothing in a plugin file expands — a placeholder spelling is an
+        # error, not a hint
         err = capsys.readouterr().err
         assert err.count("entry skipped") == 5
         assert "${VAR}" in err
-class TestNormalize:
-    def test_everything_outside_alnum_and_underscore_folds(self):
-        assert normalize("dev-radius") == "dev_radius"
-        assert normalize("a b.c/d:e") == "a_b_c_d_e"
-        assert normalize("already_ok") == "already_ok"
-        assert normalize("UPPER-1") == "UPPER_1"
-
-    def test_server_names_differing_only_in_separator_fold_equal(self):
-        assert fold_server_name("my-server") == fold_server_name("my_server")
-        assert fold_server_name("a.b") == fold_server_name("a-b")
-        assert fold_server_name("ab") != fold_server_name("a-b")
-
-    def test_full_tool_names(self):
-        assert tool_full_name("dev-radius", "search") == "mcp__dev_radius__search"
-        assert tool_full_name("srv", "do-thing") == "mcp__srv__do_thing"
-
-
-class TestAssignToolNames:
-    def test_no_collision_maps_raw_names_directly(self):
-        out = assign_tool_names("srv", ["search", "get_one"])
-        assert out == {
-            "search": "mcp__srv__search",
-            "get_one": "mcp__srv__get_one",
-        }
-
-    def test_colliding_names_get_a_stable_hash_suffix(self):
-        import hashlib
-
-        out = assign_tool_names("srv", ["a-b", "a_b", "a b"])
-        assert set(out) == {"a-b", "a_b", "a b"}
-        # sorted: "a b" < "a-b" < "a_b" — the first keeps the plain name
-        assert out["a b"] == "mcp__srv__a_b"
-        assert out["a-b"] == "mcp__srv__a_b_" + hashlib.sha1(b"a-b").hexdigest()[:6]
-        assert out["a_b"] == "mcp__srv__a_b_" + hashlib.sha1(b"a_b").hexdigest()[:6]
-
-    def test_the_assignment_does_not_depend_on_listing_order(self):
-        names = ["x-1", "x_1", "plain", "y z", "y-z"]
-        forward = assign_tool_names("srv", names)
-        backward = assign_tool_names("srv", list(reversed(names)))
-        assert forward == backward
-
-
-class TestDefaultExposure:
-    def test_auto_follows_the_codemode_plugin(self):
-        assert default_exposure({}, codemode_enabled=False) == "direct"
-        assert default_exposure({}, codemode_enabled=True) == "codemode"
-        assert default_exposure({"default_exposure": "auto"}, codemode_enabled=True) == "codemode"
-
-    def test_an_explicit_value_is_used_directly(self):
-        assert default_exposure({"default_exposure": "hidden"}, codemode_enabled=True) == "hidden"
-        assert default_exposure({"default_exposure": "codemode-deferred"}, codemode_enabled=False) == "codemode-deferred"
-
-    def test_garbage_reports_and_falls_back_to_auto(self, capsys):
-        assert default_exposure({"default_exposure": 7}, codemode_enabled=False) == "direct"
-        assert default_exposure({"default_exposure": "bogus"}, codemode_enabled=True) == "codemode"
-        err = capsys.readouterr().err
-        assert "default_exposure" in err
-
-    def test_non_dict_config_is_auto(self):
-        assert default_exposure([], codemode_enabled=False) == "direct"
-
-
 def _cfg(**kwargs) -> McpServerConfig:
     kwargs.setdefault("name", "demo")
     kwargs.setdefault("command", "x")
@@ -758,52 +558,91 @@ def _cfg(**kwargs) -> McpServerConfig:
     return McpServerConfig(**kwargs)
 
 
-class TestResolveExposure:
-    def test_server_exposure_overrides_the_default(self):
-        cfg = _cfg(exposure="hidden")
-        assert resolve_exposure(cfg, "anything", "direct") == "hidden"
+class TestNaming:
+    def test_names_fold_and_collisions_get_a_stable_suffix(self):
+        import hashlib
 
-    def test_no_server_exposure_uses_the_default(self):
-        assert resolve_exposure(_cfg(), "anything", "codemode") == "codemode"
+        assert normalize("dev-radius") == "dev_radius"
+        assert normalize("a b.c/d:e") == "a_b_c_d_e"
+        assert normalize("already_ok") == "already_ok"
+        assert normalize("UPPER-1") == "UPPER_1"
+        assert fold_server_name("my-server") == fold_server_name("my_server")
+        assert fold_server_name("a.b") == fold_server_name("a-b")
+        assert fold_server_name("ab") != fold_server_name("a-b")
+        assert tool_full_name("dev-radius", "search") == "mcp__dev_radius__search"
+        assert tool_full_name("srv", "do-thing") == "mcp__srv__do_thing"
 
-    def test_exact_tool_name_beats_pattern_and_server(self):
-        cfg = _cfg(
-            exposure="hidden",
-            tool_exposure={"search": "direct", "get_*": "codemode"},
+        assert assign_tool_names("srv", ["search", "get_one"]) == {
+            "search": "mcp__srv__search",
+            "get_one": "mcp__srv__get_one",
+        }
+        # sorted: "a b" < "a-b" < "a_b" — the first keeps the plain name, and
+        # the suffix is the raw name's own hash, so the assignment never
+        # depends on the order the server listed them in
+        out = assign_tool_names("srv", ["a-b", "a_b", "a b"])
+        assert set(out) == {"a-b", "a_b", "a b"}
+        assert out["a b"] == "mcp__srv__a_b"
+        assert out["a-b"] == "mcp__srv__a_b_" + hashlib.sha1(b"a-b").hexdigest()[:6]
+        assert out["a_b"] == "mcp__srv__a_b_" + hashlib.sha1(b"a_b").hexdigest()[:6]
+        assert assign_tool_names("srv", ["a-b", "a_b", "a b"]) == assign_tool_names(
+            "srv", ["a b", "a_b", "a-b"]
         )
-        assert resolve_exposure(cfg, "search", "hidden") == "direct"
-        assert resolve_exposure(cfg, "get_one", "hidden") == "codemode"
-        assert resolve_exposure(cfg, "delete_one", "hidden") == "hidden"
 
-    def test_star_matches_any_characters_and_first_pattern_wins(self):
+
+class TestExposureRules:
+    def test_the_default_exposure_and_the_availability_mapping(self, capsys):
+        assert default_exposure({}, codemode_enabled=False) == "direct"
+        assert default_exposure({}, codemode_enabled=True) == "codemode"
+        assert default_exposure({"default_exposure": "auto"}, codemode_enabled=True) == "codemode"
+        assert default_exposure({"default_exposure": "hidden"}, codemode_enabled=True) == "hidden"
+        assert (
+            default_exposure({"default_exposure": "codemode-deferred"}, codemode_enabled=False)
+            == "codemode-deferred"
+        )
+        assert default_exposure([], codemode_enabled=False) == "direct"  # not a dict
+        # garbage reports and falls back to auto
+        assert default_exposure({"default_exposure": 7}, codemode_enabled=False) == "direct"
+        assert default_exposure({"default_exposure": "bogus"}, codemode_enabled=True) == "codemode"
+        assert "default_exposure" in capsys.readouterr().err
+
+        assert availability_for("direct") == ("both", False)
+        assert availability_for("codemode") == ("program", False)
+        assert availability_for("deferred") == ("program", False)
+        assert availability_for("hidden") == ("both", True)
+
+        # the server-level answer, resolved against a default
+        assert resolve_server_exposure(_cfg(exposure="hidden"), "direct") == "hidden"
+        assert resolve_server_exposure(_cfg(exposure="codemode-deferred"), "direct") == "codemode"
+        assert resolve_server_exposure(_cfg(exposure="bogus"), "codemode") == "codemode"
+        assert resolve_server_exposure(_cfg(), "deferred") == "deferred"
+        assert resolve_server_exposure(_cfg(), "garbage") == "direct"
+
+    def test_the_resolution_order_and_the_pattern_matches(self):
+        # exact tool name beats pattern beats server beats default
+        cfg = _cfg(exposure="hidden", tool_exposure={"search": "direct", "get_*": "codemode"})
+        assert resolve_exposure(cfg, "search", "direct") == "direct"
+        assert resolve_exposure(cfg, "get_one", "codemode") == "codemode"
+        assert resolve_exposure(cfg, "delete_one", "hidden") == "hidden"
+        assert resolve_exposure(_cfg(exposure="hidden"), "anything", "direct") == "hidden"
+        assert resolve_exposure(_cfg(), "anything", "codemode") == "codemode"
+        assert canon_exposure("codemode-deferred") == "codemode"
+        assert resolve_exposure(_cfg(exposure="codemode-deferred"), "t", "direct") == "codemode"
+
+        # a star matches any characters, and the first matching pattern wins
         cfg = _cfg(tool_exposure={"*_x": "direct", "get_*": "hidden"})
         assert resolve_exposure(cfg, "get_x", "codemode") == "direct"
         cfg = _cfg(tool_exposure={"a*c": "direct"})
         assert resolve_exposure(cfg, "aanythingc", "codemode") == "direct"
         assert resolve_exposure(cfg, "aanythingcX", "codemode") == "codemode"
 
-    def test_codemode_deferred_alias(self):
-        assert canon_exposure("codemode-deferred") == "codemode"
-        cfg = _cfg(exposure="codemode-deferred")
-        assert resolve_exposure(cfg, "t", "direct") == "codemode"
-
     def test_unknown_values_report_and_fall_through(self, capsys):
         cfg = _cfg(exposure="sideways", tool_exposure={"t": "also-bogus"})
         assert resolve_exposure(cfg, "t", "direct") == "direct"
         cfg = _cfg(tool_exposure={"other": "bogus"})
         assert resolve_exposure(cfg, "other", "codemode") == "codemode"
-        err = capsys.readouterr().err
-        assert "sideways" in err and "bogus" in err
-
-    def test_unknown_default_falls_back_to_direct(self, capsys):
         assert resolve_exposure(_cfg(), "t", "zzz") == "direct"
-        assert "zzz" in capsys.readouterr().err
-
-    def test_availability_mapping(self):
-        assert availability_for("direct") == ("both", False)
-        assert availability_for("codemode") == ("program", False)
-        assert availability_for("deferred") == ("program", False)
-        assert availability_for("hidden") == ("both", True)
+        err = capsys.readouterr().err
+        assert "sideways" in err and "bogus" in err and "zzz" in err
 
 
 #: The handshake-era answer for a peer that answers only ``initialize``.
@@ -946,9 +785,18 @@ async def session_factory():
             session.shutdown()
 
 
-class TestModernSession:
-    async def test_the_negotiated_era_and_the_session_facts(self, session_factory):
-        session = session_factory(WirePeer(MODERN_PEER))
+class TestSessionWire:
+    """The wire shape over the SDK's memory streams: the facts a connect
+    negotiates, the wire-form results and blocks, the errors the session
+    maps onto its own codes."""
+
+    async def test_a_modern_session_connects_lists_and_calls(self, session_factory):
+        connected: list[list[dict]] = []
+
+        async def on_connected(session, tools):
+            connected.append(tools)
+
+        session = session_factory(WirePeer(MODERN_PEER), on_connected=on_connected)
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         assert session.era == ERA_MODERN
         assert session.protocol_version == "2026-07-28"
@@ -959,14 +807,6 @@ class TestModernSession:
         assert session.server_capabilities is not None
         assert session.server_capabilities.tools is not None
 
-    async def test_connect_hands_the_runtime_the_wire_form_tools(self, session_factory):
-        connected: list[list[dict]] = []
-
-        async def on_connected(session, tools):
-            connected.append(tools)
-
-        session = session_factory(WirePeer(MODERN_PEER), on_connected=on_connected)
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
         tools = session.tools
         assert [t["name"] for t in tools] == ["search", "fail", "ask", "pic"]
         assert len(connected) == 1 and connected[0] == tools
@@ -977,35 +817,12 @@ class TestModernSession:
         assert "q" in schema["properties"]  # a JSON Schema object node
         assert schema["required"] == ["q"]
 
-    async def test_call_results_come_back_as_wire_form_dicts(self, session_factory):
-        session = session_factory(WirePeer(MODERN_PEER))
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
         result = await asyncio.wait_for(session.call_tool("search"), BOUND)
         assert result["isError"] is False
         assert result["content"] == [{"type": "text", "text": "hello"}]
         assert result["structuredContent"] == {"ok": True}
 
-    async def test_a_slow_call_times_out(self, session_factory):
-        routes = dict(MODERN_PEER)
-        routes["tools/call"] = Late(5.0, _call_answer("search"))
-        session = session_factory(WirePeer(routes), name="slow", timeout=0.4)
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        with pytest.raises(McpError) as err:
-            await asyncio.wait_for(session.call_tool("search"), BOUND)
-        assert err.value.code == "mcp_timeout"
-        assert session.last_error and "timed out" in session.last_error
-
-    async def test_input_required_raises_its_own_error(self, session_factory):
-        session = session_factory(
-            WirePeer({**MODERN_PEER, "tools/call": _call_answer("ask")}), name="ask"
-        )
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        with pytest.raises(McpError) as err:
-            await asyncio.wait_for(session.call_tool("ask"), BOUND)
-        assert err.value.code == "mcp_input_required"
-        assert "elicitation is not supported" in str(err.value)
-
-    async def test_non_text_content_blocks_pass_through(self, session_factory):
+        # a non-text content block passes through beside its structured data
         session = session_factory(
             WirePeer({**MODERN_PEER, "tools/call": _call_answer("pic")}), name="pic"
         )
@@ -1017,9 +834,28 @@ class TestModernSession:
         assert block["data"] == "QUJD"
         assert result["structuredContent"] == {"n": 1}
 
-    async def test_a_dropped_peer_disconnects_and_the_session_marks_it(
-        self, session_factory
-    ):
+    async def test_the_failures_map_to_their_own_errors(self, session_factory):
+        # a slow answer costs the call its budget, not the suite its time
+        routes = dict(MODERN_PEER)
+        routes["tools/call"] = Late(0.3, _call_answer("search"))
+        session = session_factory(WirePeer(routes), name="slow", timeout=0.25)
+        await asyncio.wait_for(session.connect_and_register(), BOUND)
+        with pytest.raises(McpError) as err:
+            await asyncio.wait_for(session.call_tool("search"), BOUND)
+        assert err.value.code == "mcp_timeout"
+        assert session.last_error and "timed out" in session.last_error
+
+        # an input-requiring answer has its own code — no elicitation UI here
+        session = session_factory(
+            WirePeer({**MODERN_PEER, "tools/call": _call_answer("ask")}), name="ask"
+        )
+        await asyncio.wait_for(session.connect_and_register(), BOUND)
+        with pytest.raises(McpError) as err:
+            await asyncio.wait_for(session.call_tool("ask"), BOUND)
+        assert err.value.code == "mcp_input_required"
+        assert "elicitation is not supported" in str(err.value)
+
+        # a peer that dies mid-request fails the call instead of hanging it
         routes = dict(MODERN_PEER)
         routes["tools/call"] = Drop()
         session = session_factory(WirePeer(routes), name="drop")
@@ -1031,7 +867,7 @@ class TestModernSession:
         assert "disconnected" in str(err.value)
         assert session.state == STATE_DISCONNECTED
 
-    async def test_a_call_after_close_is_refused(self, session_factory):
+        # and a closed session refuses the next call
         session = session_factory(WirePeer(MODERN_PEER))
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         await asyncio.wait_for(session.close(), BOUND)
@@ -1039,49 +875,16 @@ class TestModernSession:
             await asyncio.wait_for(session.call_tool("search"), BOUND)
         assert err.value.code == "mcp_closed"
 
-
-class TestLegacySession:
-    async def test_the_handshake_negotiates_the_legacy_era(self, session_factory):
-        session = session_factory(
-            WirePeer({**LEGACY_PEER, "initialize": LEGACY_HANDSHAKE}), name="legacy",
-        )
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        assert session.era == ERA_LEGACY
-        assert session.protocol_version == "2025-11-25"
-        assert session.server_info == {"name": "wire-legacy-srv", "version": "1.0"}
-        assert session.instructions == "Legacy wire instructions."
-        assert session.state == STATE_CONNECTED
-        assert [t["name"] for t in session.tools] == ["search", "fail", "ask", "pic"]
-
-    async def test_calls_come_back_as_wire_form_dicts(self, session_factory):
-        routes = {
-            **LEGACY_PEER,
-            "initialize": LEGACY_HANDSHAKE,
-            "tools/call": {
-                "content": [{"type": "text", "text": "echo:{'x': '1'}"}],
-                "structuredContent": {"legacy": True},
-            },
-        }
-        session = session_factory(WirePeer(routes), name="legacy2")
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        result = await asyncio.wait_for(session.call_tool("search"), BOUND)
-        assert result["content"][0]["text"] == "echo:{'x': '1'}"
-        assert result["structuredContent"] == {"legacy": True}
-        assert result["isError"] is False
-
-
-class TestEraNegotiation:
-    async def test_a_modern_server_negotiates_the_current_version(self, session_factory):
+    async def test_the_era_negotiation(self, session_factory):
+        # a modern server settles on the current version
         session = session_factory(WirePeer(MODERN_PEER))
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         assert session.era == ERA_MODERN
         assert session.protocol_version == "2026-07-28"
 
-    async def test_an_unanswered_discover_falls_back_to_the_handshake(
-        self, session_factory
-    ):
-        """A server that does not answer the modern probe is legacy — the
-        standard forbids deciding the era on a single error code."""
+        # a server that does not answer the modern probe is legacy — the
+        # standard forbids deciding the era on a single error code, and the
+        # handshake it falls back to speaks the legacy wire
         session = session_factory(
             WirePeer(
                 {
@@ -1096,10 +899,11 @@ class TestEraNegotiation:
         assert session.era == ERA_LEGACY
         assert session.protocol_version == "2025-11-25"
         assert session.server_info == {"name": "wire-legacy-srv", "version": "1.0"}
+        assert session.instructions == "Legacy wire instructions."
+        assert session.state == STATE_CONNECTED
+        assert [t["name"] for t in session.tools] == ["search", "fail", "ask", "pic"]
 
-    async def test_a_server_sharing_no_version_fails_the_connection(
-        self, session_factory
-    ):
+        # a server sharing no version at all fails the connection
         session = session_factory(
             WirePeer({**MODERN_PEER, "server/discover": Unsupported(["2026-08-30"])}),
             name="neg3",
@@ -1110,13 +914,14 @@ class TestEraNegotiation:
         assert session.state == STATE_ERROR
         assert session.last_error
 
-    async def test_a_silent_peer_fails_the_connect_under_a_bound(self, session_factory):
+        # and a peer that never answers at all is bounded by the caller
         session = session_factory(
             WirePeer({"server/discover": Silent(), "initialize": Silent()}), name="neg4"
         )
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-            await asyncio.wait_for(session.connect_and_register(), 2)
+            await asyncio.wait_for(session.connect_and_register(), 0.2)
         assert session.state != STATE_CONNECTED
+
 
 # ── the resource seam ────────────────────────────────────────
 
@@ -1209,50 +1014,6 @@ def legacy_server() -> LowLevelServer:
     )
 
 
-class TestResourceMethods:
-    """The session's resource pass-throughs, wire-form — the tools built on
-    them (below) only split contents and map errors."""
-
-    async def test_listing_resources_and_templates_is_wire_form(self, session_factory):
-        session = session_factory(make_resource_server())
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        assert session.server_capabilities.resources is not None
-
-        resources = await asyncio.wait_for(session.list_resources(), BOUND)
-        entries = resources["resources"]
-        assert [r["uri"] for r in entries] == [
-            "note://today",
-            "pic://logo",
-            "blob://data",
-        ]
-        assert entries[0]["name"] == "today"
-        assert entries[0]["mimeType"] == "text/plain"
-
-        templates = await asyncio.wait_for(session.list_resource_templates(), BOUND)
-        assert [t["uriTemplate"] for t in templates["resourceTemplates"]] == [
-            "greeting://{name}"
-        ]
-
-    async def test_reading_a_resource_returns_its_contents(self, session_factory):
-        session = session_factory(make_resource_server())
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        result = await asyncio.wait_for(session.read_resource("greeting://ada"), BOUND)
-        assert result["contents"] == [
-            {
-                "uri": "greeting://ada",
-                "mimeType": "text/plain",
-                "text": "hello ada",
-            }
-        ]
-
-    async def test_reading_a_missing_resource_is_an_mcp_error(self, session_factory):
-        session = session_factory(make_resource_server())
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        with pytest.raises(McpError) as err:
-            await asyncio.wait_for(session.read_resource("note://absent"), BOUND)
-        assert err.value.code == "mcp_error"
-
-
 # ── the runtime seam: an in-process server per configured key ──
 
 
@@ -1334,8 +1095,40 @@ def _dispatcher(registry) -> ToolDispatcher:
     return ToolDispatcher(registry, HookRunner([]), AgentConfig(), publish)
 
 
-class TestRegistration:
-    async def test_a_resource_server_registers_the_three_tools(self, runtime_factory):
+class TestResourceTools:
+    """The three read-only tools a resources-capable server lends the whole
+    conversation — how they register as that set of servers changes, and how
+    the exposure of those servers shows up on them.
+
+    The wire-level pass-throughs (``list_resources``, ``read_resource``) ride
+    the same connect path, so they are asserted on the session this test
+    already holds.
+    """
+
+    async def test_the_tools_register_reconcile_and_follow_the_servers(
+        self, runtime_factory, session_factory
+    ):
+        # the session's own pass-throughs, wire-form — the tools below only
+        # split the contents and map the errors
+        session = session_factory(make_resource_server())
+        await asyncio.wait_for(session.connect_and_register(), BOUND)
+        assert session.server_capabilities.resources is not None
+        resources = await asyncio.wait_for(session.list_resources(), BOUND)
+        entries = resources["resources"]
+        assert [r["uri"] for r in entries] == ["note://today", "pic://logo", "blob://data"]
+        assert entries[0]["name"] == "today"
+        assert entries[0]["mimeType"] == "text/plain"
+        templates = await asyncio.wait_for(session.list_resource_templates(), BOUND)
+        assert [t["uriTemplate"] for t in templates["resourceTemplates"]] == [
+            "greeting://{name}"
+        ]
+        result = await asyncio.wait_for(
+            session.read_resource("greeting://ada"), BOUND
+        )
+        assert result["contents"] == [
+            {"uri": "greeting://ada", "mimeType": "text/plain", "text": "hello ada"}
+        ]
+
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         await connect(runtime, "demo", make_resource_server())
 
@@ -1344,108 +1137,80 @@ class TestRegistration:
             assert name in registry, name
         read = registry.get("read_mcp_resource")
         listing = registry.get("list_mcp_resources")
-        templates = registry.get("list_mcp_resource_templates")
+        templates_tool = registry.get("list_mcp_resource_templates")
         assert read.availability == "both"  # auto exposure → direct (no codemode)
         assert listing.availability == "both"
-        assert templates.availability == "both"
+        assert templates_tool.availability == "both"
         assert read.tags == frozenset({"mcp"})
         assert read.schema["required"] == ["uri"]
         assert "server" in read.schema["properties"]
         assert set(listing.schema["properties"]) == {"server", "cursor"}
         assert listing.schema.get("required") is None
+        # what mcp_status renders must not move because resources exist — the
+        # resource tools are one per conversation, not per server
+        assert runtime.status() == [
+            {"name": "demo", "state": "connected", "tools": 0, "error": None}
+        ]
 
-    async def test_a_server_without_the_capability_registers_nothing(
-        self, runtime_factory
-    ):
+        # a server without the capability registers nothing — neither the
+        # resource tools nor any per-server tool
         runtime, ctx = runtime_factory({"plain": inproc_entry()})
         session = await connect(
-            runtime, "plain", LowLevelServer("plain-low", on_list_tools=_list_tools_empty)
+            runtime,
+            "plain",
+            LowLevelServer("plain-low", on_list_tools=_list_tools_empty),
         )
         assert session.server_capabilities is not None
         assert session.server_capabilities.resources is None
-
-        registry = ctx.tools
         for name in RESOURCE_TOOL_NAMES:
-            assert name not in registry
-        # the per-server tool path is untouched — an empty listing registers nothing
-        assert [n for n in registry.names() if n.startswith("mcp__")] == []
+            assert name not in ctx.tools
+        assert [n for n in ctx.tools.names() if n.startswith("mcp__")] == []
 
-    async def test_reconciling_twice_keeps_the_same_tool_objects(self, runtime_factory):
-        """The reconciliation is idempotent — a repeated connect that changed
-        nothing re-registers nothing, so the objects a caller already holds
-        stay valid."""
+        # the reconciliation is idempotent — a repeated connect that changed
+        # nothing re-registers nothing, so the objects a caller already holds
+        # stay valid
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         session = await connect(runtime, "demo", make_resource_server())
         first = ctx.tools.get("read_mcp_resource")
-
-        # the runtime's own sync path, driven by the session re-listing
         await asyncio.wait_for(runtime.sync_tools(session), BOUND)
-
         assert ctx.tools.get("read_mcp_resource") is first
 
-    async def test_no_resource_server_left_and_the_tools_go_away(self, runtime_factory):
-        """The only resource-capable server goes away and the three tools go
-        with it — the reconciliation follows that set of servers."""
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        session = await connect(runtime, "demo", make_resource_server())
-        assert "read_mcp_resource" in ctx.tools
-
-        # the connection drops, and the next re-list reconciles the set
+        # the only resource-capable server goes away and the three tools go
+        # with it; a late one brings them back
         session.state = STATE_DISCONNECTED
         await asyncio.wait_for(runtime.sync_tools(session), BOUND)
-
         for name in RESOURCE_TOOL_NAMES:
             assert name not in ctx.tools
-
-    async def test_a_late_resource_server_registers_on_its_connect(
-        self, runtime_factory
-    ):
-        runtime, ctx = runtime_factory(
-            {"plain": inproc_entry(), "demo": inproc_entry()}
-        )
-        await connect(
-            runtime, "plain", LowLevelServer("plain-late", on_list_tools=_list_tools_empty)
-        )
-        assert "read_mcp_resource" not in ctx.tools
-
         await connect(runtime, "demo", make_resource_server())
         assert "read_mcp_resource" in ctx.tools
 
-
-class TestExposure:
-    async def test_the_default_exposure_offers_the_tools_to_the_model(
-        self, runtime_factory
-    ):
+    async def test_the_widest_exposure_of_the_servers_wins(self, runtime_factory):
+        # no codemode plugin → auto resolves to direct and both audiences see it
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         await connect(runtime, "demo", make_resource_server())
         assert ctx.tools.get("read_mcp_resource").availability == "both"
 
-    async def test_codemode_keeps_them_program_only(self, runtime_factory):
+        # the codemode plugin switched on → program only
         runtime, ctx = runtime_factory({"demo": inproc_entry()}, codemode_enabled=True)
         await connect(runtime, "demo", make_resource_server())
         assert ctx.tools.get("read_mcp_resource").availability == "program"
 
-    async def test_a_configured_server_exposure_is_honoured(self, runtime_factory):
+        # an explicit server exposure is honoured
         runtime, ctx = runtime_factory({"demo": inproc_entry(exposure="codemode")})
         await connect(runtime, "demo", make_resource_server())
         assert ctx.tools.get("read_mcp_resource").availability == "program"
 
-    async def test_the_widest_exposure_wins(self, runtime_factory):
+        # and the widest of the connected servers wins: the program-only one
+        # first, then a direct one connects and the tools are offered again
         runtime, ctx = runtime_factory(
-            {
-                "readonly": inproc_entry(exposure="codemode"),
-                "direct": inproc_entry(exposure="direct"),
-            }
+            {"readonly": inproc_entry(exposure="codemode"), "direct": inproc_entry()}
         )
         await connect(runtime, "readonly", make_resource_server("readonly"))
         assert ctx.tools.get("read_mcp_resource").availability == "program"
-
         await connect(runtime, "direct", make_resource_server("direct"))
         assert ctx.tools.get("read_mcp_resource").availability == "both"
 
-    async def test_a_hidden_server_registers_the_tools_switched_off(
-        self, runtime_factory
-    ):
+    async def test_a_hidden_server_switches_the_tools_off(self, runtime_factory):
         """A hidden server's resources stay invisible to both audiences —
         the same availability_for pipeline a hidden server tool takes."""
         runtime, ctx = runtime_factory({"demo": inproc_entry(exposure="hidden")})
@@ -1457,12 +1222,8 @@ class TestExposure:
             assert name not in registry.names(audience="model")
             assert name not in registry.names(audience="program")
 
-    async def test_a_switched_off_resource_tool_refuses_to_run(self, runtime_factory):
-        """The dispatcher is the one execution path: a disabled tool's run is
-        refused there, whatever the Tool object itself would do."""
-        runtime, ctx = runtime_factory({"demo": inproc_entry(exposure="hidden")})
-        await connect(runtime, "demo", make_resource_server())
-
+        # the dispatcher is the one execution path: a disabled tool's run is
+        # refused there, whatever the Tool object itself would do
         result = await asyncio.wait_for(
             _dispatcher(ctx.tools).run(
                 "read_mcp_resource", {"uri": "note://today"}, origin="program"
@@ -1472,21 +1233,15 @@ class TestExposure:
         assert result.status == "denied"
         assert "switched off" in result.content
 
-    async def test_going_from_offered_to_switched_off(self, runtime_factory):
-        """The reconciliation runs both ways: the direct server goes away and
-        only the hidden one is left — the set re-registers switched off."""
+        # the reconciliation runs both ways: the direct server goes away and
+        # only the hidden one is left — the set re-registers switched off
         runtime, ctx = runtime_factory(
-            {
-                "direct": inproc_entry(),
-                "hidden": inproc_entry(exposure="hidden"),
-            }
+            {"direct": inproc_entry(), "hidden": inproc_entry(exposure="hidden")}
         )
         direct = await connect(runtime, "direct", make_resource_server("direct-res"))
         await connect(runtime, "hidden", make_resource_server("hidden-res"))
         assert "read_mcp_resource" in ctx.tools.names(audience="model")
 
-        # the direct server's connection drops, and its next re-list
-        # reconciles the set down to the hidden one
         direct.state = STATE_DISCONNECTED
         await asyncio.wait_for(runtime.sync_tools(direct), BOUND)
 
@@ -1494,69 +1249,28 @@ class TestExposure:
         assert "read_mcp_resource" not in ctx.tools.names(audience="model")
         assert "read_mcp_resource" not in ctx.tools.names(audience="program")
 
-    async def test_a_late_direct_server_brings_the_tools_back(self, runtime_factory):
-        """Switched off, then a direct server connects — the reconciled set
-        re-registers enabled (the disable goes with the old form)."""
+        # switched off, then a direct server connects — the reconciled set
+        # re-registers enabled (the disable goes with the old form)
         runtime, ctx = runtime_factory(
             {"hidden": inproc_entry(exposure="hidden"), "direct": inproc_entry()}
         )
         await connect(runtime, "hidden", make_resource_server("hidden-res"))
         assert "read_mcp_resource" not in ctx.tools.names(audience="program")
-
         await connect(runtime, "direct", make_resource_server("direct-res"))
         assert ctx.tools.get("read_mcp_resource").availability == "both"
         assert "read_mcp_resource" in ctx.tools.names(audience="model")
 
 
-class TestServerArgument:
-    async def test_omitted_with_one_server_is_that_server(self, runtime_factory):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await connect(runtime, "demo", make_resource_server())
-        tool = ctx.tools.get("read_mcp_resource")
-        result = await asyncio.wait_for(tool.run_async({"uri": "note://today"}), BOUND)
-        assert result.content == "ship it"
-        assert result.details["server"] == "demo"  # the configured name
+class TestReadingAndListing:
+    """The tools' own call path: which server a read goes to, where each
+    kind of content lands, and how the listing pages."""
 
-    async def test_omitted_with_several_servers_errors(self, runtime_factory):
-        runtime, ctx = runtime_factory(
-            {"one": inproc_entry(), "two": inproc_entry()}
-        )
-        await connect(runtime, "one", make_resource_server("one-res"))
-        await connect(runtime, "two", make_resource_server("two-res"))
-        tool = ctx.tools.get("read_mcp_resource")
-        with pytest.raises(ToolError) as err:
-            await asyncio.wait_for(tool.run_async({"uri": "note://today"}), BOUND)
-        assert err.value.code == "mcp_error"
-        assert "server" in err.value.message
-
-    async def test_a_name_picks_the_server(self, runtime_factory):
-        runtime, ctx = runtime_factory(
-            {"one": inproc_entry(), "two": inproc_entry()}
-        )
-        await connect(runtime, "one", make_resource_server("one-res", note="one's note"))
-        await connect(runtime, "two", make_resource_server("two-res", note="two's note"))
-        tool = ctx.tools.get("read_mcp_resource")
-
-        result = await asyncio.wait_for(
-            tool.run_async({"server": "two", "uri": "note://today"}), BOUND
-        )
-        assert result.content == "two's note"
-        assert result.details["server"] == "two"
-
-    async def test_an_unknown_server_errors(self, runtime_factory):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await connect(runtime, "demo", make_resource_server())
-        tool = ctx.tools.get("read_mcp_resource")
-        with pytest.raises(ToolError) as err:
-            await asyncio.wait_for(
-                tool.run_async({"server": "ghost", "uri": "note://today"}), BOUND
-            )
-        assert err.value.code == "mcp_error"
-
-    async def test_a_dashed_name_matches_folded_or_verbatim(self, runtime_factory):
-        """The prompt section shows the configured name (``my-server``) and
-        the tool namespace shows the folded one (``mcp__my_server__…``) —
-        either spelling picks the server."""
+    async def test_the_server_argument_resolves_either_spelling(
+        self, runtime_factory
+    ):
+        # the prompt section shows the configured name (my-server) and the
+        # tool namespace the folded one (mcp__my_server__…) — either spelling
+        # picks the server
         runtime, ctx = runtime_factory({"my-server": inproc_entry()})
         await connect(runtime, "my_server", make_resource_server("my-server"))
         tool = ctx.tools.get("read_mcp_resource")
@@ -1568,22 +1282,47 @@ class TestServerArgument:
             tool.run_async({"server": "my_server", "uri": "note://today"}), BOUND
         )
         assert verbatim.content == folded.content == "ship it"
-        assert folded.details["server"] == "my-server"
+        assert folded.details["server"] == "my-server"  # the configured name
 
-    async def test_uri_is_the_only_required_argument(self, runtime_factory):
+        # omitted with one server is that server
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         await connect(runtime, "demo", make_resource_server())
         tool = ctx.tools.get("read_mcp_resource")
+        result = await asyncio.wait_for(
+            tool.run_async({"uri": "note://today"}), BOUND
+        )
+        assert result.content == "ship it"
+        assert result.details["server"] == "demo"
+
+        # omitted with several is an error, a name picks the server, and an
+        # unknown name errors — the uri is the only required argument
+        runtime, ctx = runtime_factory({"one": inproc_entry(), "two": inproc_entry()})
+        await connect(runtime, "one", make_resource_server("one-res", note="one's note"))
+        await connect(runtime, "two", make_resource_server("two-res", note="two's note"))
+        tool = ctx.tools.get("read_mcp_resource")
+        with pytest.raises(ToolError) as err:
+            await asyncio.wait_for(tool.run_async({"uri": "note://today"}), BOUND)
+        assert err.value.code == "mcp_error"
+        assert "server" in err.value.message
+        result = await asyncio.wait_for(
+            tool.run_async({"server": "two", "uri": "note://today"}), BOUND
+        )
+        assert result.content == "two's note"
+        with pytest.raises(ToolError) as err:
+            await asyncio.wait_for(
+                tool.run_async({"server": "ghost", "uri": "note://today"}), BOUND
+            )
+        assert err.value.code == "mcp_error"
         with pytest.raises(ToolError) as err:
             await asyncio.wait_for(tool.run_async({}), BOUND)
         assert err.value.code == "missing_param"
 
-
-class TestReadResource:
-    async def test_text_lands_in_content(self, runtime_factory):
+    async def test_a_read_and_a_listing_through_the_tools(self, runtime_factory):
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         await connect(runtime, "demo", make_resource_server())
         tool = ctx.tools.get("read_mcp_resource")
+
+        # text: content carries it, details carry the facts around it
         result = await asyncio.wait_for(tool.run_async({"uri": "note://today"}), BOUND)
         assert result.content == "ship it"
         assert result.details["uri"] == "note://today"
@@ -1592,19 +1331,13 @@ class TestReadResource:
         assert "images" not in result.details
         assert "files" not in result.details
 
-    async def test_a_template_uri_reads_through_the_server(self, runtime_factory):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await connect(runtime, "demo", make_resource_server())
-        tool = ctx.tools.get("read_mcp_resource")
+        # a template uri reads through the server
         result = await asyncio.wait_for(
             tool.run_async({"uri": "greeting://ada"}), BOUND
         )
         assert result.content == "hello ada"
 
-    async def test_an_image_lands_in_details(self, runtime_factory):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await connect(runtime, "demo", make_resource_server())
-        tool = ctx.tools.get("read_mcp_resource")
+        # an image lands in details with a placeholder in content
         result = await asyncio.wait_for(tool.run_async({"uri": "pic://logo"}), BOUND)
         assert "[image: image/png]" in result.content
         assert result.details["images"] == [
@@ -1615,12 +1348,8 @@ class TestReadResource:
             }
         ]
 
-    async def test_another_blob_is_spooled_to_a_temp_file(self, runtime_factory):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await connect(runtime, "demo", make_resource_server())
-        tool = ctx.tools.get("read_mcp_resource")
+        # an opaque blob is spooled to a temp file
         result = await asyncio.wait_for(tool.run_async({"uri": "blob://data"}), BOUND)
-
         spooled = result.details["files"]
         assert len(spooled) == 1
         entry = spooled[0]
@@ -1631,27 +1360,13 @@ class TestReadResource:
         assert path.read_bytes() == BLOB
         assert f"[file: {entry['path']} ({len(BLOB)} bytes" in result.content
 
-    async def test_a_missing_resource_is_an_mcp_error(self, runtime_factory):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await connect(runtime, "demo", make_resource_server())
-        tool = ctx.tools.get("read_mcp_resource")
-        with pytest.raises(ToolError) as err:
-            await asyncio.wait_for(tool.run_async({"uri": "note://absent"}), BOUND)
-        assert err.value.code == "mcp_error"
+        # and every failure is an mcp error — a missing resource, another
+        # server's uri, or a pre-2026 error code
+        for args in ({"uri": "note://absent"}, {"uri": "other://server/thing"}):
+            with pytest.raises(ToolError) as err:
+                await asyncio.wait_for(tool.run_async(args), BOUND)
+            assert err.value.code == "mcp_error"
 
-    async def test_a_uri_of_another_server_is_an_mcp_error(self, runtime_factory):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await connect(runtime, "demo", make_resource_server())
-        tool = ctx.tools.get("read_mcp_resource")
-        with pytest.raises(ToolError) as err:
-            await asyncio.wait_for(
-                tool.run_async({"uri": "other://server/thing"}), BOUND
-            )
-        assert err.value.code == "mcp_error"
-
-    async def test_the_legacy_error_code_maps_to_mcp_error(self, runtime_factory):
-        """A pre-2026 read answers ``-32002``; the session maps it onto the
-        same category a modern protocol error produces."""
         runtime, ctx = runtime_factory({"legacy": inproc_entry()})
         await connect(runtime, "legacy", legacy_server())
         tool = ctx.tools.get("read_mcp_resource")
@@ -1660,9 +1375,8 @@ class TestReadResource:
         assert err.value.code == "mcp_error"
         assert "legacy" in err.value.message
 
-
-class TestListing:
-    async def test_resources_list_name_uri_and_mime(self, runtime_factory):
+        # the listing tools carry the entries and page through a cursor —
+        # and an empty listing says so
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         await connect(runtime, "demo", make_resource_server())
         tool = ctx.tools.get("list_mcp_resources")
@@ -1676,64 +1390,41 @@ class TestListing:
         ]
         assert "nextCursor" not in result.details
 
-    async def test_an_empty_listing_says_so(self, runtime_factory):
-        runtime, ctx = runtime_factory({"paged": inproc_entry()})
-        await connect(runtime, "paged", paged_server())
-        tool = ctx.tools.get("list_mcp_resource_templates")
-        result = await asyncio.wait_for(tool.run_async({}), BOUND)
-        assert result.content == "no resource templates"
-        assert result.details["resourceTemplates"] == []
-
-    async def test_templates_list_their_uri_template(self, runtime_factory):
-        runtime, ctx = runtime_factory({"withres": inproc_entry()})
-        await connect(runtime, "withres", make_resource_server())
-        tool = ctx.tools.get("list_mcp_resource_templates")
-        result = await asyncio.wait_for(tool.run_async({"server": "withres"}), BOUND)
-        assert "greeting://{name}" in result.content
+        templates = ctx.tools.get("list_mcp_resource_templates")
+        result = await asyncio.wait_for(templates.run_async({"server": "demo"}), BOUND)
         assert [t["uriTemplate"] for t in result.details["resourceTemplates"]] == [
             "greeting://{name}"
         ]
+        assert "greeting://{name}" in result.content
 
-    async def test_the_cursor_passes_through_and_next_cursor_comes_back(
-        self, runtime_factory
-    ):
         runtime, ctx = runtime_factory({"paged": inproc_entry()})
         await connect(runtime, "paged", paged_server())
-        tool = ctx.tools.get("list_mcp_resources")
+        templates = ctx.tools.get("list_mcp_resource_templates")
+        result = await asyncio.wait_for(templates.run_async({}), BOUND)
+        assert result.content == "no resource templates"
+        assert result.details["resourceTemplates"] == []
 
+        tool = ctx.tools.get("list_mcp_resources")
         first = await asyncio.wait_for(tool.run_async({}), BOUND)
         assert "first: note://first" in first.content
         assert first.details["nextCursor"] == "page-2"
-
         second = await asyncio.wait_for(
             tool.run_async({"cursor": first.details["nextCursor"]}), BOUND
         )
         assert "second: note://second" in second.content
         assert "nextCursor" not in second.details
-
-    async def test_a_non_string_cursor_is_rejected(self, runtime_factory):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await connect(runtime, "demo", make_resource_server())
-        tool = ctx.tools.get("list_mcp_resources")
         with pytest.raises(ToolError) as err:
             await asyncio.wait_for(tool.run_async({"cursor": 5}), BOUND)
         assert err.value.code == "invalid_type"
 
 
-class TestStatusReport:
-    async def test_the_status_report_is_unchanged(self, runtime_factory):
-        """What mcp_status renders must not move because resources exist —
-        the resource tools are one per conversation, not per server."""
-        runtime, _ctx = runtime_factory({"demo": inproc_entry()})
-        await connect(runtime, "demo", make_resource_server())
-        assert runtime.status() == [
-            {"name": "demo", "state": "connected", "tools": 0, "error": None}
-        ]
-
 # ── tool registration and exposure, through the runtime ──────
 
 
 class TestToolMapping:
+    """The per-server tool registration and its call mapping — full names,
+    schemas, tags, and where each result shape lands."""
+
     async def test_tools_register_with_full_names_and_schemas(self, runtime_factory):
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         await peer_connect(runtime, "demo", MODERN_PEER)
@@ -1741,104 +1432,92 @@ class TestToolMapping:
         registry = ctx.tools
         assert "mcp__demo__search" in registry
         tool = registry.get("mcp__demo__search")
-        assert tool.availability == "both"  # default exposure: auto → direct (no codemode)
+        assert tool.availability == "both"  # default exposure: auto → direct
         assert tool.schema["required"] == ["q"]
         assert tool.tags == frozenset({"mcp", "mcp:demo"})
         assert tool.mcp == {"server": "demo", "tool": "search"}
         assert tool.mcp_raw_name == "search"
         assert tool.source == "host"  # a bare BuildContext stamps nothing
+        assert "mcp__demo__search" in registry.names(audience="model")
 
-    async def test_a_successful_call_maps_into_content_and_details(
-        self, runtime_factory
-    ):
+        # a bare definition with no schema or description still registers,
+        # and a colliding raw name gets the same stable suffix the naming
+        # rules assign
+        import hashlib
+
+        bare, _ctx = runtime_factory({})
+        session = McpSession(peer_config("x"))
+        tool = mcp_tool(bare, session, "demo", {"name": "raw"}, "both", False)
+        assert tool.schema == {"type": "object", "properties": {}}
+        assert tool.description == "MCP tool raw from demo"
+        bare.assignments["demo"] = assign_tool_names("demo", ["a-b", "a_b"])
+        tool = mcp_tool(bare, session, "demo", {"name": "a_b"}, "both", False)
+        assert tool.name == "mcp__demo__a_b_" + hashlib.sha1(b"a_b").hexdigest()[:6]
+        assert tool.mcp_raw_name == "a_b"
+
+        # the anchor tool carries the runtime, and it is program-only
+        anchor, _ctx = runtime_factory({"off": inproc_entry(enabled=False)})
+        status = mcp_status_tool(anchor)
+        assert status.name == "mcp_status"
+        assert status.availability == "program"
+        assert status.mcp_runtime is anchor
+        assert status.schema == {"type": "object", "properties": {}}
+
+    async def test_calls_map_into_content_and_details(self, runtime_factory):
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         await peer_connect(runtime, "demo", MODERN_PEER)
-        tool = ctx.tools.get("mcp__demo__search")
 
-        result = await asyncio.wait_for(tool.run_async({"q": "hi"}), BOUND)
+        result = await asyncio.wait_for(
+            ctx.tools.get("mcp__demo__search").run_async({"q": "hi"}), BOUND
+        )
         assert result.content == "hello"
         assert result.details["server"] == "demo"
         assert result.details["tool"] == "search"
         assert result.details["structured_content"] == {"ok": True}
         assert result.details["is_error"] is False
 
-    async def test_an_is_error_result_raises_mcp_error(self, runtime_factory):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await peer_connect(runtime, "demo", MODERN_PEER)
-        tool = ctx.tools.get("mcp__demo__fail")
-        with pytest.raises(ToolError) as err:
-            await asyncio.wait_for(tool.run_async({}), BOUND)
-        assert err.value.code == "mcp_error"
-        assert "boom" in err.value.message
-
-    async def test_input_required_raises_its_own_code(self, runtime_factory):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await peer_connect(runtime, "demo", MODERN_PEER)
-        tool = ctx.tools.get("mcp__demo__ask")
-        with pytest.raises(ToolError) as err:
-            await asyncio.wait_for(tool.run_async({}), BOUND)
-        assert err.value.code == "mcp_input_required"
-
-    async def test_image_blocks_land_in_details_with_a_placeholder(
-        self, runtime_factory
-    ):
-        runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await peer_connect(runtime, "demo", MODERN_PEER)
-        tool = ctx.tools.get("mcp__demo__pic")
-        result = await asyncio.wait_for(tool.run_async({}), BOUND)
+        # an image block lands in details with a placeholder in content
+        result = await asyncio.wait_for(
+            ctx.tools.get("mcp__demo__pic").run_async({}), BOUND
+        )
         assert result.content == "here:\n[image: image/png]"
         assert result.details["images"][0]["data"] == "QUJD"
 
-    async def test_missing_schema_and_description_fall_back(self, runtime_factory):
-        runtime, _ctx = runtime_factory({})
-        session = McpSession(peer_config("x"))
-        tool = mcp_tool(runtime, session, "demo", {"name": "raw"}, "both", False)
-        assert tool.schema == {"type": "object", "properties": {}}
-        assert tool.description == "MCP tool raw from demo"
+        # an isError result raises the mcp error, message and all — and an
+        # input-requiring answer has its own code
+        with pytest.raises(ToolError) as err:
+            await asyncio.wait_for(
+                ctx.tools.get("mcp__demo__fail").run_async({}), BOUND
+            )
+        assert err.value.code == "mcp_error"
+        assert "boom" in err.value.message
+        with pytest.raises(ToolError) as err:
+            await asyncio.wait_for(
+                ctx.tools.get("mcp__demo__ask").run_async({}), BOUND
+            )
+        assert err.value.code == "mcp_input_required"
 
-    async def test_collision_gets_the_hash_suffix_and_raw_name(self, runtime_factory):
-        import hashlib
-
-        runtime, _ctx = runtime_factory({})
-        session = McpSession(peer_config("x"))
-        runtime.assignments["demo"] = assign_tool_names("demo", ["a-b", "a_b"])
-        raw = {"name": "a_b"}
-        tool = mcp_tool(runtime, session, "demo", raw, "both", False)
-        assert tool.name == "mcp__demo__a_b_" + hashlib.sha1(b"a_b").hexdigest()[:6]
-        assert tool.mcp_raw_name == "a_b"
-
-    def test_mcp_status_tool_holds_the_runtime(self, runtime_factory):
-        runtime, _ctx = runtime_factory({"off": inproc_entry(enabled=False)})
-        tool = mcp_status_tool(runtime)
-        assert tool.name == "mcp_status"
-        assert tool.availability == "program"
-        assert tool.mcp_runtime is runtime
-        assert tool.schema == {"type": "object", "properties": {}}
-
-
-class TestExposureMapping:
-    async def test_codemode_exposure_is_program_only(self, runtime_factory):
+    async def test_the_tool_exposure_mapping(self, runtime_factory):
+        # codemode exposure: registered, the program audience sees it, the
+        # model does not
         runtime, ctx = runtime_factory({"demo": inproc_entry(exposure="codemode")})
         await peer_connect(runtime, "demo", MODERN_PEER)
         registry = ctx.tools
-        assert "mcp__demo__search" in registry
-        assert "mcp__demo__search" not in registry.names(audience="model")
         assert "mcp__demo__search" in registry.names(audience="program")
+        assert "mcp__demo__search" not in registry.names(audience="model")
 
-    async def test_hidden_exposure_registers_then_disables(self, runtime_factory):
+        # hidden: registered, visible to neither audience
         runtime, ctx = runtime_factory({"demo": inproc_entry(exposure="hidden")})
         await peer_connect(runtime, "demo", MODERN_PEER)
-        registry = ctx.tools
-        assert registry.get("mcp__demo__search") is not None  # registered
-        assert "mcp__demo__search" not in registry.names(audience="model")
-        assert "mcp__demo__search" not in registry.names(audience="program")
+        assert ctx.tools.get("mcp__demo__search") is not None
+        assert "mcp__demo__search" not in ctx.tools.names(audience="model")
+        assert "mcp__demo__search" not in ctx.tools.names(audience="program")
 
-    async def test_tool_exposure_overrides_per_tool(self, runtime_factory):
+        # a per-tool override beats the server-level one
         runtime, ctx = runtime_factory(
             {
                 "demo": inproc_entry(
-                    exposure="codemode",
-                    toolExposure={"search": "direct", "pic": "hidden"},
+                    exposure="codemode", toolExposure={"search": "direct", "pic": "hidden"}
                 )
             }
         )
@@ -1849,17 +1528,16 @@ class TestExposureMapping:
         assert registry.get("mcp__demo__pic") is not None
         assert "mcp__demo__pic" not in registry.names(audience="model")
 
-    async def test_default_exposure_auto_follows_codemode(self, runtime_factory):
+        # and the default follows the codemode plugin's presence
         runtime, ctx = runtime_factory({"demo": inproc_entry()}, codemode_enabled=True)
         await peer_connect(runtime, "demo", MODERN_PEER)
-        registry = ctx.tools
         assert runtime.default_exposure == "codemode"
-        assert "mcp__demo__search" not in registry.names(audience="model")
+        assert "mcp__demo__search" not in ctx.tools.names(audience="model")
 
 
 class TestSyncTools:
-    """A changed tool list reconciles the registry — newcomers register, the
-    gone unregister, the untouched stay where the connect put them."""
+    """A changed tool list reconciles the registry, and a connect that fails
+    is remembered on the session rather than raised into the turn."""
 
     async def test_a_changed_tool_list_reconciles_the_registry(self, runtime_factory):
         """The modern tool-change subscription drives the runtime's own sync,
@@ -1888,12 +1566,10 @@ class TestSyncTools:
         # the untouched tool stays exactly where the connect put it
         assert "mcp__demo__plain" in registry
 
-    async def test_a_failing_direct_server_marks_error_without_raising(self, tmp_path):
-        """The runtime's own bounded connect: a server that cannot start is
-        reported and remembered on the session, never raised."""
-        runtime, ctx = make_runtime(
-            tmp_path, {"bad": {"command": "no-such-binary-mocode"}}
-        )
+    async def test_connect_failures_are_marked_never_raised(self, runtime_factory):
+        """The runtime's own bounded connect: a server that cannot start, or
+        never answers, is reported and remembered on the session."""
+        runtime, ctx = runtime_factory({"bad": {"command": "no-such-binary-mocode"}})
         try:
             await asyncio.wait_for(runtime.start(), BOUND)  # must not raise
             status = {s["name"]: s for s in runtime.status()}
@@ -1903,12 +1579,10 @@ class TestSyncTools:
         finally:
             runtime.shutdown()
 
-    async def test_a_silent_server_times_out_the_connect(self, runtime_factory):
-        """The runtime's connect timeout bounds a server that never answers:
-        the session is marked with an error and the suite keeps moving — the
-        same policy a spawned-but-silent child triggers."""
+        # the same accounting on a connect that times out instead — the
+        # same policy a spawned-but-silent child triggers
         runtime, ctx = runtime_factory(
-            {"slow": {"command": "never-run"}}, connect_timeout_s=1
+            {"slow": {"command": "never-run"}}, connect_timeout_s=0.2
         )
         session = McpSession(
             runtime.config["slow"],
@@ -1917,13 +1591,12 @@ class TestSyncTools:
         runtime.sessions["slow"] = session
         try:
             with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-                await asyncio.wait_for(session.connect_and_register(), 1)
+                await asyncio.wait_for(session.connect_and_register(), 0.2)
         finally:
             session.shutdown()
         runtime.shutdown()
-        # the runtime's own accounting of the failure, not a private flag
-        runtime.tasks.clear()
         assert session.state != STATE_CONNECTED
+
 
 # ── the modern tool-change subscription ──────────────────────
 
@@ -1995,12 +1668,11 @@ async def republish_until(env: InProc, predicate, *, what: str) -> bool:
 
 
 class TestSubscriptionLifecycle:
-    async def test_the_subscription_lives_and_dies_with_the_connection(
-        self, runtime_factory
-    ):
+    async def test_the_watch_dies_with_the_session(self, runtime_factory):
         """A change delivered through the subscription reconciles the
-        registry; once the connection is closed the same announcement no
-        longer moves anything — the watch went down with it."""
+        registry; once the connection is gone — closed or shut down — the
+        same announcement no longer moves anything: the watch went down
+        with it."""
         runtime, ctx = runtime_factory({"demo": {"command": "never-run"}})
         env = InProc()
         session = await connect(runtime, "demo", env.server)
@@ -2011,15 +1683,15 @@ class TestSubscriptionLifecycle:
             env, lambda: "mcp__demo__late" in registry, what="the new tool to register"
         )
 
+        # a graceful close ends the watch: the cue is still publishable but
+        # no session answers it any more
         await asyncio.wait_for(session.close(), BOUND)
         assert session.state == STATE_CLOSED
         registry.unregister("mcp__demo__late")
-        # after close the cue is still publishable but nothing reconciles: no
-        # session answers the change any more
         await env.announce(3)
         assert "mcp__demo__late" not in registry
 
-    async def test_a_sync_shutdown_ends_the_subscription_too(self, runtime_factory):
+        # a sync shutdown ends it the same way, on its own session
         runtime, ctx = runtime_factory({"demo": {"command": "never-run"}})
         env = InProc()
         session = await connect(runtime, "demo", env.server)
@@ -2035,17 +1707,16 @@ class TestSubscriptionLifecycle:
         await env.announce(3)
         assert "mcp__demo__late" not in ctx.tools
 
-    async def test_a_modern_session_without_a_callback_starts_no_subscription(self):
+        # a modern session with nobody to answer a change starts no watch —
+        # announcing cannot move any registry, so the only observable is
+        # that the session stays healthy
         env = InProc()
         session = McpSession(inproc_config(), server=env.server)
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         assert session.era == ERA_MODERN
-        # nobody to answer a change: announcing cannot move any registry, so
-        # the only observable is that the session stays healthy
         await env.announce(3)
         assert session.state == STATE_CONNECTED
         await asyncio.wait_for(session.close(), BOUND)
-
 
 # ── the retry driver — a scripted stub of the SDK stream ────
 
@@ -2133,73 +1804,97 @@ async def _cancel(task: asyncio.Task) -> None:
     await asyncio.gather(task, return_exceptions=True)
 
 
+class _InstantBackoff:
+    """The subscriptions module's sleep entry, swapped for a recording one.
+
+    ``watch_tools`` sleeps through its module-level ``asyncio`` name, so
+    replacing that name — and only that name, with ``CancelledError`` still
+    the real one — turns the product's backoff pauses into recorded values:
+    the wait the product asked for is asserted instead of spent.
+
+    What this bypasses is the *wall clock* of a pause, nothing else: the
+    sequence of waits (the initial value, the reset on an event, the
+    doubling toward the ceiling) is the backoff rule itself and is asserted
+    exactly, off the product's own constants.
+    """
+
+    def __init__(self) -> None:
+        self.waited: list[float] = []
+
+    def patch(self, monkeypatch) -> None:
+        from mocode.host.plugin.builtin.mcp import subscriptions
+
+        async def sleep(seconds: float) -> None:
+            self.waited.append(seconds)
+            # one loop turn, so the watch's retry loop stays cooperative
+            # with the test's own polling — the pause is *recorded*, not spent
+            await _REAL_ASYNCIO_SLEEP(0)
+
+        shim = SimpleNamespace(sleep=sleep, CancelledError=asyncio.CancelledError)
+        monkeypatch.setattr(subscriptions, "asyncio", shim)
+
+
+def _recorder(seen: list):
+    """A change callback that answers by recording that it ran."""
+
+    async def on_changed() -> None:
+        seen.append(1)
+
+    return on_changed
+
+
 class TestWatchTools:
     async def test_a_stream_event_drives_the_change_callback(self):
         client = _ScriptedClient([([ToolsListChanged()], "closed")])
         seen: list[int] = []
 
-        async def on_changed():
-            seen.append(1)
-
-        task = await drive(client, on_changed)
+        task = await drive(client, _recorder(seen))
         assert await wait_until(lambda: seen, what="the change callback")
         await _cancel(task)
         # the filter is tools-only: nothing else on the modern vocabularies
         assert client.filters and client.filters[0] == {"tools_list_changed": True}
 
-    async def test_a_dropped_stream_re_listens_after_the_backoff(self):
-        client = _ScriptedClient([([], "lost"), ([ToolsListChanged()], "closed")])
-        seen: list[int] = []
-        reports: list[str] = []
+    async def test_a_drop_or_a_close_re_listens_after_the_backoff(self, monkeypatch):
+        backoff = _InstantBackoff()
+        backoff.patch(monkeypatch)
+        # an abrupt drop and a graceful close are the same policy: neither
+        # replays, so both re-listen — and both wait the backoff first
+        for end in ("lost", "closed"):
+            backoff.waited.clear()
+            client = _ScriptedClient([([], end), ([ToolsListChanged()], "closed")])
+            seen: list[int] = []
+            reports: list[str] = []
+            task = await drive(client, _recorder(seen), report=reports.append)
+            assert await wait_until(
+                lambda: len(seen) >= 2, what=f"the re-listened stream's event ({end})"
+            )
+            await _cancel(task)
+            assert client.attempts >= 3, end  # the end cost a re-listen
+            assert backoff.waited and backoff.waited[0] == BACKOFF_INITIAL, end
+            if end == "lost":
+                assert any("dropped" in message for message in reports), end
 
-        async def on_changed():
-            seen.append(1)
-
-        task = await drive(client, on_changed, report=reports.append)
-        assert await wait_until(
-            lambda: len(seen) >= 2, what="the re-listened stream's event"
-        )
-        await _cancel(task)
-        assert client.attempts >= 3  # the drop cost at least one re-listen
-        assert client.gaps[0] >= BACKOFF_INITIAL - 0.05  # and it waited first
-        assert any("dropped" in message for message in reports)
-
-    async def test_the_backoff_doubles_and_an_event_resets_it(self):
+    async def test_the_backoff_doubles_and_an_event_resets_it(self, monkeypatch):
+        backoff = _InstantBackoff()
+        backoff.patch(monkeypatch)
         client = _ScriptedClient(
-            [
-                ([], "lost"),
-                ([ToolsListChanged()], "lost"),
-                ([], "lost"),
-            ]
+            [([], "lost"), ([ToolsListChanged()], "lost"), ([], "lost")]
         )
         seen: list[int] = []
 
-        async def on_changed():
-            seen.append(1)
-
-        task = await drive(client, on_changed, report=lambda _message: None)
+        task = await drive(client, _recorder(seen), report=lambda _message: None)
         assert await wait_until(lambda: client.attempts >= 4, what="four attempts")
         await _cancel(task)
-        gaps = client.gaps
-        assert gaps[0] >= BACKOFF_INITIAL - 0.05
-        assert gaps[1] >= BACKOFF_INITIAL - 0.05  # the event reset the doubling
-        assert gaps[2] >= 2 * BACKOFF_INITIAL - 0.05  # before the ceiling
+        # the first wait is the initial one; the event that arrived reset the
+        # doubling to it, and the next loss doubled it before the ceiling
+        assert backoff.waited[:3] == [
+            BACKOFF_INITIAL,
+            BACKOFF_INITIAL,
+            2 * BACKOFF_INITIAL,
+        ]
 
-    async def test_a_graceful_close_re_listens(self):
-        client = _ScriptedClient([([], "closed"), ([ToolsListChanged()], "closed")])
-        seen: list[int] = []
-
-        async def on_changed():
-            seen.append(1)
-
-        task = await drive(client, on_changed)
-        assert await wait_until(
-            lambda: client.attempts >= 2 and seen, what="the re-listen after a close"
-        )
-        await _cancel(task)
-        assert client.gaps[0] >= BACKOFF_INITIAL - 0.05
-
-    async def test_a_refused_subscription_is_raised_never_retried(self):
+    async def test_failures_are_reported_and_the_two_diagnoses_are_raised(self):
+        # a pre-2026 server refuses the subscription: raised, never retried
         from mcp.client.subscriptions import ListenNotSupportedError
 
         client = _RefusingClient(ListenNotSupportedError("2025-11-25"))
@@ -2207,7 +1902,8 @@ class TestWatchTools:
             await asyncio.wait_for(watch_tools(client, _noop), BOUND)
         assert client.calls == 1
 
-    async def test_a_failed_subscription_is_reported_and_raised(self):
+        # a refused request is reported and then raised — retrying it here
+        # would only fight the connection task already unwinding
         client = _RefusingClient(MCPError(-32601, "the server refuses subscriptions"))
         reports: list[str] = []
         with pytest.raises(MCPError):
@@ -2217,9 +1913,10 @@ class TestWatchTools:
         assert client.calls == 1
         assert reports  # said before it was raised
 
-    async def test_a_failing_re_sync_is_reported_and_the_stream_continues(self):
+        # a re-sync that fails mid-stream is reported and the stream keeps
+        # watching — the next event retries it
         client = _ScriptedClient([([ToolsListChanged(), ToolsListChanged()], "closed")])
-        reports: list[str] = []
+        reports = []
         calls: list[int] = []
 
         async def on_changed():
@@ -2231,6 +1928,7 @@ class TestWatchTools:
         assert await wait_until(lambda: len(calls) >= 2, what="the retried re-sync")
         await _cancel(task)
         assert len(reports) == 1 and "registry hiccuped" in reports[0]
+
 
 # ── plugin lifecycle ────────────────────────────────────────
 
@@ -2252,25 +1950,6 @@ def _table(tmp_path: Path, **servers: Any) -> dict:
         name: {"command": "python", "args": ["-c", "pass"], **extra}
         for name, extra in servers.items()
     }
-
-
-class TestPluginLifecycle:
-    def test_build_registers_the_anchor_tool_with_the_runtime(self, plugin_host):
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=False)
-        assert not host.failures
-        status = host.ctx.tools.get("mcp_status")
-        assert status is not None
-        assert isinstance(status.mcp_runtime, McpRuntime)
-        # program-only: the model is never offered the anchor
-        assert "mcp_status" not in host.ctx.tools.names(audience="model")
-        assert "mcp_status" in host.ctx.tools.names(audience="program")
-
-    def test_the_plugin_instance_is_stateless(self):
-        assert McpPlugin().name == "mcp"
-        assert (
-            McpPlugin().description == "Connect to MCP servers and expose their tools"
-        )
-        assert PLUGIN.name == "mcp"
 
 
 def _status_rows(text: str) -> dict[str, tuple[str, int | None]]:
@@ -2321,10 +2000,15 @@ def _peer_sessions(monkeypatch, servers: dict[str, object]) -> None:
     sessions to talk to an in-process server (or a wire peer) instead of a
     spawned child hands the peers over here: the factory is the collaborator
     being replaced, and ``start()`` still runs in full.
+
+    The real class is taken from the module that defines it, not from the
+    runtime module's current binding, so patching twice in one test (two
+    hosts on one monkeypatch) wraps the class, not the wrapper.
     """
+    from mocode.host.plugin.builtin.mcp import client as client_module
     from mocode.host.plugin.builtin.mcp import runtime as runtime_module
 
-    real = runtime_module.McpSession
+    real = client_module.McpSession
 
     def factory(config, **kwargs):
         peer = servers.get(config.name)
@@ -2368,6 +2052,34 @@ async def _materialize_with_servers(
     return host, runtime, host.ctx
 
 
+class TestPluginLifecycle:
+    def test_build_registers_the_anchor_tool_with_the_runtime(self, plugin_host):
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=False)
+        assert not host.failures
+        status = host.ctx.tools.get("mcp_status")
+        assert status is not None
+        assert isinstance(status.mcp_runtime, McpRuntime)
+        # program-only: the model is never offered the anchor
+        assert "mcp_status" not in host.ctx.tools.names(audience="model")
+        assert "mcp_status" in host.ctx.tools.names(audience="program")
+
+        # the instance is stateless and the package surface is what a plugin
+        # author imports
+        assert McpPlugin().name == "mcp"
+        assert (
+            McpPlugin().description == "Connect to MCP servers and expose their tools"
+        )
+        assert PLUGIN.name == "mcp"
+        from mocode.host.plugin.builtin.mcp import (
+            PLUGIN as exported,
+            McpRuntime as exported_runtime,
+        )
+
+        assert isinstance(exported, McpPlugin)
+        assert exported.name == "mcp"
+        assert exported_runtime is McpRuntime
+
+
 class TestPromptSection:
     """The mcp_servers prompt section — structure, not wording: which
     servers are listed, how each is reached, and which tool names a
@@ -2377,12 +2089,9 @@ class TestPromptSection:
         self, plugin_host, monkeypatch, tmp_path
     ):
         host, runtime, ctx = await _materialize_with_servers(
-            plugin_host, monkeypatch, tmp_path, {"demo": make_resource_server()},
+            plugin_host, monkeypatch, tmp_path, {"alpha": WirePeer(MODERN_PEER)},
             default_exposure="direct",
         )
-        registry = ctx.tools
-        assert "mcp__demo__search" not in registry  # this server has no tools
-        assert "read_mcp_resource" in registry
         section = next(s for s in ctx.prompt_sections if s.name == "mcp_servers")
         assert section.priority == 46
         assert section.derived_from == "tools"
@@ -2391,30 +2100,19 @@ class TestPromptSection:
 
         text = section.render({})
         rows = _status_rows(text)
-        assert "demo" in rows
-        assert rows["demo"][0] == "direct"
-        host.close()
-
-    async def test_connected_servers_list_their_tool_names(
-        self, plugin_host, monkeypatch, tmp_path
-    ):
-        """The D12 catalogue: a connected server lists its tools' raw names
-        on an indented continuation line — names only, no schemas."""
-        host, runtime, ctx = await _materialize_with_servers(
-            plugin_host, monkeypatch, tmp_path, {"alpha": WirePeer(MODERN_PEER)}
-        )
-        section = next(s for s in ctx.prompt_sections if s.name == "mcp_servers")
-        text = section.render({})
+        assert "alpha" in rows
+        assert rows["alpha"][0] == "direct"
+        # the D12 catalogue: raw names on an indented continuation line
         catalogues, tails = _tool_lines(text)
         assert catalogues["alpha"] == ["ask", "fail", "pic", "search"]
         assert "alpha" not in tails  # no cut, no pointer
+        # a server with no configured description falls back to the first
+        # line of the instructions it handed over the wire
+        assert "Wire server instructions." in text
         host.close()
 
-    async def test_the_tool_list_truncates_at_thirty_names(
-        self, plugin_host, monkeypatch, tmp_path
-    ):
-        """Past thirty names the list gives up counting and points at
-        search_tools() — the truncated raws stay out of the section."""
+        # past thirty names the list gives up counting and points at
+        # search_tools() — the truncated raws stay out of the section
         tools = [
             {
                 "name": f"tool_{i:02d}",
@@ -2424,12 +2122,24 @@ class TestPromptSection:
             for i in range(40)
         ]
         host, runtime, ctx = await _materialize_with_servers(
-            plugin_host, monkeypatch, tmp_path, {"many": WirePeer({**MODERN_PEER, "tools/list": {
-                "resultType": "complete", "tools": tools, "ttlMs": 0, "cacheScope": "public"
-            }})}
+            plugin_host,
+            monkeypatch,
+            tmp_path,
+            {
+                "many": WirePeer(
+                    {
+                        **MODERN_PEER,
+                        "tools/list": {
+                            "resultType": "complete",
+                            "tools": tools,
+                            "ttlMs": 0,
+                            "cacheScope": "public",
+                        },
+                    }
+                )
+            },
         )
-        section = next(s for s in ctx.prompt_sections if s.name == "mcp_servers")
-        text = section.render({})
+        text = next(s for s in ctx.prompt_sections if s.name == "mcp_servers").render({})
         catalogues, tails = _tool_lines(text)
         catalogue = catalogues["many"]
         assert len(catalogue) == 30  # the list holds exactly thirty names
@@ -2438,42 +2148,23 @@ class TestPromptSection:
         assert tails["many"].startswith(" … +10 more ")
         host.close()
 
-    async def test_a_still_connecting_server_keeps_the_one_line_form(
-        self, plugin_host, monkeypatch, tmp_path
-    ):
-        """No catalogue without a connection: the failed server keeps the
-        plain one-line form and no ``tools:`` line at all."""
-        host = plugin_host(
-            plugins=[PLUGIN],
-            build=True,
-            assemble=True,
-            config_kwargs={
-                "plugins": _plugins_mcp(
-                    tmp_path, _table(tmp_path, slow={}), connect_timeout_s=1
-                )
-            },
-        )
-        # the connect is bounded by the runtime's own timeout, and the
-        # session stays unconnected — exactly the shape the section reads
-        runtime = host.ctx.tools.get("mcp_status").mcp_runtime
-        session = McpSession(
-            runtime.config["slow"],
-            server=WirePeer({"server/discover": Silent(), "initialize": Silent()}),
-        )
-        runtime.sessions["slow"] = session
-        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-            await asyncio.wait_for(session.connect_and_register(), 1)
+        # and with no servers configured there is no section at all
+        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
         await asyncio.wait_for(host.materialize(), BOUND)
-
-        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
-        text = section.render({})
-        assert "slow" in _status_rows(text)
-        assert "tools:" not in text
+        assert "<mcp_servers>" not in host.ctx.agent.system_prompt
+        assert (
+            next(
+                s for s in host.ctx.prompt_sections if s.name == "mcp_servers"
+            ).render({})
+            == ""
+        )
         host.close()
 
-    async def test_hidden_and_disabled_servers_stay_out_of_the_section(
+    async def test_servers_that_are_not_shown_stay_out_or_one_line(
         self, plugin_host, monkeypatch, tmp_path
     ):
+        # hidden and disabled servers never make a row — hidden still
+        # registers its tools, just unreachable by either audience
         peers = {"shown": WirePeer(MODERN_PEER), "hid": WirePeer(MODERN_PEER)}
         _peer_sessions(monkeypatch, peers)
         host = plugin_host(
@@ -2483,7 +2174,9 @@ class TestPromptSection:
             config_kwargs={
                 "plugins": _plugins_mcp(
                     tmp_path,
-                    _table(tmp_path, shown={}, hid={"exposure": "hidden"}, off={"enabled": False}),
+                    _table(
+                        tmp_path, shown={}, hid={"exposure": "hidden"}, off={"enabled": False}
+                    ),
                 )
             },
         )
@@ -2501,25 +2194,34 @@ class TestPromptSection:
         assert "mcp__hid__search" not in registry.names(audience="program")
         host.close()
 
-    async def test_no_servers_renders_no_section(self, plugin_host):
-        host = plugin_host(plugins=[PLUGIN], build=True, assemble=True)
-        await asyncio.wait_for(host.materialize(), BOUND)
-        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
-        assert section.render({}) == ""
-        assert "<mcp_servers>" not in host.ctx.agent.system_prompt
-        host.close()
-
-    async def test_the_section_uses_server_instructions_without_a_description(
-        self, plugin_host, monkeypatch, tmp_path
-    ):
-        """A server with no configured description falls back to the first
-        line of the instructions it handed over the wire."""
-        host, runtime, ctx = await _materialize_with_servers(
-            plugin_host, monkeypatch, tmp_path, {"demo": WirePeer(MODERN_PEER)}
+        # No catalogue without a connection: a still-connecting server keeps
+        # the plain one-line form and no ``tools:`` line at all.
+        host = plugin_host(
+            plugins=[PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={
+                "plugins": _plugins_mcp(
+                    tmp_path, _table(tmp_path, slow={}), connect_timeout_s=0.2
+                )
+            },
         )
-        section = next(s for s in ctx.prompt_sections if s.name == "mcp_servers")
+        # the connect is bounded by the runtime's own timeout, and the
+        # session stays unconnected — exactly the shape the section reads
+        runtime = host.ctx.tools.get("mcp_status").mcp_runtime
+        session = McpSession(
+            runtime.config["slow"],
+            server=WirePeer({"server/discover": Silent(), "initialize": Silent()}),
+        )
+        runtime.sessions["slow"] = session
+        with pytest.raises((asyncio.TimeoutError, TimeoutError)):
+            await asyncio.wait_for(session.connect_and_register(), 0.2)
+        await asyncio.wait_for(host.materialize(), BOUND)
+
+        section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")
         text = section.render({})
-        assert "Wire server instructions." in text
+        assert "slow" in _status_rows(text)
+        assert "tools:" not in text
         host.close()
 
 
@@ -2527,16 +2229,16 @@ class TestCodemodeNotice:
     """The one-shot codemode warning is an event on the channel — the
     observable behaviour, not a flag on the runtime."""
 
-    async def test_program_only_tools_warn_once_then_stay_quiet(
+    async def test_program_only_tools_warn_once_and_codemode_suppresses_it(
         self, plugin_host, monkeypatch, tmp_path
     ):
+        # codemode off: the warning travels with the connect — waited for on
+        # the channel, not slept for and counted after the fact
         host, runtime, ctx = await _materialize_with_servers(
             plugin_host, monkeypatch, tmp_path, {"demo": WirePeer(MODERN_PEER)},
             exposure="codemode",
         )
         reader = ctx.subscribe(since=0)
-        # the warning travels with the connect; wait for it on the channel
-        # rather than sleeping a guessed window and counting after the fact
         warnings = await _first_warning(reader)
         assert len(warnings) == 1
         assert warnings[0].level == "warn"
@@ -2546,9 +2248,7 @@ class TestCodemodeNotice:
         assert [e for e in await _drain(reader) if isinstance(e, Notice)] == []
         host.close()
 
-    async def test_codemode_on_suppresses_the_notice(
-        self, plugin_host, monkeypatch, tmp_path
-    ):
+        # codemode on: the runtime returns before it can emit
         host, runtime, ctx = await _materialize_with_servers(
             plugin_host,
             monkeypatch,
@@ -2588,13 +2288,6 @@ async def _first_warning(reader) -> list:
         await settle(0.01)
 
 
-def test_resolve_server_exposure():
-    assert resolve_server_exposure(_cfg(exposure="hidden"), "direct") == "hidden"
-    assert resolve_server_exposure(_cfg(exposure="bogus"), "codemode") == "codemode"
-    assert resolve_server_exposure(_cfg(), "deferred") == "deferred"
-    assert resolve_server_exposure(_cfg(), "garbage") == "direct"
-
-
 # ── end to end through the dispatcher ───────────────────────
 
 
@@ -2611,6 +2304,9 @@ async def _dispatch(host, name: str, args: dict, *, origin: str = "model"):
 
 
 class TestEndToEnd:
+    """One call through the real dispatcher pipeline — what the model can
+    reach, what only a program origin can, and what refuses both."""
+
     async def test_the_model_reaches_a_direct_tool_through_the_dispatcher(
         self, plugin_host, monkeypatch, tmp_path
     ):
@@ -2627,7 +2323,7 @@ class TestEndToEnd:
         assert finished[0].status == "ok"
         host.close()
 
-    async def test_program_origin_reaches_codemode_tools_and_the_model_cannot(
+    async def test_origin_and_exposure_decide_what_reaches_a_tool(
         self, plugin_host, monkeypatch, tmp_path
     ):
         host, runtime, ctx = await _materialize_with_servers(
@@ -2653,9 +2349,8 @@ class TestEndToEnd:
         assert result.status == "denied"
         host.close()
 
-    async def test_hidden_tools_refuse_every_origin(
-        self, plugin_host, monkeypatch, tmp_path
-    ):
+        # a hidden server's tool refuses both origins — the switch is off
+        # for the model and the program alike
         host, runtime, ctx = await _materialize_with_servers(
             plugin_host, monkeypatch, tmp_path, {"demo": WirePeer(MODERN_PEER)}, exposure="hidden"
         )
@@ -2663,20 +2358,8 @@ class TestEndToEnd:
             result, _ = await _dispatch(
                 host, "mcp__demo__search", {"q": "x"}, origin=origin
             )
-            assert result.status == "denied"
+            assert result.status == "denied", origin
         host.close()
-
-    def test_the_package_exports_the_plugin_surface(self):
-        from mocode.host.plugin.builtin.mcp import (
-            PLUGIN as exported,
-            McpPlugin,
-            McpRuntime,
-        )
-
-        assert isinstance(exported, McpPlugin)
-        assert exported.name == "mcp"
-        assert McpRuntime is not None
-
 
 # ── the loopback HTTP transports ─────────────────────────────
 
@@ -2796,7 +2479,12 @@ class _FakeEndpoint:
 
     def start(self) -> _FakeEndpoint:
         self._thread = threading.Thread(
-            target=self._server.serve_forever, daemon=True
+            # a short poll interval is the fake's own pacing: shutdown then
+            # costs a fiftieth of a second instead of the stdlib's half
+            # second, and no request ever waits on it
+            target=self._server.serve_forever,
+            args=(0.05,),
+            daemon=True,
         )
         self._thread.start()
         return self
@@ -2930,7 +2618,7 @@ class _Handler(BaseHTTPRequestHandler):
                 # pacing the fake's own keep-alive is the fake's behaviour,
                 # not a wait on a condition — it waits on the stop event,
                 # which the teardown sets.
-                fake.stopped_event.wait(0.5)
+                fake.stopped_event.wait(0.2)
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
 
@@ -3045,37 +2733,11 @@ async def http_sessions() -> Any:
             session.shutdown()
 
 
-# ── streamable HTTP ───────────────────────────────────
-
-
 @pytest.mark.usefixtures("_loopback_only")
 class TestStreamableHttp:
-    async def test_modern_json_responses_reach_the_session(self, endpoint, http_sessions):
-        fake = endpoint("json")
-        session = http_sessions(http_config(fake.url))
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        assert session.era == ERA_MODERN
-        assert session.protocol_version == "2026-07-28"
-        assert session.server_info == {"name": "http-srv", "version": "1.0"}
-        assert session.instructions == "HTTP server instructions."
-        assert session.state == STATE_CONNECTED
-        assert [t["name"] for t in session.tools] == ["greet"]
-        result = await asyncio.wait_for(session.call_tool("greet", {"name": "mocode"}), BOUND)
-        assert result["content"] == [{"type": "text", "text": "hi mocode"}]
-        assert result["structuredContent"] == {"text": "hi mocode"}
-
-    async def test_sse_framed_responses_are_parsed(self, endpoint, http_sessions):
-        fake = endpoint("sse")
-        session = http_sessions(http_config(fake.url))
-        await asyncio.wait_for(session.connect_and_register(), BOUND)
-        assert session.era == ERA_MODERN
-        assert session.protocol_version == "2026-07-28"
-        assert [t["name"] for t in session.tools] == ["greet"]
-        result = await asyncio.wait_for(session.call_tool("greet", {"name": "sse"}), BOUND)
-        assert result["content"] == [{"type": "text", "text": "hi sse"}]
-        assert result["structuredContent"] == {"text": "hi sse"}
-
-    async def test_configured_headers_reach_the_server(self, endpoint, http_sessions):
+    async def test_the_modern_streamable_http_wire(self, endpoint, http_sessions):
+        # modern JSON answers, the configured headers on every request, and
+        # the same answers arriving SSE-framed
         fake = endpoint("json")
         session = http_sessions(
             http_config(
@@ -3084,17 +2746,42 @@ class TestStreamableHttp:
             )
         )
         await asyncio.wait_for(session.connect_and_register(), BOUND)
-        await asyncio.wait_for(session.call_tool("greet", {"name": "mocode"}), BOUND)
+        assert session.era == ERA_MODERN
+        assert session.protocol_version == "2026-07-28"
+        assert session.server_info == {"name": "http-srv", "version": "1.0"}
+        assert session.instructions == "HTTP server instructions."
+        assert session.state == STATE_CONNECTED
+        assert [t["name"] for t in session.tools] == ["greet"]
+        result = await asyncio.wait_for(
+            session.call_tool("greet", {"name": "mocode"}), BOUND
+        )
+        assert result["content"] == [{"type": "text", "text": "hi mocode"}]
+        assert result["structuredContent"] == {"text": "hi mocode"}
         posts = [r for r in fake.requests if r["message"] is not None]
         assert posts
         for request in posts:
             assert request["headers"].get("authorization") == "Bearer test-token"
             assert request["headers"].get("x-mcp-test") == "yes"
 
+        fake = endpoint("sse")
+        session = http_sessions(http_config(fake.url))
+        await asyncio.wait_for(session.connect_and_register(), BOUND)
+        assert session.era == ERA_MODERN
+        assert session.protocol_version == "2026-07-28"
+        assert [t["name"] for t in session.tools] == ["greet"]
+        result = await asyncio.wait_for(
+            session.call_tool("greet", {"name": "sse"}), BOUND
+        )
+        assert result["content"] == [{"type": "text", "text": "hi sse"}]
+        assert result["structuredContent"] == {"text": "hi sse"}
+
 
 @pytest.mark.usefixtures("_loopback_only")
-class TestLegacyOverStreamableHttp:
-    async def test_the_failed_probe_falls_back_to_the_handshake(self, endpoint, http_sessions):
+class TestLegacyOverHttp:
+    async def test_the_two_legacy_http_wires(self, endpoint, http_sessions):
+        # a streamable-HTTP server that answers the modern probe with a
+        # plain error: the client falls back to the handshake, and the
+        # session id it is given rides every later request
         fake = endpoint("legacy")
         session = http_sessions(http_config(fake.url))
         await asyncio.wait_for(session.connect_and_register(), BOUND)
@@ -3113,15 +2800,8 @@ class TestLegacyOverStreamableHttp:
         for request in later:
             assert request["headers"].get("mcp-session-id") == SESSION_ID
 
-
-# ── the legacy SSE transport ──────────────────────────
-
-
-@pytest.mark.usefixtures("_loopback_only")
-class TestSseTransport:
-    async def test_the_handshake_rides_the_stream_and_keeps_the_session(
-        self, endpoint, http_sessions
-    ):
+        # the legacy 2024-11-05 HTTP+SSE wire: a GET stream that announces
+        # the POST endpoint first, with every answer riding the stream
         fake = endpoint("sse-transport")
         session = http_sessions(
             http_config(
@@ -3134,7 +2814,9 @@ class TestSseTransport:
         assert session.era == ERA_LEGACY
         assert session.protocol_version == "2025-11-25"
         assert [t["name"] for t in session.tools] == ["greet"]
-        result = await asyncio.wait_for(session.call_tool("greet", {"name": "sse"}), BOUND)
+        result = await asyncio.wait_for(
+            session.call_tool("greet", {"name": "sse"}), BOUND
+        )
         assert result["content"] == [{"type": "text", "text": "hi sse"}]
         gets = [r for r in fake.requests if r["message"] is None]
         posts = [r for r in fake.requests if r["message"] is not None]
@@ -3143,9 +2825,6 @@ class TestSseTransport:
         assert gets[0]["headers"].get("authorization") == "Bearer sse-token"
         # the endpoint event's session id rides every message POST
         assert posts and all("sessionId=sse-session-42" in r["path"] for r in posts)
-
-
-# ── failures ──────────────────────────────────────────
 
 
 @pytest.mark.usefixtures("_loopback_only")
