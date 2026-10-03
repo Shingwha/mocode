@@ -1,4 +1,4 @@
-⏸️ 待派工 — 前置 W2 合并
+✅ 2026-10-03 @ feat/codemode-docs（已合并 master；1020 passed exit 0，lead 复核；九条契约 × description/plugins.md/README/代码四表面交叉核对全绿；description 31 行/1960 字符，字符 +34.8% 系强制条款所致，lead 接受该偏差）
 
 # Spec 03 · W3：codemode 文档与模型描述收口（波次 W3）
 

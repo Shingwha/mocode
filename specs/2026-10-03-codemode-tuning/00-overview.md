@@ -1,4 +1,4 @@
-✅ 2026-10-03 建组（基线 master `a77c45c`，960 passed；W1 待派工）
+✅ 2026-10-03 建组（基线 master `a77c45c`，960 passed；W1/W2/W3 已合并 1020 passed；W4 待派工）
 
 # Spec Group · codemode 调优（2026-10-03）
 
