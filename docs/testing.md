@@ -64,11 +64,65 @@ script = [call_tool("greet", {"who": "world"})]
 
 A test that needs a background job to *stay alive* until something else
 releases it — a job's output, its completion, its kill — should start it as a
-bounded `sleep N` child (`"echo up; sleep 5"`), which is one fork at spawn and
+bounded `sleep N` child (`"echo up; sleep 0.3"`), which is one fork at spawn and
 ends on its own. Do not reach for a polling loop (`while true; do …; done`) or
 an external gate file: on Windows, killing a bash whose command keeps forking
 strands an MSYS fork-child, because `TerminateProcess` reaches only the direct
 child. A `sleep` child has nothing to strand.
+
+Keep the child short — 0.15–0.3s is a comfortable margin over a bash spawn on
+Windows, and the whole suite is timed. What *waits* for the job then waits on
+the job's own signal, never on a clock: `job.done.wait()`, the output sink, or
+a `wait_until(predicate, bound=…)` poll. To prove an announcement did **not**
+happen, assert the observable event set inside the turn (the turn end with no
+`PluginMessage` in it) instead of out-waiting a window — the turn boundary is
+the fact, and waiting longer only proves the window.
+
+## Time is discipline, not luck
+
+A test that sleeps to synchronize is a test that passes on the machine it was
+written on. The suite therefore treats *how a test waits* as part of its
+contract, and `tests/conftest.py` enforces it: an autouse guard patches
+`time.sleep` / `asyncio.sleep`, and a bare sleep whose call site lives under
+`tests/` **fails the test** with a message pointing at the sanctioned API. A
+sleep the *product* performs (a shell poller's window, an MCP retry backoff) is
+measured behaviour, not test fragility — the guard records those, product-side,
+without failing them.
+
+The four sanctioned waits, in the order you should reach for them:
+
+* **Event gating** — an `asyncio.Event` (or a `threading.Event` a tool shares
+  with its test) that only the thing you are waiting for sets. The strongest
+  form: the test cannot proceed until the run says so, and a missed condition
+  is a hang, which a bound turns into a failure. Use for concurrency,
+  cancellation and every "the tool started" fact.
+* **`wait_until(predicate, bound=…)`** — condition polling for state you cannot
+  be signalled about (a registry entry, a job's status, a peer's pidfile). It
+  polls on a sanctioned short sleep, so it never appears in the guard's ledger,
+  and its timeout raises an `AssertionError` naming what never came true.
+* **`settle(seconds)`** — the sanctioned sleep, for the two cases where the
+  wait *is* the behaviour under test: a real subprocess observation window (a
+  fake server that has to notice a kill) and a watchdog deadline that has to
+  actually expire. It is not a synchronization primitive; if a condition can be
+  polled, poll it.
+* **`real_time()`** — the escape hatch, for a wall-clock block the other three
+  cannot express. Rare by construction; if you reach for it, the wait probably
+  wants a different shape.
+
+Time itself can be faked with `FakeClock` + `advance(clock, dt)`: swap a
+module's `time` for the clock (`monkeypatch.setattr(module, "time", clock)`),
+and every `time.monotonic()` the product reads is yours to drive. Retry
+backoff, deadlines and budget tests prove their rules in fake time — a failed
+attempt *costs* an `advance`, never a real second. What that leaves unprovable
+is a clock the product reads through a seam you cannot reach; those tests keep
+the patch and say so in a docstring.
+
+Two wall-clock facts this suite deliberately keeps instead of hiding: a
+refused loopback TCP connect on Windows (and some corporate filter drivers)
+costs a flat ~2s in the OS, before the test runs at all; and a product
+coalescing window (`_NOTIFY_WINDOW`) is the real 0.3s it is. Both are measured,
+not slept, and both are in the slow-tests ledger rather than shaved into
+fragility.
 
 ## Reading the turn back
 
@@ -241,3 +295,11 @@ dispatcher's behavior, and it is tested through the scripted model above.
 (runtime-level turns) and `tests/test_testing.py` (these helpers' own
 contract) are larger examples of the same two moves: script the model,
 read the turn back.
+
+The suite's own timing discipline, its guard, and the slimming/consolidation
+work that produced the current shape are recorded in the spec group
+`specs/2026-10-03-test-suite-slimming/`: `00-overview.md` (the waves, the
+mandate floors and the global invariants), `01-w0-time-control.md` (the four
+waiting APIs), and `ref/orphans.md` / `ref/deletions.md` (what the gates found
+and why each removal was safe). The full suite runs in ~15s on an idle machine
+and every test is bounded by a 30s pytest timeout.

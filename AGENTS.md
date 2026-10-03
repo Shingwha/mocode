@@ -160,6 +160,16 @@ supplies the fixtures (`make_mc`, `wired`, `write_plugin`, `plugin_host`,
 readers and the conventions are in
 [docs/testing.md](docs/testing.md).
 
+**Time is discipline, not luck.** An autouse guard in `tests/conftest.py` fails
+any bare sleep whose call site is under `tests/` — waiting means an `asyncio.Event`
+gate, `wait_until(predicate, bound=…)` polling, `settle()` when the wait *is* the
+behaviour under test, or `FakeClock`/`advance()` for retry, deadline and budget
+rules; the rules and the guard are in
+[docs/testing.md](docs/testing.md#time-is-discipline-not-luck). Events, hooks and
+prompt sections get the structural-assertion treatment (a name set, a count, a
+serialized shape) rather than verbatim strings, and every test is bounded by a 30s
+pytest timeout.
+
 ## Deliberately absent from core
 
 Do not re-add these without re-reading the rule at the top — each belongs in a
