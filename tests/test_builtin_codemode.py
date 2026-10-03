@@ -1223,25 +1223,62 @@ class TestPlugin:
         assert "cannot call itself" in DESCRIPTION
 
     def test_description_pins_contract_phrases(self):
-        # W3: one pin per behavior in the spec's contract list, so a
-        # rewording that loses a behavior fails here. Phrases, not a full
-        # snapshot — the surrounding words stay free to move.
-        assert "do not `import`" in DESCRIPTION  # names are injected
+        # v2: one pin per behavior in the v2 contract, so a rewording that
+        # loses a behavior fails here. Phrases, not a full snapshot — the
+        # surrounding words stay free to move.
+        # the script shape
+        assert "top-level `await`" in DESCRIPTION
+        assert "never wrap" in DESCRIPTION and "asyncio.run()" in DESCRIPTION
         assert "`asyncio.ensure_future`" in DESCRIPTION  # background tasks
-        assert "short name" in DESCRIPTION  # MCP short names
-        assert "candidates" in DESCRIPTION  # ambiguity lists them
-        assert "exact names win" in DESCRIPTION  # exact beats short
-        assert ".error_code" in DESCRIPTION  # the four outcome fields
+        # Result is first-class
+        assert ".ok" in DESCRIPTION
+        assert ".json()" in DESCRIPTION
+        assert ".structured" in DESCRIPTION
+        assert ".tool" in DESCRIPTION
         assert 'res.get("content")' in DESCRIPTION  # Mapping access
+        assert "ToolCallError" in DESCRIPTION
+        assert "FAILED CALL RAISES" in DESCRIPTION  # asymmetry, big letters
+        # parallel / Batch
+        assert "parallel(" in DESCRIPTION
+        assert ".ok`/`.failed" in DESCRIPTION
+        assert "concurrency=N" in DESCRIPTION
+        assert "return_exceptions=True" in DESCRIPTION
+        # naming tiers and the forgiving facade
+        assert 'tools["mcp__dev_radius__search"]' in DESCRIPTION
+        assert "short name" in DESCRIPTION
+        assert "candidates" in DESCRIPTION  # ambiguity lists them
+        assert "exact names win" in DESCRIPTION
+        assert "cannot call itself" in DESCRIPTION
+        assert "dir(tools)" in DESCRIPTION
+        assert "tools.describe_tool" in DESCRIPTION
+        # output and the imperative truncation notice
+        assert "print(...)" in DESCRIPTION  # print reaches the output
+        assert "max_output_chars" in DESCRIPTION
+        assert "before relying on this output" in DESCRIPTION
+        assert "tools.read" in DESCRIPTION
+        # store limits and the large-payload idiom
+        assert "256KB" in DESCRIPTION and "1MB" in DESCRIPTION
+        assert "no pre-truncation" in DESCRIPTION
+        assert "store` the path" in DESCRIPTION
+        # discovery surface
         assert "names_only=False" in DESCRIPTION  # discovery signature
         assert "script-start snapshot" in DESCRIPTION  # all_tools() snapshot
-        assert "print(...)" in DESCRIPTION  # print reaches the output
-        assert "max_output_chars" in DESCRIPTION  # truncation
+        assert "80-character previews" in DESCRIPTION  # catalogue trim
+        # gated import
+        assert "gated" in DESCRIPTION
+        assert "from asyncio import gather" in DESCRIPTION
+        assert "ImportError" in DESCRIPTION
+        # deadline and concurrency
+        assert "@options" in DESCRIPTION
         assert "timed_out" in DESCRIPTION  # explicit deadline path
         assert "partial output is lost" in DESCRIPTION  # dispatcher fallback
-        assert "max_concurrency" in DESCRIPTION  # concurrency cap
-        assert "default unlimited" in DESCRIPTION  # ...off unless configured
+        assert "max_concurrency" in DESCRIPTION
+        assert "default unlimited" in DESCRIPTION
+        # error locations
+        assert "(line N)" in DESCRIPTION
+        # hard cut: the old surface is gone
         assert "ALL_TOOLS" not in DESCRIPTION  # renamed to all_tools() (D3)
+        assert "ToolOutcome" not in DESCRIPTION  # renamed to Result (D17)
         assert "mcp__dev-radius" not in DESCRIPTION  # folded-name example
 
     def test_build_registers_model_only_tool(self, plugin_host):
