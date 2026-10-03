@@ -41,7 +41,8 @@ from .conftest import wait_until
 BOUND = 15  # seconds — every session operation in this file stays bounded
 
 #: A modern-era fake with one tool that reports what the child sees, plus a
-#: slow one for the timeout path.
+#: slow one for the timeout path — slow for a fraction of a second, so the
+#: per-request budget is what fires and the teardown never waits it out.
 MODERN_SERVER = r'''
 import json, sys, os, time
 
@@ -84,7 +85,7 @@ for line in sys.stdin:
         if "_meta" not in params:
             send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": "missing _meta"}})
         elif params.get("name") == "slow":
-            time.sleep(3)
+            time.sleep(0.3)
             send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text": "woke up"}]}})
         elif params.get("name") == "env":
             send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text":
@@ -229,7 +230,7 @@ class TestSpawnAndFraming:
         cfg = server_config(
             write_server(tmp_path, "modern_slow.py", MODERN_SERVER),
             name="slow",
-            timeout=0.5,
+            timeout=0.2,
             pidfile=child_pidfile(tmp_path, "slow"),
         )
         session = McpSession(cfg)
@@ -352,7 +353,7 @@ class TestTheMocodeFakeSeam:
     use — they are exercised here so their contract is not assumed."""
 
     def test_the_fake_answers_with_its_pid_on_request(self, tmp_path):
-        script = write_server(tmp_path, "fake_echo.py")
+        script = write_server(tmp_path, "fake_echo.py", MODERN_SERVER)
         assert script.exists()
         assert "server/discover" in script.read_text(encoding="utf-8")
 

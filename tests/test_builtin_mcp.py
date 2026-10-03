@@ -2364,7 +2364,12 @@ class _FakeEndpoint:
 
     def start(self) -> _FakeEndpoint:
         self._thread = threading.Thread(
-            target=self._server.serve_forever, daemon=True
+            # a short poll interval is the fake's own pacing: shutdown then
+            # costs a fiftieth of a second instead of the stdlib's half
+            # second, and no request ever waits on it
+            target=self._server.serve_forever,
+            args=(0.05,),
+            daemon=True,
         )
         self._thread.start()
         return self

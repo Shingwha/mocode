@@ -152,8 +152,8 @@ class TestBashOutput:
         third = await output.run_async({"shell_id": shell_id}, None)
         assert third.details["lines"] == []
 
-    async def test_a_filter_consumes_only_the_matching_lines(self, tools, session):
-        bash, output, _ = tools
+        # a filter consumes only what it matched — a job of its own, whose
+        # non-matching lines stay buffered for the next unfiltered read
         shell_id = await _start(
             bash, "echo ERR bad; echo OK one; echo ERR worse; echo OK two"
         )
@@ -249,7 +249,7 @@ class TestTheRings:
 
 
 class TestKillAndCleanup:
-    async def test_kill_stops_a_running_job_and_reports_a_finished_one(
+    async def test_kill_restart_and_shutdown_leave_no_job_behind(
         self, tools, session
     ):
         bash, output, kill = tools
@@ -272,9 +272,7 @@ class TestKillAndCleanup:
         assert result.content == "shell_2 already completed"
         assert result.details["status"] == "completed"
 
-    async def test_restart_and_shutdown_leave_no_job_behind(self, tools, session):
-        bash, _, _ = tools
-
+        # a restart kills every background job and leaves the table empty
         first = await _start(bash, f"sleep {CHILD}")
         second = await _start(bash, f"sleep {CHILD}")
         jobs = [session.jobs[first], session.jobs[second]]
