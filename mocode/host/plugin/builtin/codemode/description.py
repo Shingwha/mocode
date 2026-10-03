@@ -50,13 +50,17 @@ and `concurrency=N` caps that batch while overriding the global
 `max_concurrency` (`asyncio.gather(..., return_exceptions=True)` is the
 asyncio-level equivalent).
 
-`tools` resolves names in tiers: exact registered name
-(`tools["mcp__dev_radius__search"]`), normalized form
-(`tools.mcp__dev_radius__search`), then the MCP short name (`tools.search`)
-when unambiguous — ambiguous short names raise listing the candidates,
-exact names win. `codemode` cannot call itself. The facade forgives the
-built-ins: `tools.describe_tool`/`tools.text`/`tools.store`/... return the
-built-in itself; `dir(tools)` and the catalogue list registered tools only.
+`tools` has one name per tool: the registered full name, the same string
+for attribute and subscript (`tools["mcp__dev_radius__search"]` and
+`tools.mcp__dev_radius__search`). An MCP tool answers only to that full
+name, never to a bare short one — two servers can hold same-named tools
+— while the bare names belong to the built-ins:
+`tools.describe_tool`/`tools.text`/`tools.store`/... return the built-in
+itself. `dir(tools)`, the catalogue helpers and the `mcp_servers` prompt
+section list that same name. A miss raises with the candidates it could
+have meant — `unknown tool 'search'; use search_tools() or all_tools() —
+did you mean 'mcp__anysearch__search'?` — so fix the spelling and retry.
+`codemode` cannot call itself.
 
 - `text(value)` / `console.log(...)` / `print(...)` append output in order;
   `return v` appends last on success; `image(block)` adds an image;
