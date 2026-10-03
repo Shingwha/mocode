@@ -4,6 +4,7 @@ plugin and the end-to-end contract."""
 from __future__ import annotations
 
 import asyncio
+import builtins
 from pathlib import Path
 
 import pytest
@@ -13,11 +14,14 @@ from mocode.host.plugin.builtin.codemode.api import (
     Store,
     ToolBox,
     ToolCallError,
+    ToolOutcome,
+    _mcp_short_name,
     build_env,
     describe_tool_entry,
     tool_entries,
 )
 from mocode.host.plugin.builtin.codemode.runtime import (
+    _RESTRICTED_KEYS,
     RESTRICTED,
     CodemodeError,
     _ScriptExit,
@@ -110,10 +114,76 @@ class TestRunScript:
         assert await run_script("return sum([1, 2, 3])", {}) == 6
         assert await run_script("return sorted([3, 1, 2])", {}) == [1, 2, 3]
 
-    @pytest.mark.parametrize("name", ["open", "__import__", "eval", "exec", "input"])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "open",
+            "__import__",
+            "eval",
+            "exec",
+            "compile",
+            "input",
+            "globals",
+            "locals",
+            "vars",
+        ],
+    )
     async def test_restricted_builtins_hide_dangerous_names(self, name: str):
         with pytest.raises(NameError):
             await run_script(f"{name}", {})
+
+    async def test_restricted_builtins_allow_catching_by_name(self):
+        # D4: the builtin exception classes are whitelisted, so a script
+        # names what it catches instead of catching bare Exception.
+        assert await run_script(
+            "try:\n"
+            "    raise RuntimeError('boom')\n"
+            "except RuntimeError:\n"
+            "    return 'caught'",
+            {},
+        ) == "caught"
+
+    async def test_restricted_builtins_allow_dir(self):
+        # field-findings P1-1: dir() opens introspection of the result.
+        assert "append" in await run_script("return dir([])", {})
+
+    @pytest.mark.parametrize(
+        "name", ["BaseException", "KeyboardInterrupt", "SystemExit", "GeneratorExit"]
+    )
+    async def test_restricted_builtins_hide_cancellation_classes(self, name: str):
+        # Not Exception subclasses — the collection rule itself leaves them
+        # out, so a script cannot even name the class that would swallow
+        # the cancellation unwinding a stopped or timed-out script.
+        with pytest.raises(NameError):
+            await run_script(name, {})
+
+    async def test_script_cannot_swallow_a_cancellation_class(self):
+        script = (
+            "try:\n"
+            "    raise ValueError('x')\n"
+            "except BaseException:\n"
+            "    return 'swallowed'"
+        )
+        with pytest.raises(NameError):
+            await run_script(script, {})
+
+    def test_restricted_whitelist_snapshot(self):
+        # The frozen set stays, every builtin exception class joins by the
+        # issubclass rule, dir comes along — and nothing else is in there.
+        builtin_exceptions = {
+            name
+            for name, value in vars(builtins).items()
+            if isinstance(value, type) and issubclass(value, Exception)
+        }
+        assert set(_RESTRICTED_KEYS) <= set(RESTRICTED)
+        assert builtin_exceptions <= set(RESTRICTED)
+        assert set(RESTRICTED) == set(_RESTRICTED_KEYS) | builtin_exceptions | {"dir"}
+        assert not {
+            "BaseException",
+            "KeyboardInterrupt",
+            "SystemExit",
+            "GeneratorExit",
+        } & set(RESTRICTED)
 
     async def test_restricted_has_no_exit(self):
         # Python's own exit/quit are absent; the injected exit() is the only one.
@@ -172,10 +242,64 @@ class TestToolBox:
         outcome = await box["x-y"]({"value": "x"})
         assert outcome.content == "echo:x"
 
+    async def test_outcome_mapping_inside_a_script(self):
+        # field-findings P0-4: res.get("content") is the idiom the docs
+        # taught, so the outcome answers it.
+        box = _box(echo_tool())
+        outcome = await box.echo({"value": "hi"})
+        assert outcome.get("content") == "echo:hi"
+        assert outcome.get("nope") is None
+        assert outcome.get("nope", "d") == "d"
+        assert outcome["content"] == "echo:hi"
+        assert "content" in outcome
+        assert dict(outcome) == outcome.to_dict()
+
+    async def test_mcp_full_and_short_names_agree(self):
+        # field-findings P0-3: both entry points accept the folded full name
+        # and its short form, through the same resolution.
+        box = _box(echo_tool("mcp__k__bash"))
+        assert (await box["mcp__k__bash"]({"value": "a"})).content == "echo:a"
+        assert (await box.bash({"value": "b"})).content == "echo:b"
+        assert (await box["bash"]({"value": "c"})).content == "echo:c"
+
+    async def test_exact_name_beats_short_name(self):
+        # A local tool and an MCP one share the "bash" short form; the
+        # exact name is tier one of the resolution and wins.
+        box = _box(echo_tool("bash"), echo_tool("mcp__k__bash"))
+        assert (await box.bash({"value": "x"})).content == "echo:x"
+
+    async def test_ambiguous_short_name_lists_candidates(self):
+        # Two servers, one tool name — the short form refuses to guess and
+        # names the candidates while the exact full names keep working.
+        box = _box(echo_tool("mcp__k__bash"), echo_tool("mcp__other__bash"))
+        expected = (
+            r"unknown tool 'bash'; use search_tools\(\) or all_tools\(\) "
+            r"— ambiguous short name, candidates: 'mcp__k__bash', "
+            r"'mcp__other__bash'"
+        )
+        with pytest.raises(CodemodeError, match=expected):
+            box.bash
+        with pytest.raises(CodemodeError, match=expected):
+            box["bash"]
+        assert (await box["mcp__k__bash"]({"value": "x"})).content == "echo:x"
+        assert (await box.mcp__other__bash({"value": "y"})).content == "echo:y"
+
+    async def test_short_name_splits_on_the_last_separator(self):
+        # A server raw-named "a//b" folds to "a__b", so the full name is
+        # mcp__a__b__tool — the short name is the tool segment alone.
+        box = _box(echo_tool("mcp__a__b__tool"))
+        assert (await box.tool({"value": "x"})).content == "echo:x"
+
+    async def test_hash_suffixed_name_keeps_a_unique_short_name(self):
+        # The mcp collision suffix (…_<sha1[:6]>) rides along in the short
+        # name, so two same-named tools of one server stay distinguishable.
+        box = _box(echo_tool("mcp__k__tool_1a2b3c"))
+        assert (await box.tool_1a2b3c({"value": "x"})).content == "echo:x"
+
     async def test_unknown_tool_message(self):
         box = _box(echo_tool())
         with pytest.raises(
-            CodemodeError, match=r"unknown tool 'nope'; use search_tools\(\) or ALL_TOOLS"
+            CodemodeError, match=r"unknown tool 'nope'; use search_tools\(\) or all_tools\(\)"
         ):
             box["nope"]
 
@@ -222,6 +346,63 @@ class TestToolBox:
         assert finished[0].call_id.startswith("parent-9:")
 
 
+class TestMcpShortNames:
+    """The short-name rule: strip the mcp prefix, split on the LAST ``__``."""
+
+    @pytest.mark.parametrize(
+        "full, short",
+        [
+            ("mcp__k__bash", "bash"),
+            ("mcp__a__b__tool", "tool"),  # server folded with __ (a//b → a__b)
+            ("mcp____tool", "tool"),  # empty server segment
+            ("mcp__k__tool_1a2b3c", "tool_1a2b3c"),  # hash-collision suffix
+            ("bash", None),  # not an MCP name
+            ("mcp__k", None),  # no tool segment at all
+            ("mcp__k__", None),  # empty tool segment
+        ],
+    )
+    def test_short_name_boundaries(self, full: str, short: str | None):
+        assert _mcp_short_name(full) == short
+
+
+class TestToolOutcomeMapping:
+    """D7 — the outcome answers the Mapping protocol, attributes unchanged."""
+
+    def _outcome(self) -> ToolOutcome:
+        return ToolOutcome(content="c", details={"exit_code": 0}, error_code=None)
+
+    def test_the_four_methods(self):
+        outcome = self._outcome()
+        assert outcome.get("content") == "c"
+        assert outcome.get("details") == {"exit_code": 0}
+        assert outcome.get("status") == "ok"
+        assert outcome.get("error_code") is None
+        assert outcome["content"] == "c"
+        assert list(outcome.keys()) == ["content", "details", "status", "error_code"]
+        assert "status" in outcome
+        assert "nope" not in outcome
+
+    def test_get_defaults(self):
+        outcome = self._outcome()
+        assert outcome.get("nope") is None
+        assert outcome.get("nope", "fallback") == "fallback"
+
+    def test_unknown_key_raises_key_error(self):
+        with pytest.raises(KeyError):
+            self._outcome()["nope"]
+
+    def test_dict_round_trip_matches_to_dict(self):
+        assert dict(self._outcome()) == self._outcome().to_dict()
+
+    def test_attributes_and_str_unchanged(self):
+        outcome = self._outcome()
+        assert outcome.content == "c"
+        assert outcome.details == {"exit_code": 0}
+        assert outcome.status == "ok"
+        assert outcome.error_code is None
+        assert str(outcome) == "c"
+
+
 class TestDiscovery:
     def _registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -250,6 +431,15 @@ class TestDiscovery:
         assert entry["schema"]["type"] == "object"
         assert describe_tool_entry(registry, "missing") is None
 
+    def test_describe_tool_entry_refuses_non_callable(self):
+        # D9: the same source of truth as the callable surface — the
+        # program-audience projection minus codemode. A name outside it is
+        # not described however registered it is.
+        registry = self._registry()
+        assert describe_tool_entry(registry, "hidden") is None  # model-only
+        assert describe_tool_entry(registry, "codemode") is None  # never callable
+        assert describe_tool_entry(registry, "missing") is None
+
     def test_build_env_injects_frozen_names(self):
         agent = make_agent(echo_tool())
         output = _FakeOutput()
@@ -261,27 +451,78 @@ class TestDiscovery:
             "asyncio", "json", "re", "math", "datetime", "textwrap",
             "collections", "itertools", "functools",
             "tools", "text", "console", "image", "exit", "store", "load",
-            "ALL_TOOLS", "search_tools", "describe_tool",
+            "all_tools", "search_tools", "describe_tool",
         ):
             assert name in env, name
+        assert "ALL_TOOLS" not in env
         assert "models" not in env
         assert "describe_namespace" not in env
-        assert [t["name"] for t in env["ALL_TOOLS"]] == ["echo"]
+        assert [t["name"] for t in env["all_tools"]()] == ["echo"]
         env["console"].log("a", 1, "b")
         assert output.items == ["a 1 b"]
         hits = env["search_tools"]("echo")
         assert [h["name"] for h in hits] == ["echo"]
+        # names_only returns the plain string table — sorted() works on it
+        assert env["search_tools"]("echo", names_only=True) == ["echo"]
+        assert env["search_tools"]("nope", names_only=True) == []
         assert env["describe_tool"]("echo")["name"] == "echo"
         assert env["describe_tool"]("missing") is None
         assert toolbox.calls == 0
+
+    def test_all_tools_returns_a_copy_of_the_snapshot(self):
+        # Field-findings P1-2: sorted(all_tools()) fails because entries are
+        # dicts — the names table is names_only's job. A script mutating the
+        # returned list must not corrupt the snapshot either.
+        agent = make_agent(echo_tool())
+        output = _FakeOutput()
+        env, _ = build_env(agent.tool_registry, agent.dispatcher, "c", output, Store({}))
+        entries = env["all_tools"]()
+        entries.clear()
+        assert [t["name"] for t in env["all_tools"]()] == ["echo"]
 
     def test_search_tools_snapshot_is_not_live(self):
         agent = make_agent(echo_tool())
         output = _FakeOutput()
         env, _ = build_env(agent.tool_registry, agent.dispatcher, "c", output, Store({}))
         agent.tool_registry.register(echo_tool("late"))
-        assert [t["name"] for t in env["ALL_TOOLS"]] == ["echo"]
+        assert [t["name"] for t in env["all_tools"]()] == ["echo"]
         assert [t["name"] for t in env["search_tools"]("late")] == []
+        assert env["search_tools"]("late", names_only=True) == []
+
+
+class TestScriptPrint:
+    """D8 — the script's ``print`` is one item in the output pipeline,
+    never the host's stdout."""
+
+    def _env(self):
+        agent = make_agent(echo_tool())
+        output = _FakeOutput()
+        env, _ = build_env(
+            agent.tool_registry, agent.dispatcher, "c", output, Store({})
+        )
+        return env, output
+
+    def test_print_is_injected(self):
+        env, _ = self._env()
+        assert env["print"] is not builtins.print
+
+    def test_print_joins_arguments_with_the_separator(self):
+        env, output = self._env()
+        env["print"]("a", "b")
+        env["print"]("x", 1, "y", sep="-")
+        assert output.items == ["a b", "x-1-y"]
+
+    def test_print_jsonifies_non_strings(self):
+        # the text() convention, per argument — not Python's repr; the
+        # whole call is still one item
+        env, output = self._env()
+        env["print"]({"x": 1}, [1, "b"], None)
+        assert output.items == ['{"x": 1} [1, "b"] null']
+
+    def test_print_with_no_args_is_one_empty_item(self):
+        env, output = self._env()
+        env["print"]()
+        assert output.items == [""]
 
 
 class TestStore:
@@ -609,6 +850,28 @@ class TestRunTool:
         assert result.content.endswith('["echo:a", "echo:b"]')
         assert result.details["tool_calls"] == 2
 
+    async def test_script_branches_on_exception_types_after_gather(self, plugin_host):
+        # D4 end to end: the script names RuntimeError in an except clause
+        # and isinstance-branches after gather(return_exceptions=True).
+        registry = ToolRegistry()
+        registry.register(echo_tool())
+        registry.register(_failing_tool())
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await self._run(
+            host,
+            "rows = await asyncio.gather("
+            "tools.echo({'value': 'a'}), tools.fail({}), return_exceptions=True)\n"
+            "good = [r for r in rows if not isinstance(r, Exception)]\n"
+            "text('%d ok / %d failed' % (len(good), len(rows) - len(good)))\n"
+            "try:\n"
+            "    raise RuntimeError('inner')\n"
+            "except RuntimeError:\n"
+            "    text('caught RuntimeError')",
+        )
+        assert result.details["ok"] is True
+        assert "1 ok / 1 failed" in result.content
+        assert "caught RuntimeError" in result.content
+
     async def test_failed_script_keeps_partial_output(self, plugin_host):
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
         result = await self._run(host, 'text("before")\nraise ValueError("boom")')
@@ -641,6 +904,18 @@ class TestRunTool:
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
         result = await self._run(host, "return {'n': 1}")
         assert result.content.endswith("\n{\"n\": 1}")
+
+    async def test_print_lands_in_the_result_not_stdout(self, plugin_host, capsys):
+        # D8: print was whitelisted but wrote to the host's stdout, where
+        # no script reader could ever see it. Three shapes — string,
+        # several arguments, non-string — one item each, none on stdout.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(
+            host, 'print("hello")\nprint("a", 1, "b")\nprint({"k": 1})'
+        )
+        assert result.details["ok"] is True
+        assert result.content.endswith('hello\na 1 b\n{"k": 1}')
+        assert capsys.readouterr().out == ""
 
     async def test_image_block_in_details(self, plugin_host):
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
@@ -695,8 +970,12 @@ class TestRunTool:
         result = await self._run(host, 'await tools["codemode"]({"script": "pass"})')
         assert result.details["ok"] is False
         assert "codemode cannot be called from a script" in result.content
-        result = await self._run(host, "return [t['name'] for t in ALL_TOOLS]")
+        result = await self._run(host, "return [t['name'] for t in all_tools()]")
         assert "codemode" not in result.content
+        # the short name stays unreachable too — it resolves to codemode
+        result = await self._run(host, 'return tools.codemode')
+        assert result.details["ok"] is False
+        assert "codemode cannot be called from a script" in result.content
 
 
 class TestOptions:
