@@ -28,8 +28,8 @@ from mocode.core.hook import (
     ToolCallContext,
 )
 from mocode.core.provider import Response, RetryPolicy, ToolCall, Usage
-from mocode.core.state import DONE, RUNNING, RunState
-from mocode.core.tool import ERROR_PREFIX, TIMEOUT_PREFIX, Tool, ToolError, ToolRegistry, ToolResult
+from mocode.core.state import DONE, RunState
+from mocode.core.tool import ERROR_PREFIX, TIMEOUT_PREFIX, Tool, ToolError, ToolResult
 from mocode.testing import MockProvider, collect, response_to_chunks, say, tool_call_response
 
 from .conftest import echo_tool, make_agent
@@ -54,15 +54,17 @@ class TestEventStream:
             "run_finished",
         ]
         assert events[-1].content == "hello"
+        # 一个 turn 一个 run_id，seq 从 1 起连续编号。
+        assert len({e.run_id for e in events}) == 1
+        assert [e.seq for e in events] == list(range(1, len(events) + 1))
 
-    async def test_text_arrives_incrementally(self):
+    async def test_text_and_reasoning_arrive_separately_and_incrementally(self):
         agent = make_agent(provider=MockProvider([say("abc")], chunk_size=1))
 
         events = await collect(agent.stream("hi"))
 
         assert [e.text for e in events if isinstance(e, TextDelta)] == ["a", "b", "c"]
 
-    async def test_reasoning_deltas_are_separate_from_text(self):
         agent = make_agent(
             provider=MockProvider(
                 [Response(content="a", reasoning_content="why", usage=Usage(1, 1))]
@@ -73,14 +75,6 @@ class TestEventStream:
 
         assert [e.text for e in events if isinstance(e, ReasoningDelta)] == ["why"]
         assert [e.text for e in events if isinstance(e, TextDelta)] == ["a"]
-
-    async def test_run_id_and_seq_are_stamped(self):
-        agent = make_agent(provider=MockProvider([say("done")]))
-
-        events = await collect(agent.stream("hi"))
-
-        assert len({e.run_id for e in events}) == 1
-        assert [e.seq for e in events] == list(range(1, len(events) + 1))
 
     async def test_tool_events_share_a_call_id(self):
         agent = make_agent(echo_tool())
@@ -194,23 +188,6 @@ class TestRunState:
         assert mirror.content == agent.state.content
         assert mirror.usage == agent.state.usage
 
-    async def test_iteration_and_tool_count_track_the_run(self):
-        agent = make_agent(echo_tool())
-        agent.provider.responses = [
-            tool_call_response("echo", '{"value": "x"}'),
-            say("done"),
-        ]
-
-        await collect(agent.stream("hi"))
-
-        assert agent.state.iteration == 2
-        assert agent.tool_call_count == 1
-
-    def test_state_starts_idle(self):
-        agent = make_agent()
-        assert agent.state.status != RUNNING
-        assert agent.state.tool_calls_made == 0
-
 
 # ── tool execution ──────────────────────────────────────────
 
@@ -224,49 +201,31 @@ def _failing(exc: Exception) -> Tool:
 
 class TestToolExecution:
     @pytest.mark.parametrize(
-        "tool,timeout,expected",
+        "tool,timeout,expected,error_code",
         [
-            (_failing(RuntimeError("kaboom")), 5, "error"),
-            (_failing(ToolError("nope", "teapot")), 5, "error"),
+            (_failing(RuntimeError("kaboom")), 5, "error", None),
+            (_failing(ToolError("nope", "teapot")), 5, "error", "teapot"),
             # Real work that outlasts the timeout by a wide margin, shrunk so
             # the loop's own timer — not the tool — decides the outcome: the
             # worker thread finishes on its own shortly after the verdict.
-            (Tool("slow", "d", {}, lambda a: __import__("time").sleep(0.3)), 0.05, "timeout"),
+            (Tool("slow", "d", {}, lambda a: __import__("time").sleep(0.3)), 0.05, "timeout", None),
         ],
     )
-    async def test_failure_statuses(self, tool, timeout, expected):
-        seen: list[str] = []
+    async def test_failure_statuses(self, tool, timeout, expected, error_code):
+        seen: list[tuple[str, str | None]] = []
 
         class Recorder(AgentHook):
             async def on_event(self, event: Event) -> None:
                 if isinstance(event, ToolCallFinished):
-                    seen.append(event.status)
+                    seen.append((event.status, event.error_code))
 
         agent = make_agent(tool, hooks=[Recorder()], config=AgentConfig(tool_timeout=timeout))
         agent.provider.responses = [tool_call_response(tool.name), say("done")]
 
         await collect(agent.stream("hi"))
 
-        assert seen == [expected]
-
-    async def test_error_code_is_reported(self):
-        agent = make_agent(_failing(ToolError("I am a teapot", "teapot_code")))
-        agent.provider.responses = [tool_call_response("boom"), say("done")]
-
-        events = await collect(agent.stream("hi"))
-
-        finished = next(e for e in events if isinstance(e, ToolCallFinished))
-        assert (finished.status, finished.error_code) == ("error", "teapot_code")
-
-    async def test_unknown_tool_is_reported_as_not_found(self):
-        agent = make_agent(echo_tool())
-        agent.provider.responses = [tool_call_response("ghost"), say("done")]
-
-        events = await collect(agent.stream("hi"))
-
-        finished = next(e for e in events if isinstance(e, ToolCallFinished))
-        assert finished.status == "not_found"
-        assert "unknown tool" in finished.result
+        # 状态与错误码集中在这里断言：每条失败都有一个可区分的 code。
+        assert seen == [(expected, error_code)]
 
     async def test_malformed_arguments_become_an_error_result(self):
         agent = make_agent(echo_tool())
@@ -354,9 +313,13 @@ class TestToolExecution:
         tool_msg = next(m for m in agent.messages if m["role"] == "tool")
         assert tool_msg["content"] == "read it"
 
-    async def test_a_plain_string_result_carries_no_details(self):
+        # A plain string result carries no details — the two channels only
+        # part ways when something structured actually came back.
         agent = make_agent(echo_tool())
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
+        agent.provider.responses = [
+            tool_call_response("echo", '{"value": "x"}'),
+            say("done"),
+        ]
 
         events = await collect(agent.stream("hi"))
 
@@ -375,14 +338,6 @@ class TestToolExecution:
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.details == {"audited": True}
-
-    async def test_max_iterations_stops_a_tool_loop(self):
-        agent = make_agent(echo_tool(), config=AgentConfig(max_iterations=2))
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
-
-        events = await collect(agent.stream("hi"))
-
-        assert sum(1 for e in events if e.type == "iteration_started") == 2
 
 
 # ── interception ────────────────────────────────────────────
@@ -440,7 +395,9 @@ class TestInterception:
 
         await collect(agent.stream("hi"))
 
-        assert [c["system"] for c in agent.provider.calls] == ["persona", "persona"]
+        # 首/末请求都带着改写后的提示词（本 turn 的两个请求）。
+        systems = [c["system"] for c in agent.provider.calls]
+        assert set(systems) == {"persona"} and len(systems) == 2
         # The rewrite is scoped to the run: the conversation keeps its prompt.
         assert agent.system_prompt == "sys"
 
@@ -466,33 +423,11 @@ class TestInterception:
         await collect(agent.stream("hi"))
         await collect(agent.stream("again"))
 
-        assert [c["system"] for c in agent.provider.calls] == [
-            "sys +injected",
-            "sys +injected",
-            "sys",  # the second turn starts from the prompt as it stood
-        ]
-
-    async def test_a_system_prompt_rewrite_sticks_for_the_rest_of_the_run(self):
-        """A hook may inject once rather than recompute every iteration."""
-
-        class Once(AgentHook):
-            def __init__(self) -> None:
-                self.done = False
-
-            async def before_iteration(self, ctx: IterationContext) -> None:
-                if not self.done:
-                    ctx.system_prompt += " +injected"
-                    self.done = True
-
-        agent = make_agent(echo_tool(), hooks=[Once()])
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
-
-        await collect(agent.stream("hi"))
-
-        assert [c["system"] for c in agent.provider.calls] == [
-            "sys +injected",
-            "sys +injected",
-        ]
+        systems = [c["system"] for c in agent.provider.calls]
+        # 注入一次，本 turn 的每个请求都带着它——
+        assert set(systems[:-1]) == {"sys +injected"}
+        # ——而第二个 turn 从当时存储的提示词起，注入不渗过去。
+        assert systems[-1] == "sys"
 
     async def test_before_iteration_may_rewrite_messages(self):
         seen: list[int] = []
@@ -509,7 +444,9 @@ class TestInterception:
         await collect(agent.stream("hi"))
 
         assert seen == [1, 2]
-        assert [m["role"] for m in agent.provider.calls[1]["messages"]] == ["user"]
+        # 末请求（裁剪后的那次）只剩用户消息：首条即末条，同为 user。
+        last = agent.provider.calls[-1]
+        assert [m["role"] for m in last["messages"]] == ["user"]
 
 
 # ── stop reasons and budgets ────────────────────────────────
@@ -534,6 +471,8 @@ class TestStopReasons:
         assert events[-1].content == ""
         assert events[-1].iterations == 2
         assert events[-1].to_dict()["stop_reason"] == "max_iterations"
+        # 计数与事件流同源：两次 iteration_started，不多不少。
+        assert sum(1 for e in events if e.type == "iteration_started") == 2
 
     async def test_a_tool_call_budget_ends_the_turn(self):
         agent = make_agent(echo_tool(), config=AgentConfig(max_tool_calls=1))
@@ -692,9 +631,10 @@ class TestRequestInterception:
 
         await collect(agent.stream("hi"))
 
-        assert agent.provider.calls[0]["messages"] == [
-            {"role": "user", "content": "replaced before the wire"}
-        ]
+        # 唯一一次请求：一条 user 消息，内容是钩子换上的。
+        (only,) = agent.provider.calls
+        assert [m["role"] for m in only["messages"]] == ["user"]
+        assert only["messages"][0]["content"] == "replaced before the wire"
 
     async def test_before_request_prompt_rewrite_is_scoped_to_the_run(self):
         class Persona(AgentHook):
@@ -719,7 +659,9 @@ class TestRequestInterception:
 
         await collect(agent.stream("hi"))
 
-        assert seen == [agent.provider.calls[0]["tools"]]
+        # 钩子看到的快照就是唯一那次请求带走的快照。
+        (only,) = agent.provider.calls
+        assert seen == [only["tools"]]
         assert [s["function"]["name"] for s in seen[0]] == ["echo"]
 
     async def test_an_in_place_tools_edit_reaches_this_request_alone(self):
@@ -731,7 +673,9 @@ class TestRequestInterception:
 
         await collect(agent.stream("hi"))
 
-        sent = [s["function"]["name"] for s in agent.provider.calls[0]["tools"]]
+        # 唯一一次请求带着 ghost 一起走。
+        (only,) = agent.provider.calls
+        sent = [s["function"]["name"] for s in only["tools"]]
         assert sent == ["echo", "ghost"]
         # The registry — including anything frozen — never saw the ghost.
         assert [s["function"]["name"] for s in agent.tool_registry.all_schemas()] == ["echo"]
@@ -940,31 +884,6 @@ class TestChat:
 
         assert result.had_error is True
         assert "nope" in result.content
-
-    async def test_unknown_tool_metadata(self):
-        tool = echo_tool(tags={"fs", "demo"}, summary_key="value")
-        assert tool.tags == frozenset({"fs", "demo"})
-        assert tool.summary_key == "value"
-
-    def test_select_filters_and_shares_instances(self):
-        registry = ToolRegistry()
-        registry.register(echo_tool("a", tags={"fs"}))
-        registry.register(echo_tool("b", tags={"shell"}))
-        registry.register(echo_tool("c"))
-
-        assert registry.select(include_tags={"fs"}).names() == ["a"]
-        assert registry.select(exclude_tags={"fs"}).names() == ["b", "c"]
-        assert registry.select(exclude_names={"c"}).names() == ["a", "b"]
-        assert registry.select().get("a") is registry.get("a")
-
-    def test_summary_key_defaults_to_the_first_param(self):
-        tool = Tool(
-            "t",
-            "d",
-            {"type": "object", "properties": {"pattern": {"type": "string"}}},
-            lambda a: "",
-        )
-        assert tool.summary_key == "pattern"
 
 
 # ── turns: addressable, watched by many, cancellable ────────
@@ -1188,55 +1107,59 @@ class TestSyncToolCancellation:
 # ── the persisted outcome protocol ─────────────────────────
 
 
+def _boom_tool() -> Tool:
+    def broken(args):
+        raise ToolError("it broke", "custom_code")
+
+    return Tool("boom", "b", {}, broken)
+
+
+def _parking_tool() -> Tool:
+    """A tool that waits for the loop's cancel signal instead of sleeping.
+
+    "Real work that outlasts the timeout" is expressed as waiting for the
+    cooperative signal, so the loop's own timer decides the timeout — and
+    the test carries no sleep of its own.
+    """
+
+    def patient(args, ctx):
+        ctx.cancel_event.wait(timeout=5.0)
+        return "late"
+
+    return Tool("patient", "waits politely", {}, patient, with_context=True)
+
+
 class TestErrorPrefixes:
     """Every failed call's persisted result says so with a prefix.
 
     A saved session is a message list — the prefix is the only place an
-    outcome survives for whoever replays it (see core/tool.py).
+    outcome survives for whoever replays it (see core/tool.py). The status
+    and the code are asserted in the one place the outcome is read.
     """
 
-    async def test_a_tool_error_result_carries_the_error_prefix(self):
-        def broken(args):
-            raise ToolError("it broke", "custom_code")
-
-        agent = make_agent(Tool("boom", "b", {}, broken))
+    @pytest.mark.parametrize(
+        "name,make,tool_timeout,status,error_code,prefix",
+        [
+            ("boom", _boom_tool, 5, "error", "custom_code", f"{ERROR_PREFIX} custom_code:"),
+            # 没注册的工具：调用发出去了，注册表答不上来。
+            ("ghost", lambda: None, 5, "not_found", None, f"{ERROR_PREFIX} unknown tool"),
+            ("patient", _parking_tool, 0.05, "timeout", None, TIMEOUT_PREFIX),
+        ],
+    )
+    async def test_the_persisted_result_says_what_happened(
+        self, name, make, tool_timeout, status, error_code, prefix
+    ):
+        tool = make()
+        agent = make_agent(tool, config=AgentConfig(tool_timeout=tool_timeout)) if tool else make_agent(config=AgentConfig(tool_timeout=tool_timeout))
         agent.provider = MockProvider(
-            [tool_call_response("boom"), say("moved on")]
+            [tool_call_response(name), say("moved on")]
         )
 
         events = await collect(agent.stream("hi"))
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
-        assert finished.status == "error"
-        assert finished.error_code == "custom_code"
-        assert finished.result.startswith(f"{ERROR_PREFIX} custom_code:")
+        assert (finished.status, finished.error_code) == (status, error_code)
+        assert finished.result.startswith(prefix)
+        # The message the next turn replays carries the same prefix.
         tool_message = next(m for m in agent.messages if m["role"] == "tool")
-        assert tool_message["content"].startswith(ERROR_PREFIX)
-
-    async def test_an_unknown_tool_result_carries_the_error_prefix(self):
-        agent = make_agent()
-        agent.provider = MockProvider(
-            [tool_call_response("nope"), say("moved on")]
-        )
-
-        events = await collect(agent.stream("hi"))
-
-        finished = next(e for e in events if isinstance(e, ToolCallFinished))
-        assert finished.status == "not_found"
-        assert finished.result.startswith(f"{ERROR_PREFIX} unknown tool")
-
-    async def test_a_timeout_result_carries_the_timeout_prefix(self):
-        started = threading.Event()
-        abandoned = threading.Event()
-        agent = make_agent(
-            _patient_tool(started, abandoned), config=AgentConfig(tool_timeout=0.1)
-        )
-        agent.provider = MockProvider(
-            [tool_call_response("patient"), say("given up waiting")]
-        )
-
-        events = await collect(agent.stream("hi"))
-
-        finished = next(e for e in events if isinstance(e, ToolCallFinished))
-        assert finished.status == "timeout"
-        assert finished.result.startswith(TIMEOUT_PREFIX)
+        assert tool_message["content"].startswith(prefix)

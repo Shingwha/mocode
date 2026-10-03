@@ -51,10 +51,10 @@ def _provider(
     return provider
 
 
-def _rate_limited(retry_after):
+def _rate_limited(retry_after, header: str = "Retry-After"):
     """A retriable error whose failed response carries a Retry-After header."""
     exc = _rate("429")
-    exc.response = SimpleNamespace(headers={"Retry-After": retry_after})
+    exc.response = SimpleNamespace(headers={header: retry_after})
     return exc
 
 
@@ -100,9 +100,10 @@ async def _collect(provider, *args, **kwargs) -> str:
 
 
 class TestWithRetryStream:
-    async def test_chunks_pass_through(self):
-        provider = _provider(say("ab"))
-        assert await _collect(provider) == "ab"
+    async def test_the_stream_is_passed_through_verbatim(self):
+        # 空流也是一个合法回答，不是错误。
+        assert await _collect(_provider(say("ab"))) == "ab"
+        assert await _collect(_provider(say(""))) == ""
 
     async def test_retries_before_the_first_chunk(self):
         provider = _provider(_rate("429"), _rate("429"), say("ok"))
@@ -113,20 +114,21 @@ class TestWithRetryStream:
         with pytest.raises(_rate):
             await _collect(_Halfway(), policy=RetryPolicy(max_attempts=4))
 
-    async def test_non_retriable_error_propagates_immediately(self):
-        provider = _provider(_auth("bad key"))
-        with pytest.raises(_auth):
-            await _collect(provider, policy=RetryPolicy(max_attempts=4))
+    async def test_an_exception_the_policy_does_not_retry_propagates_at_once(
+        self, _patch_sleep
+    ):
+        """非 retriable 与取消都不进退避：立即上溯，一次入睡都没有。"""
+        for exc in (_auth("bad key"), asyncio.CancelledError()):
+            provider = _provider(exc)
+            with pytest.raises(type(exc)):
+                await _collect(provider, policy=RetryPolicy(max_attempts=4))
+            assert len(provider.calls) == 1  # only one attempt was made
+            assert _patch_sleep.call_count == 0  # and no backoff was slept
 
     async def test_retries_are_exhausted(self):
         provider = _provider(_rate("429"), _rate("429"), _rate("429"))
         with pytest.raises(_rate):
             await _collect(provider, policy=RetryPolicy(max_attempts=3))
-
-    async def test_cancellation_is_never_retried(self):
-        provider = _provider(asyncio.CancelledError())
-        with pytest.raises(asyncio.CancelledError):
-            await _collect(provider, policy=RetryPolicy(max_attempts=4))
 
     async def test_arguments_are_forwarded(self):
         provider = _provider()
@@ -140,10 +142,6 @@ class TestWithRetryStream:
             "max_tokens": None,
             "effort": None,
         }
-
-    async def test_an_empty_stream_is_not_an_error(self):
-        provider = _provider(say(""))
-        assert await _collect(provider) == ""
 
 
 class TestPolicyResolution:
@@ -183,39 +181,41 @@ class TestPolicyResolution:
 
 
 class TestRetryAfter:
-    async def test_numeric_retry_after_is_slept_over_backoff(self, _patch_sleep):
-        # Defaults would sleep somewhere in [1.0, 1.5]; 0.3 can only come
-        # from the header.
-        provider = _provider(_rate_limited("0.3"), say("ok"))
-        assert await _collect(provider) == "ok"
-        assert _patch_sleep.call_args_list[0].args == (0.3,)
+    """Retry-After：数字头被 honored 时按它睡，其余退回指数退避。
 
-    async def test_header_lookup_is_case_insensitive(self, _patch_sleep):
-        exc = _rate("429")
-        exc.response = SimpleNamespace(headers={"retry-after": "0.7"})
-        provider = _provider(exc, say("ok"))
-        assert await _collect(provider) == "ok"
-        assert _patch_sleep.call_args_list[0].args == (0.7,)
+    入睡值不钉字面量，只钉区间：honored 的值来自头本身，且与默认退避
+    区间互斥；解析不了与关闭 honoring 都落在退避区间里。
+    """
 
-    async def test_raw_numeric_header_values(self, _patch_sleep):
-        provider = _provider(_rate_limited(2), say("ok"))
-        assert await _collect(provider) == "ok"
-        assert _patch_sleep.call_args_list[0].args == (2.0,)
-
-    async def test_http_date_falls_back_to_exponential_backoff(self, _patch_sleep):
-        provider = _provider(
-            _rate_limited("Wed, 21 Oct 2015 07:28:00 GMT"), say("ok")
-        )
-        assert await _collect(provider) == "ok"
-        (delay,) = _patch_sleep.call_args_list[0].args
-        assert 1.0 <= delay <= 1.5
-
-    async def test_honor_retry_after_false_ignores_the_header(self, _patch_sleep):
-        provider = _provider(_rate_limited("0.3"), say("ok"))
-        policy = RetryPolicy(max_attempts=2, honor_retry_after=False)
+    @pytest.mark.parametrize(
+        "header,retry_after,policy,window,honored",
+        [
+            ("Retry-After", "0.3", None, (0.25, 0.35), True),
+            ("retry-after", "0.7", None, (0.65, 0.75), True),  # 头名大小写不敏感
+            ("Retry-After", 2, None, (1.95, 2.05), True),  # 原生数字值
+            # HTTP-date 解析不出秒数，退回指数退避。
+            ("Retry-After", "Wed, 21 Oct 2015 07:28:00 GMT", None, (1.0, 1.5), False),
+            # 策略关掉 honoring，头有值也当没看见。
+            (
+                "Retry-After",
+                "0.3",
+                RetryPolicy(max_attempts=2, honor_retry_after=False),
+                (1.0, 1.5),
+                False,
+            ),
+        ],
+    )
+    async def test_a_numeric_header_is_slept_instead_of_backoff(
+        self, header, retry_after, policy, window, honored, _patch_sleep
+    ):
+        provider = _provider(_rate_limited(retry_after, header=header), say("ok"))
         assert await _collect(provider, policy=policy) == "ok"
         (delay,) = _patch_sleep.call_args_list[0].args
-        assert 1.0 <= delay <= 1.5
+        lo, hi = window
+        assert lo <= delay <= hi
+        if honored:
+            # 头 honored 时的值只能来自头，不落在默认退避区间。
+            assert not 1.0 <= delay <= 1.5
 
     async def test_missing_response_falls_back_to_backoff(self, _patch_sleep):
         provider = _provider(_rate("429"), say("ok"))

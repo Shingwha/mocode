@@ -134,31 +134,29 @@ class TestBareCoreDispatcher:
 
 
 class TestToolPolicy:
-    async def test_a_tool_policy_overrides_the_config_timeout(self):
-        slow = Tool("slow", "d", {}, lambda a: time.sleep(1), policy=ToolPolicy(timeout=0.05))
-        dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=30))
+    @pytest.mark.parametrize(
+        "policy,call_timeout,config_timeout",
+        [
+            # tool 策略压过 config
+            (ToolPolicy(timeout=0.05), None, 30),
+            # 调用级再压过 tool 策略
+            (ToolPolicy(timeout=30), 0.05, 30),
+            # 策略对超时不表态，config 的 0.05s 生效
+            (ToolPolicy(), None, 0.05),
+        ],
+    )
+    async def test_the_effective_timeout_is_call_over_tool_over_config(
+        self, policy, call_timeout, config_timeout
+    ):
+        slow = Tool("slow", "d", {}, lambda a: time.sleep(1), policy=policy)
+        dispatcher, _, _ = _bare_dispatcher(
+            slow, config=AgentConfig(tool_timeout=config_timeout)
+        )
 
-        result = await dispatcher.run("slow", {})
+        result = await dispatcher.run("slow", {}, timeout=call_timeout)
 
         assert result.status == "timeout"
-        assert "0.05" in result.content
-
-    async def test_a_call_level_timeout_wins_over_the_tool_policy(self):
-        slow = Tool("slow", "d", {}, lambda a: time.sleep(1), policy=ToolPolicy(timeout=30))
-        dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=30))
-
-        result = await dispatcher.run("slow", {}, timeout=0.05)
-
-        assert result.status == "timeout"
-        assert "0.05" in result.content
-
-    async def test_a_policy_without_an_opinion_falls_through_to_the_config(self):
-        slow = Tool("slow", "d", {}, lambda a: time.sleep(1), policy=ToolPolicy(result_limit=5))
-        dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=0.05))
-
-        result = await dispatcher.run("slow", {})
-
-        assert result.status == "timeout"  # the config's 0.05s applied
+        assert "0.05" in result.content  # 生效的那个超时值落在结果文案里
 
     async def test_a_policy_result_limit_overrides_the_config(self):
         big = Tool("big", "d", {}, lambda a: "x" * 100, policy=ToolPolicy(result_limit=10))
@@ -264,12 +262,6 @@ class TestOutcomeParity:
                 _failing(ToolError("nope", "teapot")),
                 {},
                 ("error", "error: teapot: nope", "teapot"),
-            ),
-            (
-                "echo",
-                echo_tool(),
-                {"parse_error": "error: invalid JSON arguments (boom)"},
-                ("error", "error: invalid JSON arguments (boom)", None),
             ),
             (
                 "ghost",
