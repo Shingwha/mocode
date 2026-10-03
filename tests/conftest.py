@@ -11,7 +11,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import re
+import sys
 import textwrap
 import time
 from pathlib import Path
@@ -379,6 +381,9 @@ def make_agent(
 #: ``settle()`` 因此天然豁免，不进 BARE SLEEPS 清单。
 _REAL_ASYNCIO_SLEEP = asyncio.sleep
 
+#: 同理捕获的 ``time.sleep`` 真身，守卫对测试进程内的同步裸睡同样只记真睡。
+_REAL_TIME_SLEEP = time.sleep
+
 #: ``real_time()`` 的嵌套深度：>0 时守卫只睡不记。
 _real_time_depth = 0
 
@@ -456,3 +461,69 @@ def real_time():
         yield
     finally:
         _real_time_depth -= 1
+
+
+# ── 裸睡守卫（W0 recording 模式：只记录、不失败；W2 翻硬失败） ──
+
+#: 裸睡清单：``(nodeid, 调用点 文件:行号, 秒数)``，会话末统一输出。
+_BARE_SLEEPS: list[tuple[str, str, float]] = []
+
+#: 守卫报告的调用点路径，统一相对仓库根目录，便于 grep 与聚合。
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _record_bare_sleep(nodeid: str, seconds: float) -> None:
+    """记一条裸睡；调用点取守卫包装器之外真正调用 sleep 的那一帧。"""
+    frame = sys._getframe(2)  # 0=本函数，1=守卫包装器，2=真正的调用者
+    filename = frame.f_code.co_filename
+    try:
+        filename = os.path.relpath(filename, _REPO_ROOT)
+    except ValueError:  # 跨盘符（Windows）时保留绝对路径
+        pass
+    _BARE_SLEEPS.append((nodeid, f"{filename}:{frame.f_lineno}", seconds))
+
+
+@pytest.fixture(autouse=True)
+def _sleep_guard(monkeypatch, request):
+    """把 ``time.sleep`` / ``asyncio.sleep`` 换成记录版（recording 模式）。
+
+    每次裸睡记一条 ``(nodeid, 文件:行号, 秒数)`` 进 :data:`_BARE_SLEEPS`，
+    会话末由 ``pytest_terminal_summary`` 输出 BARE SLEEPS 清单——现在
+    不失败任何测试，W1 各组清零后 W2 翻成硬失败。豁免：:func:`settle`
+    走 import 期捕获的真身、守卫 patch 不到它；:func:`real_time` 块内
+    只睡不记。真子进程（MCP fake server）跑在别的解释器里，天然豁免。
+    patch 经 ``monkeypatch`` 完成，测试结束即恢复，错误隔离不渗漏。
+    """
+    nodeid = request.node.nodeid
+
+    def recording_time_sleep(seconds):
+        if _real_time_depth == 0:
+            _record_bare_sleep(nodeid, seconds)
+        return _REAL_TIME_SLEEP(seconds)
+
+    async def recording_asyncio_sleep(delay, result=None):
+        if _real_time_depth == 0:
+            _record_bare_sleep(nodeid, delay)
+        return await _REAL_ASYNCIO_SLEEP(delay, result)
+
+    monkeypatch.setattr(time, "sleep", recording_time_sleep)
+    monkeypatch.setattr(asyncio, "sleep", recording_asyncio_sleep)
+    yield
+
+
+def pytest_terminal_summary(terminalreporter) -> None:
+    """会话末输出 BARE SLEEPS 清单：总条数、命中测试数、按文件分布 top。"""
+    if not _BARE_SLEEPS:
+        return
+    per_file: dict[str, int] = {}
+    for _, caller, _ in _BARE_SLEEPS:
+        path = caller.rsplit(":", 1)[0]
+        per_file[path] = per_file.get(path, 0) + 1
+    tests = {nodeid for nodeid, _, _ in _BARE_SLEEPS}
+    terminalreporter.write_sep(
+        "=",
+        f"BARE SLEEPS (recording mode, not failing): "
+        f"{len(_BARE_SLEEPS)} calls in {len(tests)} tests",
+    )
+    for path, count in sorted(per_file.items(), key=lambda kv: (-kv[1], kv[0]))[:15]:
+        terminalreporter.write_line(f"  {count:5d}  {path}")
