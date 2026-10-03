@@ -8,9 +8,12 @@ from this module (``from .conftest import write_plugin``).
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import re
 import textwrap
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
@@ -367,3 +370,89 @@ def make_agent(
     if "config" not in kwargs:
         kwargs["config"] = config or AgentConfig()
     return AgentLoop(**kwargs)
+
+
+# ── 时序地基（W0 交付：受批等待与假时钟，W1 起各波次统一使用） ──
+
+#: conftest 导入期捕获的 ``asyncio.sleep`` 真身。守卫（recording 模式）
+#: 在每个测试里 patch ``asyncio.sleep``，但 patch 不到这里保存的引用——
+#: ``settle()`` 因此天然豁免，不进 BARE SLEEPS 清单。
+_REAL_ASYNCIO_SLEEP = asyncio.sleep
+
+#: ``real_time()`` 的嵌套深度：>0 时守卫只睡不记。
+_real_time_depth = 0
+
+
+async def settle(seconds: float = 0.01) -> None:
+    """受批短睡：等待是"被测行为本身"时的唯一合法入睡入口。
+
+    只用于两类场景——真子进程观察窗（等 fake server 写 pidfile、等端口
+    就绪）与看门狗时限（等一个超时真的到点）。它不是同步原语：等条件
+    成立请用 :func:`wait_until`，等事件请用 ``asyncio.Event``。这里入睡
+    走 import 期捕获的真身，守卫记录不到它。
+    """
+    await _REAL_ASYNCIO_SLEEP(seconds)
+
+
+async def wait_until(
+    predicate, *, bound: float = 5.0, step: float = 0.01, what: str = ""
+) -> bool:
+    """条件轮询：*predicate* 一旦成真即返回 ``True``，超时抛 ``AssertionError``。
+
+    取代各处手写的 ``for ...: await asyncio.sleep(POLL)`` 轮询。超时消息
+    带 *what* 与实际耗时，红了直接可读。轮询步长走 :func:`settle`，不
+    计入裸睡清单。*bound* 是墙钟秒数上限，*step* 是每次轮询的间隔。
+    """
+    started = time.monotonic()
+    while not predicate():
+        elapsed = time.monotonic() - started
+        if elapsed >= bound:
+            raise AssertionError(
+                f"wait_until 超时：{what or 'condition'}"
+                f"（耗时 {elapsed:.2f}s > bound {bound:.2f}s）"
+            )
+        await settle(step)
+    return True
+
+
+class FakeClock:
+    """可手推的假单调时钟：``monotonic()`` 读 ``now``，``now`` 由测试推进。
+
+    对齐 ``test_retry.py`` 的 ``_Clock`` 与 ``test_agent_loop.py`` 的
+    ``Clock``/``FastClock`` 用法——把模块里的 ``time`` 整体换成它
+    （``monkeypatch.setattr(module, "time", clock)``）之后，被测代码的
+    每次 ``time.monotonic()`` 都读到这里的 ``now``。用 :func:`advance`
+    推进时间，断言由时钟读数驱动，不用真睡。
+    """
+
+    def __init__(self, start: float = 0.0):
+        self.now = start
+
+    def monotonic(self) -> float:
+        return self.now
+
+
+def advance(clock: FakeClock, dt: float) -> float:
+    """把 *clock* 的 ``now`` 向前推 *dt* 秒，返回推进后的读数。
+
+    一次失败的尝试消耗多少墙钟，测试里就是 ``advance(clock, burn)``——
+    退避、截止这些逻辑全部在假时间上证明。
+    """
+    clock.now += dt
+    return clock.now
+
+
+@contextlib.contextmanager
+def real_time():
+    """裸睡赦免区：块内 ``time.sleep``/``asyncio.sleep`` 只睡不记，退出即恢复。
+
+    这是逃生舱，普通测试不该见到它——存在即说明等待方式该被 W1/W2 改造。
+    只用于 :func:`settle` 覆盖不了的"必须真实阻塞一段墙钟"的场景（罕见）。
+    可嵌套，深度归零后守卫恢复记录。
+    """
+    global _real_time_depth
+    _real_time_depth += 1
+    try:
+        yield
+    finally:
+        _real_time_depth -= 1
