@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 from .....core.tool import ToolResult
+from .runtime import script_error_line
 
 __all__ = ["Output", "build_result", "compose", "truncate_body"]
 
@@ -78,23 +79,45 @@ def truncate_body(body: str, max_chars: int) -> tuple[str, str | None]:
     return head + f"\n…{omitted} chars truncated…\n" + tail, str(path)
 
 
+def _source_line(script: str, line: int) -> str | None:
+    """The trimmed *line*-th line of *script* (1-based), or ``None`` when the
+    index falls outside the script."""
+    lines = script.splitlines()
+    if 1 <= line <= len(lines):
+        return lines[line - 1].strip()
+    return None
+
+
 def compose(
     ok: bool,
     ms: int,
     body: str,
     error: BaseException | None,
     full_output_path: str | None,
+    *,
+    script: str = "",
 ) -> str:
     """The model-facing text: status line, body, error line, temp-file path.
 
     An empty body leaves no blank line — success is just the status line,
-    failure is the status line plus the error line.
+    failure is the status line plus the error line. A failure located in the
+    script's own code (see
+    :func:`~mocode.host.plugin.builtin.codemode.runtime.script_error_line`)
+    names the script line and shows that line's source on the next line;
+    anything else keeps the plain ``Script error:`` format.
     """
     text = f"Script {'completed' if ok else 'failed'} in {ms}ms"
     if body:
         text += f"\n{body}"
     if not ok and error is not None:
-        text += f"\nScript error: {type(error).__name__}: {error}"
+        line = script_error_line(error)
+        if line is None:
+            text += f"\nScript error: {type(error).__name__}: {error}"
+        else:
+            text += f"\nScript error (line {line}): {type(error).__name__}: {error}"
+            source = _source_line(script, line)
+            if source is not None:
+                text += f"\n{source}"
     if full_output_path:
         text += f"\nFull output: {full_output_path}"
     return text
@@ -108,16 +131,25 @@ def build_result(
     error: BaseException | None,
     tool_calls: int,
     max_chars: int,
+    script: str = "",
+    timed_out: bool = False,
 ) -> ToolResult:
-    """The codemode tool's ToolResult — content for the model, facts in details."""
+    """The codemode tool's ToolResult — content for the model, facts in details.
+
+    ``timed_out`` is set only when the plugin's own deadline fired: the
+    details then carry the ``"timed_out": True`` marker alongside the
+    partial output in the content."""
     body, path = truncate_body(output.render_body(), max_chars)
+    details = {
+        "ok": ok,
+        "images": list(output.images),
+        "truncated": path is not None,
+        "full_output_path": path,
+        "tool_calls": tool_calls,
+    }
+    if timed_out:
+        details["timed_out"] = True
     return ToolResult(
-        content=compose(ok, ms, body, error, path),
-        details={
-            "ok": ok,
-            "images": list(output.images),
-            "truncated": path is not None,
-            "full_output_path": path,
-            "tool_calls": tool_calls,
-        },
+        content=compose(ok, ms, body, error, path, script=script),
+        details=details,
     )

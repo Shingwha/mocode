@@ -26,6 +26,7 @@ from mocode.host.plugin.builtin.codemode.runtime import (
     CodemodeError,
     _ScriptExit,
     run_script,
+    script_error_line,
 )
 
 from .conftest import echo_tool, make_agent
@@ -54,6 +55,61 @@ def _failing_tool() -> Tool:
         description="always fails",
         schema={"type": "object", "properties": {}},
         func=fail,
+    )
+
+
+def _slow_tool(delay: float) -> Tool:
+    """A tool that answers after *delay* seconds — a cancelled call never
+    answers, so deadline tests stay fast while a missed cancellation is
+    still bounded by the sleep."""
+
+    async def slow(args):
+        await asyncio.sleep(delay)
+        return f"slow:{args['value']}"
+
+    return Tool(
+        name="slow",
+        description=f"sleep {delay}s then echo",
+        schema={"type": "object", "properties": {"value": {"type": "string"}}},
+        func=slow,
+    )
+
+
+def _order_tool(name: str, log: list) -> Tool:
+    """A tool that records its start and end in *log* — for order assertions."""
+
+    async def order_tool(args):
+        log.append(f"{name}:start")
+        await asyncio.sleep(0.05)
+        log.append(f"{name}:end")
+        return name
+
+    return Tool(
+        name=name,
+        description=name,
+        schema={"type": "object", "properties": {}},
+        func=order_tool,
+    )
+
+
+def _gate_tool(
+    name: str, started: list, both_started: asyncio.Event, release: asyncio.Event
+) -> Tool:
+    """A tool that returns only once *release* is set; two of these getting
+    started proves the calls ran concurrently."""
+
+    async def gate_tool(args):
+        started.append(name)
+        if len(started) == 2:
+            both_started.set()
+        await release.wait()
+        return name
+
+    return Tool(
+        name=name,
+        description=name,
+        schema={"type": "object", "properties": {}},
+        func=gate_tool,
     )
 
 
@@ -194,6 +250,34 @@ class TestRunScript:
         assert RESTRICTED != __builtins__ if isinstance(__builtins__, dict) else True
         assert "open" not in RESTRICTED
         assert "len" in RESTRICTED
+
+
+class TestScriptErrorLine:
+    """D10 — the wrapper offset: script line = reported line - 1."""
+
+    async def test_error_in_script_own_code(self):
+        with pytest.raises(ValueError, match="boom") as exc_info:
+            await run_script("text('a')\ntext('b')\nraise ValueError('boom')", {"text": lambda v: None})
+        assert script_error_line(exc_info.value) == 3
+
+    async def test_error_in_nested_function_still_codemode(self):
+        script = "def helper():\n    raise ValueError('inner')\n\nhelper()"
+        with pytest.raises(ValueError, match="inner") as exc_info:
+            await run_script(script, {})
+        assert script_error_line(exc_info.value) == 2
+
+    async def test_syntax_error_line(self):
+        with pytest.raises(SyntaxError) as exc_info:
+            await run_script("text('a')\ndef broken(:", {"text": lambda v: None})
+        assert script_error_line(exc_info.value) == 2
+
+    async def test_error_outside_script_has_no_line(self):
+        # No traceback at all (a bare exception) and a CodemodeError raised
+        # by run_script itself both point outside the script's frames.
+        assert script_error_line(ValueError("bare")) is None
+        with pytest.raises(CodemodeError) as exc_info:
+            await run_script("", {})
+        assert script_error_line(exc_info.value) is None
 
 
 # ── T2: api — ToolBox, discovery, store ─────────────────────
@@ -760,6 +844,7 @@ class TestRank:
 # ── T4: plugin + description ────────────────────────────────
 
 
+from mocode.core.events import Notice
 from mocode.core.hook import ToolCallContext
 from mocode.host.plugin.builtin.codemode import PLUGIN, CodemodePlugin
 from mocode.host.plugin.builtin.codemode.description import DESCRIPTION
@@ -877,8 +962,213 @@ class TestRunTool:
         result = await self._run(host, 'text("before")\nraise ValueError("boom")')
         assert result.content.startswith("Script failed in ")
         assert "\nbefore\n" in result.content
-        assert result.content.endswith("Script error: ValueError: boom")
+        assert result.content.endswith(
+            'Script error (line 2): ValueError: boom\nraise ValueError("boom")'
+        )
         assert result.details["ok"] is False
+
+    async def test_error_reports_script_line_and_source(self, plugin_host):
+        # D10: the wrapper's header line shifts reported lines by one; the
+        # error names the real script line and shows that line's source.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, 'text("a")\ntext("b")\nraise ValueError("boom")')
+        assert result.details["ok"] is False
+        assert "Script error (line 3): ValueError: boom\n" in result.content
+        assert 'raise ValueError("boom")' in result.content
+
+    async def test_error_line_inside_nested_function(self, plugin_host):
+        # A failure in a function the script defined still lives in a
+        # <codemode> frame — the reported line is the raise inside helper().
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        script = "def helper():\n    raise ValueError('inner')\n\nhelper()"
+        result = await self._run(host, script)
+        assert result.details["ok"] is False
+        assert "Script error (line 2): ValueError: inner\n" in result.content
+        assert "raise ValueError('inner')" in result.content
+
+    async def test_syntax_error_reports_real_line(self, plugin_host):
+        # The SyntaxError off-by-one: Python reports against the compiled
+        # source, whose first line is the wrapper header — line 3 there is
+        # line 2 of the script.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(host, 'text("a")\ndef broken(:')
+        assert result.details["ok"] is False
+        assert "Script error (line 2): SyntaxError:" in result.content
+        assert "\ndef broken(:" in result.content
+
+    async def test_tool_call_error_reports_no_line(self, plugin_host):
+        # The failure surfaced inside the tool box (ToolCallError), not in
+        # the script's own code — the plain format stays.
+        registry = ToolRegistry()
+        registry.register(_failing_tool())
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await self._run(host, "await tools.fail({})")
+        assert result.details["ok"] is False
+        assert "Script error: ToolCallError: fail: error: execution_error: nope" in result.content
+        assert "Script error (line" not in result.content
+
+    async def test_explicit_deadline_keeps_partial_output(self, plugin_host):
+        # D6: with an explicit deadline the plugin's own wait_for fires
+        # first and the result is a normal failure — partial output kept,
+        # timed_out marker set, no error line, store writes discarded.
+        registry = ToolRegistry()
+        registry.register(_slow_tool(10))
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await self._run(
+            host,
+            'store("k", 1)\ntext("before")\n'
+            'r = await tools.slow({"value": "x"})\ntext("after")',
+            options={"timeout_ms": 50},
+        )
+        assert result.details["ok"] is False
+        assert result.details["timed_out"] is True
+        assert "\nbefore\n" in result.content
+        assert "\nafter\n" not in result.content
+        assert "Script timed out after 1s." in result.content
+        assert "Script error" not in result.content
+        assert host.ctx.plugin_state("codemode") == {}
+
+    async def test_deadline_result_is_no_dispatcher_timeout(self, plugin_host):
+        # Through the dispatcher with room to spare, the fired deadline
+        # comes back as an ordinary ok call — never a TOOL_TIMEOUT status.
+        registry = ToolRegistry()
+        registry.register(_slow_tool(10))
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await host.ctx.agent.dispatcher.run(
+            "codemode",
+            {
+                "script": 'await tools.slow({"value": "x"})',
+                "options": {"timeout_ms": 50},
+            },
+            timeout=30,
+        )
+        assert result.status == "ok"
+        assert "Script timed out after 1s." in result.content
+
+    async def test_no_deadline_keeps_dispatcher_fallback(self, plugin_host):
+        # Without an explicit deadline the plugin path is byte-identical to
+        # before: the dispatcher's timeout cancels the call and the partial
+        # output is lost.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await host.ctx.agent.dispatcher.run(
+            "codemode",
+            {"script": 'text("before")\nawait asyncio.sleep(10)'},
+            timeout=1,
+        )
+        assert result.status == "timeout"
+        assert "before" not in result.content
+
+    async def test_turn_cancellation_passthrough_with_deadline(self, plugin_host):
+        # Cancelling the turn mid-script still propagates untouched even
+        # when a deadline is set — it must not be converted into a timed-out
+        # result (or swallowed).
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        tool = host.ctx.tools.get("codemode")
+        args = {"script": "await asyncio.sleep(10)", "options": {"timeout_ms": 60000}}
+        ctx = ToolCallContext(
+            tool_name="codemode", tool_args=args, tool_call_id="call_cm_cancel"
+        )
+        task = asyncio.create_task(tool.run_async(args, ctx))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    async def test_script_own_timeout_error_is_not_the_deadline(self, plugin_host):
+        # A script may raise TimeoutError itself; the cancelled-task check
+        # keeps it the script's own error rather than the deadline marker.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(
+            host,
+            "raise TimeoutError('self-inflicted')",
+            options={"timeout_ms": 60000},
+        )
+        assert result.details["ok"] is False
+        assert "timed_out" not in result.details
+        assert "Script error (line 1): TimeoutError: self-inflicted" in result.content
+        assert "Script timed out" not in result.content
+
+    async def test_concurrency_cap_serializes_calls(self, plugin_host):
+        # D5: max_concurrency=1 — the second call waits for the first to
+        # finish, even under gather.
+        log = []
+        registry = ToolRegistry()
+        registry.register(_order_tool("slow_a", log))
+        registry.register(_order_tool("slow_b", log))
+        host = plugin_host(
+            plugins=[PLUGIN],
+            tools=registry,
+            config_kwargs={"plugins": {"codemode": {"max_concurrency": 1}}},
+        )
+        result = await self._run(
+            host, "await asyncio.gather(tools.slow_a({}), tools.slow_b({}))"
+        )
+        assert result.details["ok"] is True
+        assert log == ["slow_a:start", "slow_a:end", "slow_b:start", "slow_b:end"]
+
+    async def test_no_cap_runs_calls_concurrently(self, plugin_host):
+        # The default (no max_concurrency) is unchanged: both calls are in
+        # flight before either returns.
+        started: list = []
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        registry = ToolRegistry()
+        registry.register(_gate_tool("gate_a", started, both_started, release))
+        registry.register(_gate_tool("gate_b", started, both_started, release))
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        tool = host.ctx.tools.get("codemode")
+        args = {
+            "script": "await asyncio.gather(tools.gate_a({}), tools.gate_b({}))"
+        }
+        ctx = ToolCallContext(
+            tool_name="codemode", tool_args=args, tool_call_id="call_cm_conc"
+        )
+        task = asyncio.create_task(tool.run_async(args, ctx))
+        await asyncio.wait_for(both_started.wait(), 5)
+        release.set()
+        result = await task
+        assert result.details["ok"] is True
+        assert sorted(started) == ["gate_a", "gate_b"]
+
+    @pytest.mark.parametrize("raw", [0, -3, "2", 2.0, True, []])
+    async def test_invalid_concurrency_reported_and_ignored(self, plugin_host, raw):
+        # D5: an unusable max_concurrency is reported once per conversation
+        # and ignored — the calls still run uncapped.
+        started: list = []
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        registry = ToolRegistry()
+        registry.register(_gate_tool("gate_a", started, both_started, release))
+        registry.register(_gate_tool("gate_b", started, both_started, release))
+        host = plugin_host(
+            plugins=[PLUGIN],
+            tools=registry,
+            config_kwargs={"plugins": {"codemode": {"max_concurrency": raw}}},
+        )
+        tool = host.ctx.tools.get("codemode")
+        args = {
+            "script": "await asyncio.gather(tools.gate_a({}), tools.gate_b({}))"
+        }
+        ctx = ToolCallContext(
+            tool_name="codemode", tool_args=args, tool_call_id="call_cm_bad"
+        )
+        task = asyncio.create_task(tool.run_async(args, ctx))
+        await asyncio.wait_for(both_started.wait(), 5)
+        release.set()
+        result = await task
+        assert result.details["ok"] is True
+        notices = [
+            e for e in host.ctx.agent.channel.history() if isinstance(e, Notice)
+        ]
+        assert len(notices) == 1
+        assert "max_concurrency" in notices[0].message
+        # the warning is once per conversation, not per call
+        result = await self._run(host, "pass")
+        assert result.details["ok"] is True
+        notices = [
+            e for e in host.ctx.agent.channel.history() if isinstance(e, Notice)
+        ]
+        assert len(notices) == 1
 
     async def test_failing_tool_call_fails_script(self, plugin_host):
         registry = ToolRegistry()
@@ -1119,7 +1409,9 @@ class TestEndToEnd:
         content = str(tool_messages[0]["content"])
         assert content.startswith("Script failed in ")
         assert "partial" in content
-        assert content.endswith("Script error: ValueError: broken")
+        assert content.endswith(
+            'Script error (line 2): ValueError: broken\nraise ValueError("broken")'
+        )
         assert host.ctx.plugin_state("codemode") == {}
 
     async def test_denied_visibility_never_reaches_messages(self, plugin_host):
