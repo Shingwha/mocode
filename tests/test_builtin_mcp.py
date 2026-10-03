@@ -836,8 +836,8 @@ class TestSessionWire:
     async def test_the_failures_map_to_their_own_errors(self, session_factory):
         # a slow answer costs the call its budget, not the suite its time
         routes = dict(MODERN_PEER)
-        routes["tools/call"] = Late(0.5, _call_answer("search"))
-        session = session_factory(WirePeer(routes), name="slow", timeout=0.4)
+        routes["tools/call"] = Late(0.3, _call_answer("search"))
+        session = session_factory(WirePeer(routes), name="slow", timeout=0.25)
         await asyncio.wait_for(session.connect_and_register(), BOUND)
         with pytest.raises(McpError) as err:
             await asyncio.wait_for(session.call_tool("search"), BOUND)
@@ -918,7 +918,7 @@ class TestSessionWire:
             WirePeer({"server/discover": Silent(), "initialize": Silent()}), name="neg4"
         )
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-            await asyncio.wait_for(session.connect_and_register(), 0.3)
+            await asyncio.wait_for(session.connect_and_register(), 0.2)
         assert session.state != STATE_CONNECTED
 
 
@@ -1464,7 +1464,7 @@ class TestSyncTools:
         # the same accounting on a connect that times out instead — the
         # same policy a spawned-but-silent child triggers
         runtime, ctx = runtime_factory(
-            {"slow": {"command": "never-run"}}, connect_timeout_s=0.3
+            {"slow": {"command": "never-run"}}, connect_timeout_s=0.2
         )
         session = McpSession(
             runtime.config["slow"],
@@ -1473,7 +1473,7 @@ class TestSyncTools:
         runtime.sessions["slow"] = session
         try:
             with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-                await asyncio.wait_for(session.connect_and_register(), 0.3)
+                await asyncio.wait_for(session.connect_and_register(), 0.2)
         finally:
             session.shutdown()
         runtime.shutdown()
@@ -2084,7 +2084,7 @@ class TestPromptSection:
             assemble=True,
             config_kwargs={
                 "plugins": _plugins_mcp(
-                    tmp_path, _table(tmp_path, slow={}), connect_timeout_s=0.3
+                    tmp_path, _table(tmp_path, slow={}), connect_timeout_s=0.2
                 )
             },
         )
@@ -2097,7 +2097,7 @@ class TestPromptSection:
         )
         runtime.sessions["slow"] = session
         with pytest.raises((asyncio.TimeoutError, TimeoutError)):
-            await asyncio.wait_for(session.connect_and_register(), 0.3)
+            await asyncio.wait_for(session.connect_and_register(), 0.2)
         await asyncio.wait_for(host.materialize(), BOUND)
 
         section = next(s for s in host.ctx.prompt_sections if s.name == "mcp_servers")

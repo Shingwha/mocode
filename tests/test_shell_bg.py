@@ -47,7 +47,7 @@ BG = {"run_in_background": True}
 #: How long a bounded sleep child sleeps — outlives every bound a test
 #: observes (a wait timeout, the watchdog deadline, the handle assertion)
 #: while costing the suite a fraction of a second.
-CHILD = 0.3
+CHILD = 0.2
 
 
 @pytest.fixture
@@ -499,7 +499,7 @@ class TestCompletionNotification:
         its empty run_id proves it was said between turns."""
         _quick_window(monkeypatch)
         conversation, _ = wired(
-            call_tool("bash", {"command": "sleep 0.4"}), "done"
+            call_tool("bash", {"command": "sleep 0.3"}), "done"
         )
         bash = conversation.tools.get("bash")
 
