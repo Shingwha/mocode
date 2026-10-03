@@ -30,7 +30,14 @@ from mocode.core.hook import (
 from mocode.core.provider import Response, RetryPolicy, ToolCall, Usage
 from mocode.core.state import DONE, RunState
 from mocode.core.tool import ERROR_PREFIX, TIMEOUT_PREFIX, Tool, ToolError, ToolResult
-from mocode.testing import MockProvider, collect, response_to_chunks, say, tool_call_response
+from mocode.testing import (
+    MockProvider,
+    SlowProvider,
+    collect,
+    response_to_chunks,
+    say,
+    tool_call_response,
+)
 
 from .conftest import echo_tool, make_agent
 
@@ -117,11 +124,12 @@ class TestEventStream:
 
     async def test_cancellation_leaves_the_history_answerable(self):
         started = asyncio.Event()
+        held = asyncio.Event()
 
         class Stuck(AgentHook):
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
                 started.set()  # the call is in flight, held open below
-                await asyncio.sleep(30)
+                await held.wait()  # 挂起等一个永不到达的事件，取消来时才散
 
         agent = make_agent(echo_tool(), hooks=[Stuck()])
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
@@ -199,19 +207,43 @@ def _failing(exc: Exception) -> Tool:
     return Tool("boom", "d", {}, _run)
 
 
+def _boom_tool() -> Tool:
+    def broken(args):
+        raise ToolError("it broke", "custom_code")
+
+    return Tool("boom", "b", {}, broken)
+
+
+def _parking_tool() -> Tool:
+    """A tool that waits for the loop's cancel signal instead of sleeping.
+
+    "Real work that outlasts the timeout" is expressed as waiting for the
+    cooperative signal, so the loop's own timer decides the timeout — and
+    the test carries no sleep of its own. The worker stands down the moment
+    the signal arrives.
+    """
+
+    def patient(args, ctx):
+        ctx.cancel_event.wait(timeout=5.0)
+        return "late"
+
+    return Tool("patient", "waits politely", {}, patient, with_context=True)
+
+
 class TestToolExecution:
     @pytest.mark.parametrize(
-        "tool,timeout,expected,error_code",
+        "make,tool_timeout,expected,error_code",
         [
-            (_failing(RuntimeError("kaboom")), 5, "error", None),
-            (_failing(ToolError("nope", "teapot")), 5, "error", "teapot"),
-            # Real work that outlasts the timeout by a wide margin, shrunk so
-            # the loop's own timer — not the tool — decides the outcome: the
-            # worker thread finishes on its own shortly after the verdict.
-            (Tool("slow", "d", {}, lambda a: __import__("time").sleep(0.3)), 0.05, "timeout", None),
+            (lambda: _failing(RuntimeError("kaboom")), 5, "error", None),
+            (lambda: _failing(ToolError("nope", "teapot")), 5, "error", "teapot"),
+            # Real work that outlasts the timeout: the loop's own timer —
+            # not the tool — decides the outcome, and the worker is told to
+            # stand down the moment it fires.
+            (_parking_tool, 0.05, "timeout", None),
         ],
     )
-    async def test_failure_statuses(self, tool, timeout, expected, error_code):
+    async def test_failure_statuses(self, make, tool_timeout, expected, error_code):
+        tool = make()
         seen: list[tuple[str, str | None]] = []
 
         class Recorder(AgentHook):
@@ -219,7 +251,7 @@ class TestToolExecution:
                 if isinstance(event, ToolCallFinished):
                     seen.append((event.status, event.error_code))
 
-        agent = make_agent(tool, hooks=[Recorder()], config=AgentConfig(tool_timeout=timeout))
+        agent = make_agent(tool, hooks=[Recorder()], config=AgentConfig(tool_timeout=tool_timeout))
         agent.provider.responses = [tool_call_response(tool.name), say("done")]
 
         await collect(agent.stream("hi"))
@@ -889,23 +921,25 @@ class TestChat:
 # ── turns: addressable, watched by many, cancellable ────────
 
 
-def _slow_provider(entered: asyncio.Event | None = None) -> MockProvider:
+def _slow_provider(entered: asyncio.Event | None = None) -> SlowProvider:
     """A provider whose turn never finishes on its own.
 
-    *entered*, when given, is set the moment the request goes out — the "tool
-    (or turn) has started" signal a cancel test synchronizes on, so the
-    cancellation meets a request genuinely under way rather than a sleep of
-    comparable length that might lose the race.
+    The park itself is the kit's :class:`SlowProvider` — cancellable, and
+    bounded by every caller's ``wait_for``. *entered*, when given, is set
+    the moment the request goes out: the "the request is genuinely in
+    flight" signal a cancel test synchronizes on, so the cancellation meets
+    a request under way rather than a sleep of comparable length that might
+    lose the race.
     """
 
-    class Slow(MockProvider):
+    class Announced(SlowProvider):
         async def stream(self, *args):
             if entered is not None:
                 entered.set()
-            await asyncio.sleep(30)
-            yield  # pragma: no cover - never reached
+            async for chunk in super().stream(*args):
+                yield chunk
 
-    return Slow()
+    return Announced()
 
 
 class TestTurns:
@@ -1105,28 +1139,6 @@ class TestSyncToolCancellation:
 
 
 # ── the persisted outcome protocol ─────────────────────────
-
-
-def _boom_tool() -> Tool:
-    def broken(args):
-        raise ToolError("it broke", "custom_code")
-
-    return Tool("boom", "b", {}, broken)
-
-
-def _parking_tool() -> Tool:
-    """A tool that waits for the loop's cancel signal instead of sleeping.
-
-    "Real work that outlasts the timeout" is expressed as waiting for the
-    cooperative signal, so the loop's own timer decides the timeout — and
-    the test carries no sleep of its own.
-    """
-
-    def patient(args, ctx):
-        ctx.cancel_event.wait(timeout=5.0)
-        return "late"
-
-    return Tool("patient", "waits politely", {}, patient, with_context=True)
 
 
 class TestErrorPrefixes:

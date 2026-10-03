@@ -96,23 +96,20 @@ class TestSubscriptions:
 class TestInline:
     async def test_the_publisher_waits_for_an_inline_subscriber(self):
         channel = EventChannel()
-        seen: list[str] = []
+        finished: list[str] = []
 
-        def _recorder():
-            async def record(event) -> None:
-                # A single yield, not a wait: the point is that the publisher
-                # awaits even a subscriber that has to suspend once to finish
-                # its work. The synchronization is the publish contract here.
-                await asyncio.sleep(0)
-                seen.append(event.message)
+        async def record(event) -> None:
+            # A genuine suspension — a hop to another thread — not a sleep:
+            # the point is that publish() does not return before the
+            # subscriber's work is complete.
+            await asyncio.to_thread(lambda: None)
+            finished.append(event.message)
 
-            return record
-
-        channel.inline(_recorder())
-        await channel.publish(Notice(message="a"))
-        await channel.publish(Notice(message="b"))
-
-        assert seen == ["a", "b"]
+        channel.inline(record)
+        assert await channel.publish(Notice(message="a")) == 1
+        assert await channel.publish(Notice(message="b")) == 2
+        # 每次 publish 返回时，订阅者的活都已真正干完。
+        assert finished == ["a", "b"]
 
     async def test_inline_delivery_precedes_the_buffered_one(self):
         """A hook sees the event before a reader can act on it."""
