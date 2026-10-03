@@ -29,20 +29,66 @@ class TestEnvVarFor:
 
 
 class TestModelEntry:
-    def test_defaults_are_all_unset(self):
-        model = ModelEntry()
-        assert model.id == ""
-        assert model.name == ""
-        assert model.context_window is None
-        assert model.max_tokens is None
-        assert model.efforts is None
-        assert model.effort is None
-        assert model.retry is None
+    """逐模型条目：从 JSON 实际持有的内容里读出来。
 
-    def test_roundtrip_omits_unset_fields_but_keeps_the_id(self):
-        assert ModelEntry().to_dict() == {"id": ""}
-        assert ModelEntry.from_dict(None) == ModelEntry()
-        assert ModelEntry.from_dict({}) == ModelEntry()
+    唯一入口是 :meth:`ModelEntry.from_dict`，它容忍手改过的文件——每个字段
+    要么被强转、要么被丢掉，而不是被信任：一个类型不对的字段退化成"未声明"，
+    加载不会因此失败。下面的矩阵就是那张容忍表，红了看参数 id 就知道是哪种
+    形状出了问题。
+    """
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            pytest.param({}, ModelEntry(), id="defaults-are-all-unset"),
+            pytest.param(None, ModelEntry(), id="no-entry-is-defaults"),
+            pytest.param(
+                {"id": 42, "name": None},
+                ModelEntry(id="42"),
+                id="id-and-name-take-strings-only",
+            ),
+            pytest.param(
+                {"context_window": "128000", "max_tokens": "8192"},
+                ModelEntry(context_window=128_000, max_tokens=8_192),
+                id="numeric-strings-are-coerced",
+            ),
+            pytest.param(
+                {"context_window": "huge", "max_tokens": True},
+                ModelEntry(),
+                id="garbage-limits-become-unset",
+            ),
+            pytest.param(
+                {"efforts": ["high", "xhigh", "max"]},
+                ModelEntry(efforts=("high", "xhigh", "max")),
+                id="efforts-take-a-list-of-strings",
+            ),
+            pytest.param(
+                {"efforts": ["high", 1, None, "max"]},
+                ModelEntry(efforts=("high", "max")),
+                id="efforts-drop-non-string-items",
+            ),
+            pytest.param({"efforts": []}, ModelEntry(), id="an-empty-efforts-is-undeclared"),
+            pytest.param(
+                {"efforts": [1, None]}, ModelEntry(), id="an-all-non-string-efforts-is-undeclared"
+            ),
+            pytest.param({"efforts": "high"}, ModelEntry(), id="a-scalar-efforts-is-undeclared"),
+            pytest.param({"efforts": {"low": 1}}, ModelEntry(), id="a-dict-efforts-is-undeclared"),
+            pytest.param({"efforts": 3}, ModelEntry(), id="a-numbered-efforts-is-undeclared"),
+            pytest.param({"effort": "low"}, ModelEntry(effort="low"), id="effort-takes-a-string"),
+            pytest.param({"effort": 1}, ModelEntry(), id="a-numbered-effort-is-unset"),
+            pytest.param({"effort": True}, ModelEntry(), id="a-boolean-effort-is-unset"),
+            pytest.param({"effort": ["low"]}, ModelEntry(), id="a-listed-effort-is-unset"),
+            pytest.param(
+                {"retry": {"max_attempts": 3, "base_delay": 5.0, "bogus": 1}},
+                ModelEntry(retry={"max_attempts": 3, "base_delay": 5.0}),
+                id="retry-roundtrips-and-drops-unknown-keys",
+            ),
+            pytest.param({"retry": {}}, ModelEntry(), id="an-empty-retry-is-unset"),
+            pytest.param({"retry": "fast"}, ModelEntry(), id="a-non-dict-retry-is-unset"),
+        ],
+    )
+    def test_from_dict_coerces_or_drops(self, raw, expected):
+        assert ModelEntry.from_dict(raw) == expected
 
     def test_roundtrip(self):
         model = ModelEntry(
@@ -54,54 +100,11 @@ class TestModelEntry:
             effort="high",
         )
         assert ModelEntry.from_dict(model.to_dict()) == model
+        # 元组序列化成它当初被读到的那个 JSON 数组
+        assert model.to_dict()["efforts"] == ["low", "high", "max"]
 
-    def test_accepts_numeric_strings(self):
-        model = ModelEntry.from_dict({"context_window": "128000", "max_tokens": "8192"})
-        assert model.context_window == 128_000
-        assert model.max_tokens == 8_192
-
-    def test_garbage_limits_become_unset(self):
-        model = ModelEntry.from_dict({"context_window": "huge", "max_tokens": True})
-        assert model.context_window is None
-        assert model.max_tokens is None
-
-    def test_id_and_name_accept_only_strings(self):
-        model = ModelEntry.from_dict({"id": 42, "name": None})
-        assert model.id == "42"
-        assert model.name == ""
-
-    def test_efforts_accept_a_list_of_strings(self):
-        model = ModelEntry.from_dict({"efforts": ["high", "xhigh", "max"]})
-        assert model.efforts == ("high", "xhigh", "max")
-        assert model.to_dict()["efforts"] == ["high", "xhigh", "max"]
-
-    def test_efforts_drop_non_string_items(self):
-        model = ModelEntry.from_dict({"efforts": ["high", 1, None, "max"]})
-        assert model.efforts == ("high", "max")
-
-    def test_efforts_empty_list_means_undeclared(self):
-        assert ModelEntry.from_dict({"efforts": []}).efforts is None
-        assert ModelEntry.from_dict({"efforts": [1, None]}).efforts is None
-
-    def test_efforts_non_list_means_undeclared(self):
-        for raw in ("high", {"low": 1}, 3):
-            assert ModelEntry.from_dict({"efforts": raw}).efforts is None
-
-    def test_effort_accepts_only_a_string(self):
-        assert ModelEntry.from_dict({"effort": "low"}).effort == "low"
-        for raw in (1, True, ["low"]):
-            assert ModelEntry.from_dict({"effort": raw}).effort is None
-
-    def test_retry_roundtrips_and_drops_unknown_keys(self):
-        model = ModelEntry.from_dict(
-            {"retry": {"max_attempts": 3, "base_delay": 5.0, "bogus": 1}}
-        )
-        assert model.retry == {"max_attempts": 3, "base_delay": 5.0}
-        assert ModelEntry.from_dict(model.to_dict()).retry == model.retry
-
-    def test_an_empty_or_non_dict_retry_is_unset(self):
-        assert ModelEntry.from_dict({"retry": {}}).retry is None
-        assert ModelEntry.from_dict({"retry": "fast"}).retry is None
+    def test_unset_fields_stay_absent_from_the_dict(self):
+        assert ModelEntry().to_dict() == {"id": ""}
 
     def test_retry_policy_builds_from_the_dict_or_stays_none(self):
         policy = ModelEntry.from_dict(

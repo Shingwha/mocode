@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 
 from mocode.core.provider import StreamAccumulator
 from mocode.providers.openai import OpenAIProvider
@@ -66,16 +67,35 @@ async def _stream(provider, messages=None, system="sys", tools=None, max_tokens=
 
 
 class TestRequestShape:
-    async def test_no_cap_means_no_max_tokens_field(self):
-        """An unset cap must not be turned into a made-up number."""
-        sent: list[dict] = []
-        await _stream(_provider(sent), max_tokens=None)
-        assert "max_tokens" not in sent[0]
+    """wire payload 的字段级契约：一个字段要么在场、要么缺席。
 
-    async def test_explicit_cap_is_sent(self):
+    单字段断言合并进矩阵——红了看参数 id 即知是哪个字段的哪种形态；
+    ``expected=None`` 表示该字段必须根本不出现在请求里。"""
+
+    @pytest.mark.parametrize(
+        "stream_kwargs, field, expected",
+        [
+            pytest.param(
+                {}, "max_tokens", None, id="no-cap-means-no-max_tokens-field"
+            ),
+            pytest.param(
+                {"max_tokens": 4096}, "max_tokens", 4096, id="an-explicit-cap-is-sent"
+            ),
+            pytest.param(
+                {}, "reasoning_effort", None, id="no-effort-means-no-reasoning_effort"
+            ),
+            pytest.param(
+                {"effort": "high"}, "reasoning_effort", "high", id="effort-travels-verbatim"
+            ),
+        ],
+    )
+    async def test_one_field_of_the_request(self, stream_kwargs, field, expected):
         sent: list[dict] = []
-        await _stream(_provider(sent), max_tokens=4096)
-        assert sent[0]["max_tokens"] == 4096
+        await _stream(_provider(sent), **stream_kwargs)
+        if expected is None:
+            assert field not in sent[0]
+        else:
+            assert sent[0][field] == expected
 
     async def test_system_prompt_is_prepended(self):
         sent: list[dict] = []
@@ -89,18 +109,6 @@ class TestRequestShape:
         assert sent[0]["stream"] is True
         assert sent[0]["stream_options"] == {"include_usage": True}
         assert sent[0]["model"] == "test-model"
-
-    async def test_effort_is_sent_as_reasoning_effort(self):
-        """A level name travels verbatim, custom names included."""
-        sent: list[dict] = []
-        await _stream(_provider(sent), effort="high")
-        assert sent[0]["reasoning_effort"] == "high"
-
-    async def test_no_effort_means_no_reasoning_effort_field(self):
-        """Absent level — the server decides on its own."""
-        sent: list[dict] = []
-        await _stream(_provider(sent))
-        assert "reasoning_effort" not in sent[0]
 
 
 class TestChunkMapping:

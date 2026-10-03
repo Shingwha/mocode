@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 import sys
 import textwrap
 from pathlib import Path
@@ -99,11 +100,21 @@ class TestManifest:
         assert spec.version == "1.2.0"
         assert spec.description == "hi"
 
-    def test_a_missing_name_rejects_the_plugin(self, tmp_path: Path, capsys):
+    @pytest.mark.parametrize(
+        "raw, problem",
+        [
+            # 清单 schema 是封闭的：缺名字与 JSON 破损都拒收，并说明原因。
+            pytest.param(json.dumps({"version": "1"}), "invalid name", id="a-missing-name"),
+            pytest.param("{not json", "unreadable manifest", id="a-broken-json"),
+        ],
+    )
+    def test_a_malformed_manifest_rejects_the_plugin(
+        self, tmp_path: Path, capsys, raw, problem
+    ):
         path = tmp_path / "plugin.json"
-        path.write_text(json.dumps({"version": "1"}), encoding="utf-8")
+        path.write_text(raw, encoding="utf-8")
         assert read_manifest(path) is None
-        assert "invalid name" in capsys.readouterr().err
+        assert problem in capsys.readouterr().err
 
     def test_unknown_top_level_fields_are_reported_and_ignored(
         self, tmp_path: Path, capsys
@@ -118,12 +129,6 @@ class TestManifest:
         assert spec is not None and spec.name == "greet"
         err = capsys.readouterr().err
         assert "enabled" in err and "entrypoint" in err
-
-    def test_a_broken_manifest_rejects_the_plugin(self, tmp_path: Path, capsys):
-        path = tmp_path / "plugin.json"
-        path.write_text("{not json", encoding="utf-8")
-        assert read_manifest(path) is None
-        assert "unreadable manifest" in capsys.readouterr().err
 
     def test_name_rules(self):
         assert valid_name("greet")

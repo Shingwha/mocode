@@ -235,19 +235,22 @@ class TestPluginMessagesField:
         assert Session.from_dict(session.to_dict()) == session
         assert Session.from_dict(session.to_dict()).plugin_messages == messages
 
-    def test_absent_for_legacy_files(self):
-        legacy = Session.from_dict(
-            {
-                "id": "session_old",
-                "created_at": "t",
-                "updated_at": "t",
-                "workdir": "/project",
-                "messages": [],
-            }
-        )
-        assert legacy.plugin_messages == []
-
-    def test_bad_entries_are_dropped(self):
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            pytest.param(
+                [{"kind": "kept"}, "junk", 42, None, ["x"]],
+                [{"kind": "kept"}],
+                id="bad-entries-are-dropped",
+            ),
+            pytest.param(
+                {"kind": "not-a-list"},
+                [],
+                id="a-wrong-shaped-field-is-dropped",
+            ),
+        ],
+    )
+    def test_malformed_values_leave_a_usable_field(self, raw, expected):
         session = Session.from_dict(
             {
                 "id": "session_x",
@@ -255,27 +258,19 @@ class TestPluginMessagesField:
                 "updated_at": "t",
                 "workdir": "/project",
                 "messages": [],
-                "plugin_messages": [{"kind": "kept"}, "junk", 42, None, ["x"]],
+                "plugin_messages": raw,
             }
         )
-        assert session.plugin_messages == [{"kind": "kept"}]
-
-    def test_a_wrong_shaped_field_is_dropped(self):
-        session = Session.from_dict(
-            {
-                "id": "session_x",
-                "created_at": "t",
-                "updated_at": "t",
-                "workdir": "/project",
-                "messages": [],
-                "plugin_messages": {"kind": "not-a-list"},
-            }
-        )
-        assert session.plugin_messages == []
+        assert session.plugin_messages == expected
 
 
 class TestFrozenRequestFields:
-    def test_round_trip_and_optional_for_legacy_files(self):
+    """会话冻结的请求面（prompt、工具接口）与插件自有状态。
+
+    三者都是可迁入迁出的可选字段：新会话从插件现场拿，旧文件没有它们也能读。
+    """
+
+    def test_round_trip(self):
         session = _session(
             system_prompt="<system-prompt>frozen</system-prompt>",
             tool_schemas=[{"function": {"name": "read"}}],
@@ -286,6 +281,16 @@ class TestFrozenRequestFields:
 
         assert Session.from_dict(session.to_dict()) == session
 
+    @pytest.mark.parametrize(
+        "field, default",
+        [
+            pytest.param("plugin_messages", [], id="plugin-messages"),
+            pytest.param("system_prompt", "", id="system-prompt"),
+            pytest.param("tool_schemas", [], id="tool-schemas"),
+            pytest.param("plugin_state", {}, id="plugin-state"),
+        ],
+    )
+    def test_absent_for_legacy_files(self, field, default):
         legacy = Session.from_dict(
             {
                 "id": "session_old",
@@ -295,6 +300,4 @@ class TestFrozenRequestFields:
                 "messages": [],
             }
         )
-        assert legacy.system_prompt == ""
-        assert legacy.tool_schemas == []
-        assert legacy.plugin_state == {}
+        assert getattr(legacy, field) == default
