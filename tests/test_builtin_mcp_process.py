@@ -170,11 +170,14 @@ async def wait_pidfile(pidfile: Path, *, bound: float = 5.0) -> int:
 
 
 async def wait_gone(pid: int, *, bound: float = 5.0) -> bool:
-    """Wait (bounded) for a direct child to be reaped."""
-    async def reaped() -> bool:
-        return not child_alive(pid)
+    """Wait (bounded) for a direct child to be reaped.
 
-    return await wait_until(reaped, bound=bound, what=f"pid {pid} to be reaped")
+    The probe is synchronous — a handle lookup, not a wait — so the
+    predicate stays a plain function the conftest poller can call.
+    """
+    return await wait_until(
+        lambda: not child_alive(pid), bound=bound, what=f"pid {pid} to be reaped"
+    )
 
 
 class TestSpawnAndFraming:
