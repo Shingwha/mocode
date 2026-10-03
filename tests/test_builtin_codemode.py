@@ -220,8 +220,6 @@ class TestRunScript:
         with pytest.raises(NameError):
             await run_script(script, {})
 
-
-    async def test_the_whitelist_is_the_frozen_set_plus_exceptions(self):
         # The frozen set stays, every builtin exception class joins by the
         # issubclass rule, dir comes along, and __import__ is the gated
         # gate — nothing else is in there.
@@ -263,7 +261,7 @@ class TestImportGate:
     ``from ... import ...`` pass, everything else fails with the tools
     facade in the message."""
 
-    async def test_the_import_statement_works_for_whitelisted_modules(self):
+    async def test_the_whitelisted_forms_pass_and_a_rejection_is_the_same_refusal(self):
         # the muscle-memory forms all pass: a plain import, several in one
         # statement, from-import, and from-import with an alias
         assert await run_script(
@@ -278,7 +276,6 @@ class TestImportGate:
             "from json import dumps as d\nreturn d({'a': 1})", {}
         ) == '{"a": 1}'
 
-    async def test_a_rejected_import_refuses_and_is_catchable_by_name(self):
         # plain, from-import and submodule forms all refuse the same way — and
         # the gate matches exact module names, so no submodule gets through
         for script in ("import os", "from os import path", "import asyncio.exceptions"):
@@ -309,7 +306,7 @@ def _box(*tools, parent="call_1") -> ToolBox:
 
 
 class TestToolBox:
-    async def test_calling_a_tool(self):
+    async def test_calling_a_tool_and_a_failing_call(self):
         box = _box(echo_tool())
         outcome = await box["echo"]({"value": "hi"})
         assert outcome.content == "echo:hi"
@@ -330,6 +327,28 @@ class TestToolBox:
         assert outcome["content"] == "echo:hi"
         assert "content" in outcome
         assert dict(outcome) == outcome.to_dict()
+
+        # a failing call raises with its result attached — the message, the
+        # status and the error code all travel, and the call is still counted
+        box = _box(_failing_tool())
+        with pytest.raises(ToolCallError) as exc_info:
+            await box.fail({})
+        error = exc_info.value
+        assert str(error) == "fail: error: execution_error: nope"
+        assert error.result.status == "error"
+        assert error.result.error_code == "execution_error"
+        assert box.calls == 1  # counted even though the call failed
+
+        # and under gather(return_exceptions=True) the failure is a value
+        box = _box(echo_tool(), _failing_tool())
+        outcomes = await asyncio.gather(
+            box.echo({"value": "ok"}),
+            box.fail({}),
+            return_exceptions=True,
+        )
+        assert outcomes[0].content == "echo:ok"
+        assert isinstance(outcomes[1], ToolCallError)
+        assert box.calls == 2
 
     async def test_the_name_resolution_tiers(self):
         # the normalized form finds a hyphenated name, and the exact name
@@ -386,26 +405,6 @@ class TestToolBox:
             box["codemode"]
         with pytest.raises(CodemodeError, match="codemode cannot be called from a script"):
             box.codemode
-    async def test_a_failing_call_raises_with_its_result(self):
-        box = _box(_failing_tool())
-        with pytest.raises(ToolCallError) as exc_info:
-            await box.fail({})
-        error = exc_info.value
-        assert str(error) == "fail: error: execution_error: nope"
-        assert error.result.status == "error"
-        assert error.result.error_code == "execution_error"
-        assert box.calls == 1  # counted even though the call failed
-
-        # and under gather(return_exceptions=True) the failure is a value
-        box = _box(echo_tool(), _failing_tool())
-        outcomes = await asyncio.gather(
-            box.echo({"value": "ok"}),
-            box.fail({}),
-            return_exceptions=True,
-        )
-        assert outcomes[0].content == "echo:ok"
-        assert isinstance(outcomes[1], ToolCallError)
-        assert box.calls == 2
 
     async def test_program_origin_parenting_and_the_dir_catalogue(self):
         agent = make_agent(echo_tool())
@@ -439,7 +438,7 @@ class TestFacadeFallback:
         )
         return env, box, output
 
-    def test_every_builtin_name_resolves_through_the_facade(self):
+    async def test_the_facade_names_resolve_their_bindings_and_a_tool_wins(self):
         env, box, _ = self._env()
         for name in (
             "describe_tool",
@@ -462,7 +461,7 @@ class TestFacadeFallback:
         ):
             box.nope
 
-    async def test_facade_bound_names_work_and_a_tool_wins(self):
+        # the bound names work, and they share one underlying store
         env, box, output = self._env()
         box.text("via facade")
         box.print("a", 1)
@@ -517,7 +516,7 @@ class TestResult:
             error_code=None,
         )
 
-    def test_accessors_and_the_str(self):
+    def test_the_accessors_the_mapping_and_the_helpers(self):
         result = self._result()
         assert result.ok is True
         assert result.content == "c"
@@ -537,8 +536,7 @@ class TestResult:
         failed = Result(ok=False, tool="fail", error="fail: error: execution_error: nope")
         assert "error" in repr(failed) and "fail" in repr(failed)
 
-    def test_the_mapping_protocol(self):
-        result = self._result()
+        # the Mapping protocol the docs taught, on top of the accessors
         assert result.get("content") == "c"
         assert result.get("details") == {"exit_code": 0}
         assert result.get("status") == "ok"
@@ -553,7 +551,8 @@ class TestResult:
             result["nope"]
         assert dict(result) == result.to_dict()
 
-    def test_json_and_structured_helpers(self):
+        # json() answers a dict for JSON and a readable message otherwise,
+        # and the structured payload is passed through when there is one
         assert Result(content='{"a": 1, "b": [2]}').json() == {"a": 1, "b": [2]}
         assert Result(content="[1, 2]").json() == [1, 2]
         message = Result(content="not json at all").json()
@@ -804,7 +803,7 @@ class TestStore:
         assert store.load("a") is None
         assert store.load("b") == [1, 2]
 
-    def test_the_limits_fail_the_commit_without_applying(self):
+    def test_the_limits_fail_the_commit_and_the_defaults_are_generous(self):
         backing = {}
         store = Store(backing, max_value_chars=10)
         store.store("big", "x" * 100)
@@ -828,7 +827,7 @@ class TestStore:
         store.store("new", "z" * 8)
         store.commit()
         assert backing == {"existing": "y" * 8, "new": "z" * 8}
-    def test_the_default_limits_are_generous_and_enforced(self):
+
         # The defaults are a policy, not a constant to pin: what a test can
         # hold is that the default store accepts a value no test would ever
         # write and rejects one no session should keep.
@@ -883,12 +882,11 @@ class TestOutput:
 
 
 class TestTruncateBody:
-    def test_a_short_body_or_a_nonpositive_limit_is_untouched(self):
+    def test_a_short_body_is_untouched_and_a_long_one_keeps_head_and_tail(self):
         assert truncate_body("hello", 12000) == ("hello", None)
         assert truncate_body("hello", 0) == ("hello", None)
         assert truncate_body("hello", -5) == ("hello", None)
 
-    def test_a_long_body_keeps_head_and_tail_and_spools_the_rest(self):
         body = "".join(str(i % 10) for i in range(1000))
         text, path = truncate_body(body, 100)
         assert path is not None
@@ -975,7 +973,7 @@ class TestRank:
             {"name": "mcp__git_ops__search_things", "description": "search ops"},
         ]
 
-    def test_name_hits_and_all_token_matches_outrank(self):
+    def test_name_hits_the_namespace_filter_and_the_normalization(self):
         # an empty query keeps registration order and respects the limit
         assert [t["name"] for t in rank("", self._entries())] == [
             "read_file",
@@ -995,7 +993,8 @@ class TestRank:
             "mcp__git_ops__search_things",
         ]
 
-    def test_the_namespace_filter_normalizes(self):
+        # the namespace filter normalizes the same way, and an unknown one
+        # keeps nothing
         hits = rank("search", self._entries(), namespace="git-ops")
         assert [t["name"] for t in hits] == ["mcp__git_ops__search_things"]
         assert rank("search", self._entries(), namespace="nope") == []
@@ -1245,7 +1244,9 @@ class TestRunTool:
         assert "nope" in result.content
         assert result.content.startswith("Script failed in ")
 
-    async def test_an_explicit_deadline_keeps_partial_output(self, plugin_host):
+    async def test_an_explicit_deadline_is_a_normal_result_at_both_levels(
+        self, plugin_host
+    ):
         # D6: with an explicit deadline the plugin's own wait_for fires
         # first and the result is a normal failure — partial output kept,
         # timed_out marker set, no error line, store writes discarded.
@@ -1280,13 +1281,10 @@ class TestRunTool:
         assert _script_error(result.content) == (1, "TimeoutError", "self-inflicted")
         assert "Script timed out" not in result.content
 
-    async def test_the_deadline_is_a_normal_result_not_a_dispatcher_timeout(
-        self, plugin_host
-    ):
-        registry = ToolRegistry()
-        registry.register(_slow_tool())
         # Through the dispatcher with room to spare, the fired deadline
         # comes back as an ordinary ok call — never a TOOL_TIMEOUT status.
+        registry = ToolRegistry()
+        registry.register(_slow_tool())
         host = plugin_host(
             plugins=[PLUGIN],
             tools=registry,
@@ -1519,7 +1517,7 @@ class TestRunTool:
 
 
 class TestOptions:
-    def test_effective_options_merge_the_comment_and_the_args(self):
+    def test_the_options_merge_and_the_policy_resolves_the_timeout(self, plugin_host):
         # the comment line is the base, explicit options win, an
         # unparseable comment is ignored, and an empty script has none
         script = '# @options: {"timeout_ms": 5000, "max_output_chars": 100}\ntext("x")'
@@ -1529,10 +1527,10 @@ class TestOptions:
         assert effective_options(script, {"timeout_ms": 1}) == {"timeout_ms": 1}
         assert effective_options("", None) == {}
 
-    def test_policy_from_the_comment_line(self, plugin_host):
+        # the ms option is ceil'd to whole seconds, and never below one —
+        # from either the args or the script's own comment line
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
         policy = host.ctx.tools.get("codemode").policy
-        # the ms option is ceil'd to whole seconds, and never below one
         assert policy({"script": "pass", "options": {"timeout_ms": 1500}}).timeout == 2
         assert policy({"script": "pass", "options": {"timeout_ms": 2000}}).timeout == 2
         assert policy({"script": "pass", "options": {"timeout_ms": 1}}).timeout == 1
@@ -1956,6 +1954,9 @@ class TestCrossPluginExposure:
         assert len(warnings) == 1
         assert warnings[0].level == "warn"
         assert "reachable only through codemode" in warnings[0].message
+        # the count of unreachable tools travels as a leading number —
+        # parsed out of the message, not spelled back out
+        assert int(warnings[0].message.split(" ", 1)[0]) == 1
         # one conversation, one warning — the second read of the same channel
         # finds no further warning: the one-shot is a fact about the
         # runtime's flag, not a window to sit out

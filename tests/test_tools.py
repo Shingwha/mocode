@@ -40,6 +40,15 @@ class TestBashSession:
         session.restart()
         assert (await session.execute("echo $MY_TEST_VAR", timeout=10)).content == "(empty)"
 
+        # the same state through the tool, and the restart argument clears it
+        tool = bash_tool(tmp_path)
+        await tool.run_async({"command": "export V=1"}, None)
+        assert (await tool.run_async({"command": "echo $V"}, None)).content == "1"
+        assert (await tool.run_async({"command": "x", "restart": True}, None)).content == (
+            "Bash session restarted"
+        )
+        assert (await tool.run_async({"command": "echo $V"}, None)).content == "(empty)"
+
     async def test_env_values_are_never_executed_as_shell_code(self, tmp_path: Path):
         """Env vars are passed through ``env=``, never interpolated into a script."""
         session = BashSession(tmp_path)
@@ -66,7 +75,9 @@ class TestBashSession:
         ]
         assert "one" in result.content and "oops" in result.content
 
-    async def test_timeout_kills_the_command(self, tmp_path: Path):
+    async def test_timeout_kills_the_command_at_both_levels(self, tmp_path: Path):
+        # the session's own budget: the command dies at the deadline, with
+        # the number read out of the message
         result = await BashSession(tmp_path).execute("sleep 5", timeout=0.3)
         # the timeout is the subject — what is asserted is that the command
         # died at the deadline, with the number read out of the message
@@ -75,21 +86,8 @@ class TestBashSession:
         assert float(result.content.rsplit(" ", 1)[1][:-2]) == 0.3
         assert "exit_code" not in result.details
 
-
-class TestBashTool:
-    def test_the_tool_shape_and_its_timeout_policy(self, tmp_path: Path):
-        from mocode.core.tool import ToolPolicy
-
-        tool = bash_tool(tmp_path)
-        assert tool.wants_context is True
-        assert tool.is_async is True
-        assert tool.result_key == "exit_code"
-        # the dispatcher enforces the deadline; the tool just maps the
-        # argument onto a ToolPolicy and reads the resolved value back
-        assert tool.policy({"timeout": 7}) == ToolPolicy(timeout=7)
-        assert tool.policy({}) == ToolPolicy(timeout=None)  # fall to config
-
-    async def test_the_model_timeout_argument_reaches_the_dispatcher(self, tmp_path: Path):
+        # and the model's timeout argument reaches the dispatcher, which is
+        # the one place the deadline is enforced
         from mocode.core.agent import AgentConfig
         from mocode.core.dispatch import ToolDispatcher
         from mocode.core.events import Event
@@ -110,48 +108,54 @@ class TestBashTool:
         assert result.status == "timeout"
         assert result.content.startswith("timeout:")
 
-    async def test_restart_resets_the_session(self, tmp_path: Path):
+
+class TestBashTool:
+    def test_the_tool_shape_and_its_timeout_policy(self, tmp_path: Path):
+        from mocode.core.tool import ToolPolicy
+
         tool = bash_tool(tmp_path)
-        await tool.run_async({"command": "export V=1"}, None)
-        assert (await tool.run_async({"command": "echo $V"}, None)).content == "1"
-        assert (await tool.run_async({"command": "x", "restart": True}, None)).content == (
-            "Bash session restarted"
-        )
-        assert (await tool.run_async({"command": "echo $V"}, None)).content == "(empty)"
+        assert tool.wants_context is True
+        assert tool.is_async is True
+        assert tool.result_key == "exit_code"
+        # the dispatcher enforces the deadline; the tool just maps the
+        # argument onto a ToolPolicy and reads the resolved value back
+        assert tool.policy({"timeout": 7}) == ToolPolicy(timeout=7)
+        assert tool.policy({}) == ToolPolicy(timeout=None)  # fall to config
 
 
 class TestReadTool:
-    def test_a_directory_is_listed_with_counts(self, tmp_path: Path):
+    def test_a_directory_listing_counts_its_kinds_and_skips_the_noise(
+        self, tmp_path: Path
+    ):
         (tmp_path / "subdir").mkdir()
         (tmp_path / "hello.py").write_text("print('hi')", encoding="utf-8")
-
-        result = read_tool(tmp_path).run({"path": str(tmp_path)}).content
-
-        assert result.startswith("[")
-        # the listing is a set of entries; the summary line is the user's
-        # wording, so what a test holds is that both kinds are counted
-        summary = result.split("\n", 1)[0]
-        assert "subdir/" in result and "hello.py" in result
-        assert "1" in summary and "directories" in summary and "files" in summary
-        # the way out of a listing is named, and no line count is shown for
-        # what has none
-        assert "directory" in result.lower()
-        assert "shell" in result
-        assert read_tool(tmp_path).run({"path": str(tmp_path)}).details == {}
-
-    def test_an_empty_directory_is_reported(self, tmp_path: Path):
-        result = read_tool(tmp_path).run({"path": str(tmp_path)}).content
-        summary = result.split("\n", 1)[0]
-        assert "0" in summary and "directories" in summary and "files" in summary
-
-    def test_noise_directories_are_skipped(self, tmp_path: Path):
         (tmp_path / "__pycache__").mkdir()
         (tmp_path / "real.py").write_text("x", encoding="utf-8")
 
         result = read_tool(tmp_path).run({"path": str(tmp_path)}).content
 
+        assert result.startswith("[")
+        # the listing is a set of entries; the summary line is the user's
+        # wording, so what a test holds is that both kinds are counted — the
+        # noise directory counted in neither
+        summary = result.split("\n", 1)[0]
+        assert "subdir/" in result and "hello.py" in result and "real.py" in result
+        assert "1" in summary and "2" in summary
+        assert "directories" in summary and "files" in summary
+        # the way out of a listing is named, and no line count is shown for
+        # what has none
+        assert "directory" in result.lower()
+        assert "shell" in result
+        assert read_tool(tmp_path).run({"path": str(tmp_path)}).details == {}
+        # the noise directories never make the listing
         assert "__pycache__" not in result
-        assert "real.py" in result
+
+        # an empty directory is reported, counted as none of either
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        result = read_tool(empty).run({"path": str(empty)}).content
+        summary = result.split("\n", 1)[0]
+        assert "0" in summary and "directories" in summary and "files" in summary
 
     def test_a_file_read_reports_its_line_numbers(self, tmp_path: Path):
         path = tmp_path / "a.py"
@@ -170,7 +174,7 @@ class TestReadTool:
 
 
 class TestSkills:
-    def test_a_skill_loads_its_body_and_keeps_unknown_metadata(self, tmp_path: Path):
+    def test_a_skill_loads_its_body_and_a_nameless_one_is_skipped(self, tmp_path):
         path = skill_dir(tmp_path, "my-skill", "test", "Hello world\n")
 
         skill = Skill.from_dir(path)
@@ -181,13 +185,15 @@ class TestSkills:
         meta = SkillMetadata.from_dict({"name": "x", "description": "d", "version": "1"})
         assert (meta.name, meta.description, meta.attrs) == ("x", "d", {"version": "1"})
 
-    def test_a_skill_without_a_name_is_skipped(self, tmp_path: Path):
-        skill_dir = tmp_path / "nameless"
-        skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("---\ndescription: no name\n---\n", encoding="utf-8")
-        assert Skill.from_dir(skill_dir) is None
+        # a skill whose frontmatter names no skill at all is skipped
+        nameless = tmp_path / "nameless"
+        nameless.mkdir()
+        (nameless / "SKILL.md").write_text("---\ndescription: no name\n---\n", encoding="utf-8")
+        assert Skill.from_dir(nameless) is None
 
-    def test_the_manager_prefers_the_directory_and_ignores_missing_ones(self, tmp_path: Path):
+    def test_the_manager_prefers_the_directory_and_the_tool_returns_content(
+        self, tmp_path
+    ):
         skill_dir(tmp_path, "fastapi", "on disk")
 
         manager = SkillManager([tmp_path])
@@ -199,7 +205,7 @@ class TestSkills:
         assert manager.names() == ["fastapi"]
         assert SkillManager([tmp_path / "nope"]).all() == []
 
-    def test_the_tool_returns_content_and_errors_on_unknown(self, tmp_path: Path):
+        # the tool hands the body back, and an unknown name is a not-found
         path = skill_dir(tmp_path, "fastapi", "FastAPI tips", "Use dependency injection.")
 
         result = skill_tool(SkillManager([tmp_path])).run({"name": "fastapi"})

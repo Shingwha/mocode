@@ -126,10 +126,10 @@ class TestBackgroundStart:
 
 
 class TestBashOutput:
-    async def test_reading_is_consuming_and_a_filter_takes_only_its_matches(
+    async def test_reading_is_consuming_a_filter_takes_matches_and_bad_ones_error(
         self, tools, session
     ):
-        bash, output, _ = tools
+        bash, output, kill = tools
         # the job's lines arrive after the read below — observed state, not a
         # guess about durations
         shell_id = await _start(bash, "sleep 0.3; echo one; echo ERR bad; echo OK two")
@@ -169,10 +169,8 @@ class TestBashOutput:
         rest = await output.run_async({"shell_id": shell_id}, None)
         assert rest.details["lines"] == ["ERR bad", "ERR worse"]
 
-    async def test_a_bad_filter_and_an_unknown_shell_are_tool_errors(
-        self, tools, session
-    ):
-        _, output, kill = tools
+        # an unknown shell id is a not-found error — on either tool — and a
+        # filter the re module refuses is a parameter error, not a crash
         with pytest.raises(ToolError) as exc:
             await output.run_async({"shell_id": "shell_9"}, None)
         assert exc.value.code == "not_found"
@@ -180,8 +178,6 @@ class TestBashOutput:
             await kill.run_async({"shell_id": "shell_9"}, None)
         assert exc.value.code == "not_found"
 
-        # a filter the re module refuses is a parameter error, not a crash
-        bash, output, _ = tools
         shell_id = await _start(bash, "echo hi")
         with pytest.raises(ToolError) as exc:
             await output.run_async({"shell_id": shell_id, "filter": "([a"}, None)
@@ -217,7 +213,11 @@ class TestBashOutput:
 
 
 class TestTheRings:
-    def test_a_ring_bounds_by_lines_and_by_bytes_and_counts_the_dropped(self):
+    async def test_a_ring_bounds_its_lines_and_bytes_and_a_flood_reports_them(
+        self, tools, session
+    ):
+        # the rule, as a unit: both bounds hold and the dropped lines are
+        # counted
         ring = _Ring(max_lines=3)
         for i in range(5):
             ring.append(f"line{i}\n")
@@ -234,7 +234,8 @@ class TestTheRings:
         assert [line.strip() for line in ring.lines] == ["bbbb", "cccc"]
         assert ring.discarded == 1
 
-    async def test_a_flooded_job_reports_what_the_ring_dropped(self, tools, session):
+        # and the same rule end to end: the job's own rings are bounded, and
+        # the read reports the count the ring kept
         bash, output, _ = tools
 
         shell_id = await _start(bash, "for i in $(seq 1 3000); do echo line$i; done")
@@ -248,8 +249,8 @@ class TestTheRings:
 
 
 class TestKillAndCleanup:
-    async def test_kill_restart_and_shutdown_leave_no_job_behind(
-        self, tools, session
+    async def test_kill_restart_shutdown_and_close_leave_no_job_behind(
+        self, tools, session, mc, tmp_path
     ):
         bash, output, kill = tools
 
@@ -288,7 +289,8 @@ class TestKillAndCleanup:
 
         assert session.jobs == {}
 
-    async def test_the_plugins_close_kills_what_it_built(self, mc, tmp_path: Path):
+        # the conversation-level close is the same promise through the
+        # plugin: what it built dies with it
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
         session = bash.session
@@ -310,7 +312,7 @@ class TestKillAndCleanup:
 
 
 class TestLimits:
-    async def test_the_background_cap_rejects_new_jobs(self, mc, tmp_path: Path):
+    async def test_the_background_cap_and_its_configuration(self, mc, tmp_path: Path):
         mc.config.plugins["shell"] = {"max_background": 2}
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
@@ -325,7 +327,9 @@ class TestLimits:
         await session.kill("shell_1")
         await session.kill("shell_2")
 
-    async def test_configure_ignores_bad_values(self, session):
+        # the configuration itself: a shape the session cannot use is ignored
+        # and the default stands, a usable one is applied
+        session = BashSession(tmp_path)
         session.configure({"max_background": "many", "background_timeout": -5})
         assert session.max_background == 16
         assert session.background_timeout == 3600
@@ -490,35 +494,35 @@ class TestCompletionNotification:
         assert [m.block_id for m in messages] == ["shell-bg-1", "shell-bg-2"]
         conversation.close(save=False)
 
-    async def test_no_announcement_while_a_turn_is_running(
+    async def test_the_announcement_waits_for_idle_and_a_killed_job_is_never_told(
         self, wired, tmp_path: Path
     ):
         """The model reads what it started; the announcement waits for idle —
-        its empty run_id proves it was said between turns."""
-        conversation, _ = wired(
-            call_tool("bash", {"command": "sleep 0.4"}), "done"
-        )
-        bash = conversation.tools.get("bash")
-
-        # The background job finishes inside the foreground call's running
-        # time — a comfortable margin — so what is held back is the
-        # announcement, not the job.
-        await bash.run_async({"command": "sleep 0.2", **BG}, None)
-        await collect(conversation.stream("go"))
-
-        messages = await self._messages(conversation, count=1)
-        assert len(messages) == 1
-        assert messages[0].run_id == ""
-        conversation.close(save=False)
-
-    async def test_a_killed_job_is_not_announced(self, wired, tmp_path: Path):
-        """A job the user killed is not something the model needs told.
+        its empty run_id proves it was said between turns. A job the user
+        killed is not something the model needs told at all.
 
         The silence is proved on a *fact*, not on a wall clock: the kill is
         the last thing that happens to this job, so the observable set after
         it is the turn end (say 回包到达) with no PluginMessage in it. Waiting
         a window longer would only prove the window, not the behaviour.
         """
+        # the idle half: the job finishes inside the foreground call's
+        # running time — a comfortable margin — so what is held back is the
+        # announcement, not the job.
+        idle_conversation, _ = wired(
+            call_tool("bash", {"command": "sleep 0.4"}), "done"
+        )
+        idle_bash = idle_conversation.tools.get("bash")
+        await idle_bash.run_async({"command": "sleep 0.2", **BG}, None)
+        await collect(idle_conversation.stream("go"))
+
+        messages = await self._messages(idle_conversation, count=1)
+        assert len(messages) == 1
+        assert messages[0].run_id == ""
+        idle_conversation.close(save=False)
+
+        # the kill half: the kill is the last thing that happens to the job,
+        # so the observable set after it is the turn end with no announcement
         conversation, _ = wired(
             call_tool("bash", {"command": f"echo up; sleep {CHILD}", **BG}),
             call_tool(
@@ -528,8 +532,6 @@ class TestCompletionNotification:
             ),
             "done",
         )
-        bash = conversation.tools.get("bash")
-
         events = await collect(conversation.stream("go"))
 
         # the turn ended — the model answered — so nothing was held back
