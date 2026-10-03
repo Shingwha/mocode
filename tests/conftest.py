@@ -463,7 +463,7 @@ def real_time():
         _real_time_depth -= 1
 
 
-# ── 裸睡守卫（W0 recording 模式：只记录、不失败；W2 翻硬失败） ──
+# ── 裸睡守卫（W2 起硬失败：tests/ 下的裸睡直接报错；产品侧只记录） ──
 
 #: 裸睡清单：``(nodeid, 调用点 文件:行号, 秒数)``，会话末统一输出。
 _BARE_SLEEPS: list[tuple[str, str, float]] = []
@@ -473,26 +473,44 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _record_bare_sleep(nodeid: str, seconds: float) -> None:
-    """记一条裸睡；调用点取守卫包装器之外真正调用 sleep 的那一帧。"""
+    """记一条裸睡；调用点取守卫包装器之外真正调用 sleep 的那一帧。
+
+    **硬失败**（W2 起）：调用点在 ``tests/`` 下的裸睡直接抛
+    ``RuntimeError``，消息指向替代 API。产品代码里的 sleep
+    （``mocode/**``）与 codemode 脚本内的 sleep（``<codemode>``）只
+    记录不失败——那是被测行为本身，不是测试脆弱性（总纲不变量 1
+    的调用点归属规则）。
+    """
     frame = sys._getframe(2)  # 0=本函数，1=守卫包装器，2=真正的调用者
     filename = frame.f_code.co_filename
     try:
         filename = os.path.relpath(filename, _REPO_ROOT)
     except ValueError:  # 跨盘符（Windows）时保留绝对路径
         pass
+    parts = Path(filename).parts
+    if parts and parts[0] == "tests":
+        raise RuntimeError(
+            f"裸睡禁止：{nodeid} 在 {filename}:{frame.f_lineno} "
+            f"入睡 {seconds}s。等条件用 wait_until(predicate, bound=…)；"
+            "等事件用 asyncio.Event；等待即被测行为用 settle()；"
+            "确有真实阻塞理由时用 real_time() 块。"
+        )
     _BARE_SLEEPS.append((nodeid, f"{filename}:{frame.f_lineno}", seconds))
 
 
 @pytest.fixture(autouse=True)
 def _sleep_guard(monkeypatch, request):
-    """把 ``time.sleep`` / ``asyncio.sleep`` 换成记录版（recording 模式）。
+    """把 ``time.sleep`` / ``asyncio.sleep`` 换成记录版（**硬失败模式**）。
 
-    每次裸睡记一条 ``(nodeid, 文件:行号, 秒数)`` 进 :data:`_BARE_SLEEPS`，
-    会话末由 ``pytest_terminal_summary`` 输出 BARE SLEEPS 清单——现在
-    不失败任何测试，W1 各组清零后 W2 翻成硬失败。豁免：:func:`settle`
-    走 import 期捕获的真身、守卫 patch 不到它；:func:`real_time` 块内
-    只睡不记。真子进程（MCP fake server）跑在别的解释器里，天然豁免。
-    patch 经 ``monkeypatch`` 完成，测试结束即恢复，错误隔离不渗漏。
+    调用点在 ``tests/`` 下的裸睡直接抛 ``RuntimeError``，消息指向
+    替代 API（:func:`wait_until`、事件门控、:func:`settle`、
+    :func:`real_time`）；``mocode/**`` 产品代码与被 ``<codemode>``
+    沙箱脚本内的 sleep 只记录进 :data:`_BARE_SLEEPS`，会话末由
+    ``pytest_terminal_summary`` 输出清单——那是产品行为与被测脚本
+    行为，不是测试脆弱性。豁免：:func:`settle` 走 import 期捕获的
+    真身、守卫 patch 不到它；:func:`real_time` 块内只睡不记。真子
+    进程（MCP fake server）跑在别的解释器里，天然豁免。patch 经
+    ``monkeypatch`` 完成，测试结束即恢复，错误隔离不渗漏。
     """
     nodeid = request.node.nodeid
 
@@ -512,7 +530,12 @@ def _sleep_guard(monkeypatch, request):
 
 
 def pytest_terminal_summary(terminalreporter) -> None:
-    """会话末输出 BARE SLEEPS 清单：总条数、命中测试数、按文件分布 top。"""
+    """会话末输出产品侧睡眠清单：总条数、命中测试数、按文件分布 top。
+
+    这些是被测行为里的 sleep（产品轮询、退避、脚本占位），按总纲
+    不变量 1 的归属规则只记录不失败；tests/ 侧的裸睡已在发生时
+    直接失败，不会出现在这里。
+    """
     if not _BARE_SLEEPS:
         return
     per_file: dict[str, int] = {}
@@ -522,7 +545,7 @@ def pytest_terminal_summary(terminalreporter) -> None:
     tests = {nodeid for nodeid, _, _ in _BARE_SLEEPS}
     terminalreporter.write_sep(
         "=",
-        f"BARE SLEEPS (recording mode, not failing): "
+        f"BARE SLEEPS (product-side only, recorded): "
         f"{len(_BARE_SLEEPS)} calls in {len(tests)} tests",
     )
     for path, count in sorted(per_file.items(), key=lambda kv: (-kv[1], kv[0]))[:15]:
