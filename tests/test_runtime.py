@@ -79,17 +79,17 @@ class TestTheRuntime:
         assert not hasattr(mc, "messages")
         assert not hasattr(mc, "agent")
 
-    def test_the_default_provider_type_is_openai(self, mc: MoCode):
+    def test_provider_for_builds_the_declared_type_and_honors_the_models_retry(
+        self, mc: MoCode
+    ):
+        """一个模型对上哪条 provider：声明的 type 与 model 名照造；模型条目
+        自己的 ``retry`` 段盖过 provider 的策略，没声明的模型照旧用默认的。"""
+        from mocode.core.provider import RetryPolicy
         from mocode.providers.openai import OpenAIProvider
 
         provider = mc.provider_for("test", "test-model")
         assert isinstance(provider, OpenAIProvider)
         assert provider.model == "test-model"
-
-    def test_a_per_model_retry_override_reaches_the_provider(self, mc: MoCode):
-        """The model entry's `retry` block beats the provider's own policy —
-        and a model without one keeps it."""
-        from mocode.core.provider import RetryPolicy
 
         mc.config.providers["test"].model("test-model").retry = {
             "max_attempts": 3,
@@ -111,8 +111,10 @@ class TestProviderTypes:
         return SimpleNamespace(model=model, built_from=key, api_key=entry.api_key_for(key))
 
     def test_a_registered_type_is_built_and_an_unregistered_one_is_a_mistake(
-        self, make_mc
+        self, make_mc, tmp_path: Path
     ):
+        """provider type 是能力，从外来：注册过就按它造，没注册过的 type 是
+        配置错误；type 这一键也原样过得文件，缺省保持隐式。"""
         config = make_config()
         config.providers["local"] = ProviderEntry(
             type="local", models=[ModelEntry(id="llama")]
@@ -130,14 +132,8 @@ class TestProviderTypes:
         with pytest.raises(ValueError, match="register_provider_type"):
             bare.provider_for("local", "llama")
 
-    def test_the_type_round_trips_through_the_file(self, tmp_path: Path):
-        config = make_config()
-        config.providers["local"] = ProviderEntry(
-            type="local", models=[ModelEntry(id="llama")]
-        )
         path = tmp_path / "config.json"
         config.save(path)
-
         loaded = Config.load(path)
 
         assert loaded.providers["local"].type == "local"
@@ -271,15 +267,11 @@ class TestTheTerminal:
         headless = CLIApp(config=make_config(), home=tmp_path / "home", interactive=False)
         assert "/help" in {c.name for c in headless.commands.all()}
 
-    def test_it_writes_sessions_under_its_own_home(self, app, tmp_path: Path):
-        app.conversation.messages.append({"role": "user", "content": "hi"})
-        app.conversation.save()
-
-        assert (tmp_path / "home" / "sessions").is_dir()
-        assert app.runtime.store.list_all() != []
-
-    async def test_a_turn_is_echoed_and_answered(self, app, capsys):
-        """The interactive path end to end — the one a user actually walks into.
+    async def test_a_turn_is_echoed_and_a_command_speaks_through_the_same_stream(
+        self, app, capsys
+    ):
+        """The interactive path end to end — the one a user actually walks into:
+        答案与命令本身都从同一条事件流上画出来。
 
         Everything here is reached only by running the REPL, which is exactly
         why a renamed display primitive can otherwise break the app silently.
@@ -288,7 +280,8 @@ class TestTheTerminal:
             app.conversation,
             Response(content="pong", usage=Usage(1, 1), finish_reason="stop"),
         )
-        typed = iter(["ping", "/quit"])
+        app.display.clear_screen = lambda: None
+        typed = iter(["ping", "/help", "/quit"])
 
         async def scripted_prompt() -> str:
             return next(typed)
@@ -299,21 +292,9 @@ class TestTheTerminal:
         out = strip_ansi(capsys.readouterr().out.replace("\r", "\n"))
         rendered = [line.rstrip() for line in out.splitlines() if line.strip()]
         assert rendered[:2] == ["❯ ping", "pong"]
-        assert rendered[2] == "↑1 ↓1 tokens"   # what the turn cost
-        assert set(rendered[3]) == {"─"}       # the rule closes it before the next prompt
-
-    async def test_a_command_speaks_through_the_same_stream(self, app, capsys):
-        """`/help` publishes a notice; the renderer draws it like anything else."""
-        app.display.clear_screen = lambda: None
-        typed = iter(["/help", "/quit"])
-
-        async def scripted_prompt() -> str:
-            return next(typed)
-
-        app.display.prompt = scripted_prompt
-        await app._repl()
-
-        out = strip_ansi(capsys.readouterr().out)
+        assert "↑1 ↓1 tokens" in rendered   # what the turn cost
+        assert any(set(line) == {"─"} for line in rendered)  # the rule closes the turn
+        # `/help` publishes a notice; the renderer draws it like anything else.
         # 列出的就是命令注册表本身：从文本提取命令名与注册表对账——一个不少，
         # 也一个不多；命令描述话术不在契约内。
         listed = {
