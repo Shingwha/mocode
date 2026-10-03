@@ -107,10 +107,9 @@ def stdio_entry(command: str = "tool", **extra) -> dict:
     return {"type": "stdio", "command": command, **extra}
 
 class TestLoadServers:
-    def test_no_configured_servers_yields_an_empty_table(self, tmp_path):
+    async def test_no_configured_servers_an_empty_table_and_inline_ones(self, tmp_path):
         assert load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home") == {}
 
-    def test_inline_servers_from_config_json(self, tmp_path):
         merged = load_servers(
             mcp_config={"servers": {"demo": {"command": "run"}}},
             cwd=tmp_path,
@@ -120,45 +119,40 @@ class TestLoadServers:
         assert merged["demo"].command == "run"
         assert merged["demo"].source == "config.json"
 
-    def test_project_and_home_files_are_read(self, tmp_path):
+    def test_the_files_precedence_and_a_projects_wholesale_replacement(self, tmp_path):
         home = tmp_path / "home"
-        write_mcp_json(tmp_path / ".mocode" / "mcp.json", {"mcpServers": {"proj": stdio_entry()}})
-        write_mcp_json(home / "mcp.json", {"mcpServers": {"user": stdio_entry()}})
-        merged = load_servers(mcp_config={}, cwd=tmp_path, home=home)
-        assert set(merged) == {"proj", "user"}
-
-    def test_a_project_entry_replaces_a_home_entry_wholesale(self, tmp_path):
-        home = tmp_path / "home"
-        write_mcp_json(
-            home / "mcp.json",
-            {"mcpServers": {"demo": stdio_entry("low", env={"K": "V"}, timeout=5)}},
-        )
-        write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json",
-            {"mcpServers": {"demo": stdio_entry("high", args=["a"])}},
-        )
-        merged = load_servers(mcp_config={}, cwd=tmp_path, home=home)
-        assert len(merged) == 1
-        cfg = merged["demo"]
-        assert cfg.command == "high"
-        # whole-entry replacement: nothing bleeds through from the loser
-        assert cfg.args == ["a"]
-        assert cfg.env == {}
-        assert cfg.timeout is None
-
-    def test_inline_beats_project_beats_home_beats_plugin(self, tmp_path):
-        home = tmp_path / "home"
-        plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(home / "mcp.json", {"mcpServers": {"s": stdio_entry("home")}})
         write_mcp_json(
-            tmp_path / ".mocode" / "mcp.json", {"mcpServers": {"s": stdio_entry("proj")}}
+            tmp_path / ".mocode" / "mcp.json",
+            {"mcpServers": {"s": stdio_entry("proj"), "demo": stdio_entry("low")}},
         )
+        plugin_dir = tmp_path / "plugins" / "acme"
         plugin_mcp = {"$schema": MCP_SCHEMA_1_0_0, "mcpServers": {"s": stdio_entry("plug")}}
         write_mcp_json(plugin_dir / "mcp.json", plugin_mcp)
 
-        merged = load_servers(mcp_config={}, cwd=tmp_path, home=home, plugin_sources=[plugin_dir])
-        assert merged["s"].command == "proj"
+        # the project file is read alongside the home one
+        both = load_servers(mcp_config={}, cwd=tmp_path, home=home)
+        assert set(both) == {"s", "demo"}
 
+        # a project entry replaces the home entry wholesale — nothing bleeds
+        # through from the loser
+        write_mcp_json(
+            home / "mcp.json",
+            {"mcpServers": {"s": stdio_entry("home"), "demo": stdio_entry("home-demo", args=["a"], env={"K": "V"})}},
+        )
+        merged = load_servers(mcp_config={}, cwd=tmp_path, home=home)
+        cfg = merged["demo"]
+        assert cfg.command == "low"
+        assert cfg.args == []
+        assert cfg.env == {}
+        assert cfg.timeout is None
+
+        # project beats home beats plugin
+        merged = load_servers(
+            mcp_config={}, cwd=tmp_path, home=home, plugin_sources=[plugin_dir]
+        )
+        assert merged["s"].command == "proj"
+        # …and inline beats them all
         merged = load_servers(
             mcp_config={"servers": {"s": {"command": "inline"}}},
             cwd=tmp_path,
@@ -167,7 +161,7 @@ class TestLoadServers:
         )
         assert merged["s"].command == "inline"
 
-    def test_server_names_differing_only_in_dash_and_underscore_are_one(self, tmp_path, capsys):
+    def test_names_differing_only_in_separator_are_one_server(self, tmp_path, capsys):
         home = tmp_path / "home"
         write_mcp_json(home / "mcp.json", {"mcpServers": {"my_srv": stdio_entry("low")}})
         write_mcp_json(
@@ -179,7 +173,7 @@ class TestLoadServers:
         assert "lower-priority entry is dropped" in capsys.readouterr().err
 
     def test_invalid_entries_are_skipped_without_hurting_valid_ones(self, tmp_path, capsys):
-        bad = {
+        bad: dict = {
             "not-an-object": 42,
             "no-command": {"type": "stdio"},
             "empty-command": stdio_entry("  "),
@@ -189,141 +183,6 @@ class TestLoadServers:
             "bad-env-value": stdio_entry(env={"K": 1}),
             "bad-cwd": stdio_entry(cwd=3),
             "bad-type": {"type": "websocket", "command": "x"},
-            "good": stdio_entry(),
-        }
-        merged = load_servers(
-            mcp_config={"servers": bad}, cwd=tmp_path, home=tmp_path / "home"
-        )
-        assert list(merged) == ["good"]
-        err = capsys.readouterr().err
-        for name in ("not-an-object", "no-command", "bad-args", "bad-env", "bad-type"):
-            assert name in err
-
-    def test_sse_entries_parse_as_the_sse_transport(self, tmp_path):
-        merged = load_servers(
-            mcp_config={"servers": {"old": {"type": "sse", "url": "https://x/sse"}}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        cfg = merged["old"]
-        assert cfg.transport == "sse"
-        assert cfg.url == "https://x/sse"
-        assert cfg.headers == {}
-
-    def test_streamable_http_entries_parse(self, tmp_path):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "web": {"type": "streamable-http", "url": "http://localhost/mcp"},
-                    "web2": {"url": "http://localhost/mcp"},
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        assert list(merged) == ["web", "web2"]
-        for cfg in merged.values():
-            assert cfg.transport == "streamable-http"
-            assert cfg.url == "http://localhost/mcp"
-            assert cfg.headers == {}
-
-    def test_type_is_optional_in_mocode_files_and_inferred(self, tmp_path):
-        merged = load_servers(
-            mcp_config={"servers": {"a": {"command": "x"}, "b": {"url": "https://u/mcp"}}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        assert list(merged) == ["a", "b"]
-        assert merged["a"].transport == "stdio"
-        assert merged["a"].command == "x"
-        assert merged["b"].transport == "streamable-http"
-        assert merged["b"].url == "https://u/mcp"
-        assert merged["b"].headers == {}
-
-    def test_http_is_the_streamable_http_transport(self, tmp_path):
-        merged = load_servers(
-            mcp_config={"servers": {"web": {"type": "http", "url": "https://u/mcp"}}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        assert merged["web"].transport == "streamable-http"
-
-    def test_url_and_header_values_expand_in_mocode_files(self, tmp_path):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "web": {
-                        "type": "streamable-http",
-                        "url": "https://${MCP_TEST_HOST}/mcp",
-                        "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
-                    }
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-            environ={"MCP_TEST_HOST": "mcp.example", "MCP_TEST_TOKEN": "secret"},
-        )
-        cfg = merged["web"]
-        assert cfg.url == "https://mcp.example/mcp"
-        assert cfg.headers == {"Authorization": "Bearer secret"}
-
-    def test_a_missing_variable_in_a_header_value_reports_and_empties(self, tmp_path, capsys):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "web": {
-                        "url": "https://h/mcp",
-                        "headers": {"X-Token": "${MCP_TEST_MISSING}"},
-                    }
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-            environ={},
-        )
-        assert merged["web"].headers == {"X-Token": ""}
-        assert "MCP_TEST_MISSING" in capsys.readouterr().err
-
-    def test_loopback_urls_may_stay_http(self, tmp_path):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "v4": {"type": "sse", "url": "http://127.0.0.1:9000/sse"},
-                    "v6": {"type": "sse", "url": "http://[::1]:9000/sse"},
-                    "name": {"type": "sse", "url": "http://localhost/sse"},
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        assert list(merged) == ["v4", "v6", "name"]
-        assert merged["v6"].url == "http://[::1]:9000/sse"
-
-    def test_http_extensions_apply_to_http_entries_too(self, tmp_path):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "web": {
-                        "type": "streamable-http",
-                        "url": "https://u/mcp",
-                        "enabled": False,
-                        "timeout": 12,
-                        "exposure": "hidden",
-                        "description": "one line",
-                    }
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        cfg = merged["web"]
-        assert cfg.enabled is False
-        assert cfg.timeout == 12.0
-        assert cfg.exposure == "hidden"
-        assert cfg.description == "one line"
-
-    def test_invalid_http_entries_are_skipped_without_hurting_valid_ones(self, tmp_path, capsys):
-        bad = {
             "scheme": {"type": "streamable-http", "url": "ftp://u/mcp"},
             "cleartext": {"type": "streamable-http", "url": "http://example.com/mcp"},
             "userinfo": {"type": "streamable-http", "url": "https://user:pw@example.com/mcp"},
@@ -344,59 +203,92 @@ class TestLoadServers:
                 "headers": {"X-${MCP_TEST_VAR}": "v"},
             },
             "sse-cleartext": {"type": "sse", "url": "http://example.com/sse"},
-            "good": {"type": "streamable-http", "url": "https://u/mcp"},
+            "good": stdio_entry(),
         }
-        merged = load_servers(
-            mcp_config={"servers": bad}, cwd=tmp_path, home=tmp_path / "home"
-        )
+        merged = load_servers(mcp_config={"servers": bad}, cwd=tmp_path, home=tmp_path / "home")
         assert list(merged) == ["good"]
         err = capsys.readouterr().err
         for name in bad:
             if name != "good":
                 assert name in err
-class TestMocodeExtensions:
-    def test_env_vars_expand_from_the_environment(self, tmp_path):
+
+    def test_the_http_transports_parse(self, tmp_path):
         merged = load_servers(
             mcp_config={
                 "servers": {
-                    "demo": stdio_entry(env={"TOKEN": "${MCP_TEST_TOKEN}"}, args=["${MCP_TEST_ARG}"])
+                    "old": {"type": "sse", "url": "https://x/sse"},
+                    "web": {"type": "streamable-http", "url": "http://localhost/mcp"},
+                    "web2": {"url": "http://localhost/mcp"},
+                    "alias": {"type": "http", "url": "https://u/mcp"},
+                    "v4": {"type": "sse", "url": "http://127.0.0.1:9000/sse"},
+                    "v6": {"type": "sse", "url": "http://[::1]:9000/sse"},
+                    "name": {"type": "sse", "url": "http://localhost/sse"},
                 }
             },
             cwd=tmp_path,
             home=tmp_path / "home",
-            environ={"MCP_TEST_TOKEN": "secret", "MCP_TEST_ARG": "value"},
         )
-        cfg = merged["demo"]
-        assert cfg.env == {"TOKEN": "secret"}
-        assert cfg.args == ["value"]
+        assert list(merged) == ["old", "web", "web2", "alias", "v4", "v6", "name"]
+        # the type is optional in mocode files and inferred from the entry
+        assert merged["old"].transport == "sse"
+        assert merged["web"].transport == "streamable-http"
+        assert merged["web2"].transport == "streamable-http"  # inferred, no type
+        assert merged["alias"].transport == "streamable-http"  # http is the alias
+        assert merged["v4"].transport == "sse"  # a loopback may stay http
+        assert merged["v6"].url == "http://[::1]:9000/sse"
 
-    def test_a_missing_variable_expands_to_empty_and_reports(self, tmp_path, capsys):
-        merged = load_servers(
-            mcp_config={"servers": {"demo": stdio_entry(env={"TOKEN": "${MCP_MISSING_VAR}"})}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-            environ={},
-        )
-        assert merged["demo"].env == {"TOKEN": ""}
-        assert "MCP_MISSING_VAR" in capsys.readouterr().err
-
-    def test_bang_command_is_reported_and_kept_literal(self, tmp_path, capsys):
-        merged = load_servers(
-            mcp_config={"servers": {"demo": stdio_entry(env={"K": "!echo hi"})}},
-            cwd=tmp_path,
-            home=tmp_path / "home",
-            environ={},
-        )
-        assert merged["demo"].env == {"K": "!echo hi"}
-        assert "'!command'" in capsys.readouterr().err
-
-    def test_plugin_tokens_are_meaningless_in_mocode_files(self, tmp_path, capsys):
+    def test_variables_expand_and_missing_ones_are_emptied_and_reported(
+        self, tmp_path, capsys
+    ):
         merged = load_servers(
             mcp_config={
                 "servers": {
-                    "a": stdio_entry(args=["${PLUGIN_ROOT}/x"]),
-                    "b": stdio_entry(env={"K": "${PLUGIN_DATA}"}),
-                    "c": stdio_entry(cwd="${PLUGIN_ROOT}"),
+                    "web": {
+                        "type": "streamable-http",
+                        "url": "https://${MCP_TEST_HOST}/mcp",
+                        "headers": {"Authorization": "Bearer ${MCP_TEST_TOKEN}"},
+                    },
+                    "demo": stdio_entry(
+                        env={"TOKEN": "${MCP_TEST_TOKEN}"}, args=["${MCP_TEST_ARG}"]
+                    ),
+                    "empty-header": {
+                        "url": "https://h/mcp",
+                        "headers": {"X-Token": "${MCP_TEST_MISSING}"},
+                    },
+                    "empty-env": stdio_entry(env={"TOKEN": "${MCP_MISSING_VAR}"}),
+                    "bang": stdio_entry(env={"K": "!echo hi"}),
+                },
+            },
+            cwd=tmp_path,
+            home=tmp_path / "home",
+            environ={
+                "MCP_TEST_HOST": "mcp.example",
+                "MCP_TEST_TOKEN": "secret",
+                "MCP_TEST_ARG": "value",
+            },
+        )
+        assert list(merged) == ["web", "demo", "empty_header", "empty_env", "bang"]
+        cfg = merged["web"]
+        assert cfg.url == "https://mcp.example/mcp"
+        assert cfg.headers == {"Authorization": "Bearer secret"}
+        cfg = merged["demo"]
+        assert cfg.env == {"TOKEN": "secret"}
+        assert cfg.args == ["value"]
+        assert merged["empty_header"].headers == {"X-Token": ""}
+        assert merged["empty_env"].env == {"TOKEN": ""}
+        # a bang command is reported and kept literal — never evaluated
+        assert merged["bang"].env == {"K": "!echo hi"}
+        err = capsys.readouterr().err
+        for word in ("MCP_TEST_MISSING", "MCP_MISSING_VAR", "'!command'"):
+            assert word in err
+
+    def test_plugin_tokens_mean_nothing_in_mocode_files(self, tmp_path, capsys):
+        merged = load_servers(
+            mcp_config={
+                "servers": {
+                    "arg": stdio_entry(args=["${PLUGIN_ROOT}/x"]),
+                    "env": stdio_entry(env={"K": "${PLUGIN_DATA}"}),
+                    "cwd": stdio_entry(cwd="${PLUGIN_ROOT}"),
                     "good": stdio_entry(),
                 }
             },
@@ -407,10 +299,18 @@ class TestMocodeExtensions:
         assert list(merged) == ["good"]
         assert "only mean something inside a plugin" in capsys.readouterr().err
 
-    def test_extensions_are_kept_on_the_config(self, tmp_path):
+    def test_the_extensions_are_kept_and_bad_values_fall_back(self, tmp_path, capsys):
         merged = load_servers(
             mcp_config={
                 "servers": {
+                    "http_web": {
+                        "type": "streamable-http",
+                        "url": "https://u/mcp",
+                        "enabled": False,
+                        "timeout": 12,
+                        "exposure": "hidden",
+                        "description": "one line",
+                    },
                     "demo": {
                         "command": "x",
                         "enabled": False,
@@ -418,37 +318,28 @@ class TestMocodeExtensions:
                         "exposure": "hidden",
                         "toolExposure": {"a": "direct"},
                         "description": "one line",
-                    }
-                }
-            },
-            cwd=tmp_path,
-            home=tmp_path / "home",
-        )
-        cfg = merged["demo"]
-        assert cfg.enabled is False
-        assert cfg.timeout == 12.0
-        assert cfg.exposure == "hidden"
-        assert cfg.tool_exposure == {"a": "direct"}
-        assert cfg.description == "one line"
-
-    def test_bad_extension_values_report_and_fall_back(self, tmp_path, capsys):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "demo": {
+                    },
+                    "bad": {
                         "command": "x",
                         "enabled": "yes",
                         "timeout": "later",
                         "exposure": 3,
                         "toolExposure": ["a"],
                         "description": {},
-                    }
+                    },
                 }
             },
             cwd=tmp_path,
             home=tmp_path / "home",
         )
-        cfg = merged["demo"]
+        for name in ("http_web", "demo"):
+            cfg = merged[name]
+            assert cfg.enabled is False
+            assert cfg.timeout == 12.0
+            assert cfg.exposure == "hidden"
+            assert cfg.description == "one line"
+        assert merged["demo"].tool_exposure == {"a": "direct"}
+        cfg = merged["bad"]
         assert cfg.enabled is True
         assert cfg.timeout is None
         assert cfg.exposure is None
@@ -458,22 +349,21 @@ class TestMocodeExtensions:
         for word in ("'enabled'", "'timeout'", "'exposure'", "'toolExposure'", "'description'"):
             assert word in err
 
-    def test_relative_cwd_resolves_against_the_file_directory(self, tmp_path):
+    def test_cwd_resolves_against_its_file_directory(self, tmp_path):
         project = tmp_path / "proj"
         write_mcp_json(
             project / ".mocode" / "mcp.json",
             {"mcpServers": {"demo": stdio_entry(cwd="./data")}},
         )
-        write_mcp_json(
-            tmp_path / "home" / "mcp.json",
-            {"mcpServers": {"other": stdio_entry(cwd="sub")}},
-        )
         home = tmp_path / "home"
+        write_mcp_json(
+            home / "mcp.json", {"mcpServers": {"other": stdio_entry(cwd="sub")}}
+        )
         merged = load_servers(mcp_config={}, cwd=project, home=home)
         assert merged["demo"].cwd == str((project / ".mocode" / "data").resolve())
         assert merged["other"].cwd == str((home / "sub").resolve())
 
-    def test_absolute_cwd_is_kept(self, tmp_path):
+        # an absolute path is kept as it is
         merged = load_servers(
             mcp_config={"servers": {"demo": stdio_entry(cwd=str(tmp_path))}},
             cwd=tmp_path,
@@ -481,22 +371,23 @@ class TestMocodeExtensions:
         )
         assert merged["demo"].cwd == str(tmp_path)
 
-    def test_broken_json_file_is_reported_and_skipped(self, tmp_path, capsys):
+    def test_a_broken_file_or_a_shape_wrong_table_is_reported(self, tmp_path, capsys):
         write_mcp_json(tmp_path / ".mocode" / "mcp.json", "{not json")
         merged = load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home")
         assert merged == {}
         assert "unreadable mcp.json" in capsys.readouterr().err
 
-    def test_mcp_servers_must_be_an_object(self, tmp_path, capsys):
         write_mcp_json(tmp_path / ".mocode" / "mcp.json", {"mcpServers": ["a"]})
         merged = load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home")
         assert merged == {}
         assert "must be an object" in capsys.readouterr().err
+
+
 class TestPluginFileRules:
     def _plugin_mcp(self, servers: dict, **top) -> dict:
         return {"$schema": MCP_SCHEMA_1_0_0, "mcpServers": servers, **top}
 
-    def test_a_valid_plugin_file_is_loaded(self, tmp_path):
+    def test_a_valid_plugin_file_loads_and_creates_its_data_dir(self, tmp_path):
         plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": stdio_entry()}))
         merged = load_servers(
@@ -507,16 +398,9 @@ class TestPluginFileRules:
         assert cfg.cwd == str(plugin_dir.resolve())  # omitted cwd defaults to the root
         assert cfg.plugin_root == plugin_dir
         assert cfg.plugin_data == plugin_dir / PLUGIN_DATA_DIR
-
-    def test_the_plugin_data_directory_is_created(self, tmp_path):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": stdio_entry()}))
-        load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
         assert (plugin_dir / PLUGIN_DATA_DIR).is_dir()
 
-    def test_a_missing_or_mismatched_schema_skips_the_whole_file(self, tmp_path, capsys):
+    def test_a_bad_schema_or_unknown_fields_skip_the_whole_file(self, tmp_path, capsys):
         plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(plugin_dir / "mcp.json", {"mcpServers": {"srv": stdio_entry()}})
         other_dir = tmp_path / "plugins" / "other"
@@ -527,28 +411,31 @@ class TestPluginFileRules:
                 "mcpServers": {"srv": stdio_entry()},
             },
         )
+        extra_dir = tmp_path / "plugins" / "extra"
+        write_mcp_json(extra_dir / "mcp.json", self._plugin_mcp({"srv": stdio_entry()}, extra=1))
         merged = load_servers(
             mcp_config={},
             cwd=tmp_path,
             home=tmp_path / "home",
-            plugin_sources=[plugin_dir, other_dir],
+            plugin_sources=[plugin_dir, other_dir, extra_dir],
         )
+        # a missing schema, a mismatched one and a stray top-level field each
+        # take the whole file down — entries are never half-loaded
         assert merged == {}
         err = capsys.readouterr().err
-        assert err.count("MCP configuration is skipped") == 2
+        assert err.count("MCP configuration is skipped") == 3
+        assert "unknown top-level field" in err
 
-    def test_unknown_top_level_fields_skip_the_whole_file(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(
-            plugin_dir / "mcp.json", self._plugin_mcp({"srv": stdio_entry()}, extra=1)
-        )
+        # the type every entry must carry
+        type_dir = tmp_path / "plugins" / "typed"
+        write_mcp_json(type_dir / "mcp.json", self._plugin_mcp({"srv": {"command": "x"}}))
         merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
+            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[type_dir]
         )
         assert merged == {}
-        assert "unknown top-level field" in capsys.readouterr().err
+        assert "missing 'type'" in capsys.readouterr().err
 
-    def test_plugin_placeholders_expand_once(self, tmp_path):
+    def test_plugin_placeholders_expand_once(self, tmp_path, capsys):
         plugin_dir = tmp_path / "plugins" / "acme"
         entry = stdio_entry(
             command="./bin/tool",
@@ -567,7 +454,19 @@ class TestPluginFileRules:
         assert cfg.env == {"CONF": f"{root}/conf"}
         assert cfg.cwd == str((Path(data) / "run").resolve())
 
-    def test_expanded_cwd_must_stay_inside_its_root(self, tmp_path, capsys):
+        # the mocode-only extensions are reported and ignored here
+        ext = stdio_entry(exposure="hidden", timeout=5, description="nope")
+        write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": ext}))
+        merged = load_servers(
+            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
+        )
+        cfg = merged["srv"]
+        assert cfg.exposure is None
+        assert cfg.timeout is None
+        assert cfg.description == ""
+        assert "unknown field(s)" in capsys.readouterr().err
+
+    def test_the_plugin_placeholders_are_read_only(self, tmp_path, capsys):
         plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(
             plugin_dir / "mcp.json",
@@ -576,6 +475,7 @@ class TestPluginFileRules:
                     "escapes-root": stdio_entry(cwd="${PLUGIN_ROOT}/../out"),
                     "escapes-data": stdio_entry(cwd="${PLUGIN_DATA}/../../out"),
                     "abs-outside": stdio_entry(cwd="/tmp"),
+                    "bad-shape": stdio_entry(cwd="sub/dir"),
                     "plain-dot": stdio_entry(cwd="./sub"),
                 }
             ),
@@ -587,9 +487,9 @@ class TestPluginFileRules:
         assert merged["plain_dot"].cwd == str((plugin_dir / "sub").resolve())
         err = capsys.readouterr().err
         assert "escapes" in err
+        assert "must start with './'" in err
 
-    def test_env_must_not_set_plugin_root_or_plugin_data(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
+        # and an entry may not define the placeholders itself
         write_mcp_json(
             plugin_dir / "mcp.json",
             self._plugin_mcp({"bad": stdio_entry(env={"PLUGIN_ROOT": "/x"})}),
@@ -600,41 +500,9 @@ class TestPluginFileRules:
         assert merged == {}
         assert "must not set 'PLUGIN_ROOT'" in capsys.readouterr().err
 
-    def test_a_bad_cwd_shape_is_rejected(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(
-            plugin_dir / "mcp.json",
-            self._plugin_mcp({"bad": stdio_entry(cwd="sub/dir")}),
-        )
-        merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
-        assert merged == {}
-        assert "must start with './'" in capsys.readouterr().err
-
-    def test_extension_keys_are_reported_and_ignored_in_plugin_files(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        entry = stdio_entry(exposure="hidden", timeout=5, description="nope")
-        write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": entry}))
-        merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
-        cfg = merged["srv"]
-        assert cfg.exposure is None
-        assert cfg.timeout is None
-        assert cfg.description == ""
-        assert "unknown field(s)" in capsys.readouterr().err
-
-    def test_type_is_required_in_plugin_files(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(plugin_dir / "mcp.json", self._plugin_mcp({"srv": {"command": "x"}}))
-        merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
-        assert merged == {}
-        assert "missing 'type'" in capsys.readouterr().err
-
-    def test_a_valid_http_entry_is_loaded(self, tmp_path):
+    def test_http_entries_in_plugin_files_validate_and_expand_nothing(
+        self, tmp_path, capsys
+    ):
         plugin_dir = tmp_path / "plugins" / "acme"
         write_mcp_json(
             plugin_dir / "mcp.json",
@@ -646,25 +514,6 @@ class TestPluginFileRules:
                         "headers": {"Authorization": "Bearer t"},
                     },
                     "feed": {"type": "sse", "url": "https://u/sse"},
-                }
-            ),
-        )
-        merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
-        assert list(merged) == ["web", "feed"]
-        assert merged["web"].transport == "streamable-http"
-        assert merged["web"].url == "http://127.0.0.1:8080/mcp"
-        assert merged["web"].headers == {"Authorization": "Bearer t"}
-        assert merged["feed"].transport == "sse"
-        assert merged["feed"].url == "https://u/sse"
-
-    def test_http_entries_expand_nothing_in_plugin_files(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(
-            plugin_dir / "mcp.json",
-            self._plugin_mcp(
-                {
                     "var-url": {"type": "streamable-http", "url": "https://${MCP_TEST_HOST}/mcp"},
                     "bang-url": {"type": "streamable-http", "url": "!echo hi"},
                     "var-value": {
@@ -685,7 +534,14 @@ class TestPluginFileRules:
         merged = load_servers(
             mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
         )
-        assert list(merged) == ["good"]
+        assert list(merged) == ["web", "feed", "good"]
+        assert merged["web"].transport == "streamable-http"
+        assert merged["web"].url == "http://127.0.0.1:8080/mcp"
+        assert merged["web"].headers == {"Authorization": "Bearer t"}
+        assert merged["feed"].transport == "sse"
+        assert merged["feed"].url == "https://u/sse"
+        # nothing in a plugin file expands — a placeholder spelling is an
+        # error, not a hint
         err = capsys.readouterr().err
         assert err.count("entry skipped") == 5
         assert "${VAR}" in err
@@ -804,6 +660,93 @@ class TestResolveExposure:
         assert availability_for("codemode") == ("program", False)
         assert availability_for("deferred") == ("program", False)
         assert availability_for("hidden") == ("both", True)
+
+
+class TestNaming:
+    def test_names_fold_and_collisions_get_a_stable_suffix(self):
+        import hashlib
+
+        assert normalize("dev-radius") == "dev_radius"
+        assert normalize("a b.c/d:e") == "a_b_c_d_e"
+        assert normalize("already_ok") == "already_ok"
+        assert normalize("UPPER-1") == "UPPER_1"
+        assert fold_server_name("my-server") == fold_server_name("my_server")
+        assert fold_server_name("a.b") == fold_server_name("a-b")
+        assert fold_server_name("ab") != fold_server_name("a-b")
+        assert tool_full_name("dev-radius", "search") == "mcp__dev_radius__search"
+        assert tool_full_name("srv", "do-thing") == "mcp__srv__do_thing"
+
+        assert assign_tool_names("srv", ["search", "get_one"]) == {
+            "search": "mcp__srv__search",
+            "get_one": "mcp__srv__get_one",
+        }
+        # sorted: "a b" < "a-b" < "a_b" — the first keeps the plain name, and
+        # the suffix is the raw name's own hash, so the assignment never
+        # depends on the order the server listed them in
+        out = assign_tool_names("srv", ["a-b", "a_b", "a b"])
+        assert set(out) == {"a-b", "a_b", "a b"}
+        assert out["a b"] == "mcp__srv__a_b"
+        assert out["a-b"] == "mcp__srv__a_b_" + hashlib.sha1(b"a-b").hexdigest()[:6]
+        assert out["a_b"] == "mcp__srv__a_b_" + hashlib.sha1(b"a_b").hexdigest()[:6]
+        assert assign_tool_names("srv", ["a-b", "a_b", "a b"]) == assign_tool_names(
+            "srv", ["a b", "a_b", "a-b"]
+        )
+
+
+class TestExposureRules:
+    def test_the_default_exposure_and_the_availability_mapping(self, capsys):
+        assert default_exposure({}, codemode_enabled=False) == "direct"
+        assert default_exposure({}, codemode_enabled=True) == "codemode"
+        assert default_exposure({"default_exposure": "auto"}, codemode_enabled=True) == "codemode"
+        assert default_exposure({"default_exposure": "hidden"}, codemode_enabled=True) == "hidden"
+        assert (
+            default_exposure({"default_exposure": "codemode-deferred"}, codemode_enabled=False)
+            == "codemode-deferred"
+        )
+        assert default_exposure([], codemode_enabled=False) == "direct"  # not a dict
+        # garbage reports and falls back to auto
+        assert default_exposure({"default_exposure": 7}, codemode_enabled=False) == "direct"
+        assert default_exposure({"default_exposure": "bogus"}, codemode_enabled=True) == "codemode"
+        assert "default_exposure" in capsys.readouterr().err
+
+        assert availability_for("direct") == ("both", False)
+        assert availability_for("codemode") == ("program", False)
+        assert availability_for("deferred") == ("program", False)
+        assert availability_for("hidden") == ("both", True)
+
+        # the server-level answer, resolved against a default
+        assert resolve_server_exposure(_cfg(exposure="hidden"), "direct") == "hidden"
+        assert resolve_server_exposure(_cfg(exposure="codemode-deferred"), "direct") == "codemode"
+        assert resolve_server_exposure(_cfg(exposure="bogus"), "codemode") == "codemode"
+        assert resolve_server_exposure(_cfg(), "deferred") == "deferred"
+        assert resolve_server_exposure(_cfg(), "garbage") == "direct"
+
+    def test_the_resolution_order_and_the_pattern_matches(self):
+        # exact tool name beats pattern beats server beats default
+        cfg = _cfg(exposure="hidden", tool_exposure={"search": "direct", "get_*": "codemode"})
+        assert resolve_exposure(cfg, "search", "direct") == "direct"
+        assert resolve_exposure(cfg, "get_one", "codemode") == "codemode"
+        assert resolve_exposure(cfg, "delete_one", "hidden") == "hidden"
+        assert resolve_exposure(_cfg(exposure="hidden"), "anything", "direct") == "hidden"
+        assert resolve_exposure(_cfg(), "anything", "codemode") == "codemode"
+        assert canon_exposure("codemode-deferred") == "codemode"
+        assert resolve_exposure(_cfg(exposure="codemode-deferred"), "t", "direct") == "codemode"
+
+        # a star matches any characters, and the first matching pattern wins
+        cfg = _cfg(tool_exposure={"*_x": "direct", "get_*": "hidden"})
+        assert resolve_exposure(cfg, "get_x", "codemode") == "direct"
+        cfg = _cfg(tool_exposure={"a*c": "direct"})
+        assert resolve_exposure(cfg, "aanythingc", "codemode") == "direct"
+        assert resolve_exposure(cfg, "aanythingcX", "codemode") == "codemode"
+
+    def test_unknown_values_report_and_fall_through(self, capsys):
+        cfg = _cfg(exposure="sideways", tool_exposure={"t": "also-bogus"})
+        assert resolve_exposure(cfg, "t", "direct") == "direct"
+        cfg = _cfg(tool_exposure={"other": "bogus"})
+        assert resolve_exposure(cfg, "other", "codemode") == "codemode"
+        assert resolve_exposure(_cfg(), "t", "zzz") == "direct"
+        err = capsys.readouterr().err
+        assert "sideways" in err and "bogus" in err and "zzz" in err
 
 
 #: The handshake-era answer for a peer that answers only ``initialize``.
