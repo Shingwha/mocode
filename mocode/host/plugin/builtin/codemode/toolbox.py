@@ -41,13 +41,13 @@ class ToolBox:
 
     Both entry points run the same resolution: the exact registered name,
     the single spelling of a tool. An MCP tool answers only to its full
-    ``mcp__<server>__<tool>`` name — never to a bare short name — so two
-    servers with same-named tools cannot collide, and the bare namespace
-    belongs to the built-ins (``store``, ``describe_tool``, …) even when a
-    registered tool ends in it. A name no tool and no built-in claims is
-    unknown, and the error reports the candidate full names. ``codemode``
-    itself is never callable from a script. ``dir(tools)`` and the
-    catalogue list the tools registered when the box was created;
+    ``mcp__<server>__<tool>`` name — never to a bare spelling of its own —
+    so two servers with same-named tools cannot collide, and the bare
+    namespace belongs to the built-ins (``store``, ``describe_tool``, …)
+    even when a registered tool ends in it. A name no tool and no built-in
+    claims is unknown, and the error reports the candidate full names.
+    ``codemode`` itself is never callable from a script. ``dir(tools)`` and
+    the catalogue list the tools registered when the box was created;
     resolution itself reads the live registry.
 
     An optional ``semaphore`` caps how many of this box's calls run at

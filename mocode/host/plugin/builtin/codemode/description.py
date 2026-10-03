@@ -53,8 +53,8 @@ asyncio-level equivalent).
 `tools` has one name per tool: the registered full name, the same string
 for attribute and subscript (`tools["mcp__dev_radius__search"]` and
 `tools.mcp__dev_radius__search`). An MCP tool answers only to that full
-name, never to a bare short one — two servers can hold same-named tools
-— while the bare names belong to the built-ins:
+name, never to a bare spelling of its own — two servers can hold
+same-named tools — while the bare names belong to the built-ins:
 `tools.describe_tool`/`tools.text`/`tools.store`/... return the built-in
 itself. `dir(tools)`, the catalogue helpers and the `mcp_servers` prompt
 section list that same name. A miss raises with the candidates it could
