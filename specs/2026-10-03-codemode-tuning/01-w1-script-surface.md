@@ -1,4 +1,4 @@
-⏸️ 待派工
+✅ 2026-10-03 @ feat/codemode-surface（已合并 master `3c0576f`；998 passed exit 0，lead 合并前后各复核一次；命名路线经用户确认维持：折叠规范名做 key、沙箱三拼法全收）
 
 # Spec 01 · W1：codemode 脚本表面（波次 W1）
 
