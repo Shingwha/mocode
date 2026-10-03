@@ -114,7 +114,7 @@ def stdio_entry(command: str = "tool", **extra) -> dict:
     return {"type": "stdio", "command": command, **extra}
 
 class TestLoadServers:
-    def test_the_files_precedence_and_a_projects_wholesale_replacement(self, tmp_path):
+    def test_the_files_precedence_collisions_and_the_broken_ones(self, tmp_path, capsys):
         # nothing configured is an empty table; an inline config.json entry
         # carries its source
         assert load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home") == {}
@@ -186,7 +186,8 @@ class TestLoadServers:
         )
         assert merged["demo"].cwd == str(tmp_path)
 
-    def test_names_differing_only_in_separator_are_one_server(self, tmp_path, capsys):
+        # names differing only in a separator fold onto one server — the
+        # lower-priority spelling is dropped, and said to be
         home = tmp_path / "home"
         write_mcp_json(home / "mcp.json", {"mcpServers": {"my_srv": stdio_entry("low")}})
         write_mcp_json(
@@ -197,7 +198,22 @@ class TestLoadServers:
         assert merged["my_srv"].command == "high"
         assert "lower-priority entry is dropped" in capsys.readouterr().err
 
-    def test_invalid_entries_are_skipped_without_hurting_valid_ones(self, tmp_path, capsys):
+        # a file that cannot be read, or a table of the wrong shape, is
+        # reported and leaves nothing behind
+        fresh_home = tmp_path / "fresh-home"
+        write_mcp_json(tmp_path / ".mocode" / "mcp.json", "{not json")
+        merged = load_servers(mcp_config={}, cwd=tmp_path, home=fresh_home)
+        assert merged == {}
+        assert "unreadable mcp.json" in capsys.readouterr().err
+
+        write_mcp_json(tmp_path / ".mocode" / "mcp.json", {"mcpServers": ["a"]})
+        merged = load_servers(mcp_config={}, cwd=tmp_path, home=fresh_home)
+        assert merged == {}
+        assert "must be an object" in capsys.readouterr().err
+
+    def test_invalid_entries_are_skipped_and_the_extensions_are_kept(
+        self, tmp_path, capsys
+    ):
         bad: dict = {
             "not-an-object": 42,
             "no-command": {"type": "stdio"},
@@ -263,6 +279,57 @@ class TestLoadServers:
         assert merged["v4"].transport == "sse"  # a loopback may stay http
         assert merged["v6"].url == "http://[::1]:9000/sse"
 
+        # the mocode-only extensions are kept on a valid entry, and a bad
+        # value of one is reported and falls back to its default
+        merged = load_servers(
+            mcp_config={
+                "servers": {
+                    "http_web": {
+                        "type": "streamable-http",
+                        "url": "https://u/mcp",
+                        "enabled": False,
+                        "timeout": 12,
+                        "exposure": "hidden",
+                        "description": "one line",
+                    },
+                    "demo": {
+                        "command": "x",
+                        "enabled": False,
+                        "timeout": 12,
+                        "exposure": "hidden",
+                        "toolExposure": {"a": "direct"},
+                        "description": "one line",
+                    },
+                    "bad": {
+                        "command": "x",
+                        "enabled": "yes",
+                        "timeout": "later",
+                        "exposure": 3,
+                        "toolExposure": ["a"],
+                        "description": {},
+                    },
+                }
+            },
+            cwd=tmp_path,
+            home=tmp_path / "home",
+        )
+        for name in ("http_web", "demo"):
+            cfg = merged[name]
+            assert cfg.enabled is False
+            assert cfg.timeout == 12.0
+            assert cfg.exposure == "hidden"
+            assert cfg.description == "one line"
+        assert merged["demo"].tool_exposure == {"a": "direct"}
+        cfg = merged["bad"]
+        assert cfg.enabled is True
+        assert cfg.timeout is None
+        assert cfg.exposure is None
+        assert cfg.tool_exposure == {}
+        assert cfg.description == ""
+        err = capsys.readouterr().err
+        for word in ("'enabled'", "'timeout'", "'exposure'", "'toolExposure'", "'description'"):
+            assert word in err
+
     def test_variables_and_placeholders(
         self, tmp_path, capsys
     ):
@@ -326,66 +393,51 @@ class TestLoadServers:
         assert list(merged) == ["good"]
         assert "only mean something inside a plugin" in capsys.readouterr().err
 
-    def test_the_extensions_are_kept_and_bad_values_fall_back(self, tmp_path, capsys):
-        merged = load_servers(
-            mcp_config={
-                "servers": {
-                    "http_web": {
+        # and the mirror rule in a plugin file: a placeholder spelling is an
+        # error, not a hint — nothing there expands. The http entries the
+        # plugin file form accepts still do (loopback may stay http), and
+        # their configured headers ride along untouched.
+        plugin_dir = tmp_path / "plugins" / "acme"
+        write_mcp_json(
+            plugin_dir / "mcp.json",
+            {
+                "$schema": MCP_SCHEMA_1_0_0,
+                "mcpServers": {
+                    "web": {
+                        "type": "streamable-http",
+                        "url": "http://127.0.0.1:8080/mcp",
+                        "headers": {"Authorization": "Bearer t"},
+                    },
+                    "feed": {"type": "sse", "url": "https://u/sse"},
+                    "var-url": {"type": "streamable-http", "url": "https://${MCP_TEST_HOST}/mcp"},
+                    "bang-url": {"type": "streamable-http", "url": "!echo hi"},
+                    "var-value": {
                         "type": "streamable-http",
                         "url": "https://u/mcp",
-                        "enabled": False,
-                        "timeout": 12,
-                        "exposure": "hidden",
-                        "description": "one line",
+                        "headers": {"X": "${MCP_TEST_TOKEN}"},
                     },
-                    "demo": {
-                        "command": "x",
-                        "enabled": False,
-                        "timeout": 12,
-                        "exposure": "hidden",
-                        "toolExposure": {"a": "direct"},
-                        "description": "one line",
+                    "var-name": {
+                        "type": "streamable-http",
+                        "url": "https://u/mcp",
+                        "headers": {"X-${MCP_TEST_VAR}": "v"},
                     },
-                    "bad": {
-                        "command": "x",
-                        "enabled": "yes",
-                        "timeout": "later",
-                        "exposure": 3,
-                        "toolExposure": ["a"],
-                        "description": {},
-                    },
+                    "plugin-token": {"type": "streamable-http", "url": "https://${PLUGIN_ROOT}/mcp"},
+                    "good": {"type": "streamable-http", "url": "https://u/mcp"},
                 }
             },
-            cwd=tmp_path,
-            home=tmp_path / "home",
         )
-        for name in ("http_web", "demo"):
-            cfg = merged[name]
-            assert cfg.enabled is False
-            assert cfg.timeout == 12.0
-            assert cfg.exposure == "hidden"
-            assert cfg.description == "one line"
-        assert merged["demo"].tool_exposure == {"a": "direct"}
-        cfg = merged["bad"]
-        assert cfg.enabled is True
-        assert cfg.timeout is None
-        assert cfg.exposure is None
-        assert cfg.tool_exposure == {}
-        assert cfg.description == ""
+        merged = load_servers(
+            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
+        )
+        assert list(merged) == ["web", "feed", "good"]
+        assert merged["web"].transport == "streamable-http"
+        assert merged["web"].url == "http://127.0.0.1:8080/mcp"
+        assert merged["web"].headers == {"Authorization": "Bearer t"}
+        assert merged["feed"].transport == "sse"
+        assert merged["feed"].url == "https://u/sse"
         err = capsys.readouterr().err
-        for word in ("'enabled'", "'timeout'", "'exposure'", "'toolExposure'", "'description'"):
-            assert word in err
-
-    def test_a_broken_file_or_a_shape_wrong_table_is_reported(self, tmp_path, capsys):
-        write_mcp_json(tmp_path / ".mocode" / "mcp.json", "{not json")
-        merged = load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home")
-        assert merged == {}
-        assert "unreadable mcp.json" in capsys.readouterr().err
-
-        write_mcp_json(tmp_path / ".mocode" / "mcp.json", {"mcpServers": ["a"]})
-        merged = load_servers(mcp_config={}, cwd=tmp_path, home=tmp_path / "home")
-        assert merged == {}
-        assert "must be an object" in capsys.readouterr().err
+        assert err.count("entry skipped") == 5
+        assert "${VAR}" in err
 
 
 class TestPluginFileRules:
@@ -441,7 +493,9 @@ class TestPluginFileRules:
         assert merged == {}
         assert "missing 'type'" in capsys.readouterr().err
 
-    def test_plugin_placeholders_expand_once(self, tmp_path, capsys):
+    def test_plugin_placeholders_expand_once_and_stay_read_only(self, tmp_path, capsys):
+        # the two halves of one rule: the placeholders expand exactly once,
+        # only in the fields that name a path, and nowhere else
         plugin_dir = tmp_path / "plugins" / "acme"
         entry = stdio_entry(
             command="./bin/tool",
@@ -472,8 +526,9 @@ class TestPluginFileRules:
         assert cfg.description == ""
         assert "unknown field(s)" in capsys.readouterr().err
 
-    def test_the_plugin_placeholders_are_read_only(self, tmp_path, capsys):
-        plugin_dir = tmp_path / "plugins" / "acme"
+        # read-only: a cwd that escapes the root or is not a relative path
+        # under it takes the entry out, and an entry may not define the
+        # placeholders itself
         write_mcp_json(
             plugin_dir / "mcp.json",
             self._plugin_mcp(
@@ -495,7 +550,6 @@ class TestPluginFileRules:
         assert "escapes" in err
         assert "must start with './'" in err
 
-        # and an entry may not define the placeholders itself
         write_mcp_json(
             plugin_dir / "mcp.json",
             self._plugin_mcp({"bad": stdio_entry(env={"PLUGIN_ROOT": "/x"})}),
@@ -506,51 +560,7 @@ class TestPluginFileRules:
         assert merged == {}
         assert "must not set 'PLUGIN_ROOT'" in capsys.readouterr().err
 
-    def test_http_entries_in_plugin_files_validate_and_expand_nothing(
-        self, tmp_path, capsys
-    ):
-        plugin_dir = tmp_path / "plugins" / "acme"
-        write_mcp_json(
-            plugin_dir / "mcp.json",
-            self._plugin_mcp(
-                {
-                    "web": {
-                        "type": "streamable-http",
-                        "url": "http://127.0.0.1:8080/mcp",
-                        "headers": {"Authorization": "Bearer t"},
-                    },
-                    "feed": {"type": "sse", "url": "https://u/sse"},
-                    "var-url": {"type": "streamable-http", "url": "https://${MCP_TEST_HOST}/mcp"},
-                    "bang-url": {"type": "streamable-http", "url": "!echo hi"},
-                    "var-value": {
-                        "type": "streamable-http",
-                        "url": "https://u/mcp",
-                        "headers": {"X": "${MCP_TEST_TOKEN}"},
-                    },
-                    "var-name": {
-                        "type": "streamable-http",
-                        "url": "https://u/mcp",
-                        "headers": {"X-${MCP_TEST_VAR}": "v"},
-                    },
-                    "plugin-token": {"type": "streamable-http", "url": "https://${PLUGIN_ROOT}/mcp"},
-                    "good": {"type": "streamable-http", "url": "https://u/mcp"},
-                }
-            ),
-        )
-        merged = load_servers(
-            mcp_config={}, cwd=tmp_path, home=tmp_path / "home", plugin_sources=[plugin_dir]
-        )
-        assert list(merged) == ["web", "feed", "good"]
-        assert merged["web"].transport == "streamable-http"
-        assert merged["web"].url == "http://127.0.0.1:8080/mcp"
-        assert merged["web"].headers == {"Authorization": "Bearer t"}
-        assert merged["feed"].transport == "sse"
-        assert merged["feed"].url == "https://u/sse"
-        # nothing in a plugin file expands — a placeholder spelling is an
-        # error, not a hint
-        err = capsys.readouterr().err
-        assert err.count("entry skipped") == 5
-        assert "${VAR}" in err
+
 def _cfg(**kwargs) -> McpServerConfig:
     kwargs.setdefault("name", "demo")
     kwargs.setdefault("command", "x")
@@ -617,7 +627,7 @@ class TestExposureRules:
         assert resolve_server_exposure(_cfg(), "deferred") == "deferred"
         assert resolve_server_exposure(_cfg(), "garbage") == "direct"
 
-    def test_the_resolution_order_and_the_pattern_matches(self):
+    def test_the_resolution_order_the_patterns_and_the_unknown_values(self, capsys):
         # exact tool name beats pattern beats server beats default
         cfg = _cfg(exposure="hidden", tool_exposure={"search": "direct", "get_*": "codemode"})
         assert resolve_exposure(cfg, "search", "direct") == "direct"
@@ -635,7 +645,8 @@ class TestExposureRules:
         assert resolve_exposure(cfg, "aanythingc", "codemode") == "direct"
         assert resolve_exposure(cfg, "aanythingcX", "codemode") == "codemode"
 
-    def test_unknown_values_report_and_fall_through(self, capsys):
+        # an unknown value — wherever it sits — is reported and falls through
+        # to the next rule down, never failing the resolution
         cfg = _cfg(exposure="sideways", tool_exposure={"t": "also-bogus"})
         assert resolve_exposure(cfg, "t", "direct") == "direct"
         cfg = _cfg(tool_exposure={"other": "bogus"})
@@ -1184,7 +1195,9 @@ class TestResourceTools:
         await connect(runtime, "demo", make_resource_server())
         assert "read_mcp_resource" in ctx.tools
 
-    async def test_the_widest_exposure_of_the_servers_wins(self, runtime_factory):
+    async def test_the_widest_exposure_of_the_servers_wins_and_hidden_switches_off(
+        self, runtime_factory
+    ):
         # no codemode plugin → auto resolves to direct and both audiences see it
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         await connect(runtime, "demo", make_resource_server())
@@ -1210,9 +1223,8 @@ class TestResourceTools:
         await connect(runtime, "direct", make_resource_server("direct"))
         assert ctx.tools.get("read_mcp_resource").availability == "both"
 
-    async def test_a_hidden_server_switches_the_tools_off(self, runtime_factory):
-        """A hidden server's resources stay invisible to both audiences —
-        the same availability_for pipeline a hidden server tool takes."""
+        # a hidden server's resources stay invisible to both audiences —
+        # the same availability_for pipeline a hidden server tool takes
         runtime, ctx = runtime_factory({"demo": inproc_entry(exposure="hidden")})
         await connect(runtime, "demo", make_resource_server())
 
@@ -1539,7 +1551,9 @@ class TestSyncTools:
     """A changed tool list reconciles the registry, and a connect that fails
     is remembered on the session rather than raised into the turn."""
 
-    async def test_a_changed_tool_list_reconciles_the_registry(self, runtime_factory):
+    async def test_a_changed_list_reconciles_and_a_failed_connect_is_remembered(
+        self, runtime_factory
+    ):
         """The modern tool-change subscription drives the runtime's own sync,
         so a server that adds a tool and drops another is reflected."""
         runtime, ctx = runtime_factory({"demo": {"command": "never-run"}})
@@ -1566,9 +1580,9 @@ class TestSyncTools:
         # the untouched tool stays exactly where the connect put it
         assert "mcp__demo__plain" in registry
 
-    async def test_connect_failures_are_marked_never_raised(self, runtime_factory):
-        """The runtime's own bounded connect: a server that cannot start, or
-        never answers, is reported and remembered on the session."""
+        # the runtime's own bounded connect: a server that cannot start, or
+        # never answers, is reported and remembered on the session rather
+        # than raised into the turn
         runtime, ctx = runtime_factory({"bad": {"command": "no-such-binary-mocode"}})
         try:
             await asyncio.wait_for(runtime.start(), BOUND)  # must not raise
@@ -1874,13 +1888,14 @@ class TestWatchTools:
             if end == "lost":
                 assert any("dropped" in message for message in reports), end
 
-    async def test_the_backoff_doubles_and_an_event_resets_it(self, monkeypatch):
-        backoff = _InstantBackoff()
-        backoff.patch(monkeypatch)
+        # and the doubling runs toward its ceiling, with the event that did
+        # arrive resetting it — the sequence is the rule, read off the
+        # recorded waits rather than spent
+        backoff.waited.clear()
         client = _ScriptedClient(
             [([], "lost"), ([ToolsListChanged()], "lost"), ([], "lost")]
         )
-        seen: list[int] = []
+        seen = []
 
         task = await drive(client, _recorder(seen), report=lambda _message: None)
         assert await wait_until(lambda: client.attempts >= 4, what="four attempts")
@@ -2085,7 +2100,7 @@ class TestPromptSection:
     servers are listed, how each is reached, and which tool names a
     connected one catalogues."""
 
-    async def test_a_connected_server_joins_the_section(
+    async def test_the_sections_rows_catalogues_and_who_is_left_out(
         self, plugin_host, monkeypatch, tmp_path
     ):
         host, runtime, ctx = await _materialize_with_servers(
@@ -2160,9 +2175,6 @@ class TestPromptSection:
         )
         host.close()
 
-    async def test_servers_that_are_not_shown_stay_out_or_one_line(
-        self, plugin_host, monkeypatch, tmp_path
-    ):
         # hidden and disabled servers never make a row — hidden still
         # registers its tools, just unreachable by either audience
         peers = {"shown": WirePeer(MODERN_PEER), "hid": WirePeer(MODERN_PEER)}
@@ -2223,69 +2235,6 @@ class TestPromptSection:
         assert "slow" in _status_rows(text)
         assert "tools:" not in text
         host.close()
-
-
-class TestCodemodeNotice:
-    """The one-shot codemode warning is an event on the channel — the
-    observable behaviour, not a flag on the runtime."""
-
-    async def test_program_only_tools_warn_once_and_codemode_suppresses_it(
-        self, plugin_host, monkeypatch, tmp_path
-    ):
-        # codemode off: the warning travels with the connect — waited for on
-        # the channel, not slept for and counted after the fact
-        host, runtime, ctx = await _materialize_with_servers(
-            plugin_host, monkeypatch, tmp_path, {"demo": WirePeer(MODERN_PEER)},
-            exposure="codemode",
-        )
-        reader = ctx.subscribe(since=0)
-        warnings = await _first_warning(reader)
-        assert len(warnings) == 1
-        assert warnings[0].level == "warn"
-        # the count travels as a leading number — parsed, not spelled out
-        assert int(warnings[0].message.split(" ", 1)[0]) == 4
-        # one conversation, one warning — a second emission never lands
-        assert [e for e in await _drain(reader) if isinstance(e, Notice)] == []
-        host.close()
-
-        # codemode on: the runtime returns before it can emit
-        host, runtime, ctx = await _materialize_with_servers(
-            plugin_host,
-            monkeypatch,
-            tmp_path,
-            {"demo": WirePeer(MODERN_PEER)},
-            exposure="codemode",
-            codemode_enabled=True,
-        )
-        reader = ctx.subscribe(since=0)
-        await _drain(reader)
-        assert [e for e in await _drain(reader) if isinstance(e, Notice)] == []
-        host.close()
-
-
-async def _drain(reader) -> list:
-    """Everything a subscriber has so far — read, not polled."""
-    seen = []
-    while (event := reader.take()) is not None:
-        seen.append(event)
-    return seen
-
-
-async def _first_warning(reader) -> list:
-    """The codemode warnings on the channel, waiting for the first one.
-
-    The reader is drained inside the poll, so a warning that arrives while
-    this waits is seen the moment it does — no guessed window, and the
-    drain is one read rather than a second pass that finds nothing.
-    """
-    deadline = asyncio.get_running_loop().time() + BOUND
-    while True:
-        for event in await _drain(reader):
-            if isinstance(event, Notice) and "reachable only through codemode" in event.message:
-                return [event]
-        if asyncio.get_running_loop().time() >= deadline:
-            return []
-        await settle(0.01)
 
 
 # ── end to end through the dispatcher ───────────────────────

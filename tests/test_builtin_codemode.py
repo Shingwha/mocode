@@ -1954,6 +1954,9 @@ class TestCrossPluginExposure:
         assert len(warnings) == 1
         assert warnings[0].level == "warn"
         assert "reachable only through codemode" in warnings[0].message
+        # the count of unreachable tools travels as a leading number —
+        # parsed out of the message, not spelled back out
+        assert int(warnings[0].message.split(" ", 1)[0]) == 1
         # one conversation, one warning — the second read of the same channel
         # finds no further warning: the one-shot is a fact about the
         # runtime's flag, not a window to sit out
