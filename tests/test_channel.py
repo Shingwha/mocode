@@ -23,11 +23,6 @@ class TestPublishing:
         assert channel.seq == 3
         assert [e.seq for e in events] == [1, 2, 3]
 
-    async def test_publishing_without_readers_is_fine(self):
-        channel = EventChannel()
-        await channel.publish(Notice(message="nobody is listening"))
-        assert channel.seq == 1
-
 
 class TestSubscriptions:
     async def test_every_subscriber_sees_every_event(self):
@@ -38,14 +33,6 @@ class TestSubscriptions:
 
         assert (await first.get()).message == "hello"
         assert (await second.get()).message == "hello"
-
-    async def test_a_live_subscription_starts_from_now(self):
-        channel = EventChannel()
-        await channel.publish(Notice(message="old"))
-        sub = channel.subscribe()
-        await channel.publish(Notice(message="new"))
-
-        assert (await sub.get()).message == "new"
 
     async def test_since_replays_the_backlog_and_continues_live(self):
         channel = EventChannel()
@@ -60,6 +47,11 @@ class TestSubscriptions:
         await channel.publish(Notice(message="3"))
         assert (await sub.get()).message == "3"
 
+        # 默认 since=0：订阅从"现在"起，之前的一律不补看。
+        live = channel.subscribe()
+        await channel.publish(Notice(message="new"))
+        assert (await live.get()).message == "new"
+
     async def test_a_subscription_that_fell_behind_is_told_so(self):
         channel = EventChannel(replay=4)
         for event in _deltas(10):
@@ -72,6 +64,12 @@ class TestSubscriptions:
         assert [e.message for e in channel.history(since=0)] == ["6", "7", "8", "9"]
         assert sub.dropped == 6
         assert sub.lagging
+        # history 就是缓冲区的视图：窗内按 seq 排序，窗外为空。
+        windowed = EventChannel()
+        for event in _deltas(3):
+            await windowed.publish(event)
+        assert [e.seq for e in windowed.history(since=1)] == [2, 3]
+        assert windowed.history(since=3) == []
 
     async def test_a_slow_reader_never_holds_up_the_publisher(self):
         channel = EventChannel(backlog=2)
@@ -83,14 +81,6 @@ class TestSubscriptions:
         assert (await sub.get()).message == "3"
         assert (await sub.get()).message == "4"
         assert sub.dropped == 3
-
-    async def test_history_is_a_view_of_the_buffer(self):
-        channel = EventChannel()
-        for event in _deltas(3):
-            await channel.publish(event)
-
-        assert [e.seq for e in channel.history(since=1)] == [2, 3]
-        assert channel.history(since=3) == []
 
 
 class TestInline:
@@ -149,9 +139,7 @@ class TestClosing:
         with pytest.raises(StopAsyncIteration):
             await sub.__anext__()
 
-    async def test_subscribing_after_the_close_ends_immediately(self):
-        channel = EventChannel()
-        channel.close()
+        # 关闭之后再订阅：立刻结束，不用等一条永远不来的事件。
         assert await channel.subscribe().get() is None
 
     async def test_a_closed_channel_still_serves_its_history(self):

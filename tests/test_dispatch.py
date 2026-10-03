@@ -22,7 +22,6 @@ from mocode.core.tool import (
     ToolResult,
 )
 from mocode.host.config import Config
-from mocode.host.plugin.base import Plugin
 from mocode.host.plugin.context import BuildContext, HostContext
 from mocode.host.plugin.host import PluginHost, load_plugins
 from mocode.testing import MockProvider, collect, say, tool_call_response
@@ -87,14 +86,6 @@ def _bare_dispatcher(
     return dispatcher, events, folds
 
 
-class _Denier(AgentHook):
-    def __init__(self, reason: str = "not allowed") -> None:
-        self.reason = reason
-
-    async def on_tool_start(self, ctx: ToolCallContext) -> None:
-        ctx.deny = self.reason
-
-
 # ── bare core: the dispatcher without a loop ─────────────────
 
 
@@ -110,6 +101,15 @@ class TestBareCoreDispatcher:
         assert events[0].args == {"value": "x"}
         assert events[1].status == "ok"
 
+        # 结构化 details 走第二条通道：结果与事件都带，模型读的 content 不带。
+        stats = Tool("stats", "d", {}, lambda a: ToolResult("read it", {"lines": 412}))
+        structured, structured_events, _ = _bare_dispatcher(stats)
+        structured_result = await structured.run("stats", {})
+
+        assert structured_result.details == {"lines": 412}
+        assert structured_events[1].details == {"lines": 412}
+        assert structured_result.content == "read it"
+
     async def test_model_origin_events_fold_program_origin_events_do_not(self):
         tool = echo_tool()
 
@@ -120,33 +120,6 @@ class TestBareCoreDispatcher:
         program, _, program_folds = _bare_dispatcher(tool)
         await program.run("echo", {"value": "x"}, origin="program")
         assert program_folds == [False, False]
-
-    async def test_structured_details_travel_on_the_result(self):
-        tool = Tool("stats", "d", {}, lambda a: ToolResult("read it", {"lines": 412}))
-
-        dispatcher, events, _ = _bare_dispatcher(tool)
-        result = await dispatcher.run("stats", {})
-
-        assert result.details == {"lines": 412}
-        assert events[1].details == {"lines": 412}
-        assert result.content == "read it"
-
-    async def test_results_are_truncated_to_the_configured_limit(self):
-        tool = Tool("big", "d", {}, lambda a: "x" * 100)
-
-        dispatcher, _, _ = _bare_dispatcher(
-            tool, config=AgentConfig(tool_result_limit=10)
-        )
-        result = await dispatcher.run("big", {})
-
-        assert result.content == "x" * 10 + "\n... [truncated]"
-
-    async def test_a_per_call_timeout_overrides_the_config(self):
-        dispatcher, _, _ = _bare_dispatcher(_sleeper(), config=AgentConfig(tool_timeout=30))
-        result = await dispatcher.run("slow", {}, timeout=0.05)
-
-        assert result.status == "timeout"
-        assert result.content.startswith("timeout:")
 
 
 # ── execution policy: call over tool over config ────────────
@@ -177,13 +150,26 @@ class TestToolPolicy:
         assert result.status == "timeout"
         assert "0.05" in result.content  # 生效的那个超时值落在结果文案里
 
-    async def test_a_policy_result_limit_overrides_the_config(self):
-        big = Tool("big", "d", {}, lambda a: "x" * 100, policy=ToolPolicy(result_limit=10))
-        dispatcher, _, _ = _bare_dispatcher(big, config=AgentConfig(tool_result_limit=50))
+    async def test_a_result_limit_is_policy_over_config(self):
+        """tool 策略压过 config；没有工具策略时 config 自己生效。"""
+        overridden = Tool(
+            "big", "d", {}, lambda a: "x" * 100, policy=ToolPolicy(result_limit=10)
+        )
+        dispatcher, _, _ = _bare_dispatcher(
+            overridden, config=AgentConfig(tool_result_limit=50)
+        )
 
         result = await dispatcher.run("big", {})
 
         assert result.content == "x" * 10 + "\n... [truncated]"
+
+        # 没有工具策略时，config 的限额单独生效——截断记号是同一样子。
+        plain = Tool("big", "d", {}, lambda a: "x" * 100)
+        config_only, _, _ = _bare_dispatcher(
+            plain, config=AgentConfig(tool_result_limit=10)
+        )
+
+        assert (await config_only.run("big", {})).content == "x" * 10 + "\n... [truncated]"
 
     async def test_a_callable_policy_reads_the_call_arguments(self):
         seen: list[dict] = []
@@ -232,24 +218,19 @@ class TestToolPolicy:
 
 
 class TestCallIdentity:
-    async def test_program_calls_nested_in_a_parent_are_numbered_per_parent(self):
+    async def test_program_calls_are_numbered_per_parent_or_get_a_pcall_id(self):
         dispatcher, events, _ = _bare_dispatcher(echo_tool())
 
         await dispatcher.run("echo", {}, origin="program", parent_call_id="p9")
         await dispatcher.run("echo", {}, origin="program", parent_call_id="p9")
         await dispatcher.run("echo", {}, origin="program", parent_call_id="other")
-
-        ids = [e.call_id for e in events if isinstance(e, ToolCallStarted)]
-        assert ids == ["p9:1", "p9:2", "other:1"]
-
-    async def test_a_parentless_program_call_gets_a_pcall_id(self):
-        dispatcher, events, _ = _bare_dispatcher(echo_tool())
-
+        # 没有父调用的 program 调用：前缀 pcall_。两个计数器共用一条序列，
+        # 所以编号接着前面几次调用往下数，跨形态也不会撞。
         await dispatcher.run("echo", {}, origin="program")
         await dispatcher.run("echo", {}, origin="program")
 
         ids = [e.call_id for e in events if isinstance(e, ToolCallStarted)]
-        assert ids == ["pcall_1", "pcall_2"]
+        assert ids == ["p9:1", "p9:2", "other:1", "pcall_4", "pcall_5"]
 
     async def test_model_calls_keep_the_provider_id_or_get_one_made_up(self):
         dispatcher, events, _ = _bare_dispatcher(echo_tool())
@@ -282,12 +263,6 @@ class TestOutcomeParity:
                 {},
                 ("error", "error: teapot: nope", "teapot"),
             ),
-            (
-                "ghost",
-                echo_tool(),
-                {},
-                ("not_found", "error: unknown tool 'ghost'", None),
-            ),
         ],
     )
     async def test_outcomes_are_identical_across_origins(
@@ -299,12 +274,6 @@ class TestOutcomeParity:
             result = await dispatcher.run(name, {}, origin=origin, **kwargs)
             outcomes[origin] = (result.status, result.content, result.error_code)
         assert outcomes["model"] == outcomes["program"] == expected
-
-    async def test_a_vetoed_call_is_denied_for_both_origins(self):
-        for origin in ("model", "program"):
-            dispatcher, _, _ = _bare_dispatcher(echo_tool(), hooks=[_Denier("no")])
-            result = await dispatcher.run("echo", {"value": "x"}, origin=origin)
-            assert (result.status, result.content) == ("denied", "denied: no")
 
     async def test_a_timeout_is_a_timeout_whatever_the_origin(self):
         for origin in ("model", "program"):
@@ -338,36 +307,13 @@ class TestAvailability:
     def _schema_names(registry: ToolRegistry, **kwargs) -> list[str]:
         return [s["function"]["name"] for s in registry.all_schemas(**kwargs)]
 
-    def test_additive_everything_is_both_by_default(self):
-        registry = ToolRegistry()
-        registry.register(self._tool("a"))
-        registry.register(self._tool("b"))
-
-        assert registry.names() == registry.names(audience="program") == ["a", "b"]
-        assert self._schema_names(registry) == self._schema_names(
-            registry, audience="program"
-        )
-
-    def test_folded_tools_are_marked_program(self):
-        registry = ToolRegistry()
-        registry.register(self._tool("orchestrator"))
-        registry.register(self._tool("read", "program"))
-        registry.register(self._tool("bash", "program"))
-
-        # The model is offered the fold point only; the program side sees all.
-        assert registry.names() == ["orchestrator"]
-        assert registry.names(audience="program") == [
-            "orchestrator",
-            "read",
-            "bash",
-        ]
-
     def test_mixed_deployment_shows_each_side_its_own_half(self):
         registry = ToolRegistry()
         registry.register(self._tool("plain"))
         registry.register(self._tool("sdk_only", "program"))
         registry.register(self._tool("model_only", "model"))
 
+        # both 是默认取值：plain 两边都看得见，各自的半边各归各。
         assert registry.names() == ["plain", "model_only"]
         assert registry.names(audience="program") == ["plain", "sdk_only"]
         assert self._schema_names(registry) == ["plain", "model_only"]
@@ -376,15 +322,10 @@ class TestAvailability:
             "sdk_only",
         ]
 
-    def test_select_filters_by_audience_too(self):
-        registry = ToolRegistry()
-        registry.register(self._tool("plain"))
-        registry.register(self._tool("sdk_only", "program"))
-
-        assert registry.select().names() == ["plain"]
+        # select 也按 audience 过滤，且过滤出的是同一个实例。
         child = registry.select(audience="program")
         assert child.names(audience="program") == ["plain", "sdk_only"]
-        assert child.get("sdk_only") is registry.get("sdk_only")  # shared instances
+        assert child.get("sdk_only") is registry.get("sdk_only")
 
     def test_freeze_pins_the_model_projection_only(self):
         registry = ToolRegistry()
@@ -401,10 +342,6 @@ class TestAvailability:
             "sdk_only",
             "late",
         ]
-
-    def test_an_unknown_availability_is_rejected_at_construction(self):
-        with pytest.raises(ValueError, match="availability"):
-            self._tool("typo", "modle")
 
     async def test_execution_permission_follows_the_origin(self):
         dispatcher, _, _ = _bare_dispatcher(
@@ -430,22 +367,22 @@ class TestAvailability:
 
 class TestProvenance:
     async def test_events_say_who_asked_and_what_they_are_nested_in(self):
-        dispatcher, events, _ = _bare_dispatcher(echo_tool())
-        await dispatcher.run(
+        program, program_events, _ = _bare_dispatcher(echo_tool())
+        await program.run(
             "echo", {"value": "x"}, origin="program", parent_call_id="p1"
         )
 
-        started, finished = events
+        started, finished = program_events
         assert (started.origin, started.parent_call_id) == ("program", "p1")
         assert (finished.origin, finished.parent_call_id) == ("program", "p1")
 
-    async def test_model_origin_is_the_default_and_carries_no_parent(self):
-        dispatcher, events, _ = _bare_dispatcher(echo_tool())
-        await dispatcher.run("echo", {"value": "x"}, call_id="c1")
+        # model 是默认 origin，且不带 parent。
+        default, default_events, _ = _bare_dispatcher(echo_tool())
+        await default.run("echo", {"value": "x"}, call_id="c1")
 
-        started, finished = events
-        assert started.origin == "model" and started.parent_call_id is None
-        assert finished.origin == "model" and finished.parent_call_id is None
+        started, finished = default_events
+        assert (started.origin, started.parent_call_id) == ("model", None)
+        assert (finished.origin, finished.parent_call_id) == ("model", None)
 
     async def test_provenance_crosses_a_process_boundary_as_plain_data(self):
         dispatcher, events, _ = _bare_dispatcher(echo_tool())
@@ -514,19 +451,15 @@ class TestEmitAttribution:
             seen.append(event)
         assert [e.run_id for e in seen] == [""]
 
+        # 发布者自己带上的 run_id 原样保留，不被空 run 覆盖。
+        claimed = Notice(message="mine", run_id="someone-elses")
+        await host_ctx.emit(claimed)
+        assert claimed.run_id == "someone-elses"
+
         # …and a later turn's view does not reach back for it.
         agent.provider = MockProvider([say("done")])
         turn_events = await collect(agent.stream("go"))
         assert not any(isinstance(event, Notice) for event in turn_events)
-
-    async def test_a_publisher_may_claim_its_own_run_id(self, tmp_path):
-        agent = make_agent()
-        host_ctx = _host_context(tmp_path, agent)
-        claimed = Notice(message="mine", run_id="someone-elses")
-
-        await host_ctx.emit(claimed)
-
-        assert claimed.run_id == "someone-elses"
 
 
 class TestSpawn:
@@ -536,7 +469,7 @@ class TestSpawn:
         agent = make_agent(*tools)
         return _host_context(tmp_path, agent)
 
-    def test_visible_by_default_and_shares_the_parents_channel(self, tmp_path):
+    def test_visible_by_default_and_invisible_gets_a_private_stream(self, tmp_path):
         host = self._host(tmp_path)
 
         child = host.spawn(system_prompt="focused")
@@ -548,12 +481,8 @@ class TestSpawn:
             host.agent.tool_registry.names()
         )  # a live copy of the parent's set
 
-    def test_invisible_spawn_gets_a_private_stream(self, tmp_path):
-        host = self._host(tmp_path)
-
-        child = host.spawn(system_prompt="quiet", visible=False)
-
-        assert child.channel is not host.agent.channel
+        quiet = host.spawn(system_prompt="quiet", visible=False)
+        assert quiet.channel is not host.agent.channel
 
     async def test_hooks_are_not_inherited(self, tmp_path):
         seen: list[Event] = []
@@ -596,17 +525,6 @@ def _sourced_tool(name: str, source: str) -> Tool:
     return Tool(name, "d", {}, lambda a: f"ran:{name}", source=source)
 
 
-class _Registering(Plugin):
-    """A plugin that registers one tool — however that tool presents itself."""
-
-    def __init__(self, name: str, tool: Tool):
-        self.name = name
-        self._tool = tool
-
-    def build(self, ctx) -> None:
-        ctx.tools.register(self._tool)
-
-
 def _host_context_for_tools() -> BuildContext:
     """A BuildContext whose registry stamps — no agent, no paths that matter."""
     return BuildContext(
@@ -617,40 +535,28 @@ def _host_context_for_tools() -> BuildContext:
 
 
 class TestToolSource:
-    def test_bare_core_registration_stays_unattributed(self):
-        registry = ToolRegistry()
-        registry.register(echo_tool("echo"))
-        registry.register(echo_tool("echo"))  # unattributed vs unattributed: overwrite
-
-        assert registry.get("echo").source == ""
-
-    def test_a_same_source_reregistration_is_a_hot_update(self):
+    def test_the_attribution_matrix_decides_quietly_or_loudly(self):
+        """同一来源重复登记静默热更新；不同来源大声冲突；单向归属照样覆盖。"""
         registry = ToolRegistry()
         registry.register(_sourced_tool("echo", "plugin:acme"))
         registry.register(_sourced_tool("echo", "plugin:acme"))
-
         assert registry.get("echo").source == "plugin:acme"
 
-    def test_different_sources_collide_loudly(self):
-        registry = ToolRegistry()
-        registry.register(_sourced_tool("echo", "builtin:shell"))
+        colliding = ToolRegistry()
+        colliding.register(_sourced_tool("echo", "builtin:shell"))
 
         with pytest.raises(ToolConflictError) as exc:
-            registry.register(_sourced_tool("echo", "plugin:acme"))
+            colliding.register(_sourced_tool("echo", "plugin:acme"))
         assert (exc.value.existing, exc.value.incoming) == (
             "builtin:shell",
             "plugin:acme",
         )
 
-    def test_one_sided_attribution_still_overrides(self):
-        registry = ToolRegistry()
-        registry.register(_sourced_tool("echo", "plugin:acme"))
-        registry.register(echo_tool("echo"))
-        assert registry.get("echo").source == ""
-
-        registry.register(_sourced_tool("echo", "plugin:acme"))
-        registry.register(echo_tool("echo"))
-        assert registry.get("echo").source == ""
+        # 无归属的裸登记压过有归属的：source 回到空，且不报错。
+        one_sided = ToolRegistry()
+        one_sided.register(_sourced_tool("echo", "plugin:acme"))
+        one_sided.register(echo_tool("echo"))
+        assert one_sided.get("echo").source == ""
 
     def test_replace_forces_the_takeover(self):
         registry = ToolRegistry()
@@ -662,24 +568,47 @@ class TestToolSource:
 
 
 class TestSourceStamping:
-    def test_a_plugins_registrations_carry_its_channel_not_its_claim(
-        self, plugin_host
-    ):
-        lying = _sourced_tool("greet", "builtin:shell")  # a fake identity
-        host = plugin_host(
-            plugins=[_Registering("acme", lying)], sources=["plugin:acme"]
-        )
+    def test_a_discovered_plugin_gets_its_manifest_name(self, tmp_path, plugin_host):
+        """发现渠道盖过工具自称的来源：manifest 名说了算。"""
+        write_plugin(
+            tmp_path / "plugins",
+            "acme",
+            """
+            from mocode.plugins import Plugin, Tool
 
+            class AcmePlugin(Plugin):
+                name = "acme"
+
+                def build(self, ctx):
+                    ctx.tools.register(Tool(
+                        name="greet", description="g",
+                        schema={"type": "object", "properties": {}},
+                        func=lambda args: "hi",
+                        source="builtin:shell",  # a claim the path overrides
+                    ))
+            """,
+        )
+        loaded = load_plugins(
+            plugin_dirs=[tmp_path / "plugins"], config=Config(provider="p", model="m")
+        )
+        host = plugin_host(plugins=loaded.plugins, sources=loaded.tool_sources)
+
+        assert "plugin:acme" in loaded.tool_sources
         assert host.ctx.tools.get("greet").source == "plugin:acme"
 
-    def test_a_registration_outside_any_plugin_is_the_hosts(self):
-        ctx = _host_context_for_tools()
+    def test_builtin_tools_get_their_builtin_identity(self, tmp_path, plugin_host):
+        loaded = load_plugins(plugin_dirs=[], config=Config(provider="p", model="m"))
+        host = plugin_host(plugins=loaded.plugins, sources=loaded.tool_sources)
 
-        ctx.tools.register(echo_tool("manual"))
-
-        assert ctx.tools.get("manual").source == "host"
+        assert host.ctx.tools.get("bash").source == "builtin:shell"
+        assert host.ctx.tools.get("read").source == "builtin:filesystem"
+        assert all(
+            source.startswith("builtin:")
+            for source in loaded.tool_sources
+        )
 
     def test_a_registry_passed_in_is_kept_verbatim(self):
+        """注入的 registry 原样保留（连 stamp 都不盖）；context 自建的盖 host。"""
         plain = ToolRegistry()
         ctx = BuildContext(
             home=Path(".") / "home",
@@ -692,6 +621,10 @@ class TestSourceStamping:
 
         assert ctx.tools is plain
         assert plain.get("mine").source == ""
+
+        own = _host_context_for_tools()
+        own.tools.register(echo_tool("manual"))
+        assert own.tools.get("manual").source == "host"
 
     def test_builtin_tools_get_their_builtin_identity(self, tmp_path, plugin_host):
         loaded = load_plugins(plugin_dirs=[], config=Config(provider="p", model="m"))

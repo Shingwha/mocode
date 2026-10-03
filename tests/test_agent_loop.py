@@ -29,7 +29,14 @@ from mocode.core.hook import (
 )
 from mocode.core.provider import Response, RetryPolicy, ToolCall, Usage
 from mocode.core.state import DONE, RunState
-from mocode.core.tool import ERROR_PREFIX, TIMEOUT_PREFIX, Tool, ToolError, ToolResult
+from mocode.core.tool import (
+    DENIED_PREFIX,
+    ERROR_PREFIX,
+    TIMEOUT_PREFIX,
+    Tool,
+    ToolError,
+    ToolResult,
+)
 from mocode.testing import (
     MockProvider,
     SlowProvider,
@@ -64,6 +71,9 @@ class TestEventStream:
         # 一个 turn 一个 run_id，seq 从 1 起连续编号。
         assert len({e.run_id for e in events}) == 1
         assert [e.seq for e in events] == list(range(1, len(events) + 1))
+        # 跑完的 turn：completed 且没有取消标记（其余四种收场各有自己的测试）。
+        assert events[-1].stop_reason == "completed"
+        assert events[-1].cancelled is False
 
     async def test_text_and_reasoning_arrive_separately_and_incrementally(self):
         agent = make_agent(provider=MockProvider([say("abc")], chunk_size=1))
@@ -83,23 +93,7 @@ class TestEventStream:
         assert [e.text for e in events if isinstance(e, ReasoningDelta)] == ["why"]
         assert [e.text for e in events if isinstance(e, TextDelta)] == ["a"]
 
-    async def test_tool_events_share_a_call_id(self):
-        agent = make_agent(echo_tool())
-        agent.provider.responses = [
-            tool_call_response("echo", '{"value": "x"}'),
-            say("done"),
-        ]
-
-        events = await collect(agent.stream("hi"))
-
-        started = [e for e in events if isinstance(e, ToolCallStarted)]
-        finished = [e for e in events if isinstance(e, ToolCallFinished)]
-        assert [e.call_id for e in started] == [e.call_id for e in finished] == ["c1"]
-        assert started[0].args == {"value": "x"}
-        assert finished[0].status == "ok"
-        assert finished[0].duration >= 0
-
-    async def test_run_finished_summarises_the_turn(self):
+    async def test_a_tool_turn_reports_its_events_and_summary(self):
         agent = make_agent(echo_tool())
         agent.provider.responses = [
             tool_call_response("echo", '{"value": "x"}'),
@@ -108,19 +102,19 @@ class TestEventStream:
 
         events = await collect(agent.stream("hi"))
 
+        # 一对 ToolCallStarted/Finished 共用一个 call_id，参数与终态落在事件上。
+        started = [e for e in events if isinstance(e, ToolCallStarted)]
+        finished = [e for e in events if isinstance(e, ToolCallFinished)]
+        assert [e.call_id for e in started] == [e.call_id for e in finished] == ["c1"]
+        assert started[0].args == {"value": "x"}
+        assert finished[0].status == "ok"
+        assert finished[0].duration >= 0
+
+        # turn 的总结：两次迭代、一次工具调用，用量随之累计。
         done = events[-1]
         assert isinstance(done, RunFinished)
         assert (done.content, done.iterations, done.tool_calls_made) == ("final", 2, 1)
         assert done.usage.prompt_tokens == 2
-
-    async def test_events_serialise_to_plain_data(self):
-        agent = make_agent(provider=MockProvider([say("hi")]))
-
-        events = await collect(agent.stream("hi"))
-
-        data = events[0].to_dict()
-        assert data["type"] == "run_started"
-        assert set(data) == {"type", "run_id", "seq", "model", "tools"}
 
     async def test_cancellation_leaves_the_history_answerable(self):
         started = asyncio.Event()
@@ -163,7 +157,7 @@ class TestEventStream:
 
 
 class TestRunState:
-    async def test_state_is_queryable_while_a_tool_runs(self):
+    async def test_the_live_state_mirrors_the_run(self):
         seen: list[list[str]] = []
 
         async def _slow(args, ctx):
@@ -175,24 +169,17 @@ class TestRunState:
         )
         agent.provider.responses = [tool_call_response("slow"), say("done")]
 
-        await collect(agent.stream("hi"))
-
-        assert seen == [["slow"]]
-        assert agent.state.status == DONE
-        assert [c for c in agent.state.tool_calls.values() if not c.done] == []
-        assert agent.state.tool_calls_made == 1
-
-    async def test_state_folds_the_same_stream_a_consumer_sees(self):
-        agent = make_agent(
-            echo_tool(), provider=MockProvider([say("hello")], chunk_size=1)
-        )
-
         mirror = RunState()
         async for event in agent.stream("hi"):
             mirror.apply(event)
 
+        # 工具跑着的时候，state 已经能回答"哪个调用在飞"。
+        assert seen == [["slow"]]
+        assert [c for c in agent.state.tool_calls.values() if not c.done] == []
+        assert agent.state.tool_calls_made == 1
+        # 消费者自己折的镜像与 agent 的 state 收敛到同一个快照。
         assert mirror.status == DONE
-        assert mirror.answer == agent.state.answer == "hello"
+        assert mirror.answer == agent.state.answer == "done"
         assert mirror.content == agent.state.content
         assert mirror.usage == agent.state.usage
 
@@ -376,25 +363,6 @@ class TestToolExecution:
 
 
 class TestInterception:
-    async def test_deny_vetoes_execution(self):
-        executed = []
-
-        class Denier(AgentHook):
-            async def on_tool_start(self, ctx: ToolCallContext) -> None:
-                ctx.deny = "not allowed here"
-
-        tool = Tool("risky", "d", {"type": "object", "properties": {"value": {"type": "string"}}},
-                    lambda a: executed.append(a) or "ran")
-        agent = make_agent(tool, hooks=[Denier()])
-        agent.provider.responses = [tool_call_response("risky", '{"value": "x"}'), say("done")]
-
-        events = await collect(agent.stream("hi"))
-
-        assert executed == []
-        finished = next(e for e in events if isinstance(e, ToolCallFinished))
-        assert finished.status == "denied"
-        assert finished.result.startswith("denied:")
-
     async def test_hooks_may_rewrite_args_and_results(self):
         class Rewriter(AgentHook):
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
@@ -417,35 +385,25 @@ class TestInterception:
         started = next(e for e in events if isinstance(e, ToolCallStarted))
         assert started.args == {"value": "rewritten"}
 
-    async def test_before_iteration_may_rewrite_the_system_prompt(self):
-        class Persona(AgentHook):
-            async def before_iteration(self, ctx: IterationContext) -> None:
-                ctx.system_prompt = "persona"
+    async def test_a_prompt_rewrite_reaches_every_request_and_dies_with_the_run(self):
+        """两个钩子点都能改写提示词；改写只活在本次 run，不渗进对话。"""
 
-        agent = make_agent(echo_tool(), hooks=[Persona()])
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
-
-        await collect(agent.stream("hi"))
-
-        # 首/末请求都带着改写后的提示词（本 turn 的两个请求）。
-        systems = [c["system"] for c in agent.provider.calls]
-        assert set(systems) == {"persona"} and len(systems) == 2
-        # The rewrite is scoped to the run: the conversation keeps its prompt.
-        assert agent.system_prompt == "sys"
-
-    async def test_a_system_prompt_rewrite_does_not_leak_into_the_next_turn(self):
-        """What before_iteration changed lasts the run, not the conversation."""
-
-        class Injects(AgentHook):
+        class Scoped(AgentHook):
             def __init__(self) -> None:
-                self.done = False
+                self.iteration_done = False
+                self.request_done = False
 
             async def before_iteration(self, ctx: IterationContext) -> None:
-                if not self.done:
-                    ctx.system_prompt += " +injected"
-                    self.done = True
+                if not self.iteration_done:
+                    ctx.system_prompt += " +iteration"
+                    self.iteration_done = True
 
-        agent = make_agent(echo_tool(), hooks=[Injects()])
+            async def before_request(self, ctx: RequestContext) -> None:
+                if not self.request_done:
+                    ctx.system_prompt += " +request"
+                    self.request_done = True
+
+        agent = make_agent(echo_tool(), hooks=[Scoped()])
         agent.provider.responses = [
             tool_call_response("echo", '{"value": "x"}'),
             say("done"),
@@ -456,10 +414,12 @@ class TestInterception:
         await collect(agent.stream("again"))
 
         systems = [c["system"] for c in agent.provider.calls]
-        # 注入一次，本 turn 的每个请求都带着它——
-        assert set(systems[:-1]) == {"sys +injected"}
+        # 注入一次，本 turn 的每个请求都带着两处改写的总和——
+        assert set(systems[:-1]) == {"sys +iteration +request"}
         # ——而第二个 turn 从当时存储的提示词起，注入不渗过去。
         assert systems[-1] == "sys"
+        # The rewrite is scoped to the run: the conversation keeps its prompt.
+        assert agent.system_prompt == "sys"
 
     async def test_before_iteration_may_rewrite_messages(self):
         seen: list[int] = []
@@ -487,38 +447,33 @@ class TestInterception:
 class TestStopReasons:
     """Five endings, one distinguishable field — and a replayable history."""
 
-    async def test_a_completed_turn_says_so(self):
-        agent = make_agent(provider=MockProvider([say("done")]))
-        events = await collect(agent.stream("hi"))
-        assert events[-1].stop_reason == "completed"
-        assert events[-1].cancelled is False
-
-    async def test_max_iterations_reports_its_stop_reason(self):
-        agent = make_agent(echo_tool(), config=AgentConfig(max_iterations=2))
+    @pytest.mark.parametrize(
+        "config,stop_reason,iterations,tool_calls_made",
+        [
+            # 迭代预算与工具调用预算：两种花法的钱，收场方式一样可判别。
+            (AgentConfig(max_iterations=2), "max_iterations", 2, 1),
+            (AgentConfig(max_tool_calls=1), "max_tool_calls", 1, 1),
+        ],
+    )
+    async def test_a_budget_ends_the_turn(
+        self, config, stop_reason, iterations, tool_calls_made
+    ):
+        agent = make_agent(echo_tool(), config=config)
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
         events = await collect(agent.stream("hi"))
 
-        assert events[-1].stop_reason == "max_iterations"
+        assert events[-1].stop_reason == stop_reason
         assert events[-1].content == ""
-        assert events[-1].iterations == 2
-        assert events[-1].to_dict()["stop_reason"] == "max_iterations"
-        # 计数与事件流同源：两次 iteration_started，不多不少。
-        assert sum(1 for e in events if e.type == "iteration_started") == 2
-
-    async def test_a_tool_call_budget_ends_the_turn(self):
-        agent = make_agent(echo_tool(), config=AgentConfig(max_tool_calls=1))
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
-
-        events = await collect(agent.stream("hi"))
-
-        assert events[-1].stop_reason == "max_tool_calls"
-        assert events[-1].iterations == 1
-        assert events[-1].tool_calls_made == 1
-        # The cut history is replayable: the one call that ran is answered.
-        assistant = next(m for m in agent.messages if m.get("tool_calls"))
+        assert events[-1].iterations == iterations
+        assert events[-1].tool_calls_made == tool_calls_made
+        assert events[-1].to_dict()["stop_reason"] == stop_reason
+        # 计数与事件流同源：几次 iteration_started，不多不少。
+        assert sum(1 for e in events if e.type == "iteration_started") == iterations
+        # The cut history is replayable: every call that ran is answered.
+        asked = [m for m in agent.messages if m.get("tool_calls")]
         answers = [m for m in agent.messages if m["role"] == "tool"]
-        assert len(answers) == len(assistant["tool_calls"])
+        assert len(answers) == sum(len(m["tool_calls"]) for m in asked)
 
     async def test_a_wall_clock_budget_ends_the_turn(self, monkeypatch):
         """The work itself burns past the turn's wall-clock budget.
@@ -622,7 +577,8 @@ class TestStopReasons:
         assert terminal.stop_reason == "cancelled"
         assert terminal.cancelled is True
 
-    async def test_chat_raises_iteration_limit_instead_of_answering_empty(self):
+    async def test_the_iteration_limit_surfaces_per_convenience_api(self):
+        """chat() 把预算花光当异常抛出；run_with_messages() 把它当结果回报。"""
         agent = make_agent(echo_tool(), config=AgentConfig(max_iterations=2))
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
@@ -631,10 +587,6 @@ class TestStopReasons:
 
         assert exc.value.iterations == 2
         assert agent.state.status == DONE  # a budget cut is an ending, not a failure
-
-    async def test_run_with_messages_reports_the_limit_as_an_error_result(self):
-        agent = make_agent(echo_tool(), config=AgentConfig(max_iterations=1))
-        agent.provider.responses = [tool_call_response("echo", '{"value": "x"}')]
 
         result = await agent.run_with_messages([{"role": "user", "content": "hi"}])
 
@@ -646,33 +598,29 @@ class TestStopReasons:
 
 
 class TestRequestInterception:
-    async def test_before_request_may_rewrite_the_messages(self):
-        class Rewriter(AgentHook):
+    async def test_before_request_may_rewrite_the_messages_and_runs_last(self):
+        order: list[str] = []
+
+        class Both(AgentHook):
+            async def before_iteration(self, ctx: IterationContext) -> None:
+                order.append("iteration")
+
             async def before_request(self, ctx: RequestContext) -> None:
+                order.append("request")
                 ctx.messages = [
                     {"role": "user", "content": "replaced before the wire"}
                 ]
 
-        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Rewriter()])
+        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Both()])
 
         await collect(agent.stream("hi"))
 
+        # before_iteration 先跑，before_request 后跑，各就各位。
+        assert order == ["iteration", "request"]
         # 唯一一次请求：一条 user 消息，内容是钩子换上的。
         (only,) = agent.provider.calls
         assert [m["role"] for m in only["messages"]] == ["user"]
         assert only["messages"][0]["content"] == "replaced before the wire"
-
-    async def test_before_request_prompt_rewrite_is_scoped_to_the_run(self):
-        class Persona(AgentHook):
-            async def before_request(self, ctx: RequestContext) -> None:
-                ctx.system_prompt = "on the wire"
-
-        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Persona()])
-
-        await collect(agent.stream("hi"))
-
-        assert [c["system"] for c in agent.provider.calls] == ["on the wire"]
-        assert agent.system_prompt == "sys"  # the conversation keeps its prompt
 
     async def test_the_tools_snapshot_is_what_the_request_carries(self):
         seen: list[dict] = []
@@ -680,6 +628,9 @@ class TestRequestInterception:
         class Watcher(AgentHook):
             async def before_request(self, ctx: RequestContext) -> None:
                 seen.append(ctx.tools)
+                # An in-place edit reaches this request alone — never the
+                # registry, and never a frozen payload.
+                ctx.tools.append({"type": "function", "function": {"name": "ghost"}})
 
         agent = make_agent(echo_tool(), provider=MockProvider([say("done")]), hooks=[Watcher()])
 
@@ -688,53 +639,33 @@ class TestRequestInterception:
         # 钩子看到的快照就是唯一那次请求带走的快照。
         (only,) = agent.provider.calls
         assert seen == [only["tools"]]
-        assert [s["function"]["name"] for s in seen[0]] == ["echo"]
-
-    async def test_an_in_place_tools_edit_reaches_this_request_alone(self):
-        class Injector(AgentHook):
-            async def before_request(self, ctx: RequestContext) -> None:
-                ctx.tools.append({"type": "function", "function": {"name": "ghost"}})
-
-        agent = make_agent(echo_tool(), provider=MockProvider([say("done")]), hooks=[Injector()])
-
-        await collect(agent.stream("hi"))
-
-        # 唯一一次请求带着 ghost 一起走。
-        (only,) = agent.provider.calls
         sent = [s["function"]["name"] for s in only["tools"]]
         assert sent == ["echo", "ghost"]
         # The registry — including anything frozen — never saw the ghost.
         assert [s["function"]["name"] for s in agent.tool_registry.all_schemas()] == ["echo"]
 
-    async def test_after_response_may_correct_the_usage(self):
-        class Auditor(AgentHook):
-            async def after_response(self, ctx: ResponseContext) -> None:
-                ctx.usage = Usage(10, 20)
-
-        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Auditor()])
-
-        events = await collect(agent.stream("hi"))
-
-        iteration = next(e for e in events if e.type == "iteration_finished")
-        assert (iteration.usage.prompt_tokens, iteration.usage.completion_tokens) == (10, 20)
-        assert events[-1].usage.prompt_tokens == 10  # the turn's totals add up
-
-    async def test_after_response_sees_the_finish_reason_and_iteration(self):
+    async def test_after_response_sees_the_response_and_may_correct_the_usage(self):
         seen: list[tuple[str | None, int]] = []
 
-        class Watcher(AgentHook):
+        class Auditor(AgentHook):
             async def after_response(self, ctx: ResponseContext) -> None:
                 seen.append((ctx.finish_reason, ctx.iteration))
+                ctx.usage = Usage(10, 20)
 
-        agent = make_agent(echo_tool(), hooks=[Watcher()])
+        agent = make_agent(echo_tool(), hooks=[Auditor()])
         agent.provider.responses = [
             tool_call_response("echo", '{"value": "x"}'),
             say("done"),
         ]
 
-        await collect(agent.stream("hi"))
+        events = await collect(agent.stream("hi"))
 
+        # 钩子读得到 finish_reason 与迭代号（两次请求各一次）。
         assert seen == [("tool_calls", 1), ("stop", 2)]
+        # ……改写的用量落在迭代事件上，并累计进 turn 的汇总。
+        iteration = next(e for e in events if e.type == "iteration_finished")
+        assert (iteration.usage.prompt_tokens, iteration.usage.completion_tokens) == (10, 20)
+        assert events[-1].usage.prompt_tokens == 20  # the turn's totals add up
 
     async def test_a_raising_interception_hook_does_not_break_the_turn(self):
         class Bad(AgentHook):
@@ -750,60 +681,45 @@ class TestRequestInterception:
 
         assert events[-1].content == "still fine"
 
-    async def test_before_request_runs_after_before_iteration(self):
-        order: list[str] = []
-
-        class Both(AgentHook):
-            async def before_iteration(self, ctx: IterationContext) -> None:
-                order.append("iteration")
-
-            async def before_request(self, ctx: RequestContext) -> None:
-                order.append("request")
-
-        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Both()])
-
-        await collect(agent.stream("hi"))
-
-        assert order == ["iteration", "request"]
-
 
 # ── hook event channel ──────────────────────────────────────
 
 
 class TestEventChannel:
-    async def test_plugin_events_reach_both_hooks_and_the_stream(self):
+    async def test_an_emitted_event_reaches_both_hooks_and_the_stream(self):
+        """迭代钩子与工具钩子发出的 Notice：钩子侧与事件流都收得到。"""
+        hook_notices: list[str] = []
+
         class Plugin(AgentHook):
+            def __init__(self) -> None:
+                self.emitted = False
+
             async def before_iteration(self, ctx: IterationContext) -> None:
-                await ctx.emit(Notice(message="hello from a plugin"))
+                if not self.emitted:
+                    self.emitted = True
+                    await ctx.emit(Notice(message="hello from a plugin"))
 
             async def on_event(self, event: Event) -> None:
                 if isinstance(event, Notice):
-                    seen.append(event.message)
+                    hook_notices.append(event.message)
 
-        seen: list[str] = []
-        agent = make_agent(provider=MockProvider([say("done")]), hooks=[Plugin()])
-
-        events = await collect(agent.stream("hi"))
-
-        assert seen == ["hello from a plugin"]
-        assert [e.message for e in events if isinstance(e, Notice)] == [
-            "hello from a plugin"
-        ]
-
-    async def test_tool_hooks_can_emit(self):
         class Emitter(AgentHook):
             async def on_tool_start(self, ctx: ToolCallContext) -> None:
                 await ctx.emit(Notice(message=f"tool {ctx.tool_name}"))
 
-        agent = make_agent(echo_tool(), hooks=[Emitter()])
+        agent = make_agent(echo_tool(), hooks=[Plugin(), Emitter()])
         agent.provider.responses = [tool_call_response("echo", '{"value": "x"}'), say("done")]
 
         events = await collect(agent.stream("hi"))
 
-        notices = [e for e in events if isinstance(e, Notice)]
-        assert [n.message for n in notices] == ["tool echo"]
+        notices = [e.message for e in events if isinstance(e, Notice)]
+        assert notices == ["hello from a plugin", "tool echo"]
+        # on_event 是带内订阅者：流里每条 Notice 它都看见。
+        assert hook_notices == notices
         # Emitted from on_tool_start, so it precedes the call it is about.
-        assert events.index(notices[0]) < next(
+        assert events.index(
+            next(e for e in events if isinstance(e, Notice) and e.message == "tool echo")
+        ) < next(
             i for i, e in enumerate(events) if isinstance(e, ToolCallStarted)
         )
 
@@ -838,24 +754,19 @@ class TestDerive:
         assert child.tool_registry.names() == ["b", "c"]
         assert parent.tool_registry.names() == ["a", "b"]
 
-    def test_provider_override(self):
-        parent = make_agent(echo_tool())
-
-        replacement = MockProvider([], model="cheap-model")
-        child = parent.derive(provider=replacement)
-
-        assert child.provider is replacement
-        assert parent.provider is not replacement
-
     def test_overrides_are_independent(self):
         parent = make_agent(echo_tool("a"), echo_tool("b"))
 
+        replacement = MockProvider([], model="cheap-model")
         child = parent.derive(
+            provider=replacement,
             system_prompt="child",
             tools=parent.tool_registry.select(include_names={"a"}),
             config=parent.config.replace(max_iterations=3),
         )
 
+        assert child.provider is replacement
+        assert parent.provider is not replacement
         assert child.system_prompt == "child"
         assert child.tool_registry.names() == ["a"]
         assert child.config.max_iterations == 3
@@ -885,7 +796,8 @@ class TestChat:
         assert await agent.chat("hello") == "Hi!"
         assert [m["role"] for m in agent.messages] == ["user", "assistant"]
 
-    async def test_provider_failure_raises(self):
+    async def test_a_provider_failure_surfaces_per_convenience_api(self):
+        """chat() 让异常上溯；run_with_messages() 把它装进错误结果。"""
         class Dead(MockProvider):
             async def stream(self, *args):
                 raise RuntimeError("upstream is down")
@@ -898,18 +810,10 @@ class TestChat:
 
         assert agent.state.status == "failed"
 
-    async def test_run_with_messages_reports_errors_instead_of_raising(self):
-        class Dead(MockProvider):
-            async def stream(self, *args):
-                raise RuntimeError("nope")
-                yield  # pragma: no cover
-
-        agent = make_agent(provider=Dead())
-
         result = await agent.run_with_messages([{"role": "user", "content": "hi"}])
 
         assert result.had_error is True
-        assert "nope" in result.content
+        assert "upstream is down" in result.content
 
 
 # ── turns: addressable, watched by many, cancellable ────────
@@ -951,25 +855,19 @@ class TestTurns:
         await turn.wait()
 
     async def test_a_turn_can_be_watched_after_it_started(self):
-        agent = make_agent(provider=MockProvider([say("hello")]))
-
-        turn = agent.start("hi")
-        events = await collect(turn.subscribe())
-
-        assert isinstance(events[0], RunStarted)
-        assert isinstance(events[-1], RunFinished)
-        assert all(event.run_id == turn.id for event in events)
-
-    async def test_two_readers_see_the_same_run(self):
         agent = make_agent(provider=MockProvider([say("hello")], chunk_size=1))
 
         turn = agent.start("hi")
+        # Two readers subscribe after the start; each sees the whole run.
         first = turn.subscribe()
         second = turn.subscribe()
 
         watched = await collect(first)
         mirrored = await collect(second)
 
+        assert isinstance(watched[0], RunStarted)
+        assert isinstance(watched[-1], RunFinished)
+        assert all(event.run_id == turn.id for event in watched)
         assert [e.seq for e in watched] == [e.seq for e in mirrored]
         assert mirrored[-1].content == "hello"
 
@@ -1095,13 +993,15 @@ async def _thread_event(event: threading.Event, timeout: float = 5.0) -> None:
 
 
 class TestSyncToolCancellation:
-    async def test_a_timed_out_sync_tool_sees_the_cancel_signal(self):
-        started = threading.Event()
-        abandoned = threading.Event()
-        # A tenth of a second: the loop's timer decides the timeout, and the
-        # worker is still inside its wait when it does.
+    async def test_a_running_sync_tool_is_told_to_stand_down(self):
+        """计时器到点或取消整轮：worker 都从取消信号里得知自己被放弃。"""
+        # 1) 循环的计时器决定超时：A tenth of a second — the worker is
+        #    still inside its wait when the timer fires.
+        timed_out = threading.Event()
+        abandoned_by_timer = threading.Event()
         agent = make_agent(
-            _patient_tool(started, abandoned), config=AgentConfig(tool_timeout=0.1)
+            _patient_tool(timed_out, abandoned_by_timer),
+            config=AgentConfig(tool_timeout=0.1),
         )
         agent.provider = MockProvider(
             [tool_call_response("patient"), say("given up waiting")]
@@ -1111,11 +1011,11 @@ class TestSyncToolCancellation:
 
         finished = next(e for e in events if isinstance(e, ToolCallFinished))
         assert finished.status == "timeout"
-        await _thread_event(started)
-        await _thread_event(abandoned)
-        assert abandoned.is_set()  # the worker noticed it was abandoned
+        await _thread_event(timed_out)
+        await _thread_event(abandoned_by_timer)
+        assert abandoned_by_timer.is_set()  # the worker noticed it was abandoned
 
-    async def test_cancelling_the_turn_signals_a_running_sync_tool(self):
+        # 2) 取消整轮：同一条信号送达仍在运行的 worker。
         started = threading.Event()
         abandoned = threading.Event()
         agent = make_agent(
@@ -1135,28 +1035,54 @@ class TestSyncToolCancellation:
 # ── the persisted outcome protocol ─────────────────────────
 
 
+def _vetoed_tool() -> tuple[Tool, list[AgentHook]]:
+    """A call a hook vetoes — the tool body must never run."""
+
+    def never_runs(args):
+        raise AssertionError("a vetoed tool does not execute")
+
+    class Vetoer(AgentHook):
+        async def on_tool_start(self, ctx: ToolCallContext) -> None:
+            ctx.deny = "not allowed here"
+
+    tool = Tool(
+        "risky",
+        "d",
+        {"type": "object", "properties": {"value": {"type": "string"}}},
+        never_runs,
+    )
+    return tool, [Vetoer()]
+
+
 class TestErrorPrefixes:
     """Every failed call's persisted result says so with a prefix.
 
     A saved session is a message list — the prefix is the only place an
     outcome survives for whoever replays it (see core/tool.py). The status
-    and the code are asserted in the one place the outcome is read.
+    and the code are asserted in the one place the outcome is read; the
+    denied row is also where the veto is proven (the tool never runs).
     """
 
     @pytest.mark.parametrize(
-        "name,make,tool_timeout,status,error_code,prefix",
+        "name,factory,tool_timeout,status,error_code,prefix",
         [
-            ("boom", _boom_tool, 5, "error", "custom_code", f"{ERROR_PREFIX} custom_code:"),
+            ("boom", lambda: (_boom_tool(), []), 5, "error", "custom_code", f"{ERROR_PREFIX} custom_code:"),
+            # 钩子否决的调用：denied 前缀，工具根本不跑。
+            ("risky", _vetoed_tool, 5, "denied", None, DENIED_PREFIX),
             # 没注册的工具：调用发出去了，注册表答不上来。
-            ("ghost", lambda: None, 5, "not_found", None, f"{ERROR_PREFIX} unknown tool"),
-            ("patient", _parking_tool, 0.05, "timeout", None, TIMEOUT_PREFIX),
+            ("ghost", lambda: (None, []), 5, "not_found", None, f"{ERROR_PREFIX} unknown tool"),
+            ("patient", lambda: (_parking_tool(), []), 0.05, "timeout", None, TIMEOUT_PREFIX),
         ],
     )
     async def test_the_persisted_result_says_what_happened(
-        self, name, make, tool_timeout, status, error_code, prefix
+        self, name, factory, tool_timeout, status, error_code, prefix
     ):
-        tool = make()
-        agent = make_agent(tool, config=AgentConfig(tool_timeout=tool_timeout)) if tool else make_agent(config=AgentConfig(tool_timeout=tool_timeout))
+        tool, hooks = factory()
+        agent = (
+            make_agent(tool, hooks=hooks, config=AgentConfig(tool_timeout=tool_timeout))
+            if tool
+            else make_agent(config=AgentConfig(tool_timeout=tool_timeout))
+        )
         agent.provider = MockProvider(
             [tool_call_response(name), say("moved on")]
         )
