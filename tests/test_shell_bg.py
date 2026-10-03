@@ -65,16 +65,15 @@ async def _start(bash, command: str) -> str:
     return result.details["shell_id"]
 
 
-def _quick_window(monkeypatch) -> None:
-    """Compress the plugin's coalescing window for the announcement tests.
+def _quick_window(monkeypatch, seconds: float) -> None:
+    """Compress the plugin's coalescing window for one announcement.
 
-    What the window buys — same-moment finishers share one entry, a later
-    burst gets its own — is a property of *ordering*, and these tests prove
-    it by waiting for the announcement, never by watching a clock: the jobs
-    of one burst finish within milliseconds of each other, so a hundredth
-    of a second coalesces them exactly as three tenths would. The only
-    thing dropped is the wall clock the suite would otherwise spend.
-    """
+    Only safe where a *single* job is announced — the window is then pure
+    latency, not the coalescing rule. The tests that prove the coalescing
+    itself (two finishers sharing one entry) keep the product's window,
+    because how far apart two spawned children finish is exactly what it
+    is meant to absorb."""
+
     from mocode.host.plugin.builtin.shell import session as shell_session
 
     monkeypatch.setattr(shell_session, "_NOTIFY_WINDOW", 0.05)
@@ -336,7 +335,7 @@ class TestLimits:
     async def test_a_background_deadline_times_the_job_out(
         self, mc, tmp_path: Path, monkeypatch
     ):
-        _quick_window(monkeypatch)
+        _quick_window(monkeypatch, 0.05)
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
 
@@ -441,11 +440,10 @@ class TestCompletionNotification:
         return found
 
     async def test_a_burst_of_finishers_announces_as_one_block(
-        self, mc, tmp_path: Path, monkeypatch
+        self, mc, tmp_path: Path
     ):
         """The two sides of the coalescing window: same-moment finishers
         share one announcement, a later burst gets a block of its own."""
-        _quick_window(monkeypatch)
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
 
@@ -493,13 +491,12 @@ class TestCompletionNotification:
         conversation.close(save=False)
 
     async def test_no_announcement_while_a_turn_is_running(
-        self, wired, tmp_path: Path, monkeypatch
+        self, wired, tmp_path: Path
     ):
         """The model reads what it started; the announcement waits for idle —
         its empty run_id proves it was said between turns."""
-        _quick_window(monkeypatch)
         conversation, _ = wired(
-            call_tool("bash", {"command": "sleep 0.3"}), "done"
+            call_tool("bash", {"command": "sleep 0.4"}), "done"
         )
         bash = conversation.tools.get("bash")
 
