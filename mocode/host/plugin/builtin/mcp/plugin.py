@@ -40,15 +40,17 @@ def _render_mcp_servers(
     namespace, how its tools are reached (``direct`` to the model,
     ``codemode`` otherwise) and a one-line description — the configured one,
     else the first line of the server instructions once connected. A
-    connected server additionally lists its tools' raw names (the registry,
-    decision D12) on an indented continuation line — a catalogue, not a
-    manual: usage stays with ``describe_tool()`` in a codemode script. Only
-    callable names make the list — the program audience's projection of the
-    registry drops ``hidden`` per-tool entries, never advertising a name the
-    run would refuse. A server still connecting keeps the one-line form, and
-    a list longer than ``_PROMPT_TOOL_NAME_LIMIT`` truncates with a
-    ``search_tools()`` pointer. No servers → an empty render, and the prompt
-    skips the section.
+    connected server additionally lists its tools' registered full names
+    (``mcp__<server>__<tool>`` — the one spelling a script calls them by,
+    and the catalogue's) on an indented continuation line — a catalogue,
+    not a manual: usage stays with ``describe_tool()`` in a codemode
+    script. Only callable names make the list — the program audience's
+    projection of the registry drops ``hidden`` per-tool entries, never
+    advertising a name the run would refuse. A server still connecting
+    keeps the one-line form, and a list longer than
+    ``_PROMPT_TOOL_NAME_LIMIT`` truncates with a ``search_tools()``
+    pointer. No servers → an empty render, and the prompt skips the
+    section.
     """
 
     def render(builder_context: dict[str, Any]) -> str:
@@ -71,9 +73,7 @@ def _render_mcp_servers(
             lines.append(line)
             registered = runtime._registered.get(key, {})
             if session is not None and session.state == STATE_CONNECTED and registered:
-                names = sorted(
-                    raw for full, raw in registered.items() if full in visible
-                )
+                names = sorted(full for full in registered if full in visible)
                 if not names:
                     continue
                 if len(names) > _PROMPT_TOOL_NAME_LIMIT:
