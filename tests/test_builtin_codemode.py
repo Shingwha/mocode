@@ -75,6 +75,44 @@ def _slow_tool(delay: float) -> Tool:
     )
 
 
+def _order_tool(name: str, log: list) -> Tool:
+    """A tool that records its start and end in *log* — for order assertions."""
+
+    async def order_tool(args):
+        log.append(f"{name}:start")
+        await asyncio.sleep(0.05)
+        log.append(f"{name}:end")
+        return name
+
+    return Tool(
+        name=name,
+        description=name,
+        schema={"type": "object", "properties": {}},
+        func=order_tool,
+    )
+
+
+def _gate_tool(
+    name: str, started: list, both_started: asyncio.Event, release: asyncio.Event
+) -> Tool:
+    """A tool that returns only once *release* is set; two of these getting
+    started proves the calls ran concurrently."""
+
+    async def gate_tool(args):
+        started.append(name)
+        if len(started) == 2:
+            both_started.set()
+        await release.wait()
+        return name
+
+    return Tool(
+        name=name,
+        description=name,
+        schema={"type": "object", "properties": {}},
+        func=gate_tool,
+    )
+
+
 # ── T1: runtime ─────────────────────────────────────────────
 
 
@@ -806,6 +844,7 @@ class TestRank:
 # ── T4: plugin + description ────────────────────────────────
 
 
+from mocode.core.events import Notice
 from mocode.core.hook import ToolCallContext
 from mocode.host.plugin.builtin.codemode import PLUGIN, CodemodePlugin
 from mocode.host.plugin.builtin.codemode.description import DESCRIPTION
@@ -1048,6 +1087,88 @@ class TestRunTool:
         assert "timed_out" not in result.details
         assert "Script error (line 1): TimeoutError: self-inflicted" in result.content
         assert "Script timed out" not in result.content
+
+    async def test_concurrency_cap_serializes_calls(self, plugin_host):
+        # D5: max_concurrency=1 — the second call waits for the first to
+        # finish, even under gather.
+        log = []
+        registry = ToolRegistry()
+        registry.register(_order_tool("slow_a", log))
+        registry.register(_order_tool("slow_b", log))
+        host = plugin_host(
+            plugins=[PLUGIN],
+            tools=registry,
+            config_kwargs={"plugins": {"codemode": {"max_concurrency": 1}}},
+        )
+        result = await self._run(
+            host, "await asyncio.gather(tools.slow_a({}), tools.slow_b({}))"
+        )
+        assert result.details["ok"] is True
+        assert log == ["slow_a:start", "slow_a:end", "slow_b:start", "slow_b:end"]
+
+    async def test_no_cap_runs_calls_concurrently(self, plugin_host):
+        # The default (no max_concurrency) is unchanged: both calls are in
+        # flight before either returns.
+        started: list = []
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        registry = ToolRegistry()
+        registry.register(_gate_tool("gate_a", started, both_started, release))
+        registry.register(_gate_tool("gate_b", started, both_started, release))
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        tool = host.ctx.tools.get("codemode")
+        args = {
+            "script": "await asyncio.gather(tools.gate_a({}), tools.gate_b({}))"
+        }
+        ctx = ToolCallContext(
+            tool_name="codemode", tool_args=args, tool_call_id="call_cm_conc"
+        )
+        task = asyncio.create_task(tool.run_async(args, ctx))
+        await asyncio.wait_for(both_started.wait(), 5)
+        release.set()
+        result = await task
+        assert result.details["ok"] is True
+        assert sorted(started) == ["gate_a", "gate_b"]
+
+    @pytest.mark.parametrize("raw", [0, -3, "2", 2.0, True, []])
+    async def test_invalid_concurrency_reported_and_ignored(self, plugin_host, raw):
+        # D5: an unusable max_concurrency is reported once per conversation
+        # and ignored — the calls still run uncapped.
+        started: list = []
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        registry = ToolRegistry()
+        registry.register(_gate_tool("gate_a", started, both_started, release))
+        registry.register(_gate_tool("gate_b", started, both_started, release))
+        host = plugin_host(
+            plugins=[PLUGIN],
+            tools=registry,
+            config_kwargs={"plugins": {"codemode": {"max_concurrency": raw}}},
+        )
+        tool = host.ctx.tools.get("codemode")
+        args = {
+            "script": "await asyncio.gather(tools.gate_a({}), tools.gate_b({}))"
+        }
+        ctx = ToolCallContext(
+            tool_name="codemode", tool_args=args, tool_call_id="call_cm_bad"
+        )
+        task = asyncio.create_task(tool.run_async(args, ctx))
+        await asyncio.wait_for(both_started.wait(), 5)
+        release.set()
+        result = await task
+        assert result.details["ok"] is True
+        notices = [
+            e for e in host.ctx.agent.channel.history() if isinstance(e, Notice)
+        ]
+        assert len(notices) == 1
+        assert "max_concurrency" in notices[0].message
+        # the warning is once per conversation, not per call
+        result = await self._run(host, "pass")
+        assert result.details["ok"] is True
+        notices = [
+            e for e in host.ctx.agent.channel.history() if isinstance(e, Notice)
+        ]
+        assert len(notices) == 1
 
     async def test_failing_tool_call_fails_script(self, plugin_host):
         registry = ToolRegistry()

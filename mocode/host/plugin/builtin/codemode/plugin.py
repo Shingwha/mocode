@@ -16,6 +16,7 @@ import re
 import time
 from typing import TYPE_CHECKING
 
+from .....core.events import Notice
 from .....core.tool import Tool, ToolPolicy, ToolResult
 from ...base import Plugin
 from .api import (
@@ -89,6 +90,8 @@ def _deadline_seconds(options: dict, config: dict) -> float | None:
 def codemode_tool(host: "HostContext") -> Tool:
     """The ``codemode`` tool — closures over the host, stateless plugin."""
 
+    concurrency_warned = False  # one warning per conversation, not per call
+
     def policy(args: dict) -> ToolPolicy:
         """Whole-script deadline handed to the dispatcher: explicit options,
         then the `@options` comment, then ``plugins.codemode.timeout_s``;
@@ -99,6 +102,7 @@ def codemode_tool(host: "HostContext") -> Tool:
         )
 
     async def run(args: dict, call_ctx: "ToolCallContext") -> ToolResult:
+        nonlocal concurrency_warned
         script = args["script"]
         options = effective_options(script, args.get("options"))
         config = host.plugin_config("codemode")
@@ -112,12 +116,37 @@ def codemode_tool(host: "HostContext") -> Tool:
                 "store_max_total_chars", DEFAULT_STORE_MAX_TOTAL_CHARS
             ),
         )
+        # D5: an optional fan-out cap. Absent means unlimited; anything that
+        # is not a positive integer is reported once and ignored.
+        raw_limit = config.get("max_concurrency")
+        max_concurrency = None
+        if raw_limit is not None:
+            if (
+                isinstance(raw_limit, bool)
+                or not isinstance(raw_limit, int)
+                or raw_limit <= 0
+            ):
+                if not concurrency_warned:
+                    concurrency_warned = True
+                    await host.emit(
+                        Notice(
+                            message=(
+                                "plugins.codemode.max_concurrency must be a "
+                                f"positive integer, got {raw_limit!r} "
+                                "— running without a concurrency cap."
+                            ),
+                            level="warn",
+                        )
+                    )
+            else:
+                max_concurrency = raw_limit
         env, toolbox = build_env(
             host.tools,
             host.agent.dispatcher,
             call_ctx.tool_call_id,
             output,
             store,
+            max_concurrency=max_concurrency,
         )
         deadline = _deadline_seconds(options, config)
         started = time.monotonic()

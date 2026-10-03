@@ -154,6 +154,11 @@ class ToolBox:
     raises instead of guessing, listing the candidates. ``codemode`` itself
     is never callable from a script. The bindings are a snapshot of the
     registry at ``ToolBox`` creation, like ``all_tools()``.
+
+    An optional ``semaphore`` caps how many of this box's calls run at once:
+    every call acquires it around the dispatcher, so a fan-out queues
+    instead of running all at once. ``None`` (the default) leaves calls
+    unlimited.
     """
 
     def __init__(
@@ -161,10 +166,12 @@ class ToolBox:
         registry: ToolRegistry,
         dispatcher: "ToolDispatcher",
         parent_call_id: str,
+        semaphore: asyncio.Semaphore | None = None,
     ):
         self._registry = registry
         self._dispatcher = dispatcher
         self._parent_call_id = parent_call_id
+        self._semaphore = semaphore
         #: Counts every ``dispatcher.run`` the box makes — reported as the
         #: result's ``tool_calls``.
         self.calls = 0
@@ -240,12 +247,21 @@ class ToolBox:
 
         async def call(args: dict | None = None, **kwargs):
             merged = {**(args or {}), **kwargs}
-            result = await self._dispatcher.run(
-                resolved,
-                merged,
-                origin="program",
-                parent_call_id=self._parent_call_id,
-            )
+            if self._semaphore is None:
+                result = await self._dispatcher.run(
+                    resolved,
+                    merged,
+                    origin="program",
+                    parent_call_id=self._parent_call_id,
+                )
+            else:
+                async with self._semaphore:
+                    result = await self._dispatcher.run(
+                        resolved,
+                        merged,
+                        origin="program",
+                        parent_call_id=self._parent_call_id,
+                    )
             self.calls += 1
             if result.status != "ok":
                 raise ToolCallError(resolved, result)
@@ -398,14 +414,21 @@ def build_env(
     parent_call_id: str,
     output: "Output",
     store: Store,
+    *,
+    max_concurrency: int | None = None,
 ) -> tuple[dict, ToolBox]:
     """Assemble the globals dict a script runs with.
 
     Returns the env and the :class:`ToolBox` (for its call counter). The
     discovery surface — ``all_tools()`` and ``search_tools()`` — reads one
-    snapshot computed here, at script start.
+    snapshot computed here, at script start. ``max_concurrency`` caps how
+    many of the script's tool calls run at once through one per-script
+    semaphore; ``None`` (the default) leaves the calls unlimited.
     """
-    toolbox = ToolBox(registry, dispatcher, parent_call_id)
+    semaphore = (
+        asyncio.Semaphore(max_concurrency) if max_concurrency is not None else None
+    )
+    toolbox = ToolBox(registry, dispatcher, parent_call_id, semaphore=semaphore)
     entries = tool_entries(registry)
     console = _Console(output.text)
 
