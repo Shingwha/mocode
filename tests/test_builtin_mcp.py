@@ -237,7 +237,8 @@ class TestLoadServers:
             if name != "good":
                 assert name in err
 
-    def test_the_http_transports_parse(self, tmp_path):
+        # and the transports the loader accepts — sse, streamable-http
+        # (explicit, inferred and aliased) and a loopback that may stay http
         merged = load_servers(
             mcp_config={
                 "servers": {
@@ -1415,6 +1416,123 @@ class TestReadingAndListing:
         with pytest.raises(ToolError) as err:
             await asyncio.wait_for(tool.run_async({"cursor": 5}), BOUND)
         assert err.value.code == "invalid_type"
+
+
+# ── tool registration and exposure, through the runtime ──────
+
+
+class TestToolMapping:
+    """The per-server tool registration and its call mapping — full names,
+    schemas, tags, and where each result shape lands."""
+
+    async def test_tools_register_with_full_names_and_schemas(self, runtime_factory):
+        runtime, ctx = runtime_factory({"demo": inproc_entry()})
+        await peer_connect(runtime, "demo", MODERN_PEER)
+
+        registry = ctx.tools
+        assert "mcp__demo__search" in registry
+        tool = registry.get("mcp__demo__search")
+        assert tool.availability == "both"  # default exposure: auto → direct
+        assert tool.schema["required"] == ["q"]
+        assert tool.tags == frozenset({"mcp", "mcp:demo"})
+        assert tool.mcp == {"server": "demo", "tool": "search"}
+        assert tool.mcp_raw_name == "search"
+        assert tool.source == "host"  # a bare BuildContext stamps nothing
+        assert "mcp__demo__search" in registry.names(audience="model")
+
+        # a bare definition with no schema or description still registers,
+        # and a colliding raw name gets the same stable suffix the naming
+        # rules assign
+        import hashlib
+
+        bare, _ctx = runtime_factory({})
+        session = McpSession(peer_config("x"))
+        tool = mcp_tool(bare, session, "demo", {"name": "raw"}, "both", False)
+        assert tool.schema == {"type": "object", "properties": {}}
+        assert tool.description == "MCP tool raw from demo"
+        bare.assignments["demo"] = assign_tool_names("demo", ["a-b", "a_b"])
+        tool = mcp_tool(bare, session, "demo", {"name": "a_b"}, "both", False)
+        assert tool.name == "mcp__demo__a_b_" + hashlib.sha1(b"a_b").hexdigest()[:6]
+        assert tool.mcp_raw_name == "a_b"
+
+        # the anchor tool carries the runtime, and it is program-only
+        anchor, _ctx = runtime_factory({"off": inproc_entry(enabled=False)})
+        status = mcp_status_tool(anchor)
+        assert status.name == "mcp_status"
+        assert status.availability == "program"
+        assert status.mcp_runtime is anchor
+        assert status.schema == {"type": "object", "properties": {}}
+
+    async def test_calls_map_into_content_and_details(self, runtime_factory):
+        runtime, ctx = runtime_factory({"demo": inproc_entry()})
+        await peer_connect(runtime, "demo", MODERN_PEER)
+
+        result = await asyncio.wait_for(
+            ctx.tools.get("mcp__demo__search").run_async({"q": "hi"}), BOUND
+        )
+        assert result.content == "hello"
+        assert result.details["server"] == "demo"
+        assert result.details["tool"] == "search"
+        assert result.details["structured_content"] == {"ok": True}
+        assert result.details["is_error"] is False
+
+        # an image block lands in details with a placeholder in content
+        result = await asyncio.wait_for(
+            ctx.tools.get("mcp__demo__pic").run_async({}), BOUND
+        )
+        assert result.content == "here:\n[image: image/png]"
+        assert result.details["images"][0]["data"] == "QUJD"
+
+        # an isError result raises the mcp error, message and all — and an
+        # input-requiring answer has its own code
+        with pytest.raises(ToolError) as err:
+            await asyncio.wait_for(
+                ctx.tools.get("mcp__demo__fail").run_async({}), BOUND
+            )
+        assert err.value.code == "mcp_error"
+        assert "boom" in err.value.message
+        with pytest.raises(ToolError) as err:
+            await asyncio.wait_for(
+                ctx.tools.get("mcp__demo__ask").run_async({}), BOUND
+            )
+        assert err.value.code == "mcp_input_required"
+
+    async def test_the_tool_exposure_mapping(self, runtime_factory):
+        # codemode exposure: registered, the program audience sees it, the
+        # model does not
+        runtime, ctx = runtime_factory({"demo": inproc_entry(exposure="codemode")})
+        await peer_connect(runtime, "demo", MODERN_PEER)
+        registry = ctx.tools
+        assert "mcp__demo__search" in registry.names(audience="program")
+        assert "mcp__demo__search" not in registry.names(audience="model")
+
+        # hidden: registered, visible to neither audience
+        runtime, ctx = runtime_factory({"demo": inproc_entry(exposure="hidden")})
+        await peer_connect(runtime, "demo", MODERN_PEER)
+        assert ctx.tools.get("mcp__demo__search") is not None
+        assert "mcp__demo__search" not in ctx.tools.names(audience="model")
+        assert "mcp__demo__search" not in ctx.tools.names(audience="program")
+
+        # a per-tool override beats the server-level one
+        runtime, ctx = runtime_factory(
+            {
+                "demo": inproc_entry(
+                    exposure="codemode", toolExposure={"search": "direct", "pic": "hidden"}
+                )
+            }
+        )
+        await peer_connect(runtime, "demo", MODERN_PEER)
+        registry = ctx.tools
+        assert "mcp__demo__search" in registry.names(audience="model")
+        assert "mcp__demo__ask" not in registry.names(audience="model")
+        assert registry.get("mcp__demo__pic") is not None
+        assert "mcp__demo__pic" not in registry.names(audience="model")
+
+        # and the default follows the codemode plugin's presence
+        runtime, ctx = runtime_factory({"demo": inproc_entry()}, codemode_enabled=True)
+        await peer_connect(runtime, "demo", MODERN_PEER)
+        assert runtime.default_exposure == "codemode"
+        assert "mcp__demo__search" not in ctx.tools.names(audience="model")
 
 
 class TestSyncTools:

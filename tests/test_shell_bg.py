@@ -40,7 +40,7 @@ from mocode.host.plugin.builtin.shell import (
 )
 from mocode.host.plugin.builtin.shell import BashSession
 from .conftest import settle
-from mocode.testing import call_tool, collect, say, terminal
+from mocode.testing import call_tool, collect, terminal
 
 BG = {"run_in_background": True}
 

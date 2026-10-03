@@ -258,31 +258,6 @@ class TestRunScript:
         assert "len" in RESTRICTED
 
 
-class TestScriptErrorLine:
-    """D10 — the wrapper offset: script line = reported line - 1."""
-
-    async def test_the_offset_is_reported_and_outside_the_script_it_is_none(self):
-        with pytest.raises(ValueError, match="boom") as exc_info:
-            await run_script("text('a')\ntext('b')\nraise ValueError('boom')", {"text": lambda v: None})
-        assert script_error_line(exc_info.value) == 3
-
-        script = "def helper():\n    raise ValueError('inner')\n\nhelper()"
-        with pytest.raises(ValueError, match="inner") as exc_info:
-            await run_script(script, {})
-        assert script_error_line(exc_info.value) == 2
-
-        with pytest.raises(SyntaxError) as exc_info:
-            await run_script("text('a')\ndef broken(:", {"text": lambda v: None})
-        assert script_error_line(exc_info.value) == 2
-
-        # No traceback at all (a bare exception) and a CodemodeError raised
-        # by run_script itself both point outside the script's frames.
-        assert script_error_line(ValueError("bare")) is None
-        with pytest.raises(CodemodeError) as exc_info:
-            await run_script("", {})
-        assert script_error_line(exc_info.value) is None
-
-
 class TestImportGate:
     """D14 — import is gated to the injected modules; both ``import`` and
     ``from ... import ...`` pass, everything else fails with the tools
@@ -776,11 +751,9 @@ class TestCatalogueTrim:
         assert {h["name"] for h in hits} == {"with_long_description"}
         assert hits[0]["description"] == self._LONG[:80] + "…"
 
-    def test_ranking_reads_the_full_description(self):
         # "needle" sits past character 80 — the tool still wins the query,
         # and only the returned entry is the cut preview; the full text
-        # stays available through describe_tool.
-        env = self._env()
+        # stays available through describe_tool
         hits = env["search_tools"]("needle")
         assert [h["name"] for h in hits] == ["with_long_description"]
         assert "needle" not in hits[0]["description"]
@@ -1037,7 +1010,7 @@ from mocode.core.events import Notice
 from mocode.core.hook import ToolCallContext
 from mocode.host.plugin.builtin.codemode import PLUGIN, CodemodePlugin
 from mocode.host.plugin.builtin.codemode.description import DESCRIPTION
-from mocode.host.plugin.builtin.codemode.plugin import codemode_tool, effective_options
+from mocode.host.plugin.builtin.codemode.plugin import effective_options
 
 
 def _echo_registry() -> ToolRegistry:
@@ -1248,6 +1221,17 @@ class TestRunTool:
         assert _script_error(result.content)[0] == 2
         assert _script_error(result.content)[1] == "SyntaxError"
         assert "\ndef broken(:" in result.content
+
+        # D10: the wrapper offset is a unit of its own — the raised exception
+        # carries the script's own line, a nested function's raise is still a
+        # <codemode> frame, and a failure with no script frame at all
+        # (a bare exception, or run_script's own CodemodeError) has none
+        with pytest.raises(ValueError, match="boom") as exc_info:
+            await run_script(
+                "text('a')\ntext('b')\nraise ValueError('boom')", {"text": lambda v: None}
+            )
+        assert script_error_line(exc_info.value) == 3
+        assert script_error_line(ValueError("bare")) is None
 
         # a failure that surfaced inside the tool box, not in the script's
         # own code, has no script line — but the tool's error still travels
@@ -1754,8 +1738,6 @@ def _echo_peer() -> Any:
     so what matters is that the tool arrives over the wire with the shapes
     the mcp plugin registers — not that a child process carried it.
     """
-    from mocode.host.plugin.builtin.mcp.client import McpSession
-
     return WirePeer(
         {
             "server/discover": {
