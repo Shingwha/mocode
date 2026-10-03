@@ -1,4 +1,4 @@
-⏸️ 待派工 — 前置 W1 合并
+✅ 2026-10-03 @ feat/codemode-runtime（已合并 master `b0a7e23`；三个 commit 门禁 1006→1011→1019 全绿 exit 0，lead 合并前后各复核一次；行号换算取整个 traceback 最内层帧、Python 3.12+ wait_for 语义使超时判别无竞态）
 
 # Spec 02 · W2：codemode 运行时质量（波次 W2）
 
