@@ -13,18 +13,40 @@ script is an async function body: top-level `await`/`return` are legal —
 never wrap code in `asyncio.run()`/`main()`; `asyncio.ensure_future` tasks
 are never awaited, so await everything explicitly.
 
-Results are first-class: `r = await tools.<name>(args)` gives a Result with
-`.ok`, `.content`, `.details` (tool-specific facts), `.tool` (the resolved
-name), `.json()` (content parsed as JSON, a diagnostic string on failure)
-and `.structured` (an MCP tool's structuredContent, else None); it also
-answers the Mapping protocol — `res.get("content")`, `dict(res)`. A SINGLE
-FAILED CALL RAISES ToolCallError, with the tool name: fail fast by design.
-For failures as data, batch — `rs = await parallel(tools.a(...),
-tools.b(...))` returns a Batch (a list) in argument order with
-`.ok`/`.failed`; a failed call never sinks the batch (its Result carries
-`.error`), only bad arguments raise, and `concurrency=N` caps that batch
-while overriding the global `max_concurrency` (`asyncio.gather(...,
-return_exceptions=True)` is the asyncio-level equivalent).
+A complete example — unfamiliar schema described first, batch with one
+failure kept as data, state stored, summary returned:
+
+    d = describe_tool("mcp__anysearch__search")        # schema + full text
+    text(d["schema"])                                  # see its fields
+    hits = await parallel(                             # failures become data
+        tools.search(query="anysearch rate limits"),
+        tools.extract(url="https://example.com"),
+    )
+    for r in hits.ok:                                  # in call order
+        text(r.content)
+    for r in hits.failed:
+        text("skipped: " + r.error)                    # never sinks the batch
+    if hits.ok:
+        r = hits.ok[0]
+        brief = {"title": r.content.splitlines()[0]}
+        store("note", brief)                           # small JSON state
+        return brief
+
+Calls: `tools.<name>(args)` — arguments as keywords or one dict:
+`await tools.read(path="README.md", limit=80)` or
+`await tools.mcp__dev_radius__search({"query": "x"})`; keywords or one dict
+work with every tool. The answer is a Result: `.ok`, `.content`,
+`.details` (tool-specific facts), `.tool` (the resolved name), `.json()`
+(content parsed as JSON, raising a diagnostic on bad JSON), `.structured`
+(an MCP tool's structuredContent, else None), and the Mapping protocol —
+`res.get("content")`, `dict(res)`. A SINGLE FAILED CALL RAISES
+ToolCallError, with the tool name: fail fast by design. For failures as
+data, batch — `rs = await parallel(tools.a(...), tools.b(...))` returns a
+Batch (a list) in argument order with `.ok`/`.failed`; a failed call never
+sinks the batch (its Result carries `.error`), only bad arguments raise,
+and `concurrency=N` caps that batch while overriding the global
+`max_concurrency` (`asyncio.gather(..., return_exceptions=True)` is the
+asyncio-level equivalent).
 
 `tools` resolves names in tiers: exact registered name
 (`tools["mcp__dev_radius__search"]`), normalized form
@@ -49,7 +71,7 @@ built-in itself; `dir(tools)` and the catalogue list registered tools only.
   namespace=None, names_only=False)`, `describe_tool(name)` — every
   callable tool, even program-only ones. Catalogue descriptions are
   80-character previews; `describe_tool(name)` has the full text plus
-  schema.
+  schema — describe a tool before its first call when unsure.
 - `import` is gated to the injected modules — `import asyncio` and
   `from asyncio import gather` both work: asyncio, json, re, math,
   datetime, textwrap, collections, itertools, functools — already in
