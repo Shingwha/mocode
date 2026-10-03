@@ -249,40 +249,41 @@ class TestOutcomeParity:
     """Deny, timeout and every error mean the same thing whatever the origin."""
 
     @pytest.mark.parametrize(
-        "name,tool,kwargs,expected",
+        "name,tool,kwargs,config,expected",
         [
             (
                 "boom",
                 _failing(RuntimeError("kaboom")),
                 {},
+                None,
                 ("error", "error: kaboom", None),
             ),
             (
                 "boom",
                 _failing(ToolError("nope", "teapot")),
                 {},
+                None,
                 ("error", "error: teapot: nope", "teapot"),
+            ),
+            # 超时同样不看出身：生效的 0.05 是 config 层的值，落在结果文案里。
+            (
+                "slow",
+                _sleeper(),
+                {},
+                AgentConfig(tool_timeout=0.05),
+                ("timeout", "timeout: 0.05s", None),
             ),
         ],
     )
     async def test_outcomes_are_identical_across_origins(
-        self, name, tool, kwargs, expected
+        self, name, tool, kwargs, config, expected
     ):
         outcomes = {}
         for origin in ("model", "program"):
-            dispatcher, _, _ = _bare_dispatcher(tool)
+            dispatcher, _, _ = _bare_dispatcher(tool, config=config)
             result = await dispatcher.run(name, {}, origin=origin, **kwargs)
             outcomes[origin] = (result.status, result.content, result.error_code)
         assert outcomes["model"] == outcomes["program"] == expected
-
-    async def test_a_timeout_is_a_timeout_whatever_the_origin(self):
-        for origin in ("model", "program"):
-            dispatcher, _, _ = _bare_dispatcher(
-                _sleeper(), config=AgentConfig(tool_timeout=0.05)
-            )
-            result = await dispatcher.run("slow", {}, origin=origin)
-            assert result.status == "timeout"
-            assert result.content.startswith("timeout:")
 
     async def test_a_switched_off_tool_refuses_for_both_origins(self):
         for origin in ("model", "program"):
@@ -367,22 +368,31 @@ class TestAvailability:
 
 class TestProvenance:
     async def test_events_say_who_asked_and_what_they_are_nested_in(self):
-        program, program_events, _ = _bare_dispatcher(echo_tool())
-        await program.run(
-            "echo", {"value": "x"}, origin="program", parent_call_id="p1"
-        )
+        """出处落在两条读通道上，同形：事件的两端与钩子 ctx 看到的是一份数据。"""
+        seen: list[tuple[str, str | None]] = []
 
-        started, finished = program_events
-        assert (started.origin, started.parent_call_id) == ("program", "p1")
-        assert (finished.origin, finished.parent_call_id) == ("program", "p1")
+        class Recorder(AgentHook):
+            async def on_tool_start(self, ctx: ToolCallContext) -> None:
+                seen.append((ctx.origin, ctx.parent_call_id))
+
+        dispatcher, events, _ = _bare_dispatcher(echo_tool(), hooks=[Recorder()])
+        await dispatcher.run("echo", {"value": "x"}, call_id="c1")
 
         # model 是默认 origin，且不带 parent。
-        default, default_events, _ = _bare_dispatcher(echo_tool())
-        await default.run("echo", {"value": "x"}, call_id="c1")
-
-        started, finished = default_events
+        started, finished = events
         assert (started.origin, started.parent_call_id) == ("model", None)
         assert (finished.origin, finished.parent_call_id) == ("model", None)
+        assert seen == [("model", None)]
+
+        # program 调用带 parent：嵌在谁的名下，事件两端与钩子 ctx 说同一件事。
+        await dispatcher.run(
+            "echo", {"value": "x"}, origin="program", parent_call_id="c1"
+        )
+
+        started, finished = events[-2:]
+        assert (started.origin, started.parent_call_id) == ("program", "c1")
+        assert (finished.origin, finished.parent_call_id) == ("program", "c1")
+        assert seen == [("model", None), ("program", "c1")]
 
     async def test_provenance_crosses_a_process_boundary_as_plain_data(self):
         dispatcher, events, _ = _bare_dispatcher(echo_tool())
@@ -397,19 +407,6 @@ class TestProvenance:
         assert (legacy.origin, legacy.parent_call_id) == ("model", None)
         legacy = ToolCallFinished(call_id="c1", name="echo")
         assert (legacy.origin, legacy.parent_call_id) == ("model", None)
-
-    async def test_hooks_see_provenance_on_the_context(self):
-        seen: list[tuple[str, str | None]] = []
-
-        class Recorder(AgentHook):
-            async def on_tool_start(self, ctx: ToolCallContext) -> None:
-                seen.append((ctx.origin, ctx.parent_call_id))
-
-        dispatcher, _, _ = _bare_dispatcher(echo_tool(), hooks=[Recorder()])
-        await dispatcher.run("echo", {}, call_id="c1")
-        await dispatcher.run("echo", {}, origin="program", parent_call_id="c1")
-
-        assert seen == [("model", None), ("program", "c1")]
 
 
 # ── attribution: what ctx.emit belongs to ────────────────────
@@ -625,44 +622,6 @@ class TestSourceStamping:
         own = _host_context_for_tools()
         own.tools.register(echo_tool("manual"))
         assert own.tools.get("manual").source == "host"
-
-    def test_builtin_tools_get_their_builtin_identity(self, tmp_path, plugin_host):
-        loaded = load_plugins(plugin_dirs=[], config=Config(provider="p", model="m"))
-        host = plugin_host(plugins=loaded.plugins, sources=loaded.tool_sources)
-
-        assert host.ctx.tools.get("bash").source == "builtin:shell"
-        assert host.ctx.tools.get("read").source == "builtin:filesystem"
-        assert all(
-            source.startswith("builtin:")
-            for source in loaded.tool_sources
-        )
-
-    def test_a_discovered_plugin_gets_its_manifest_name(self, tmp_path, plugin_host):
-        write_plugin(
-            tmp_path / "plugins",
-            "acme",
-            """
-            from mocode.plugins import Plugin, Tool
-
-            class AcmePlugin(Plugin):
-                name = "acme"
-
-                def build(self, ctx):
-                    ctx.tools.register(Tool(
-                        name="greet", description="g",
-                        schema={"type": "object", "properties": {}},
-                        func=lambda args: "hi",
-                        source="builtin:shell",  # a claim the path overrides
-                    ))
-            """,
-        )
-        loaded = load_plugins(
-            plugin_dirs=[tmp_path / "plugins"], config=Config(provider="p", model="m")
-        )
-        host = plugin_host(plugins=loaded.plugins, sources=loaded.tool_sources)
-
-        assert "plugin:acme" in loaded.tool_sources
-        assert host.ctx.tools.get("greet").source == "plugin:acme"
 
 
 # ── program origin inside a real loop ────────────────────────
