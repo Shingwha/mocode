@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import json
 from pathlib import Path
 
 import pytest
@@ -178,7 +179,6 @@ class TestRunScript:
         "name",
         [
             "open",
-            "__import__",
             "eval",
             "exec",
             "compile",
@@ -229,7 +229,8 @@ class TestRunScript:
 
     def test_restricted_whitelist_snapshot(self):
         # The frozen set stays, every builtin exception class joins by the
-        # issubclass rule, dir comes along — and nothing else is in there.
+        # issubclass rule, dir comes along, and __import__ is the gated
+        # gate — nothing else is in there.
         builtin_exceptions = {
             name
             for name, value in vars(builtins).items()
@@ -237,13 +238,29 @@ class TestRunScript:
         }
         assert set(_RESTRICTED_KEYS) <= set(RESTRICTED)
         assert builtin_exceptions <= set(RESTRICTED)
-        assert set(RESTRICTED) == set(_RESTRICTED_KEYS) | builtin_exceptions | {"dir"}
+        assert set(RESTRICTED) == set(_RESTRICTED_KEYS) | builtin_exceptions | {
+            "dir",
+            "__import__",
+        }
         assert not {
             "BaseException",
             "KeyboardInterrupt",
             "SystemExit",
             "GeneratorExit",
         } & set(RESTRICTED)
+        # the gate itself: whitelisted names import, the rest point at tools.*
+        assert RESTRICTED["__import__"]("json") is json
+        with pytest.raises(ImportError, match="tools.* facade"):
+            RESTRICTED["__import__"]("os")
+
+    async def test_gated_import_is_reachable_by_direct_call(self):
+        # A script naming __import__ hits the same gate as the import
+        # statement does.
+        assert await run_script(
+            "return __import__('json').dumps({'a': 1})", {}
+        ) == '{"a": 1}'
+        with pytest.raises(ImportError, match="not available"):
+            await run_script("return __import__('os')", {})
 
     async def test_restricted_has_no_exit(self):
         # Python's own exit/quit are absent; the injected exit() is the only one.
@@ -282,6 +299,58 @@ class TestScriptErrorLine:
         with pytest.raises(CodemodeError) as exc_info:
             await run_script("", {})
         assert script_error_line(exc_info.value) is None
+
+
+class TestImportGate:
+    """D14 — import is gated to the injected modules; both ``import`` and
+    ``from ... import ...`` pass, everything else fails with the tools
+    facade in the message."""
+
+    async def test_import_three_modules_in_one_statement(self):
+        # field-findings P0-1 replay: the muscle-memory import line works.
+        assert await run_script(
+            "import re, asyncio, json\nreturn json.dumps({'ok': bool(re)})",
+            {},
+        ) == '{"ok": true}'
+
+    async def test_from_import(self):
+        assert await run_script(
+            "from asyncio import gather\nreturn gather.__name__", {}
+        ) == "gather"
+
+    async def test_from_import_with_alias(self):
+        assert await run_script(
+            "from json import dumps as d\nreturn d({'a': 1})", {}
+        ) == '{"a": 1}'
+
+    async def test_import_rejected_with_tools_pointer(self):
+        with pytest.raises(ImportError, match=r"import of 'os' is not available"):
+            await run_script("import os", {})
+        with pytest.raises(ImportError, match=r"tools.\* facade"):
+            await run_script("import os", {})
+
+    async def test_from_import_rejected(self):
+        with pytest.raises(ImportError, match="not available"):
+            await run_script("from os import path", {})
+
+    async def test_submodule_import_rejected(self):
+        # The gate matches exact module names — no submodules.
+        with pytest.raises(ImportError, match="not available"):
+            await run_script("import asyncio.exceptions", {})
+
+    async def test_import_error_is_catchable_by_name(self):
+        # ImportError is a whitelisted builtin exception, so scripts can
+        # probe for an optional module without dying.
+        assert await run_script(
+            "try:\n    import os\nexcept ImportError:\n    return 'caught'",
+            {},
+        ) == "caught"
+
+    def test_injected_modules_match_the_import_whitelist(self):
+        from mocode.host.plugin.builtin.codemode.env import _MODULES
+        from mocode.host.plugin.builtin.codemode.runtime import IMPORT_WHITELIST
+
+        assert set(_MODULES) == set(IMPORT_WHITELIST)
 
 
 # ── T2: api — ToolBox, discovery, store ─────────────────────
@@ -778,6 +847,58 @@ class TestDiscovery:
         assert [t["name"] for t in env["all_tools"]()] == ["echo"]
         assert [t["name"] for t in env["search_tools"]("late")] == []
         assert env["search_tools"]("late", names_only=True) == []
+
+
+class TestCatalogueTrim:
+    """D13 — catalogue entries preview their description at 80 characters
+    (exactly-80 stays, empties get no ellipsis); ranking still reads the
+    full text."""
+
+    _LONG = "alpha " * 30 + "needle"  # 186 chars; "needle" hides past the cut
+
+    @staticmethod
+    def _desc_tool(name: str, description: str) -> Tool:
+        return Tool(
+            name=name,
+            description=description,
+            schema={"type": "object", "properties": {}},
+            func=lambda args: name,
+        )
+
+    def _env(self):
+        agent = make_agent(
+            self._desc_tool("with_long_description", self._LONG),
+            self._desc_tool("exact_eighty", "x" * 80),
+            self._desc_tool("empty_description", ""),
+        )
+        output = _FakeOutput()
+        env, _ = build_env(
+            agent.tool_registry, agent.dispatcher, "c", output, Store({})
+        )
+        return env
+
+    def test_all_tools_previews_at_eighty_chars(self):
+        entries = {e["name"]: e["description"] for e in self._env()["all_tools"]()}
+        assert entries["with_long_description"] == self._LONG[:80] + "…"
+        assert entries["exact_eighty"] == "x" * 80  # exactly 80 is not cut
+        assert entries["empty_description"] == ""  # empties get no ellipsis
+
+    def test_search_tools_entries_are_previewed_too(self):
+        hits = self._env()["search_tools"]("alpha")
+        assert {h["name"] for h in hits} == {"with_long_description"}
+        assert hits[0]["description"] == self._LONG[:80] + "…"
+
+    def test_ranking_reads_the_full_description(self):
+        # "needle" sits past character 80 — the tool still wins the query,
+        # and only the returned entry is the cut preview.
+        hits = self._env()["search_tools"]("needle")
+        assert [h["name"] for h in hits] == ["with_long_description"]
+        assert "needle" not in hits[0]["description"]
+
+    def test_full_text_stays_available_via_describe_tool(self):
+        env = self._env()
+        full = env["describe_tool"]("with_long_description")
+        assert full["description"] == self._LONG
 
 
 class TestScriptPrint:

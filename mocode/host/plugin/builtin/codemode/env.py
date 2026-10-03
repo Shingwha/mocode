@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from .....core.tool import ToolRegistry
 from .result import parallel
 from .runtime import _ScriptExit
-from .search import rank
+from .search import preview, rank
 from .store import Store
 from .toolbox import ToolBox, describe_tool_entry, tool_entries
 
@@ -37,7 +37,9 @@ if TYPE_CHECKING:
 
 __all__ = ["build_env"]
 
-#: Injected read-only standard-library modules.
+#: Injected read-only standard-library modules. The key set mirrors
+#: ``runtime.IMPORT_WHITELIST`` — the gate a script's ``import`` statement
+#: passes through — and a test keeps the two in lockstep.
 _MODULES = {
     "asyncio": asyncio,
     "json": json,
@@ -133,9 +135,10 @@ def build_env(
         return store.load(key)
 
     def all_tools() -> list[dict]:
-        """The startup snapshot: the program-audience tools as
-        ``{"name", "description"}`` entries, minus ``codemode``."""
-        return list(entries)
+        """The startup snapshot: the program-audience tools as catalogue
+        entries, minus ``codemode`` — descriptions previewed at the
+        catalogue trim, full text via ``describe_tool(name)``."""
+        return [preview(entry) for entry in entries]
 
     def search_tools(
         query: str,
@@ -144,11 +147,12 @@ def build_env(
         names_only: bool = False,
     ) -> list[dict] | list[str]:
         """Rank the snapshot against *query* — entries, or just their names
-        with ``names_only=True``."""
+        with ``names_only=True``. Ranking reads the full descriptions; the
+        catalogue entries are previewed at the return boundary."""
         hits = rank(query, entries, limit=limit, namespace=namespace)
         if names_only:
             return [hit["name"] for hit in hits]
-        return hits
+        return [preview(hit) for hit in hits]
 
     def describe(name: str) -> dict | None:
         return describe_tool_entry(registry, name)
