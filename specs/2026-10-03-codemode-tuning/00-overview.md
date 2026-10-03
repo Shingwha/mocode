@@ -1,4 +1,4 @@
-✅ 2026-10-03 全组完成（W1/W2/W3/W4 全部合并，最终 1025 passed exit 0；field-findings 附录 A 七条重放验证通过；命名路线与 prompt 名单经用户拍板；不 push，等用户指令）
+✅ 2026-10-03 W1–W4 已合并（1025 passed）；W5 取消并入 **W6 v2**（脚本表面彻底重构，v2 API 用户已拍板，待派工；不 push，等用户指令）
 
 # Spec Group · codemode 调优（2026-10-03）
 
@@ -35,6 +35,9 @@
 | D14 | **门控 import**（用户拍板 2026-10-03）：注入 `__import__` 到脚本 env，白名单仅限 8 个已注入模块（`import asyncio`/`from asyncio import gather` 直接成功）；其余模块报明确错误并指向 `tools.*`；不动 `runtime.py` 的 RESTRICTED，资源边界（no fs/network）一寸不让 | 消除 ImportError 往返；全开放会让 os/subprocess/socket 进沙箱，契约作废 |
 | D15 | **门面回退解析**（用户拍板 2026-10-03，修正原"报错提示"裁决）：`tools.x` 查找 = 注册工具（精确 → 归一化 → 短名）→ **内建名回退**（`describe_tool`/`all_tools`/`search_tools`/`store`/`load`/`text`/`console`/`image`/`print`/`exit` 直接返回内建函数）；**目录仍只列注册工具**——门面宽容、目录严格；`tools.codemode` 自调用拒绝维持 | 模型猜 `tools.describe_tool` 零往返浪费；报错提示省不了那轮（脚本抛错即死，仍须重发 codemode） |
 | D16 | **截断与 store 加固**（用户实测 2026-10-03）：输出截断通知改**祈使句**（"⚠ N chars truncated — before relying on this output, read the full result at <path> via tools.read"）；`description.py` 写明 store 真实限额（默认单值 256KB / 总量 1MB，按 JSON 序列化尺寸）防止模型过度防御式预截断；大件标准出路写进文档（`tools.write` 落盘 + `store` 存路径） | 模型把 `[:20000]` 手动截断与忽略截断标记都是文档信息不足所致 |
+| D17 | **Result 一等公民**（用户拍板 2026-10-03）：`ToolOutcome` → `Result`；保留 `.content`（MCP wire 术语），增量在 `.ok/.error/.json()/.structured/.tool` + 友好 repr；W1 Mapping 协议保留；**单项失败抛异常、仅 parallel 捕获**（不对称是设计，文档大字写明） | 结果应该像它概念上是的那个值 |
+| D18 | **`parallel(*coros, concurrency=None) -> Batch`**（用户拍板 2026-10-03）：Batch=list 子类带 `.ok/.failed`，保序；单项失败绝不炸整批；per-call 覆盖全局 max_concurrency | 批量是一等公民，容错聚合一行写完 |
+| D19 | **v2 硬切政策**（用户拍板 2026-10-03）：`all_tools/search_tools/describe_tool` 不改名；门面维持 `tools.x` 唯一入口不做顶层平铺；旧名零别名（`ALL_TOOLS` 同政策）；内部 `api.py` 拆为 toolbox/result/store/env | 为改而改只制造文档噪音；脚本是一次性消费品 |
 
 ## 3. 波次表（同包文件强耦合 → 串行，一波一个 agent）
 
@@ -44,7 +47,8 @@
 | W2 | `feat/codemode-runtime` | `02-w2-runtime-quality.md` | 错误行号+片段；超时保部分输出；`max_concurrency` | W1 合并 | `output.py`、`plugin.py`、`runtime.py`、`api.py`、测试 |
 | W3 | `feat/codemode-docs` | `03-w3-docs.md` | `description.py` 重写 + docs 同步 + codemode README | W2 合并 | `description.py`、`docs/plugins.md`、`codemode/README.md`（新建）、措辞断言测试 |
 | W4 | `feat/mcp-prompt-tools` | `04-w4-prompt-tool-list.md` | `mcp_servers` 段列 server+工具名（名单即目录，用法按需 `describe_tool`） | W3 合并 | `builtin/mcp/plugin.py`、`tests/test_builtin_mcp.py`、`docs/plugins.md` |
-| W5 | `feat/codemode-catalog-trim` | `05-w5-trimmed-catalogue.md` | 目录条目描述裁 80 字符（排序仍用全文） | W4 合并 | `builtin/codemode/api.py`、`tests/test_builtin_codemode.py`、`description.py`、`docs/plugins.md`、`codemode/README.md` |
+| ~~W5~~ | ~~`feat/codemode-catalog-trim`~~ | `05-w5-trimmed-catalogue.md` | ❌ 取消——并入 v2（`06`），分支零 commit 已删 | — | — |
+| W6 v2 | `feat/codemode-v2` | `06-w6-codemode-v2.md` | 脚本表面彻底重构：Result/parallel/门面回退/门控 import/模块拆分/文档 v2 | W4 合并 | 整个 `builtin/codemode/**`、`tests/test_builtin_codemode.py`、`docs/plugins.md` |
 
 每波独立过全量门禁；lead pre/post 门禁后 `merge --no-ff`；红了整分支打回，不手改。
 
