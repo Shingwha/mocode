@@ -85,7 +85,7 @@ for line in sys.stdin:
         if "_meta" not in params:
             send({"jsonrpc": "2.0", "id": rid, "error": {"code": -32602, "message": "missing _meta"}})
         elif params.get("name") == "slow":
-            time.sleep(0.3)
+            time.sleep(0.15)
             send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text": "woke up"}]}})
         elif params.get("name") == "env":
             send({"jsonrpc": "2.0", "id": rid, "result": {"resultType": "complete", "content": [{"type": "text", "text":
@@ -230,7 +230,7 @@ class TestSpawnAndFraming:
         cfg = server_config(
             write_server(tmp_path, "modern_slow.py", MODERN_SERVER),
             name="slow",
-            timeout=0.2,
+            timeout=0.12,
             pidfile=child_pidfile(tmp_path, "slow"),
         )
         session = McpSession(cfg)

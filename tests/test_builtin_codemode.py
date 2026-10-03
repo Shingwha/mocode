@@ -1255,7 +1255,7 @@ class TestRunTool:
         host = plugin_host(
             plugins=[PLUGIN],
             tools=registry,
-            config_kwargs={"plugins": {"codemode": {"timeout_s": 0.2}}},
+            config_kwargs={"plugins": {"codemode": {"timeout_s": 0.1}}},
         )
         result = await self._run(
             host, 'store("k", 1)\ntext("before")\n'
@@ -1288,7 +1288,7 @@ class TestRunTool:
         host = plugin_host(
             plugins=[PLUGIN],
             tools=registry,
-            config_kwargs={"plugins": {"codemode": {"timeout_s": 0.2}}},
+            config_kwargs={"plugins": {"codemode": {"timeout_s": 0.1}}},
         )
         result = await host.ctx.agent.dispatcher.run(
             "codemode",

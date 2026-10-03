@@ -132,7 +132,7 @@ class TestBashOutput:
         bash, output, kill = tools
         # the job's lines arrive after the read below — observed state, not a
         # guess about durations
-        shell_id = await _start(bash, "sleep 0.3; echo one; echo ERR bad; echo OK two")
+        shell_id = await _start(bash, "sleep 0.15; echo one; echo ERR bad; echo OK two")
 
         first = await output.run_async({"shell_id": shell_id}, None)
         assert first.details["lines"] == []
@@ -455,8 +455,8 @@ class TestCompletionNotification:
         # so they finish inside one coalescing window; the assertion below
         # (one announcement, listing both) is what makes that fail loudly if
         # they ever drift apart instead of passing quietly.
-        await bash.run_async({"command": f"sleep 0.3; echo a", **BG}, None)
-        await bash.run_async({"command": f"sleep 0.3; echo b", **BG}, None)
+        await bash.run_async({"command": f"sleep 0.15; echo a", **BG}, None)
+        await bash.run_async({"command": f"sleep 0.15; echo b", **BG}, None)
 
         messages = await self._messages(conversation, count=1)
         assert len(messages) == 1, "two same-moment finishers, one announcement"
@@ -510,10 +510,10 @@ class TestCompletionNotification:
         # running time — a comfortable margin — so what is held back is the
         # announcement, not the job.
         idle_conversation, _ = wired(
-            call_tool("bash", {"command": "sleep 0.4"}), "done"
+            call_tool("bash", {"command": "sleep 0.3"}), "done"
         )
         idle_bash = idle_conversation.tools.get("bash")
-        await idle_bash.run_async({"command": "sleep 0.2", **BG}, None)
+        await idle_bash.run_async({"command": "sleep 0.15", **BG}, None)
         await collect(idle_conversation.stream("go"))
 
         messages = await self._messages(idle_conversation, count=1)
