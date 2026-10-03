@@ -1280,8 +1280,13 @@ def make_runtime(
 
 async def connect(runtime: McpRuntime, key: str, server: object) -> McpSession:
     """Wire an in-process *server* into the runtime's slot for *key* and run
-    the connect path the plugin runs — the runtime's own callbacks, so the
-    registration under test is the one the plugin performs."""
+    the connect path the plugin runs.
+
+    The two callbacks are the runtime's own: ``McpRuntime.start()`` passes
+    exactly these to the sessions it builds, so re-using them here means the
+    registration under test is the one the plugin performs — a test asserts
+    on what the registry ends up holding, never on the callbacks themselves.
+    """
     session = McpSession(
         runtime.config[key],
         server=server,
@@ -1366,21 +1371,28 @@ class TestRegistration:
         assert [n for n in registry.names() if n.startswith("mcp__")] == []
 
     async def test_reconciling_twice_keeps_the_same_tool_objects(self, runtime_factory):
+        """The reconciliation is idempotent — a repeated connect that changed
+        nothing re-registers nothing, so the objects a caller already holds
+        stay valid."""
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
-        await connect(runtime, "demo", make_resource_server())
+        session = await connect(runtime, "demo", make_resource_server())
         first = ctx.tools.get("read_mcp_resource")
 
-        runtime._apply_resource_tools()
+        # the runtime's own sync path, driven by the session re-listing
+        await asyncio.wait_for(runtime.sync_tools(session), BOUND)
 
         assert ctx.tools.get("read_mcp_resource") is first
 
     async def test_no_resource_server_left_and_the_tools_go_away(self, runtime_factory):
+        """The only resource-capable server goes away and the three tools go
+        with it — the reconciliation follows that set of servers."""
         runtime, ctx = runtime_factory({"demo": inproc_entry()})
         session = await connect(runtime, "demo", make_resource_server())
         assert "read_mcp_resource" in ctx.tools
 
+        # the connection drops, and the next re-list reconciles the set
         session.state = STATE_DISCONNECTED
-        runtime._apply_resource_tools()
+        await asyncio.wait_for(runtime.sync_tools(session), BOUND)
 
         for name in RESOURCE_TOOL_NAMES:
             assert name not in ctx.tools
@@ -1473,8 +1485,10 @@ class TestExposure:
         await connect(runtime, "hidden", make_resource_server("hidden-res"))
         assert "read_mcp_resource" in ctx.tools.names(audience="model")
 
+        # the direct server's connection drops, and its next re-list
+        # reconciles the set down to the hidden one
         direct.state = STATE_DISCONNECTED
-        runtime._apply_resource_tools()
+        await asyncio.wait_for(runtime.sync_tools(direct), BOUND)
 
         assert ctx.tools.get("read_mcp_resource") is not None
         assert "read_mcp_resource" not in ctx.tools.names(audience="model")
