@@ -1,4 +1,4 @@
-⏸️ 待派工 — 规格已定（v2 API 全参考见 §1，用户已拍板）
+✅ 2026-10-03 @ feat/codemode-v2（已合并 master `d59bb47`；六个 commit 门禁 1031→1057 全绿 exit 0，lead 合并前后各复核一次；重放清单全过。关键实测：`__import__` 必须落 `runtime.RESTRICTED`（CPython 从帧 builtins 解析 import，注入 globals 无效）；api.py 整体删除拆为 toolbox/result/store/env；parallel 并发覆盖经 contextvar（内层 batch 生效不叠加，嵌套语义留档）；白名单实为 9 模块）
 
 # Spec 06 · W6：codemode v2 —— 脚本表面彻底重构（波次 W6）
 
