@@ -431,6 +431,15 @@ class TestDiscovery:
         assert entry["schema"]["type"] == "object"
         assert describe_tool_entry(registry, "missing") is None
 
+    def test_describe_tool_entry_refuses_non_callable(self):
+        # D9: the same source of truth as the callable surface — the
+        # program-audience projection minus codemode. A name outside it is
+        # not described however registered it is.
+        registry = self._registry()
+        assert describe_tool_entry(registry, "hidden") is None  # model-only
+        assert describe_tool_entry(registry, "codemode") is None  # never callable
+        assert describe_tool_entry(registry, "missing") is None
+
     def test_build_env_injects_frozen_names(self):
         agent = make_agent(echo_tool())
         output = _FakeOutput()
@@ -479,6 +488,41 @@ class TestDiscovery:
         assert [t["name"] for t in env["all_tools"]()] == ["echo"]
         assert [t["name"] for t in env["search_tools"]("late")] == []
         assert env["search_tools"]("late", names_only=True) == []
+
+
+class TestScriptPrint:
+    """D8 — the script's ``print`` is one item in the output pipeline,
+    never the host's stdout."""
+
+    def _env(self):
+        agent = make_agent(echo_tool())
+        output = _FakeOutput()
+        env, _ = build_env(
+            agent.tool_registry, agent.dispatcher, "c", output, Store({})
+        )
+        return env, output
+
+    def test_print_is_injected(self):
+        env, _ = self._env()
+        assert env["print"] is not builtins.print
+
+    def test_print_joins_arguments_with_the_separator(self):
+        env, output = self._env()
+        env["print"]("a", "b")
+        env["print"]("x", 1, "y", sep="-")
+        assert output.items == ["a b", "x-1-y"]
+
+    def test_print_jsonifies_non_strings(self):
+        # the text() convention, per argument — not Python's repr; the
+        # whole call is still one item
+        env, output = self._env()
+        env["print"]({"x": 1}, [1, "b"], None)
+        assert output.items == ['{"x": 1} [1, "b"] null']
+
+    def test_print_with_no_args_is_one_empty_item(self):
+        env, output = self._env()
+        env["print"]()
+        assert output.items == [""]
 
 
 class TestStore:
@@ -860,6 +904,18 @@ class TestRunTool:
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
         result = await self._run(host, "return {'n': 1}")
         assert result.content.endswith("\n{\"n\": 1}")
+
+    async def test_print_lands_in_the_result_not_stdout(self, plugin_host, capsys):
+        # D8: print was whitelisted but wrote to the host's stdout, where
+        # no script reader could ever see it. Three shapes — string,
+        # several arguments, non-string — one item each, none on stdout.
+        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        result = await self._run(
+            host, 'print("hello")\nprint("a", 1, "b")\nprint({"k": 1})'
+        )
+        assert result.details["ok"] is True
+        assert result.content.endswith('hello\na 1 b\n{"k": 1}')
+        assert capsys.readouterr().out == ""
 
     async def test_image_block_in_details(self, plugin_host):
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())

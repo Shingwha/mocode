@@ -1,9 +1,10 @@
 """The script-facing API — ToolBox, outcomes, discovery helpers, store, env.
 
 Everything a codemode script may touch is assembled here into one globals
-dict: the ``tools`` proxy, ``text``/``console``/``image``/``exit``, the
-``store``/``load`` closures, the discovery helpers and the read-only
-standard-library modules.
+dict: the ``tools`` proxy, ``text``/``console``/``print``/``image``/``exit``,
+the ``store``/``load`` closures, the discovery helpers and the read-only
+standard-library modules. ``print`` is the one builtin the env replaces —
+it appends to the output pipeline instead of writing to the host's stdout.
 
 Every tool call a script makes goes through the dispatcher with
 ``origin="program"`` — that is the program-origin contract: the calls are
@@ -366,11 +367,29 @@ def tool_entries(registry: ToolRegistry) -> list[dict]:
 
 
 def describe_tool_entry(registry: ToolRegistry, name: str) -> dict | None:
-    """A registered tool's ``{"name", "description", "schema"}`` — or None."""
-    tool = registry.get(name)
-    if tool is None:
+    """A *callable* tool's ``{"name", "description", "schema"}`` — or None.
+
+    Same source of truth as the callable surface: the program-audience
+    projection minus ``codemode``. A name outside it — model-only,
+    disabled, ``codemode`` itself, unregistered — describes as None
+    instead of advertising something a script cannot call.
+    """
+    if name == "codemode":
         return None
+    if name not in registry.names(audience="program"):
+        return None
+    tool = registry.get(name)
     return {"name": tool.name, "description": tool.description, "schema": tool.schema}
+
+
+def _render_argument(value: Any) -> str:
+    """One argument's text: strings as-is, everything else as JSON.
+
+    The convention :class:`~mocode.host.plugin.builtin.codemode.output.Output`
+    applies to an item, here applied per argument so ``print({"a": 1})``
+    lands as ``{"a": 1}`` rather than Python's repr.
+    """
+    return value if isinstance(value, str) else json.dumps(value, default=str)
 
 
 def build_env(
@@ -392,6 +411,17 @@ def build_env(
 
     def text(value: Any) -> None:
         output.text(value)
+
+    def script_print(*args, sep: str = " ") -> None:
+        """The script's ``print`` — one output item, like ``console.log``.
+
+        Non-string arguments are JSON-ified exactly as ``text()`` renders
+        them. ``end`` is deliberately not offered: an item is one line and
+        the renderer already joins items with newlines, so a trailing
+        newline would double up — a script that needs that emits it with
+        ``text()``.
+        """
+        output.text(sep.join(_render_argument(arg) for arg in args))
 
     def image(block: Any) -> None:
         output.image(block)
@@ -429,6 +459,7 @@ def build_env(
             "tools": toolbox,
             "text": text,
             "console": console,
+            "print": script_print,
             "image": image,
             "exit": exit,
             "store": store_value,
