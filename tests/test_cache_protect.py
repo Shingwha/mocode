@@ -78,22 +78,24 @@ def _listed_tools(text: str) -> set[str]:
 
 
 class TestThePayloadIsPinned:
-    async def test_a_switch_costs_no_request_change(self, wired, tmp_path: Path):
-        conversation, _ = wired("one", "two", cwd=project(tmp_path, "a"))
-
+    async def test_a_switch_costs_no_request_change_and_refuses_to_run(
+        self, wired, tmp_path: Path
+    ):
+        """禁用不动请求面（两次请求带着同一份工具集合），但调用本身被拒绝。"""
+        conversation, _ = wired(
+            "one",
+            tool_call_response("read", '{"path": "notes.md"}'),
+            "fine",
+            cwd=project(tmp_path, "a"),
+        )
         await conversation.chat("first")
         conversation.tools.disable("read")
-        await conversation.chat("second")
+
+        await conversation.chat("read it")
 
         provider = conversation.agent.provider
         assert provider.calls[0]["tools"] == provider.calls[1]["tools"]
         assert "read" in _tool_names(provider.calls[1]["tools"])
-
-    async def test_a_disabled_tool_refuses_to_run(self, wired, tmp_path: Path):
-        conversation, _ = wired(tool_call_response("read", '{"path": "notes.md"}'), "fine", cwd=project(tmp_path, "a"))
-        conversation.tools.disable("read")
-
-        await conversation.chat("read it")
 
         results = [m for m in conversation.messages if m.get("role") == "tool"]
         assert results[0]["content"].startswith("denied:")
@@ -115,15 +117,33 @@ class TestThePayloadIsPinned:
 
 
 class TestTheWorldIsAnnounced:
-    async def test_a_switch_off_is_one_line(self, wired, tmp_path: Path):
-        conversation, _ = wired("one", "two", cwd=project(tmp_path, "a"))
+    async def test_a_switch_is_announced_in_each_direction_and_a_revert_is_not(
+        self, wired, tmp_path: Path
+    ):
+        """关掉再打开：两个方向各自公告一次，点名且只点名真正动了的工具；
+        在 turn 之间改回去的，从来不是新闻。"""
+        conversation, _ = wired("1", "2", "3", cwd=project(tmp_path, "a"))
         await conversation.chat("first")
-
         conversation.tools.disable("read")
         await conversation.chat("second")
 
         # 公告点名且只点名真正动了的那个工具
         assert _tool_states(updates(conversation)[-1]["content"]) == {"read": "disabled"}
+
+        conversation.tools.enable("read")
+        await conversation.chat("third")
+
+        assert _tool_states(updates(conversation)[-1]["content"]) == {"read": "available"}
+
+        # Changed and reverted before any turn saw it: never announced.
+        reverted, _ = wired("1", "2", cwd=project(tmp_path, "a"))
+        await reverted.chat("first")
+
+        reverted.tools.disable("read")
+        reverted.tools.enable("read")
+        await reverted.chat("second")
+
+        assert updates(reverted) == []
 
     async def test_a_pinned_derived_section_holds_the_prompt_and_announces_itself(
         self, wired, tmp_path: Path
@@ -186,29 +206,6 @@ class TestTheWorldIsAnnounced:
         )
         assert section is not None
         assert _listed_tools(section.group(1)) == set(conversation.tools.names())
-        assert updates(conversation) == []
-
-    async def test_a_switch_back_on_is_news_again(self, wired, tmp_path: Path):
-        conversation, _ = wired("1", "2", "3", cwd=project(tmp_path, "a"))
-        await conversation.chat("first")
-        conversation.tools.disable("read")
-        await conversation.chat("second")
-
-        conversation.tools.enable("read")
-        await conversation.chat("third")
-
-        assert _tool_states(updates(conversation)[-1]["content"]) == {"read": "available"}
-
-    async def test_a_change_reverted_between_turns_is_never_news(
-        self, wired, tmp_path: Path
-    ):
-        conversation, _ = wired("1", "2", cwd=project(tmp_path, "a"))
-        await conversation.chat("first")
-
-        conversation.tools.disable("read")
-        conversation.tools.enable("read")
-        await conversation.chat("second")
-
         assert updates(conversation) == []
 
     async def test_an_in_place_edit_is_seen_and_diffed(
@@ -348,23 +345,21 @@ class TestUnified:
         assert "-b" in body
         assert "+B" in body
 
-    def test_an_addition_diffs_against_nothing(self):
+    def test_an_addition_diffs_against_nothing_and_a_removal_diffs_to_nothing(self):
+        """新增与删除都是越过空侧的 diff。"""
         from mocode.host.plugin.builtin.cache_protect import unified
 
-        block = unified("tool 'grep'", "", '{\n  "name": "grep"\n}')
+        addition = unified("tool 'grep'", "", '{\n  "name": "grep"\n}')
         body = [
             line
-            for line in block.splitlines()
+            for line in addition.splitlines()
             if line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
         ]
 
-        assert "@@ -0,0 +1," in block
+        assert "@@ -0,0 +1," in addition
         assert body and all(line.startswith("+") for line in body)
 
-    def test_a_removal_diffs_to_nothing(self):
-        from mocode.host.plugin.builtin.cache_protect import unified
+        removal = unified("section 'time'", "today: old", "")
 
-        block = unified("section 'time'", "today: old", "")
-
-        assert "@@ -1 +0,0 @@" in block
-        assert "-today: old" in block.splitlines()
+        assert "@@ -1 +0,0 @@" in removal
+        assert "-today: old" in removal.splitlines()

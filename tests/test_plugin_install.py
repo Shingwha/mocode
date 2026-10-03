@@ -49,21 +49,21 @@ class TestInstall:
         assert _installed_flag(root, "acme").is_file()
         assert source.is_dir()  # a copy, never consuming the source
 
-    def test_without_a_manifest_it_is_not_a_plugin(self, tmp_path):
-        source = tmp_path / "src" / "loose"
-        source.mkdir(parents=True)
-        root = tmp_path / "root"
-
+    def test_an_install_that_cannot_happen_says_which_rule_it_broke(self, tmp_path):
+        """三种装不进去：源不是插件、名字已被占用、源地址根本不可识别。"""
+        loose = tmp_path / "src" / "loose"
+        loose.mkdir(parents=True)
         with pytest.raises(plugins.PluginInstallError, match="not a plugin"):
-            plugins.install_plugin(str(source), root=root)
+            plugins.install_plugin(str(loose), root=tmp_path / "root")
 
-    def test_an_installed_name_is_refused(self, tmp_path):
         source = _source_plugin(tmp_path / "src", "acme")
         root = tmp_path / "root"
         plugins.install_plugin(str(source), root=root)
-
         with pytest.raises(plugins.PluginInstallError, match="already installed"):
             plugins.install_plugin(str(source), root=root)
+
+        with pytest.raises(plugins.PluginInstallError, match="not a git URL"):
+            plugins.install_plugin(str(tmp_path / "missing"), root=tmp_path)
 
     def test_a_package_form_plugin_installs_and_loads(self, tmp_path):
         """Install copies the package whole; the loader enters at its __init__."""
@@ -91,7 +91,9 @@ class TestInstall:
         loaded = load_plugin(spec)
         assert loaded is not None and loaded.description == "installed"
 
-    def test_git_source_clones_then_places(self, tmp_path, monkeypatch):
+    def test_a_git_source_clones_then_places_or_says_why_it_could_not(
+        self, tmp_path, monkeypatch
+    ):
         root = tmp_path / "root"
         argv_seen = []
 
@@ -113,7 +115,7 @@ class TestInstall:
         assert installed.name == "from-git"
         assert _installed_flag(root, "from-git").is_file()
 
-    def test_a_failed_clone_says_so(self, tmp_path, monkeypatch):
+        # A failed clone keeps git's own last word.
         monkeypatch.setattr(
             plugins.subprocess,
             "run",
@@ -121,10 +123,6 @@ class TestInstall:
         )
         with pytest.raises(plugins.PluginInstallError, match="no repo"):
             plugins.install_plugin("https://example.com/nope.git", root=tmp_path)
-
-    def test_an_unknown_source_is_rejected(self, tmp_path):
-        with pytest.raises(plugins.PluginInstallError, match="not a git URL"):
-            plugins.install_plugin(str(tmp_path / "missing"), root=tmp_path)
 
 
 class TestSubdirectorySources:
@@ -146,7 +144,9 @@ class TestSubdirectorySources:
         local = Source.parse("/local/acme")
         assert (local.url, local.local) == ("/local/acme", True)
 
-    def test_a_subdirectory_installs_from_the_clone(self, tmp_path, monkeypatch):
+    def test_a_subdirectory_installs_from_the_clone_or_may_not_escape_it(
+        self, tmp_path, monkeypatch
+    ):
         argv_seen = []
 
         def fake_run(argv, **kwargs):
@@ -170,40 +170,52 @@ class TestSubdirectorySources:
         assert installed.name == "acme"
         assert _installed_flag(tmp_path, "acme").is_file()
 
-    def test_a_subdirectory_may_not_escape_the_clone(self, tmp_path, monkeypatch):
-        def fake_run(argv, **kwargs):
+        # 子目录可以指向 clone 深处，但不能爬出 clone 之外
+        def empty_clone(argv, **kwargs):
             Path(argv[5]).mkdir(parents=True)
             return SimpleNamespace(returncode=0, stderr="", stdout="")
 
-        monkeypatch.setattr(plugins.subprocess, "run", fake_run)
+        monkeypatch.setattr(plugins.subprocess, "run", empty_clone)
 
         with pytest.raises(plugins.PluginInstallError, match="may not contain"):
             plugins.install_plugin("https://example.com/x.git#../acme", root=tmp_path)
 
 
 class TestInstallSyncsTheEnvironment:
-    def test_a_declared_plugin_syncs_in_the_same_breath(self, tmp_path, monkeypatch):
-        source = _source_plugin(tmp_path / "src", "acme", with_pyproject=True)
+    def test_a_declared_plugin_syncs_and_an_undeclared_one_never_does(
+        self, tmp_path, monkeypatch
+    ):
+        """声明了 pyproject.toml 的插件装好即同步；没声明的永远不同步。"""
         synced = []
         monkeypatch.setattr(
             plugins.PluginVenv, "sync", lambda self: synced.append(self.plugin_dir)
         )
 
-        installed = plugins.install_plugin(str(source), root=tmp_path / "root")
+        declared = _source_plugin(tmp_path / "src", "acme", with_pyproject=True)
+
+        installed = plugins.install_plugin(str(declared), root=tmp_path / "root")
 
         assert synced == [tmp_path / "root" / "acme"]
         assert installed.env_warning is None
 
-    def test_an_undeclared_plugin_never_syncs(self, tmp_path, monkeypatch):
-        source = _source_plugin(tmp_path / "src", "acme")
-        synced = []
+        plain = _source_plugin(tmp_path / "src2", "plain")
+
+        plugins.install_plugin(str(plain), root=tmp_path / "root2")
+
+        assert synced == [tmp_path / "root" / "acme"]
+
+    def test_a_failed_sync_installs_anyway_with_a_warning(self, tmp_path, monkeypatch):
+        source = _source_plugin(tmp_path / "src", "acme", with_pyproject=True)
         monkeypatch.setattr(
-            plugins.PluginVenv, "sync", lambda self: synced.append(self.plugin_dir)
+            plugins.PluginVenv,
+            "sync",
+            lambda self: (_ for _ in ()).throw(PluginVenvError("uv not found")),
         )
 
-        plugins.install_plugin(str(source), root=tmp_path / "root")
+        installed = plugins.install_plugin(str(source), root=tmp_path / "root")
 
-        assert synced == []
+        assert _installed_flag(tmp_path / "root", "acme").is_file()
+        assert "mocode plugin sync" in installed.env_warning
 
     def test_a_failed_sync_installs_anyway_with_a_warning(self, tmp_path, monkeypatch):
         source = _source_plugin(tmp_path / "src", "acme", with_pyproject=True)
@@ -231,11 +243,16 @@ class TestSyncRemoveList:
 
         assert report == "acme: ready"
 
-    def test_sync_names_an_unknown_plugin(self, tmp_path):
+    def test_an_unknown_plugin_is_named_by_sync_and_remove_alike(self, tmp_path):
         with pytest.raises(plugins.PluginInstallError, match="no plugin named"):
             plugins.sync_plugin("ghost", dirs=[tmp_path])
 
-    def test_remove_deletes_the_directory_with_its_environment(self, tmp_path):
+        with pytest.raises(plugins.PluginInstallError, match="no plugin named"):
+            plugins.remove_plugin("ghost", roots=[tmp_path])
+
+    def test_remove_deletes_the_directory_even_when_files_are_locked(self, tmp_path):
+        """A git-installed plugin carries read-only .git packs (Windows) —
+        delete takes the environment with it either way."""
         root = tmp_path / "root"
         _source_plugin(root, "acme", with_pyproject=True)
         (root / "acme" / ".venv").mkdir()
@@ -245,21 +262,15 @@ class TestSyncRemoveList:
         assert removed == root / "acme"
         assert not (root / "acme").exists()
 
-    def test_remove_handles_read_only_files(self, tmp_path):
-        """A git-installed plugin carries read-only .git packs (Windows)."""
-        root = tmp_path / "root"
-        plugin = _source_plugin(root, "acme")
+        locked_root = tmp_path / "locked"
+        plugin = _source_plugin(locked_root, "locked")
         locked = plugin / "pack.idx"
         locked.write_text("", encoding="utf-8")
         locked.chmod(0o444)
 
-        plugins.remove_plugin("acme", roots=[root])
+        plugins.remove_plugin("locked", roots=[locked_root])
 
         assert not plugin.exists()
-
-    def test_remove_names_an_unknown_plugin(self, tmp_path):
-        with pytest.raises(plugins.PluginInstallError, match="no plugin named"):
-            plugins.remove_plugin("ghost", roots=[tmp_path])
 
     def test_list_reports_environment_state_across_roots(self, tmp_path):
         project = tmp_path / "project"

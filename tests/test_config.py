@@ -15,17 +15,16 @@ from mocode.host.config import (
 
 
 class TestEnvVarFor:
-    @pytest.mark.parametrize(
-        "provider_key,expected",
-        [
-            ("intern", "INTERN_API_KEY"),
-            ("my-gateway", "MY_GATEWAY_API_KEY"),
-            ("OpenAI", "OPENAI_API_KEY"),
-            ("a.b", "A_B_API_KEY"),
-        ],
-    )
-    def test_conventional_name(self, provider_key, expected):
-        assert env_var_for(provider_key) == expected
+    def test_conventional_name(self):
+        """同一条命名规则的各种形状：红了看断言消息即知是哪种 key。"""
+        cases = {
+            "intern": "INTERN_API_KEY",
+            "my-gateway": "MY_GATEWAY_API_KEY",
+            "OpenAI": "OPENAI_API_KEY",
+            "a.b": "A_B_API_KEY",
+        }
+        for provider_key, expected in cases.items():
+            assert env_var_for(provider_key) == expected, provider_key
 
 
 class TestModelEntry:
@@ -33,64 +32,81 @@ class TestModelEntry:
 
     唯一入口是 :meth:`ModelEntry.from_dict`，它容忍手改过的文件——每个字段
     要么被强转、要么被丢掉，而不是被信任：一个类型不对的字段退化成"未声明"，
-    加载不会因此失败。下面的矩阵就是那张容忍表，红了看参数 id 就知道是哪种
-    形状出了问题。
+    加载不会因此失败。下面的矩阵就是那张容忍表，红了看参数 id 就知道是哪条
+    规则出了问题；参数行把同一种规则的若干形状合成一组。
     """
 
     @pytest.mark.parametrize(
-        "raw, expected",
+        "raws, expecteds",
         [
-            pytest.param({}, ModelEntry(), id="defaults-are-all-unset"),
-            pytest.param(None, ModelEntry(), id="no-entry-is-defaults"),
             pytest.param(
-                {"id": 42, "name": None},
-                ModelEntry(id="42"),
+                [{}, None],
+                [ModelEntry(), ModelEntry()],
+                id="absent-or-null-means-all-unset",
+            ),
+            pytest.param(
+                [{"id": 42, "name": None}],
+                [ModelEntry(id="42")],
                 id="id-and-name-take-strings-only",
             ),
             pytest.param(
-                {"context_window": "128000", "max_tokens": "8192"},
-                ModelEntry(context_window=128_000, max_tokens=8_192),
-                id="numeric-strings-are-coerced",
+                [
+                    {"context_window": "128000", "max_tokens": "8192"},
+                    {"context_window": "huge", "max_tokens": True},
+                ],
+                [
+                    ModelEntry(context_window=128_000, max_tokens=8_192),
+                    ModelEntry(),
+                ],
+                id="limit-fields-coerce-numbers-and-drop-garbage",
             ),
             pytest.param(
-                {"context_window": "huge", "max_tokens": True},
-                ModelEntry(),
-                id="garbage-limits-become-unset",
-            ),
-            pytest.param(
-                {"efforts": ["high", "xhigh", "max"]},
-                ModelEntry(efforts=("high", "xhigh", "max")),
+                [{"efforts": ["high", "xhigh", "max"]}],
+                [ModelEntry(efforts=("high", "xhigh", "max"))],
                 id="efforts-take-a-list-of-strings",
             ),
             pytest.param(
-                {"efforts": ["high", 1, None, "max"]},
-                ModelEntry(efforts=("high", "max")),
+                [{"efforts": ["high", 1, None, "max"]}],
+                [ModelEntry(efforts=("high", "max"))],
                 id="efforts-drop-non-string-items",
             ),
-            pytest.param({"efforts": []}, ModelEntry(), id="an-empty-efforts-is-undeclared"),
             pytest.param(
-                {"efforts": [1, None]}, ModelEntry(), id="an-all-non-string-efforts-is-undeclared"
+                [
+                    {"efforts": []},
+                    {"efforts": [1, None]},
+                    {"efforts": "high"},
+                    {"efforts": {"low": 1}},
+                    {"efforts": 3},
+                ],
+                [ModelEntry()] * 5,
+                id="efforts-of-the-wrong-shape-are-undeclared",
             ),
-            pytest.param({"efforts": "high"}, ModelEntry(), id="a-scalar-efforts-is-undeclared"),
-            pytest.param({"efforts": {"low": 1}}, ModelEntry(), id="a-dict-efforts-is-undeclared"),
-            pytest.param({"efforts": 3}, ModelEntry(), id="a-numbered-efforts-is-undeclared"),
-            pytest.param({"effort": "low"}, ModelEntry(effort="low"), id="effort-takes-a-string"),
-            pytest.param({"effort": 1}, ModelEntry(), id="a-numbered-effort-is-unset"),
-            pytest.param({"effort": True}, ModelEntry(), id="a-boolean-effort-is-unset"),
-            pytest.param({"effort": ["low"]}, ModelEntry(), id="a-listed-effort-is-unset"),
             pytest.param(
-                {"retry": {"max_attempts": 3, "base_delay": 5.0, "bogus": 1}},
-                ModelEntry(retry={"max_attempts": 3, "base_delay": 5.0}),
-                id="retry-roundtrips-and-drops-unknown-keys",
+                [{"effort": "low"}, {"effort": 1}, {"effort": True}, {"effort": ["low"]}],
+                [ModelEntry(effort="low"), ModelEntry(), ModelEntry(), ModelEntry()],
+                id="effort-takes-a-string-and-nothing-else",
             ),
-            pytest.param({"retry": {}}, ModelEntry(), id="an-empty-retry-is-unset"),
-            pytest.param({"retry": "fast"}, ModelEntry(), id="a-non-dict-retry-is-unset"),
+            pytest.param(
+                [{"retry": {"max_attempts": 3, "base_delay": 5.0, "bogus": 1}}],
+                [ModelEntry(retry={"max_attempts": 3, "base_delay": 5.0})],
+                id="retry-keeps-known-keys-and-drops-unknown-ones",
+            ),
+            pytest.param(
+                [{"retry": {}}, {"retry": "fast"}],
+                [ModelEntry(), ModelEntry()],
+                id="retry-of-the-wrong-shape-is-unset",
+            ),
         ],
     )
-    def test_from_dict_coerces_or_drops(self, raw, expected):
-        assert ModelEntry.from_dict(raw) == expected
+    def test_from_dict_coerces_or_drops(self, raws, expecteds):
+        for raw, expected in zip(raws, expecteds):
+            assert ModelEntry.from_dict(raw) == expected
 
-    def test_roundtrip(self):
+    def test_roundtrip_and_omission(self):
+        """一个声明齐全的条目原样往返；什么都没声明的条目只序列化 id。
+
+        元组序列化成它当初被读到的那个 JSON 数组。
+        """
         model = ModelEntry(
             id="big",
             name="Big",
@@ -100,10 +116,8 @@ class TestModelEntry:
             effort="high",
         )
         assert ModelEntry.from_dict(model.to_dict()) == model
-        # 元组序列化成它当初被读到的那个 JSON 数组
         assert model.to_dict()["efforts"] == ["low", "high", "max"]
 
-    def test_unset_fields_stay_absent_from_the_dict(self):
         assert ModelEntry().to_dict() == {"id": ""}
 
     def test_retry_policy_builds_from_the_dict_or_stays_none(self):
@@ -115,56 +129,47 @@ class TestModelEntry:
 
 
 class TestProviderEntry:
-    def test_defaults(self):
+    def test_defaults_and_label(self):
         entry = ProviderEntry()
         assert entry.name == ""
         assert entry.base_url is None
         assert entry.models == []
         assert entry.model_ids() == []
-
-    def test_label_falls_back_to_key(self):
-        assert ProviderEntry().label("deepseek") == "deepseek"
+        assert entry.label("deepseek") == "deepseek"
         assert ProviderEntry(name="DeepSeek").label("deepseek") == "DeepSeek"
 
-    def test_models_parse_as_an_ordered_array(self):
+    def test_the_models_array_is_parsed_and_skips_what_is_not_an_entry(self):
+        """models 是有序数组；没有 id 的、不是对象的条目整条跳过，
+        字段本身不是数组则一篇没有。"""
         entry = ProviderEntry.from_dict(
             {"models": [{"id": "a"}, {"id": "b", "max_tokens": 100}]}
         )
         assert entry.model_ids() == ["a", "b"]
         assert entry.model("b").max_tokens == 100
 
-    def test_entries_without_an_id_are_skipped(self):
-        entry = ProviderEntry.from_dict(
+        no_id = ProviderEntry.from_dict(
             {"models": [{"id": "a"}, {"name": "no id"}, {}]}
         )
-        assert entry.model_ids() == ["a"]
-
-    def test_non_dict_entries_are_skipped(self):
-        entry = ProviderEntry.from_dict({"models": [{"id": "a"}, "b", None, 3]})
-        assert entry.model_ids() == ["a"]
-
-    def test_non_list_models_means_none_at_all(self):
-        entry = ProviderEntry.from_dict({"models": {"a": {}}})
-        assert entry.models == []
+        assert no_id.model_ids() == ["a"]
+        not_dicts = ProviderEntry.from_dict({"models": [{"id": "a"}, "b", None, 3]})
+        assert not_dicts.model_ids() == ["a"]
+        not_a_list = ProviderEntry.from_dict({"models": {"a": {}}})
+        assert not_a_list.models == []
 
     def test_model_lookup_hits_and_misses(self):
         entry = ProviderEntry(models=[ModelEntry(id="a"), ModelEntry(id="b")])
         assert entry.model("b").id == "b"
         assert entry.model("who-knows") is None
 
-    def test_explicit_key_wins(self, monkeypatch):
+    def test_the_key_resolves_explicit_then_environment_then_empty(self, monkeypatch):
         monkeypatch.setenv("DEMO_API_KEY", "from-env")
         assert ProviderEntry(api_key="explicit").api_key_for("demo") == "explicit"
-
-    def test_falls_back_to_environment(self, monkeypatch):
-        monkeypatch.setenv("DEMO_API_KEY", "from-env")
         assert ProviderEntry().api_key_for("demo") == "from-env"
 
-    def test_missing_key_resolves_empty(self, monkeypatch):
         monkeypatch.delenv("DEMO_API_KEY", raising=False)
         assert ProviderEntry().api_key_for("demo") == ""
 
-    def test_roundtrip(self):
+    def test_roundtrip_and_omission(self):
         entry = ProviderEntry(
             name="Demo",
             api_key="sk-1",
@@ -173,9 +178,8 @@ class TestProviderEntry:
         )
         assert ProviderEntry.from_dict(entry.to_dict()) == entry
 
-    def test_an_entry_without_settings_serializes_its_id_only(self):
-        entry = ProviderEntry(models=[ModelEntry(id="m")])
-        assert entry.to_dict() == {"models": [{"id": "m"}]}
+        bare = ProviderEntry(models=[ModelEntry(id="m")])
+        assert bare.to_dict() == {"models": [{"id": "m"}]}
 
 
 class TestConfigModelSpec:
@@ -198,40 +202,36 @@ class TestConfigModelSpec:
             },
         )
 
-    def test_resolves_active_pair(self):
-        spec = self._config().model_spec()
-        assert spec.name == "big"
-        assert spec.context_window == 200_000
-        assert spec.max_tokens == 32_768
+    def test_model_spec_resolves_the_declared_entry(self):
+        """声明的成对出现；没声明的一个限制都不发明。
 
-    def test_resolves_explicit_pair(self):
-        spec = self._config().model_spec("demo", "bare")
-        assert spec.name == "bare"
-        assert spec.context_window is None
-        assert spec.max_tokens is None
+        表里每个 (provider, model) 走一遍 ``model_spec``：命中的带出声明值，
+        没命中的（模型未知、整个 provider 未知）只有名字、没有限制。
+        """
+        cases = [
+            ("demo", "big", "big", 200_000, 32_768),
+            ("demo", "bare", "bare", None, None),
+            ("demo", "who-knows", "who-knows", None, None),
+            ("ghost", "big", "big", None, None),
+        ]
+        for provider, model, name, context_window, max_tokens in cases:
+            spec = self._config().model_spec(provider, model)
+            assert (spec.name, spec.context_window, spec.max_tokens) == (
+                name,
+                context_window,
+                max_tokens,
+            ), f"{provider}/{model}"
 
-    def test_unknown_model_gets_no_invented_limits(self):
-        spec = self._config().model_spec("demo", "who-knows")
-        assert spec.name == "who-knows"
-        assert spec.max_tokens is None
-
-    def test_unknown_provider_gets_no_invented_limits(self):
-        spec = self._config().model_spec("ghost", "big")
-        assert spec.name == "big"
-        assert spec.context_window is None
+        # 自定义 efforts 原样穿过；没声明 effort 的条目不发明一个
+        custom = self._config().model_spec("demo", "custom")
+        assert custom.efforts == ("high", "xhigh", "max")
+        assert custom.effort == "xhigh"
+        assert self._config().model_spec("demo", "big").effort is None
 
     def test_efforts_fall_back_to_the_kernel_default(self):
         assert self._config().model_spec("demo", "big").efforts == EFFORTS
         assert self._config().model_spec("demo", "who-knows").efforts == EFFORTS
         assert self._config().model_spec("ghost", "big").efforts == EFFORTS
-
-    def test_custom_efforts_pass_through_verbatim(self):
-        spec = self._config().model_spec("demo", "custom")
-        assert spec.efforts == ("high", "xhigh", "max")
-        assert spec.effort == "xhigh"
-
-    def test_undeclared_effort_stays_absent(self):
-        assert self._config().model_spec("demo", "big").effort is None
 
 
 class TestConfigSerialization:
@@ -245,38 +245,37 @@ class TestConfigSerialization:
         assert config.agent.tool_result_limit == 50000
 
     def test_agent_block_is_the_core_policy_type(self):
-        """One policy type: what the loop runs under is what the file stores."""
-        config = Config.from_dict(
+        """One policy type: what the loop runs under is what the file stores —
+        读进来是它，写出去也是它，每个字段都过得去。"""
+        parsed = Config.from_dict(
             {"agent": {"tool_timeout": 30, "max_turn_seconds": 120, "tool_result_limit": 9000}}
         )
-        assert config.agent == AgentConfig(
+        assert parsed.agent == AgentConfig(
             tool_timeout=30, max_turn_seconds=120, tool_result_limit=9000
         )
 
-    def test_agent_block_roundtrips_every_field(self):
         original = Config(agent=AgentConfig(tool_timeout=45, max_iterations=7, max_tool_calls=99))
         assert Config.from_dict(original.to_dict()).agent == original.agent
 
-    def test_unknown_agent_subkeys_are_ignored(self):
-        config = Config.from_dict({"agent": {"tool_timeout": 30, "mystery": True}})
-        assert config.agent.tool_timeout == 30
-        assert not hasattr(config.agent, "mystery")
+    def test_agent_block_tolerates_hand_editing(self):
+        """手改过的 agent 段：没见过的子键忽略、类型不对的值退回默认、
+        整个段不是对象也只是一段空策略。"""
+        fallback = AgentConfig()
 
-    def test_garbage_agent_values_fall_back_to_defaults(self):
-        config = Config.from_dict({"agent": {"tool_timeout": "soon", "max_iterations": None}})
-        assert config.agent.tool_timeout == AgentConfig().tool_timeout
-        assert config.agent.max_iterations == AgentConfig().max_iterations
+        # 没见过的子键被忽略，认得的那个照常生效
+        unknown = Config.from_dict({"agent": {"tool_timeout": 30, "mystery": True}})
+        assert unknown.agent.tool_timeout == 30
+        assert not hasattr(unknown.agent, "mystery")
 
-    def test_a_non_dict_agent_section_is_survivable(self):
-        config = Config.from_dict({"agent": None, "model": "m"})
-        assert config.agent == AgentConfig()
+        # 类型不对的值退回默认，加载不因此失败
+        garbage = Config.from_dict({"agent": {"tool_timeout": "soon", "max_iterations": None}})
+        assert garbage.agent.tool_timeout == fallback.tool_timeout
+        assert garbage.agent.max_iterations == fallback.max_iterations
 
-    def test_top_level_keys_are_provider_and_model(self):
-        config = Config.from_dict({"provider": "demo", "model": "m"})
-        assert config.provider == "demo"
-        assert config.model == "m"
-        assert config.to_dict()["provider"] == "demo"
-        assert config.to_dict()["model"] == "m"
+        # 整个段不是对象：一段空策略，别的键照常读
+        not_a_section = Config.from_dict({"agent": None, "model": "m"})
+        assert not_a_section.agent == AgentConfig()
+        assert not_a_section.model == "m"
 
     def test_roundtrip(self):
         original = Config(
@@ -293,8 +292,9 @@ class TestConfigSerialization:
         )
         assert Config.from_dict(original.to_dict()) == original
 
-    def test_foreign_keys_survive_roundtrip(self):
-        """Keys MoCode does not own must not be dropped when it saves."""
+    def test_foreign_keys_survive_and_owned_keys_win(self):
+        """Keys MoCode does not own must not be dropped when it saves — and a
+        stale foreign copy never overrides a real owned key."""
         raw = {
             "provider": "demo",
             "model": "m",
@@ -310,22 +310,26 @@ class TestConfigSerialization:
         assert config.to_dict()["active_theme"] == "mist"
         assert config.to_dict()["tools"] == {"websearch": {"apiKey": "as_sk_x"}}
 
-    def test_owned_keys_win_over_foreign(self):
-        config = Config.from_dict({"model": "real", "providers": {}})
-        config.foreign["model"] = "stale"
-        assert config.to_dict()["model"] == "real"
+        owned = Config.from_dict({"model": "real", "providers": {}})
+        owned.foreign["model"] = "stale"
+        assert owned.to_dict()["model"] == "real"
 
-    def test_unset_keys_stay_absent(self):
-        config = Config(providers={"demo": ProviderEntry()})
-        data = config.to_dict()
+    def test_the_top_level_pair_and_unset_stay_absent(self):
+        config = Config.from_dict({"provider": "demo", "model": "m"})
+        assert config.provider == "demo"
+        assert config.model == "m"
+        assert config.to_dict()["provider"] == "demo"
+        assert config.to_dict()["model"] == "m"
+
+        unset = Config(providers={"demo": ProviderEntry()})
+        data = unset.to_dict()
         assert data["provider"] == ""
         assert data["model"] == ""
         assert data["providers"] == {"demo": {"models": []}}
         assert "plugins" in data  # an empty mapping is still owned, not omitted
 
-    def test_missing_provider_is_survivable(self):
-        config = Config.from_dict({"provider": "ghost", "providers": {}})
-        assert config.current is None
+        # 一个文件里根本不存在的 provider：读得进来，current 就是没有
+        assert Config.from_dict({"provider": "ghost", "providers": {}}).current is None
 
 
 class TestConfigPersistence:
@@ -344,18 +348,17 @@ class TestConfigPersistence:
         assert loaded.provider == "demo"
         assert loaded.providers["demo"].model("m") == ModelEntry(id="m")
 
-    def test_load_remembers_its_path(self, tmp_path):
-        path = tmp_path / "custom.json"
-        Config(model="m").save(path)
-        loaded = Config.load(path)
-        assert loaded.path == path
-        loaded.save()  # no path argument → back to where it came from
-        assert json.loads(path.read_text(encoding="utf-8"))["model"] == "m"
+        # 记住自己从哪来：不带参数的 save() 写回原处
+        custom = tmp_path / "custom.json"
+        Config(model="m").save(custom)
+        back = Config.load(custom)
+        assert back.path == custom
+        back.save()
+        assert json.loads(custom.read_text(encoding="utf-8"))["model"] == "m"
 
-    def test_load_missing_file_returns_none(self, tmp_path):
+    def test_load_of_missing_or_broken_file_returns_none(self, tmp_path):
         assert Config.load(tmp_path / "nope.json") is None
 
-    def test_load_invalid_json_returns_none(self, tmp_path):
-        path = tmp_path / "broken.json"
-        path.write_text("{not json", encoding="utf-8")
-        assert Config.load(path) is None
+        broken = tmp_path / "broken.json"
+        broken.write_text("{not json", encoding="utf-8")
+        assert Config.load(broken) is None

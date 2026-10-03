@@ -63,20 +63,15 @@ def _app(tmp_path: Path, plugins: Path):
 
 
 class TestBothSurfacesInOneDirectory:
-    def test_the_agent_gets_the_host_namespace(self, tmp_path: Path):
+    def test_one_directory_feeds_the_agent_and_the_terminal(self, tmp_path: Path):
+        """同一个目录装两张面孔：host 命名段喂 agent（工具），mocode.cli
+        命名段只喂这个前端（命令与它自己的插件）。"""
         plugins = tmp_path / "plugins"
         write_plugin(plugins, "acme", HOST_CODE, cli=CLI_CODE)
 
         app = _app(tmp_path, plugins)
 
         assert "ping" in app.conversation.tools.names()
-
-    def test_the_terminal_gets_its_own_namespace(self, tmp_path: Path):
-        plugins = tmp_path / "plugins"
-        write_plugin(plugins, "acme", HOST_CODE, cli=CLI_CODE)
-
-        app = _app(tmp_path, plugins)
-
         assert "/shout" in {c.name for c in app.commands.all()}
         assert "acme.cli" in [p.name for p in app.plugins]
 

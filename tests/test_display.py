@@ -68,24 +68,21 @@ class TestFormatting:
         )
         assert _plain(got) == "✓ read  a.py · lines=3"
 
-    def test_an_answer_line_has_nothing_in_front_of_it(self):
+    def test_a_bare_line_renders_unmarked(self):
+        """答案行前面什么都不加；认不出来的样式也原样上色失败——都不加前缀。"""
         assert _plain(_make_display().format(lines.Line(text="hello"))) == "hello"
+        assert _plain(_make_display().format(lines.Line(text="x", style="nope"))) == "x"
 
     def test_a_note_alone_does_not_leave_a_dangling_separator(self):
         got = _make_display().format(lines.Line(icon="✓", icon_style="success", note="lines=3"))
         assert _plain(got) == "✓ lines=3"
 
-    def test_an_unknown_style_is_left_uncoloured(self):
-        assert _plain(_make_display().format(lines.Line(text="x", style="nope"))) == "x"
-
 
 class TestClamping:
     """A block row has to be exactly one terminal row, or its offsets lie."""
 
-    def test_text_that_fits_is_left_alone(self):
+    def test_what_fits_is_left_alone_and_overlong_ends_in_an_ellipsis(self):
         assert clamp_visible("read  a.py", 40) == "read  a.py"
-
-    def test_an_overlong_line_ends_in_an_ellipsis(self):
         assert _plain(clamp_visible("x" * 100, 10)) == "x" * 9 + "…"
 
     def test_styling_survives_and_is_closed(self):
@@ -99,7 +96,8 @@ class TestClamping:
 
 
 class TestStreaming:
-    def test_the_answer_streams_at_the_left_margin(self, capsys):
+    def test_answer_and_reasoning_stream_their_text_through(self, capsys):
+        """流式输出的文本原样落笔：答案与推理都不加字形、不加缩进。"""
         display = _make_display()
 
         display.stream("Hel", kind="answer")
@@ -107,9 +105,6 @@ class TestStreaming:
         display.end_stream()
 
         assert _plain(capsys.readouterr().out) == "Hello\nworld\n"
-
-    def test_reasoning_streams_indented_without_a_glyph(self, capsys):
-        display = _make_display()
 
         display.stream("先看看\n再说\n", kind="reasoning")
         display.end_stream()
@@ -212,7 +207,7 @@ class TestRenderer:
         assert rendered[3] == "↑3 ↓3 tokens"   # what the turn cost, all iterations
         assert set(rendered[4]) == {"─"}       # the rule that closes the turn
 
-    async def test_a_provider_that_reports_no_usage_gets_no_line(self, capsys):
+        # 没有 usage 的 endpoint 拿不到令牌行——那行不出现
         await self._run(
             MockProvider([
                 Response(content="done", usage=Usage(0, 0), finish_reason="stop"),

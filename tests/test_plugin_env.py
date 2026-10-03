@@ -36,42 +36,36 @@ def _fake_venv(plugin_dir: Path, *, windows: bool = True) -> Path:
 
 
 class TestSitePackages:
-    def test_windows_layout(self, tmp_path: Path):
-        site = _fake_venv(tmp_path, windows=True)
-        assert PluginVenv(tmp_path).site_packages() == site
+    def test_both_platform_layouts(self, tmp_path: Path):
+        """site-packages 的位置是平台事实：两套布局各指各的地方。"""
+        windows = _fake_venv(tmp_path / "w", windows=True)
+        assert PluginVenv(tmp_path / "w").site_packages() == windows
+        posix = _fake_venv(tmp_path / "p", windows=False)
+        assert PluginVenv(tmp_path / "p").site_packages() == posix
 
-    def test_posix_layout(self, tmp_path: Path):
-        site = _fake_venv(tmp_path, windows=False)
-        assert PluginVenv(tmp_path).site_packages() == site
-
-    def test_no_venv_means_none(self, tmp_path: Path):
+    def test_no_site_packages_means_none(self, tmp_path: Path):
+        """没有 .venv、或 .venv 还空着：一个包都没有，解析为无。"""
         assert PluginVenv(tmp_path).site_packages() is None
 
-    def test_venv_without_packages_yet(self, tmp_path: Path):
-        venv = tmp_path / ".venv"
+        venv = tmp_path / "venv"
         venv.mkdir()
         (venv / "pyvenv.cfg").write_text("", encoding="utf-8")
         assert PluginVenv(tmp_path).site_packages() is None
 
 
 class TestAttach:
-    def test_appends_at_the_end_of_sys_path(self, tmp_path: Path):
+    def test_appends_at_the_end_of_sys_path_and_is_idempotent(self, tmp_path: Path):
+        """挂到 sys.path 末尾，再来一次是空操作——不重复挂载。"""
         site = _fake_venv(tmp_path)
+        venv = PluginVenv(tmp_path)
 
-        attached = PluginVenv(tmp_path).attach()
+        attached = venv.attach()
 
         assert attached == site
         assert sys.path[-1] == str(site)
 
-    def test_attach_is_idempotent(self, tmp_path: Path):
-        _fake_venv(tmp_path)
-        venv = PluginVenv(tmp_path)
-
-        venv.attach()
-        second = venv.attach()
-
-        assert second is None
-        assert sys.path.count(str(venv.site_packages())) == 1
+        assert venv.attach() is None
+        assert sys.path.count(str(site)) == 1
 
     def test_no_venv_attaches_nothing(self, tmp_path: Path):
         assert PluginVenv(tmp_path).attach() is None
@@ -154,16 +148,21 @@ class TestSync:
         with pytest.raises(Exception, match="no version pinned"):
             PluginVenv(plugin_dir).sync()
 
-    def test_without_uv_it_says_how_to_get_it(self, tmp_path, monkeypatch):
+    def test_without_uv_or_without_a_declaration_it_names_what_is_missing(
+        self, tmp_path, monkeypatch
+    ):
+        """两样东西缺一样都跑不了 uv sync：没有 uv 工具、或连 pyproject.toml
+        都没有——各自说清楚缺什么。"""
         plugin_dir = self._declared(tmp_path)
         monkeypatch.setattr("shutil.which", lambda name: None)
 
         with pytest.raises(Exception, match="install it"):
             PluginVenv(plugin_dir).sync()
 
-    def test_without_a_declaration_it_names_the_file(self, tmp_path):
+        monkeypatch.setattr("shutil.which", lambda name: "C:/fake/uv")
+
         with pytest.raises(Exception, match="pyproject.toml"):
-            PluginVenv(tmp_path).sync()
+            PluginVenv(tmp_path / "bare").sync()
 
 
 class TestDescribe:

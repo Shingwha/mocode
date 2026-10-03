@@ -47,37 +47,32 @@ def _get_builtin_cmd(name: str) -> Command:
 
 
 class TestCommandRegistry:
-    def test_register_and_get_by_name(self):
+    def test_the_registry_resolves_by_name_and_alias_and_lists_sorted(self):
+        """get 认名字也认别名，不认识的返回 None；all() 按名字排好——
+        菜单的顺序由注册表自己保证。"""
         reg = CommandRegistry()
         cmd = _get_builtin_cmd("/quit")
         reg.register(cmd)
         assert reg.get("/quit") is cmd
+        for spelling in ("/exit", "quit", "exit"):
+            assert reg.get(spelling) is not None, spelling
+        assert reg.get("/nonexistent") is None
 
-    def test_get_by_alias(self):
-        reg = CommandRegistry()
-        reg.register(_get_builtin_cmd("/quit"))
-        assert reg.get("/exit") is not None
-        assert reg.get("quit") is not None
-        assert reg.get("exit") is not None
-
-    def test_get_unknown_returns_none(self):
-        assert CommandRegistry().get("/nonexistent") is None
-
-    def test_register_multiple_and_all_is_sorted(self):
-        reg = CommandRegistry()
-        reg.register(*BUILTIN_COMMANDS)
-        names = [c.name for c in reg.all()]
+        everything = CommandRegistry()
+        everything.register(*BUILTIN_COMMANDS)
+        names = [c.name for c in everything.all()]
         assert names == sorted(names)
         assert "/quit" in names
 
 
 class TestCommandResults:
-    def test_text_builds_prompt_result(self):
+    def test_results_carry_a_kind(self):
+        """CommandResult 的种类：一段文本是 prompt，两个哨兵分别是
+        continue 与 exit。"""
         result = CommandResult.text("hi")
         assert result.kind is Kind.PROMPT
         assert result.prompt == "hi"
 
-    def test_sentinels(self):
         assert CONTINUE.kind is Kind.CONTINUE
         assert EXIT.kind is Kind.EXIT
         assert CONTINUE.prompt is None
@@ -103,7 +98,11 @@ class TestDispatch:
         await registry.dispatch("/say hello  world", conversation=conversation)
         assert seen == ["hello  world"]
 
-    async def test_anything_else_is_a_prompt(self, conversation: Conversation):
+    async def test_what_is_not_a_command_becomes_a_prompt(
+        self, conversation: Conversation
+    ):
+        """不是命令的输入——一句普通的话、一个没人登记的斜杠词——都是
+        prompt：前端自己决定说什么，host 不猜。"""
         result = await CommandRegistry().dispatch(
             "what is in this project?", conversation=conversation
         )
@@ -111,13 +110,10 @@ class TestDispatch:
         assert result.kind is Kind.PROMPT
         assert result.prompt == "what is in this project?"
 
-    async def test_an_unknown_slash_word_is_a_prompt_too(self, conversation: Conversation):
-        """The frontend decides what to say about it; the host does not guess."""
-        result = await CommandRegistry().dispatch(
+        unknown = await CommandRegistry().dispatch(
             "/nope", conversation=conversation
         )
-
-        assert result.kind is Kind.PROMPT
+        assert unknown.kind is Kind.PROMPT
 
 
 class TestQuitCommand:
@@ -144,7 +140,14 @@ class TestResumeCommand:
         assert conversation.messages == export_data["messages"]
         assert any(isinstance(e, ConversationChanged) for e in events)
 
-    async def test_resume_rejects_an_invalid_file(self, conversation: Conversation):
+    async def test_a_resume_that_cannot_happen_says_so_or_stays_silent(
+        self, conversation: Conversation
+    ):
+        """三种"恢复不了"：文件读不动（warn 级）、根本没有会话（info 级）、
+        有会话但没有终端可挑（什么都不说，一个事件都没有）。
+
+        公告的存在性与级别是契约，整句话术可改写。
+        """
         path = Path(conversation.cwd) / "old.json"
         path.write_text(json.dumps([{"role": "user", "content": "hi"}]), encoding="utf-8")
 
@@ -153,20 +156,13 @@ class TestResumeCommand:
         assert conversation.messages == []
         assert [n.level for n in notices(events)] == ["warn"]
 
-    async def test_a_bare_resume_says_so_when_there_is_nothing_to_resume(
-        self, conversation: Conversation
-    ):
-        _result, events = await run_command(_get_builtin_cmd("/resume"), conversation)
+        _result, nothing = await run_command(_get_builtin_cmd("/resume"), conversation)
 
-        # 一条 info 级公告，说明没有可恢复的会话——存在性与级别是契约，
-        # 整句话术可改写。
-        assert [n.level for n in notices(events)] == ["info"]
-        assert re.search(r"no sessions", notices(events)[0].message, re.I)
+        # 一条 info 级公告，说明没有可恢复的会话
+        assert [n.level for n in notices(nothing)] == ["info"]
+        assert re.search(r"no sessions", notices(nothing)[0].message, re.I)
 
-    async def test_a_bare_resume_without_a_terminal_does_nothing(
-        self, conversation: Conversation
-    ):
-        """No picker, no pipe to draw it into — and no traceback either."""
+        # 有更老的会话、但没有终端可挑：静默的无操作——不崩，也不留痕
         other = conversation.runtime.new_conversation(cwd=conversation.cwd)
         other.messages.append({"role": "user", "content": "an older session"})
         other.save()
@@ -183,14 +179,6 @@ class TestResumeCommand:
 
 
 class TestModelCommand:
-    async def test_without_a_terminal_it_leaves_the_model_alone(
-        self, conversation: Conversation
-    ):
-        _result, events = await run_command(_get_builtin_cmd("/model"), conversation)
-
-        assert conversation.model_name == "test-model"
-        assert events == []
-
     async def test_the_picker_shows_ids_and_falls_back_to_them_for_titles(
         self, make_mc, tmp_path: Path, monkeypatch
     ):
@@ -200,8 +188,15 @@ class TestModelCommand:
         选择器是终端自己的模态框，只能从 ``mocode.cli.dialogs.select`` 这个
         模块 seam 替换成脚本应答（模态框无法在测试里真正弹出）——patch 接缝在
         此声明。断言的是选项的结构（value 恒为 id、title 的取舍、current 标记）
-        与切换事实，选择器标题与公告话术可改写。
+        与切换事实，选择器标题与公告话术可改写。没有终端时选择器无从弹起：
+        模型原地不动，一个事件都没有。
         """
+        headless = make_mc().new_conversation(cwd=tmp_path)
+        _result, events = await run_command(_get_builtin_cmd("/model"), headless)
+
+        assert headless.model_name == "test-model"
+        assert events == []
+
         config = Config(
             provider="p",
             model="a",
@@ -249,7 +244,9 @@ class TestModelCommand:
 class TestSkillCommand:
     """`/skill:<name>` is contributed by a *host* plugin, so it works headless."""
 
-    async def test_basic_load(self, conversation: Conversation):
+    async def test_the_prompt_is_the_skill_block_then_the_body_then_the_request(
+        self, conversation: Conversation
+    ):
         cmd = make_skill_command(_skill("workflow", "DAG orchestration", "instructions here"))
         assert cmd.name == "/skill:workflow"
         assert cmd.description == "DAG orchestration"
@@ -257,22 +254,22 @@ class TestSkillCommand:
         result, _events = await run_command(cmd, conversation)
 
         assert result.kind is Kind.PROMPT
-        # 注入的 prompt 以 [Skill:<name>] 形态的指令块开头，随后是技能正文——
-        # 顺序即契约，指令块与正文之间的文案不钉。
+        # 注入的 prompt 以 [Skill:<name>] 形态的指令块开头，随后是技能正文；
+        # 没有附带用户请求时 prompt 止于技能正文——顺序即契约，指令块与正文
+        # 之间的文案不钉。
         assert re.search(r"\[Skill:workflow\b", result.prompt)
         assert result.prompt.index("[Skill:workflow") < result.prompt.index(
             "instructions here"
         )
-        # 没有附带用户请求：prompt 止于技能正文
         assert result.prompt.rstrip().endswith("instructions here")
 
-    async def test_with_user_request(self, conversation: Conversation):
-        cmd = make_skill_command(_skill("kami", "PDF typesetting", "typeset instructions"))
-
-        result, _events = await run_command(cmd, conversation, args="帮我做一份简历")
-
         # 用户请求拼在技能正文之后——顺序即契约，"User request" 标签不钉
-        assert result.prompt.index("typeset instructions") < result.prompt.index(
+        asked, _ = await run_command(
+            make_skill_command(_skill("kami", "PDF typesetting", "typeset instructions")),
+            conversation,
+            args="帮我做一份简历",
+        )
+        assert asked.prompt.index("typeset instructions") < asked.prompt.index(
             "帮我做一份简历"
         )
 
