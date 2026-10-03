@@ -32,6 +32,9 @@
 | D11 | 文档收口：`description.py`（模型契约）重写——名字已注入全局/直接用别 import、顶层 await 别包 asyncio.run（含 ensure_future 需显式 await）、命名规则、结果四字段与新发现表面、输出方式与截断、deadline 语义；`docs/plugins.md` 同步；新建 `codemode/README.md`（mcp 有、codemode 没有） | field-findings P0-1/P0-2/P2-2/P2-4 |
 | D12 | **prompt 名单**（用户拍板 2026-10-03）：`mcp_servers` 段每个可达 server 下列**工具名清单**（只名字不 schema）；用法（字段/description）按需经 codemode `describe_tool()` 获取；每 server 名单设上限，超出提示 `search_tools()`；段在会话开始定稿，订阅新增的工具不在名单但脚本可用（文档写明）。命名路线同时拍板：折叠规范名做 key（注册表/事件/权限稳定），沙箱三拼法全收（短名/连字符全名/精确名），与 Claude Code 同构 | 用户讨论裁决；pi declarations 模式的名单版 |
 | D13 | **目录条目裁断**（用户拍板 2026-10-03）：`all_tools()`/`search_tools()` 条目 = `{name, description 裁到 80 字符 + "…"}`；**排序仍用全文**（BM25 内部吃完整描述，返回边界才裁）；全文 + schema 走 `describe_tool()`；空描述不补省略号 | 目录即目录、详情按需，与 D12 同哲学 |
+| D14 | **门控 import**（用户拍板 2026-10-03）：注入 `__import__` 到脚本 env，白名单仅限 8 个已注入模块（`import asyncio`/`from asyncio import gather` 直接成功）；其余模块报明确错误并指向 `tools.*`；不动 `runtime.py` 的 RESTRICTED，资源边界（no fs/network）一寸不让 | 消除 ImportError 往返；全开放会让 os/subprocess/socket 进沙箱，契约作废 |
+| D15 | **门面回退解析**（用户拍板 2026-10-03，修正原"报错提示"裁决）：`tools.x` 查找 = 注册工具（精确 → 归一化 → 短名）→ **内建名回退**（`describe_tool`/`all_tools`/`search_tools`/`store`/`load`/`text`/`console`/`image`/`print`/`exit` 直接返回内建函数）；**目录仍只列注册工具**——门面宽容、目录严格；`tools.codemode` 自调用拒绝维持 | 模型猜 `tools.describe_tool` 零往返浪费；报错提示省不了那轮（脚本抛错即死，仍须重发 codemode） |
+| D16 | **截断与 store 加固**（用户实测 2026-10-03）：输出截断通知改**祈使句**（"⚠ N chars truncated — before relying on this output, read the full result at <path> via tools.read"）；`description.py` 写明 store 真实限额（默认单值 256KB / 总量 1MB，按 JSON 序列化尺寸）防止模型过度防御式预截断；大件标准出路写进文档（`tools.write` 落盘 + `store` 存路径） | 模型把 `[:20000]` 手动截断与忽略截断标记都是文档信息不足所致 |
 
 ## 3. 波次表（同包文件强耦合 → 串行，一波一个 agent）
 
