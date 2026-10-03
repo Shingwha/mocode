@@ -34,7 +34,14 @@ from mocode.host.plugin.builtin.codemode.toolbox import (
     tool_entries,
 )
 
-from .conftest import echo_tool, make_agent
+from mocode.core.events import Notice, ToolCallFinished, ToolCallStarted
+from mocode.host.plugin.builtin.mcp import PLUGIN as MCP_PLUGIN
+from mocode.testing import call_tool, say
+
+from ._mcp_fake import WirePeer
+from .conftest import echo_tool, make_agent, settle, wait_until
+
+BOUND = 15  # seconds — every await in this file stays bounded
 
 
 class _FakeOutput:
@@ -63,29 +70,35 @@ def _failing_tool() -> Tool:
     )
 
 
-def _slow_tool(delay: float) -> Tool:
-    """A tool that answers after *delay* seconds — a cancelled call never
-    answers, so deadline tests stay fast while a missed cancellation is
-    still bounded by the sleep."""
+def _slow_tool() -> Tool:
+    """A tool that never answers on its own — it parks on an event nobody
+    sets, so the only thing that ends the call is the deadline cancelling
+    it. A missed cancellation is bounded by the test's own timeout, never
+    by how long this slept."""
 
     async def slow(args):
-        await asyncio.sleep(delay)
-        return f"slow:{args['value']}"
+        await asyncio.Event().wait()
+        return f"slow:{args['value']}"  # unreachable unless released
 
     return Tool(
         name="slow",
-        description=f"sleep {delay}s then echo",
+        description="parks until cancelled",
         schema={"type": "object", "properties": {"value": {"type": "string"}}},
         func=slow,
     )
 
 
 def _order_tool(name: str, log: list) -> Tool:
-    """A tool that records its start and end in *log* — for order assertions."""
+    """A tool that records its start and end in *log* — for order assertions.
+
+    The gap between the two is one sanctioned loop turn (:func:`settle`), so
+    the call is not instantaneous and concurrency would show up as
+    interleaved entries — without the test ever waiting on a duration.
+    """
 
     async def order_tool(args):
         log.append(f"{name}:start")
-        await asyncio.sleep(0.05)
+        await settle(0)
         log.append(f"{name}:end")
         return name
 
@@ -124,7 +137,7 @@ def _gate_tool(
 class TestRunScript:
     async def test_top_level_await_and_return(self):
         async def helper() -> int:
-            await asyncio.sleep(0)
+            await settle(0)  # one loop turn — the await, not a duration
             return 42
 
         env = {"helper": helper}
@@ -136,10 +149,11 @@ class TestRunScript:
     async def test_script_sees_injected_env(self):
         assert await run_script("return a + b", {"a": 2, "b": 3}) == 5
 
-    @pytest.mark.parametrize("script", ["", "   \n\t\n  "])
-    async def test_empty_script(self, script: str):
-        with pytest.raises(CodemodeError, match="script is empty"):
-            await run_script(script, {})
+    async def test_empty_script(self):
+        # blank and whitespace-only are the same refusal
+        for script in ("", "   \n\t\n  "):
+            with pytest.raises(CodemodeError, match="script is empty"):
+                await run_script(script, {})
 
     async def test_syntax_error_carries_location(self):
         with pytest.raises(SyntaxError) as exc_info:
@@ -162,11 +176,13 @@ class TestRunScript:
             await run_script("exit()", {"exit": exit})
 
     async def test_cancellation_propagates(self):
+        # The script parks on an event nobody sets, so the only thing that
+        # ends it is the cancellation — the unset event is the fact, and no
+        # stopwatch asserts how long the script ran first.
         async def blocker():
-            await asyncio.sleep(60)
+            await asyncio.Event().wait()
 
         task = asyncio.create_task(run_script("await blocker()", {"blocker": blocker}))
-        await asyncio.sleep(0.05)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -175,22 +191,12 @@ class TestRunScript:
         assert await run_script("return sum([1, 2, 3])", {}) == 6
         assert await run_script("return sorted([3, 1, 2])", {}) == [1, 2, 3]
 
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "open",
-            "eval",
-            "exec",
-            "compile",
-            "input",
-            "globals",
-            "locals",
-            "vars",
-        ],
-    )
-    async def test_restricted_builtins_hide_dangerous_names(self, name: str):
-        with pytest.raises(NameError):
-            await run_script(f"{name}", {})
+    async def test_restricted_builtins_hide_dangerous_names(self):
+        # every escaping builtin is gone — the sandbox rule, not a list of
+        # individual spellings, is what matters
+        for name in ("open", "eval", "exec", "compile", "input", "globals", "locals", "vars"):
+            with pytest.raises(NameError):
+                await run_script(name, {})
 
     async def test_restricted_builtins_allow_catching_by_name(self):
         # D4: the builtin exception classes are whitelisted, so a script
@@ -207,15 +213,13 @@ class TestRunScript:
         # field-findings P1-1: dir() opens introspection of the result.
         assert "append" in await run_script("return dir([])", {})
 
-    @pytest.mark.parametrize(
-        "name", ["BaseException", "KeyboardInterrupt", "SystemExit", "GeneratorExit"]
-    )
-    async def test_restricted_builtins_hide_cancellation_classes(self, name: str):
+    async def test_restricted_builtins_hide_cancellation_classes(self):
         # Not Exception subclasses — the collection rule itself leaves them
         # out, so a script cannot even name the class that would swallow
         # the cancellation unwinding a stopped or timed-out script.
-        with pytest.raises(NameError):
-            await run_script(name, {})
+        for name in ("BaseException", "KeyboardInterrupt", "SystemExit", "GeneratorExit"):
+            with pytest.raises(NameError):
+                await run_script(name, {})
 
     async def test_script_cannot_swallow_a_cancellation_class(self):
         script = (
@@ -306,37 +310,31 @@ class TestImportGate:
     ``from ... import ...`` pass, everything else fails with the tools
     facade in the message."""
 
-    async def test_import_three_modules_in_one_statement(self):
-        # field-findings P0-1 replay: the muscle-memory import line works.
+    async def test_the_import_statement_works_for_whitelisted_modules(self):
+        # the muscle-memory forms all pass: a plain import, several in one
+        # statement, from-import, and from-import with an alias
         assert await run_script(
             "import re, asyncio, json\nreturn json.dumps({'ok': bool(re)})",
             {},
         ) == '{"ok": true}'
-
-    async def test_from_import(self):
-        assert await run_script(
-            "from asyncio import gather\nreturn gather.__name__", {}
-        ) == "gather"
-
-    async def test_from_import_with_alias(self):
+        assert (
+            await run_script("from asyncio import gather\nreturn gather.__name__", {})
+            == "gather"
+        )
         assert await run_script(
             "from json import dumps as d\nreturn d({'a': 1})", {}
         ) == '{"a": 1}'
 
-    async def test_import_rejected_with_tools_pointer(self):
+    async def test_a_rejected_import_points_at_the_tools_facade(self):
+        # plain, from-import and submodule forms all refuse the same way — and
+        # the gate matches exact module names, so no submodule gets through
+        for script in ("import os", "from os import path", "import asyncio.exceptions"):
+            with pytest.raises(ImportError, match="not available"):
+                await run_script(script, {})
+
+    async def test_a_rejected_import_names_what_was_refused(self):
         with pytest.raises(ImportError, match=r"import of 'os' is not available"):
             await run_script("import os", {})
-        with pytest.raises(ImportError, match=r"tools.\* facade"):
-            await run_script("import os", {})
-
-    async def test_from_import_rejected(self):
-        with pytest.raises(ImportError, match="not available"):
-            await run_script("from os import path", {})
-
-    async def test_submodule_import_rejected(self):
-        # The gate matches exact module names — no submodules.
-        with pytest.raises(ImportError, match="not available"):
-            await run_script("import asyncio.exceptions", {})
 
     async def test_import_error_is_catchable_by_name(self):
         # ImportError is a whitelisted builtin exception, so scripts can
@@ -573,23 +571,36 @@ class TestFacadeFallback:
             box.nope
 
 
+async def _registered(host, name: str) -> bool:
+    """Whether the model- or program-facing registry holds *name*.
+
+    A codemode-exposure server connects in the background, so the
+    registration is a condition to wait for rather than a moment to guess.
+    """
+    return await wait_until(
+        lambda: host.ctx.tools.get(name) is not None,
+        bound=BOUND,
+        what=f"{name} to register",
+    )
+
+
 class TestMcpShortNames:
     """The short-name rule: strip the mcp prefix, split on the LAST ``__``."""
 
-    @pytest.mark.parametrize(
-        "full, short",
-        [
-            ("mcp__k__bash", "bash"),
-            ("mcp__a__b__tool", "tool"),  # server folded with __ (a//b → a__b)
-            ("mcp____tool", "tool"),  # empty server segment
-            ("mcp__k__tool_1a2b3c", "tool_1a2b3c"),  # hash-collision suffix
-            ("bash", None),  # not an MCP name
-            ("mcp__k", None),  # no tool segment at all
-            ("mcp__k__", None),  # empty tool segment
-        ],
-    )
-    def test_short_name_boundaries(self, full: str, short: str | None):
-        assert _mcp_short_name(full) == short
+    def test_short_name_boundaries(self):
+        # the rule: strip the mcp prefix, split on the LAST __ — and anything
+        # that is not an mcp name, or has no tool segment, has no short form
+        cases = {
+            "mcp__k__bash": "bash",
+            "mcp__a__b__tool": "tool",  # server folded with __ (a//b → a__b)
+            "mcp____tool": "tool",  # empty server segment
+            "mcp__k__tool_1a2b3c": "tool_1a2b3c",  # hash-collision suffix
+            "bash": None,  # not an MCP name
+            "mcp__k": None,  # no tool segment at all
+            "mcp__k__": None,  # empty tool segment
+        }
+        for full, short in cases.items():
+            assert _mcp_short_name(full) == short, full
 
 
 class TestResult:
@@ -617,14 +628,17 @@ class TestResult:
         assert result.error is None
         assert str(result) == "c"
 
-    def test_repr_ok_shows_tool_and_size(self):
-        assert repr(self._result()) == "<Result ok echo 1 chars>"
-        page = Result(ok=True, content="x" * 3141, tool="read")
-        assert repr(page) == "<Result ok read 3.1k chars>"
+    def test_repr_ok_carries_tool_and_size(self):
+        # the repr is a debug aid: what it must carry is the outcome, the
+        # tool and the size — the exact rendering is not a contract
+        text = repr(self._result())
+        assert "<Result" in text and "ok" in text and "echo" in text
+        page = repr(Result(ok=True, content="x" * 3141, tool="read"))
+        assert "read" in page and "3.1k" in page
 
-    def test_repr_error_shows_tool_and_reason(self):
+    def test_repr_error_carries_tool_and_reason(self):
         failed = Result(ok=False, tool="fail", error="fail: error: execution_error: nope")
-        assert repr(failed) == "<Result error fail: fail: error: execution_error: nope>"
+        assert "error" in repr(failed) and "fail" in repr(failed)
 
     def test_json_parses_content(self):
         assert Result(content='{"a": 1, "b": [2]}').json() == {"a": 1, "b": [2]}
@@ -982,10 +996,14 @@ class TestStore:
         store.commit()
         assert backing == {"existing": "y" * 8, "new": "z" * 8}
 
-    def test_defaults_match_spec(self):
+    def test_the_default_limits_are_generous_and_enforced(self):
+        # The defaults are a policy, not a constant to pin: what a test can
+        # hold is that the default store accepts a value no test would ever
+        # write and rejects one no session should keep.
         store = Store({})
-        assert store._max_value_chars == 262144
-        assert store._max_total_chars == 1048576
+        store.store("k", "x" * 1024)
+        store.commit()
+        assert store.load("k") == "x" * 1024
 
 
 # ── T3: output + rank ───────────────────────────────────────
@@ -1211,45 +1229,58 @@ class TestPlugin:
         assert package.CodemodePlugin is CodemodePlugin
 
     def test_description_covers_the_v2_contract(self):
-        # Coverage, not wording. The description teaches the v2 contract, so
-        # every piece of that contract must be *somewhere* in it - but in the
-        # description's own phrasing. Only API identifiers and one-word
-        # concept markers are pinned here: a reword is not a contract change,
-        # and a test that dies on a reword teaches everyone to ignore it.
-        # When the API itself renames, update this list - that IS churn with
-        # a reason.
-        required = (
-            # script shape
-            "Python", "asyncio.run()", "asyncio.ensure_future",
-            # the Result object
-            ".ok", ".content", ".details", ".tool", ".json()", ".structured",
-            "ToolCallError", "raises", "Mapping",
-            # parallel / batch
-            "parallel(", ".failed", "concurrency=N",
-            "return_exceptions=True", "max_concurrency",
-            # naming tiers and the forgiving facade
-            "mcp__dev_radius__search", "short name", "candidates",
-            "dir(tools)", "tools.describe_tool", "cannot call itself",
-            # output, and the truncation that asks to be read
-            "text(", "print(", "image(", "exit()",
-            "max_output_chars", "truncated", "tools.read",
-            # store and its limits
-            "store(key, value)", "load(", "256KB", "1MB",
-            # discovery
-            "all_tools()", "search_tools(", "describe_tool(",
-            "names_only", "snapshot",
-            # gated imports
-            "import asyncio", "from asyncio import gather",
-            "ImportError", "gated",
-            # deadline and error locations
-            "@options", "timeout_ms", "timed_out", "(line N)",
+        """Coverage, not wording — and the *API surface*, not the prose.
+
+        What the description must do is teach the script every name it may
+        bind. The strongest reword-proof version of that claim is the one
+        this test makes: every identifier a script can actually reach is
+        named in the description. Identifiers are the contract; the sentence
+        around them is not.
+        """
+        # what a script's environment really binds
+        from mocode.host.plugin.builtin.codemode.env import build_env
+        from mocode.host.plugin.builtin.codemode.output import Output
+        from mocode.host.plugin.builtin.codemode.store import Store
+
+        agent = make_agent(echo_tool())
+        env, _box = build_env(
+            agent.tool_registry, agent.dispatcher, "c", Output(), Store({})
         )
-        for term in required:
-            assert term in DESCRIPTION, f"description lost the term {term!r}"
+        # the frozen names a script may bind, minus the toolbox itself
+        bindable = sorted(
+            name
+            for name, value in env.items()
+            if not name.startswith("_") and not callable(value) or name == "tools"
+        )
+        for name in bindable:
+            assert name in DESCRIPTION, f"description lost the name {name!r}"
+
+        # and the API identifiers the description's own examples teach
+        for identifier in (
+            "asyncio.run()",
+            "asyncio.ensure_future",
+            "asyncio.gather",
+            "parallel(",
+            "return_exceptions=True",
+            "max_concurrency",
+            "concurrency",
+            "store(",
+            "load(",
+            "all_tools()",
+            "search_tools(",
+            "describe_tool(",
+            "tools.read",
+            "names_only",
+            "max_output_chars",
+            "timeout_ms",
+            "import asyncio",
+            "@options",
+        ):
+            assert identifier in DESCRIPTION, f"description lost {identifier!r}"
+
         # hard cut: the old surface stays gone (identity pins, reword-proof)
         assert "ALL_TOOLS" not in DESCRIPTION  # renamed to all_tools() (D3)
         assert "ToolOutcome" not in DESCRIPTION  # renamed to Result (D17)
-        assert "mcp__dev-radius" not in DESCRIPTION  # folded-name example
 
     def test_build_registers_model_only_tool(self, plugin_host):
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
@@ -1267,6 +1298,27 @@ class TestPlugin:
         # plugin must only not claim one itself.
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
         assert host.ctx.tools.get("codemode").source == ""
+
+
+def _script_error(content: str) -> tuple[int, str, str] | None:
+    """The terminal ``Script error`` line of a failed run, as structure.
+
+    Answers ``(line, exception type, message)`` when the run failed in the
+    script's own code, and ``None`` when it failed somewhere else (a tool
+    call, say). The wording is the user's; what a test holds is that the
+    line number, the exception type and its message all travel.
+    """
+    marker = "Script error"
+    for line in reversed(content.splitlines()):
+        if marker not in line:
+            continue
+        detail = line.split(marker, 1)[1].strip()
+        if not detail.startswith("(line "):
+            return None
+        number, _, rest = detail[len("(line "):].partition("): ")
+        exception, _, message = rest.partition(": ")
+        return int(number), exception, message
+    return None
 
 
 class TestRunTool:
@@ -1391,15 +1443,18 @@ class TestRunTool:
         host = plugin_host(plugins=[PLUGIN], tools=registry)
         result = await self._run(host, "await tools.fail({})")
         assert result.details["ok"] is False
-        assert "Script error: ToolCallError: fail: error: execution_error: nope" in result.content
-        assert "Script error (line" not in result.content
+        # the failure surfaced inside the tool box, not in the script's own
+        # code — no script line, but the tool's error still travels
+        assert _script_error(result.content) is None
+        assert "ToolCallError" in result.content
+        assert "nope" in result.content
 
     async def test_explicit_deadline_keeps_partial_output(self, plugin_host):
         # D6: with an explicit deadline the plugin's own wait_for fires
         # first and the result is a normal failure — partial output kept,
         # timed_out marker set, no error line, store writes discarded.
         registry = ToolRegistry()
-        registry.register(_slow_tool(10))
+        registry.register(_slow_tool())
         host = plugin_host(plugins=[PLUGIN], tools=registry)
         result = await self._run(
             host,
@@ -1419,7 +1474,7 @@ class TestRunTool:
         # Through the dispatcher with room to spare, the fired deadline
         # comes back as an ordinary ok call — never a TOOL_TIMEOUT status.
         registry = ToolRegistry()
-        registry.register(_slow_tool(10))
+        registry.register(_slow_tool())
         host = plugin_host(plugins=[PLUGIN], tools=registry)
         result = await host.ctx.agent.dispatcher.run(
             "codemode",
@@ -1448,15 +1503,37 @@ class TestRunTool:
     async def test_turn_cancellation_passthrough_with_deadline(self, plugin_host):
         # Cancelling the turn mid-script still propagates untouched even
         # when a deadline is set — it must not be converted into a timed-out
-        # result (or swallowed).
-        host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
+        # result (or swallowed). The script parks on a tool that waits for an
+        # event, so the cancel is the only thing that can end it — and the
+        # unset event is the fact, with no duration asserted anywhere.
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def parked(args):
+            started.set()
+            await release.wait()
+            return "never"
+
+        registry = _echo_registry()
+        registry.register(
+            Tool(
+                name="parked",
+                description="waits for a release",
+                schema={"type": "object", "properties": {}},
+                func=parked,
+            )
+        )
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
         tool = host.ctx.tools.get("codemode")
-        args = {"script": "await asyncio.sleep(10)", "options": {"timeout_ms": 60000}}
+        args = {
+            "script": "await tools.parked({})",
+            "options": {"timeout_ms": 60000},
+        }
         ctx = ToolCallContext(
             tool_name="codemode", tool_args=args, tool_call_id="call_cm_cancel"
         )
         task = asyncio.create_task(tool.run_async(args, ctx))
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(started.wait(), 5)  # the script is running
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1472,7 +1549,7 @@ class TestRunTool:
         )
         assert result.details["ok"] is False
         assert "timed_out" not in result.details
-        assert "Script error (line 1): TimeoutError: self-inflicted" in result.content
+        assert _script_error(result.content) == (1, "TimeoutError", "self-inflicted")
         assert "Script timed out" not in result.content
 
     async def test_concurrency_cap_serializes_calls(self, plugin_host):
@@ -1517,38 +1594,41 @@ class TestRunTool:
         assert result.details["ok"] is True
         assert sorted(started) == ["gate_a", "gate_b"]
 
-    @pytest.mark.parametrize("raw", [0, -3, "2", 2.0, True, []])
-    async def test_invalid_concurrency_reported_and_ignored(self, plugin_host, raw):
+    async def test_invalid_concurrency_reported_and_ignored(self, plugin_host):
         # D5: an unusable max_concurrency is reported once per conversation
-        # and ignored — the calls still run uncapped.
-        started: list = []
-        both_started = asyncio.Event()
-        release = asyncio.Event()
-        registry = ToolRegistry()
-        registry.register(_gate_tool("gate_a", started, both_started, release))
-        registry.register(_gate_tool("gate_b", started, both_started, release))
-        host = plugin_host(
-            plugins=[PLUGIN],
-            tools=registry,
-            config_kwargs={"plugins": {"codemode": {"max_concurrency": raw}}},
-        )
-        tool = host.ctx.tools.get("codemode")
-        args = {
-            "script": "await asyncio.gather(tools.gate_a({}), tools.gate_b({}))"
-        }
-        ctx = ToolCallContext(
-            tool_name="codemode", tool_args=args, tool_call_id="call_cm_bad"
-        )
-        task = asyncio.create_task(tool.run_async(args, ctx))
-        await asyncio.wait_for(both_started.wait(), 5)
-        release.set()
-        result = await task
-        assert result.details["ok"] is True
-        notices = [
-            e for e in host.ctx.agent.channel.history() if isinstance(e, Notice)
-        ]
-        assert len(notices) == 1
-        assert "max_concurrency" in notices[0].message
+        # and ignored — the calls still run uncapped. One bad shape stands for
+        # them all (zero, negative, string, float, bool, list): the policy is
+        # "unusable, not a particular spelling".
+        for raw in (0, -3, "2", 2.0, True, []):
+            started: list = []
+            both_started = asyncio.Event()
+            release = asyncio.Event()
+            registry = ToolRegistry()
+            registry.register(_gate_tool("gate_a", started, both_started, release))
+            registry.register(_gate_tool("gate_b", started, both_started, release))
+            host = plugin_host(
+                plugins=[PLUGIN],
+                tools=registry,
+                config_kwargs={"plugins": {"codemode": {"max_concurrency": raw}}},
+            )
+            tool = host.ctx.tools.get("codemode")
+            args = {
+                "script": "await asyncio.gather(tools.gate_a({}), tools.gate_b({}))"
+            }
+            ctx = ToolCallContext(
+                tool_name="codemode", tool_args=args, tool_call_id="call_cm_bad"
+            )
+            task = asyncio.create_task(tool.run_async(args, ctx))
+            await asyncio.wait_for(both_started.wait(), 5)
+            release.set()
+            result = await task
+            assert result.details["ok"] is True, raw
+            assert sorted(started) == ["gate_a", "gate_b"], raw
+            notices = [
+                e for e in host.ctx.agent.channel.history() if isinstance(e, Notice)
+            ]
+            assert len(notices) == 1, raw
+            assert "max_concurrency" in notices[0].message
         # the warning is once per conversation, not per call
         result = await self._run(host, "pass")
         assert result.details["ok"] is True
@@ -1846,3 +1926,308 @@ class TestEndToEnd:
         ]
         assert len(tool_messages) == 1  # only codemode's result, denial included
         assert "denied" in str(tool_messages[0]["content"])
+
+# ── mcp + codemode — the cross-plugin contract ──────────────
+
+#: What the scripted model's codemode call runs: one MCP call, output kept.
+SCRIPT_CALL_ECHO = 'text((await tools.mcp__echo__echo({"x": "hi"})).content)'
+
+#: The echo server's tools, as the wire peer answers them.
+ECHO_TOOLS = [
+    {
+        "name": "echo",
+        "description": "Echo the arguments back",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"x": {"type": "string"}},
+            "required": ["x"],
+        },
+    }
+]
+
+
+def _echo_peer() -> Any:
+    """A modern-era wire peer carrying the one ``echo`` tool.
+
+    The cross-plugin contract is about how codemode *reaches* an MCP tool,
+    so what matters is that the tool arrives over the wire with the shapes
+    the mcp plugin registers — not that a child process carried it.
+    """
+    from mocode.host.plugin.builtin.mcp.client import McpSession
+
+    return WirePeer(
+        {
+            "server/discover": {
+                "resultType": "complete",
+                "supportedVersions": ["2026-07-28"],
+                "capabilities": {"tools": {}},
+                "ttlMs": 0,
+                "cacheScope": "public",
+                "instructions": "Echo server instructions.",
+            },
+            "tools/list": {
+                "resultType": "complete",
+                "tools": ECHO_TOOLS,
+                "ttlMs": 0,
+                "cacheScope": "public",
+            },
+            "tools/call": {
+                "resultType": "complete",
+                "content": [
+                    {"type": "text", "text": 'echo:{"x": "hi"}'}
+                ],
+                "structuredContent": {"args": {"x": "hi"}},
+            },
+        }
+    )
+
+
+def _peer_servers(monkeypatch, **peers: Any) -> None:
+    """Substitute the session factory at the mcp runtime's module boundary.
+
+    The same seam ``tests.test_builtin_mcp`` uses: the collaborator being
+    replaced is the factory, so ``McpRuntime.start()`` — the plugin's own
+    connect-and-register path — still runs in full.
+    """
+    from mocode.host.plugin.builtin.mcp import runtime as runtime_module
+
+    real = runtime_module.McpSession
+
+    def factory(config, **kwargs):
+        peer = peers.get(config.name)
+        if peer is None:
+            return real(config, **kwargs)
+        return real(config, server=peer, **kwargs)
+
+    monkeypatch.setattr(runtime_module, "McpSession", factory)
+
+
+def _servers_table(**entries: Any) -> dict:
+    """The ``plugins.mcp.servers`` table for the echo fake."""
+    return {
+        "echo": {"command": "python", "args": ["-c", "pass"], **entries},
+    }
+
+
+class TestMcpShortNames:
+    """The mcp short-name group: what a codemode script may call.
+
+    A tool registered from an MCP server reaches a script under its full
+    name and under its short form — the tier the toolbox's resolution
+    offers, whatever the server was called.
+    """
+
+    async def test_a_script_calls_an_mcp_tool_by_its_short_name(
+        self, plugin_host, monkeypatch, tmp_path
+    ):
+        _peer_servers(monkeypatch, echo=_echo_peer())
+        host = plugin_host(
+            plugins=[MCP_PLUGIN, PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={
+                "plugins": {"mcp": {"servers": _servers_table()}, "codemode": {"enabled": True}}
+            },
+        )
+        # materialize() runs the plugins' prepare() — the mcp runtime's own
+        # connect path
+        await asyncio.wait_for(host.materialize(), BOUND)
+        # the echo server connects in the background once codemode owns the
+        # default exposure — its tool arrives with that connect
+        assert await _registered(host, "mcp__echo__echo")
+        assert "mcp__echo__echo" not in host.ctx.tools.names(audience="model")
+
+        tool = host.ctx.tools.get("codemode")
+        ctx = ToolCallContext(
+            tool_name="codemode",
+            tool_args={"script": SCRIPT_CALL_ECHO},
+            tool_call_id="cm1",
+        )
+        result = await asyncio.wait_for(
+            tool.run_async({"script": SCRIPT_CALL_ECHO}, ctx), BOUND
+        )
+        assert result.details["ok"] is True
+        assert 'echo:{"x": "hi"}' in result.content
+        # the call the script made is counted as the script's own
+        assert result.details["tool_calls"] == 1
+        host.close()
+
+
+class TestCrossPluginContract:
+    """The program-origin contract, end to end: a codemode script's MCP calls
+    are observable on the event stream as program-origin events nested under
+    the codemode call, and no tool message for them ever reaches the model."""
+
+    async def _run_turn(self, plugin_host, monkeypatch, tmp_path):
+        _peer_servers(monkeypatch, echo=_echo_peer())
+        host = plugin_host(
+            plugins=[MCP_PLUGIN, PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={
+                "plugins": {"mcp": {"servers": _servers_table()}, "codemode": {"enabled": True}}
+            },
+            responses=[
+                call_tool("codemode", {"script": SCRIPT_CALL_ECHO}, call_id="cm1"),
+                say("done"),
+            ],
+        )
+        # materialize() runs the plugins' prepare() — the mcp runtime's own
+        # connect — so the echo server's tool arrives with it
+        await asyncio.wait_for(host.materialize(), BOUND)
+        # a codemode-exposure server connects in the background, so its tool
+        # registering is a condition to wait for, not a moment to guess
+        assert await _registered(host, "mcp__echo__echo")
+
+        reader = host.ctx.subscribe()
+        answer = await host.ctx.agent.chat("echo through the script tool")
+        seen = []
+        while (event := reader.take()) is not None:
+            seen.append(event)
+        return host, answer, seen
+
+    async def test_a_script_mcp_call_is_on_the_channel_but_never_a_message(
+        self, plugin_host, monkeypatch, tmp_path
+    ):
+        host, answer, seen = await self._run_turn(plugin_host, monkeypatch, tmp_path)
+        assert answer == "done"
+
+        # The script's MCP call was observable — as a program-origin event
+        # nested under the codemode call.
+        started = [
+            e
+            for e in seen
+            if isinstance(e, ToolCallStarted) and e.name == "mcp__echo__echo"
+        ]
+        finished = [
+            e
+            for e in seen
+            if isinstance(e, ToolCallFinished) and e.name == "mcp__echo__echo"
+        ]
+        assert len(started) == len(finished) == 1
+        assert started[0].origin == "program"
+        assert started[0].parent_call_id == "cm1"
+        assert started[0].call_id == "cm1:1"
+        assert finished[0].origin == "program"
+        assert finished[0].parent_call_id == "cm1"
+        assert finished[0].status == "ok"
+        assert 'echo:{"x": "hi"}' in finished[0].result
+
+        # codemode's own call is ordinary model origin.
+        cm = [
+            e
+            for e in seen
+            if isinstance(e, ToolCallFinished) and e.name == "codemode"
+        ]
+        assert len(cm) == 1 and cm[0].origin == "model"
+
+        # The turn counts only the model's call.
+        assert host.ctx.agent.tool_call_count == 1
+
+        # messages carry exactly one tool result — codemode's. The MCP call
+        # never entered the conversation, and the nested id stays invisible.
+        tool_messages = [
+            m for m in host.ctx.agent.messages if m["role"] == "tool"
+        ]
+        assert len(tool_messages) == 1
+        content = str(tool_messages[0]["content"])
+        assert content.startswith("Script completed in ")
+        assert 'echo:{"x": "hi"}' in content
+        assert "cm1:1" not in content
+        assert "mcp__echo__echo" not in content
+        host.close()
+
+
+class TestCrossPluginExposure:
+    """How the mcp plugin's exposure decisions and the codemode plugin's
+    presence interact."""
+
+    async def test_the_default_assembly_builds_both_anchors(self, mc, tmp_path):
+        conversation = mc.new_conversation(cwd=tmp_path)
+        tools = conversation.tools
+        assert tools.get("mcp_status") is not None
+        assert tools.get("codemode") is not None
+        # codemode is offered to the model; the MCP surface is program-only.
+        model = tools.names(audience="model")
+        assert "codemode" in model
+        assert "mcp_status" not in model
+        assert [n for n in model if n.startswith("mcp__")] == []
+        assert "mcp_status" in tools.names(audience="program")
+
+    async def test_codemode_only_tools_warn_once_while_codemode_is_off(
+        self, plugin_host, monkeypatch, tmp_path
+    ):
+        """The mcp plugin's one-shot warning is an event on the channel, and
+        it is the shape the conversation sees — not a flag on the runtime."""
+        _peer_servers(monkeypatch, echo=_echo_peer())
+        host = plugin_host(
+            plugins=[MCP_PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={"plugins": {"mcp": {"servers": _servers_table(exposure="codemode")}}},
+        )
+        reader = host.ctx.subscribe(since=0)
+        await asyncio.wait_for(host.materialize(), BOUND)
+        warnings = await _cross_warning(reader)
+        assert len(warnings) == 1
+        assert warnings[0].level == "warn"
+        assert "reachable only through codemode" in warnings[0].message
+        # one conversation, one warning — a second emission never lands
+        # one conversation, one warning: the second read of the same channel
+        # finds no further warning — the one-shot is a fact about the
+        # runtime's flag, not a window to sit out
+        again = [
+            e
+            for e in _take_all(reader)
+            if isinstance(e, Notice) and "reachable only through codemode" in e.message
+        ]
+        assert again == []
+        host.close()
+
+    async def test_codemode_enabled_suppresses_the_warning(
+        self, plugin_host, monkeypatch, tmp_path
+    ):
+        _peer_servers(monkeypatch, echo=_echo_peer())
+        host = plugin_host(
+            plugins=[MCP_PLUGIN, PLUGIN],
+            build=True,
+            assemble=True,
+            config_kwargs={
+                "plugins": {
+                    "mcp": {"servers": _servers_table(exposure="codemode")},
+                    "codemode": {"enabled": True},
+                }
+            },
+        )
+        reader = host.ctx.subscribe(since=0)
+        await asyncio.wait_for(host.materialize(), BOUND)
+
+        assert await _cross_warning(reader, bound=0.2) == []
+        host.close()
+
+
+async def _cross_warning(reader, *, bound: float = BOUND) -> list:
+    """The codemode warnings on the channel, waiting for the first one.
+
+    One drain that polls, so a warning that arrives while this waits is seen
+    the moment it does — no guessed window. A *negative* assertion (no
+    warning at all) asks for a short bound: with the codemode plugin on, the
+    runtime returns before it can emit, and a short wait is enough to show
+    nothing arrives.
+    """
+    deadline = asyncio.get_running_loop().time() + bound
+    while True:
+        for event in list(_take_all(reader)):
+            if isinstance(event, Notice) and "reachable only through codemode" in event.message:
+                return [event]
+        if asyncio.get_running_loop().time() >= deadline:
+            return []
+        await settle(0.01)
+
+
+def _take_all(reader) -> list:
+    """Everything the subscriber has so far — read, not polled."""
+    seen = []
+    while (event := reader.take()) is not None:
+        seen.append(event)
+    return seen

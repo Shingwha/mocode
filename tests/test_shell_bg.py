@@ -19,10 +19,14 @@ from pathlib import Path
 
 import pytest
 
-from mocode.core.events import PluginMessage, ToolCallStarted, ToolOutput
+from mocode.core.events import (
+    PluginMessage,
+    ToolCallFinished,
+    ToolCallStarted,
+    ToolOutput,
+)
 from mocode.core.tool import ToolError
 from mocode.host.plugin.builtin.shell import (
-    _NOTIFY_WINDOW,
     _Ring,
     _SIGKILL,
     _terminate,
@@ -31,7 +35,8 @@ from mocode.host.plugin.builtin.shell import (
     kill_shell_tool,
 )
 from mocode.host.plugin.builtin.shell import BashSession
-from mocode.testing import call_tool, collect, say
+from .conftest import settle
+from mocode.testing import call_tool, collect, say, terminal
 
 BG = {"run_in_background": True}
 
@@ -155,13 +160,14 @@ class TestBashOutput:
         bash, output, _ = tools
 
         shell_id = await _start(bash, "sleep 0.5; echo done")
-        # Issue the read first and give it one loop turn to reach its wait;
-        # the job is observed still running, so what the read returns below
-        # is a blocked-then-completed read, not a guess about durations.
+        # Issue the read first and let it reach its wait; the job is observed
+        # still running, so what the read returns below is a blocked-then-
+        # completed read, not a guess about durations. One loop turn is all
+        # the read needs to park on the job's own done event.
         waiter = asyncio.ensure_future(
             output.run_async({"shell_id": shell_id, "wait": True}, None)
         )
-        await asyncio.sleep(0)
+        await settle()  # one loop turn for the read to park on job.done
         assert session.jobs[shell_id].running
 
         result = await waiter
@@ -510,27 +516,37 @@ class TestCompletionNotification:
         assert messages[0].run_id == ""
         conversation.close(save=False)
 
-    async def test_a_killed_job_is_not_announced(self, mc, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=tmp_path)
-        bash = conversation.tools.get("bash")
-        kill = conversation.tools.get("kill_shell")
+    async def test_a_killed_job_is_not_announced(self, wired, tmp_path: Path):
+        """A job the user killed is not something the model needs told.
 
-        shell_id = await _start(bash, "sleep 5")
-        await kill.run_async({"shell_id": shell_id}, None)
-        # Nothing was ever queued for an announcement. Prove the silence on a
-        # reader that would have seen one: the bound is one coalescing window
-        # plus slack — by then an announcement, if it were coming, had landed.
-        reader = conversation.agent.channel.subscribe(
-            since=0, keep=lambda event: isinstance(event, PluginMessage)
+        The silence is proved on a *fact*, not on a wall clock: the kill is
+        the last thing that happens to this job, so the observable set after
+        it is the turn end (say 回包到达) with no PluginMessage in it. Waiting
+        a window longer would only prove the window, not the behaviour.
+        """
+        conversation, _ = wired(
+            call_tool("bash", {"command": "echo up; sleep 5", **BG}),
+            call_tool(
+                "kill_shell",
+                {"shell_id": "shell_1"},
+                call_id="k1",
+            ),
+            "done",
         )
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(reader.get(), _NOTIFY_WINDOW + 0.3)
+        bash = conversation.tools.get("bash")
 
-        assert [
+        events = await collect(conversation.stream("go"))
+
+        # the turn ended — the model answered — so nothing was held back
+        assert terminal(events).content == "done"
+        # and the job's whole life is in that turn's events: no announcement
+        assert [e for e in events if isinstance(e, PluginMessage)] == []
+        killed = [
             e
-            for e in conversation.agent.channel.history()
-            if isinstance(e, PluginMessage)
-        ] == []
+            for e in events
+            if isinstance(e, ToolCallFinished) and e.name == "kill_shell"
+        ]
+        assert [e.status for e in killed] == ["ok"]
         conversation.close(save=False)
 
     async def test_a_timed_out_job_is_announced(self, mc, tmp_path: Path):
