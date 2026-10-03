@@ -62,8 +62,7 @@ class TestEventSummary:
     def test_the_default_names_the_type_and_its_fields(self):
         assert ev.ToolCallFinished(name="bash", status="ok").summary() == "bash [ok]"
         assert ev.TextDelta(text="hi").summary() == "TextDelta: text='hi'"
-
-    def test_the_envelope_is_left_out(self):
+        # 信封（run_id / seq）不出现在事件对自己的描述里。
         summary = ev.Notice(message="hi").summary()
         assert "run_id" not in summary and "seq" not in summary
 
@@ -89,19 +88,21 @@ class TestRunState:
             state.apply(event)
         return state
 
-    def test_run_lifecycle(self):
-        state = self._state(
+    def test_the_lifecycle_folds_its_ending(self):
+        """Finished 收敛到 DONE 并留下答案；Failed 收敛到 FAILED 并留下错误。"""
+        done = self._state(
             ev.RunStarted(model="m", tools=["a"]),
             ev.TextDelta(text="think"),
             ev.RunFinished(content="answer", iterations=1),
         )
-        assert (state.model, state.status) == ("m", DONE)
-        assert state.content == "think"
-        assert state.answer == "answer"
+        assert (done.model, done.status) == ("m", DONE)
+        assert done.content == "think"
+        assert done.answer == "answer"
 
-    def test_failure_is_recorded(self):
-        state = self._state(ev.RunStarted(), ev.RunFailed(error="boom", kind="RuntimeError"))
-        assert (state.status, state.error) == (FAILED, "boom")
+        failed = self._state(
+            ev.RunStarted(), ev.RunFailed(error="boom", kind="RuntimeError")
+        )
+        assert (failed.status, failed.error) == (FAILED, "boom")
 
     def test_usage_sums_across_iterations(self):
         state = self._state(
@@ -112,38 +113,35 @@ class TestRunState:
         assert state.last_usage == Usage(3, 2)
 
     def test_a_tool_call_runs_from_started_to_finished(self):
+        """一个调用的折叠全程：在飞、输出累积、终态，计数与调用数一致。"""
         state = self._state(
             ev.RunStarted(),
             ev.ToolCallStarted(call_id="c1", name="bash", args={"command": "ls"}),
         )
         assert [c.name for c in state.tool_calls.values() if not c.done] == ["bash"]
 
+        # 输出按调用累积，别的调用的输出不混进来。
+        state.apply(ev.ToolOutput(call_id="c1", text="one\n"))
+        state.apply(ev.ToolOutput(call_id="c1", text="two\n"))
+        state.apply(ev.ToolOutput(call_id="other", text="ignored"))
+        assert state.tool_calls["c1"].output_text == "one\ntwo\n"
+
         state.apply(ev.ToolCallFinished(call_id="c1", name="bash", status="ok", result="a\nb"))
         call = state.tool_calls["c1"]
         assert call.done and call.status == "ok" and call.result == "a\nb"
         assert [c for c in state.tool_calls.values() if not c.done] == []
 
-    def test_tool_output_accumulates_per_call(self):
-        state = self._state(
-            ev.RunStarted(),
-            ev.ToolCallStarted(call_id="c1", name="bash"),
-            ev.ToolOutput(call_id="c1", text="one\n"),
-            ev.ToolOutput(call_id="c1", text="two\n"),
-            ev.ToolOutput(call_id="other", text="ignored"),
-        )
-        assert state.tool_calls["c1"].output_text == "one\ntwo\n"
-
-    def test_tool_calls_fold_their_terminal_status(self):
-        state = self._state(
+        # 终态逐调用折叠：每个调用各带自己的 status，计数与调用数一致。
+        another = self._state(
             ev.RunStarted(),
             ev.ToolCallStarted(call_id="c1", name="a"),
             ev.ToolCallFinished(call_id="c1", name="a", status="timeout"),
             ev.ToolCallStarted(call_id="c2", name="b"),
             ev.ToolCallFinished(call_id="c2", name="b", status="ok"),
         )
-        assert state.tool_calls["c1"].status == "timeout"
-        assert state.tool_calls["c2"].status == "ok"
-        assert state.tool_calls_made == 2
+        assert another.tool_calls["c1"].status == "timeout"
+        assert another.tool_calls["c2"].status == "ok"
+        assert another.tool_calls_made == 2
 
     def test_unknown_events_are_ignored(self):
         class PluginEvent(ev.Event):
@@ -152,8 +150,9 @@ class TestRunState:
         state = self._state(ev.RunStarted(), PluginEvent())
         assert state.status == RUNNING
 
-    def test_an_overlapping_replay_does_not_double_count(self):
-        """A reconnect that re-reads a range it had folded stays correct."""
+    def test_the_seq_guard_passes_live_events_and_dedups_replays(self):
+        """seq 守卫的两面：没盖戳的（seq 0）总放行，盖了戳的重放不重复计。"""
+        # 已盖戳的一段，中间又被重放一遍——内容不翻倍，收场不变。
         events = [
             self._stamped(ev.RunStarted(run_id="r1"), 1),
             self._stamped(ev.TextDelta(run_id="r1", text="think"), 2),
@@ -170,13 +169,12 @@ class TestRunState:
         assert state.content == "thinking"
         assert state.status == DONE
 
-    def test_unstamped_events_always_apply(self):
-        """The loop folds an event before the channel stamps it: seq 0 is live."""
-        state = RunState()
-        state.apply(ev.RunStarted(run_id="r1"))
-        state.apply(ev.TextDelta(text="a"))
-        state.apply(ev.TextDelta(text="b"))
-        assert state.content == "ab"
+        # The loop folds an event before the channel stamps it: seq 0 is live.
+        live = RunState()
+        live.apply(ev.RunStarted(run_id="r1"))
+        live.apply(ev.TextDelta(text="a"))
+        live.apply(ev.TextDelta(text="b"))
+        assert live.content == "ab"
 
     def test_another_runs_events_do_not_fold_in(self):
         """One RunState is one run's view, even on a channel others share."""
@@ -236,11 +234,11 @@ class TestContentSoftLimit:
         assert state.content.endswith("\nxxxxxxxxxx")
         assert len(state.content) <= 10 + len("…[30 chars elided]\n")
 
-    def test_the_marker_counts_what_was_dropped(self):
-        state = RunState(content_limit=10)
-        self._stream(state, "0123456789abcdefghijk")  # 21 characters, one overflow
-        assert state.content.startswith("…[11 chars elided]\n")
-        assert state.content.endswith("bcdefghijk")
+        # 标记数的是被丢掉的那段：21 个字符超窗 10，丢 11。
+        counted = RunState(content_limit=10)
+        self._stream(counted, "0123456789abcdefghijk")  # 21 characters, one overflow
+        assert counted.content.startswith("…[11 chars elided]\n")
+        assert counted.content.endswith("bcdefghijk")
 
     def test_a_second_elision_recounts_the_marker(self):
         """Documented drift: the count is derived from the trimmed string,
