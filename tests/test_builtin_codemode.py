@@ -1042,16 +1042,28 @@ class TestTruncateBody:
         assert truncate_body("hello", 0) == ("hello", None)
         assert truncate_body("hello", -5) == ("hello", None)
 
-    def test_long_body_head_tail_marker_and_file(self):
+    def test_long_body_head_tail_notice_and_file(self):
         body = "".join(str(i % 10) for i in range(1000))
         text, path = truncate_body(body, 100)
         assert path is not None
         head, tail = body[:50], body[-50:]
-        assert text == head + "\n…900 chars truncated…\n" + tail
+        assert text.startswith(head)
+        assert text.endswith(tail)
         full = Path(path)
         assert full.name.startswith("mocode-codemode-") and full.suffix == ".txt"
         assert full.read_text(encoding="utf-8") == body
         full.unlink()
+
+    def test_notice_is_imperative_and_self_contained(self):
+        # D16: the notice must be unmissable — the omitted character count,
+        # the file path, an explicit read-first instruction and the
+        # tools.read hint all in one line.
+        body = "x" * 500
+        text, path = truncate_body(body, 100)
+        assert "⚠ 400 chars truncated" in text
+        assert "before relying on this output, read the full result" in text
+        assert path in text
+        assert "tools.read" in text
 
     def test_odd_limit_keeps_max_minus_one(self):
         text, _ = truncate_body("x" * 10, 7)
@@ -1110,7 +1122,9 @@ class TestBuildResult:
         result = build_result(ok=True, ms=1, output=out, error=None, tool_calls=0, max_chars=100)
         assert result.details["truncated"] is True
         assert result.details["full_output_path"] is not None
-        assert "…400 chars truncated…" in result.content
+        assert "⚠ 400 chars truncated" in result.content
+        assert "before relying on this output, read the full result" in result.content
+        assert "tools.read" in result.content
         assert "\nFull output: " in result.content
         Path(result.details["full_output_path"]).unlink()
 
@@ -1619,6 +1633,9 @@ class TestRunTool:
         path = Path(result.details["full_output_path"])
         assert path.read_text(encoding="utf-8") == "x" * 500
         path.unlink()
+        assert "⚠ 400 chars truncated" in result.content
+        assert "before relying on this output, read the full result" in result.content
+        assert "tools.read" in result.content
         assert "\nFull output: " in result.content
 
     async def test_recursion_guard_in_script(self, plugin_host):

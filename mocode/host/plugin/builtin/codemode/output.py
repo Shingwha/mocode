@@ -64,10 +64,12 @@ def truncate_body(body: str, max_chars: int) -> tuple[str, str | None]:
     """Bound *body* to *max_chars* with head+tail truncation.
 
     The first and last ``max_chars // 2`` characters survive, separated by
-    an ``…<n> chars truncated…`` marker counting the omitted characters; the
-    full text is written to ``<tmp>/mocode-codemode-<uuid>.txt`` (UTF-8) and
-    its path returned. ``max_chars`` at or below zero, or a body that
-    already fits, comes back unchanged with no file.
+    an imperative notice counting the omitted characters, naming the temp
+    file and instructing the reader to open it before relying on the
+    output; the full text is written to
+    ``<tmp>/mocode-codemode-<uuid>.txt`` (UTF-8) and its path returned.
+    ``max_chars`` at or below zero, or a body that already fits, comes back
+    unchanged with no file.
     """
     if max_chars <= 0 or len(body) <= max_chars:
         return body, None
@@ -76,7 +78,11 @@ def truncate_body(body: str, max_chars: int) -> tuple[str, str | None]:
     omitted = len(body) - len(head) - len(tail)
     path = Path(tempfile.gettempdir()) / f"mocode-codemode-{uuid.uuid4().hex}.txt"
     path.write_text(body, encoding="utf-8")
-    return head + f"\n…{omitted} chars truncated…\n" + tail, str(path)
+    notice = (
+        f"\n⚠ {omitted} chars truncated — before relying on this output, "
+        f"read the full result at {path} (e.g. via tools.read)\n"
+    )
+    return head + notice + tail, str(path)
 
 
 def _source_line(script: str, line: int) -> str | None:
