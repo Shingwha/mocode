@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import pytest
 import sys
 import textwrap
 from pathlib import Path
@@ -92,7 +91,11 @@ def _load(ctx: BuildContext, plugin_dirs: list[Path]):
 
 
 class TestManifest:
-    def test_reads_the_standard_fields(self, tmp_path: Path):
+    def test_reads_the_standard_fields_and_reports_extras(
+        self, tmp_path: Path, capsys
+    ):
+        """清单 schema 是封闭的：认识的字段读出来，多出来的顶层字段报出来
+        并忽略（它们属于 extensions）。"""
         write_plugin(tmp_path, "greet", manifest={"version": "1.2.0", "description": "hi"})
         spec = read_manifest(tmp_path / "greet" / "plugin.json")
         assert spec is not None
@@ -100,35 +103,27 @@ class TestManifest:
         assert spec.version == "1.2.0"
         assert spec.description == "hi"
 
-    @pytest.mark.parametrize(
-        "raw, problem",
-        [
-            # 清单 schema 是封闭的：缺名字与 JSON 破损都拒收，并说明原因。
-            pytest.param(json.dumps({"version": "1"}), "invalid name", id="a-missing-name"),
-            pytest.param("{not json", "unreadable manifest", id="a-broken-json"),
-        ],
-    )
-    def test_a_malformed_manifest_rejects_the_plugin(
-        self, tmp_path: Path, capsys, raw, problem
-    ):
-        path = tmp_path / "plugin.json"
-        path.write_text(raw, encoding="utf-8")
-        assert read_manifest(path) is None
-        assert problem in capsys.readouterr().err
-
-    def test_unknown_top_level_fields_are_reported_and_ignored(
-        self, tmp_path: Path, capsys
-    ):
-        """The manifest schema is closed — extras belong under `extensions`."""
         path = tmp_path / "plugin.json"
         path.write_text(
             json.dumps({"name": "greet", "enabled": False, "entrypoint": "X"}),
             encoding="utf-8",
         )
-        spec = read_manifest(path)
-        assert spec is not None and spec.name == "greet"
+        extra = read_manifest(path)
+        assert extra is not None and extra.name == "greet"
         err = capsys.readouterr().err
         assert "enabled" in err and "entrypoint" in err
+
+    def test_a_malformed_manifest_rejects_the_plugin(self, tmp_path: Path, capsys):
+        """缺名字与 JSON 破损都拒收，并说明原因。"""
+        cases = [
+            (json.dumps({"version": "1"}), "invalid name"),
+            ("{not json", "unreadable manifest"),
+        ]
+        for raw, problem in cases:
+            path = tmp_path / "plugin.json"
+            path.write_text(raw, encoding="utf-8")
+            assert read_manifest(path) is None
+            assert problem in capsys.readouterr().err
 
     def test_name_rules(self):
         assert valid_name("greet")
@@ -145,7 +140,9 @@ class TestManifest:
 
 
 class TestDiscovery:
-    def test_finds_a_plugin_directory(self, tmp_path: Path):
+    def test_the_two_module_forms_are_found(self, tmp_path: Path):
+        """目录形式与单文件形式都是插件；目录形式解析到它自己的
+        mocode/plugin.py。"""
         write_plugin(tmp_path, "greet", GREET_CODE, manifest={"description": "greets"})
         specs = discover([tmp_path])
         assert [s.name for s in specs] == ["greet"]
@@ -153,26 +150,27 @@ class TestDiscovery:
         assert specs[0].directory == tmp_path / "greet"
         assert specs[0].module == tmp_path / "greet" / HOST_NAMESPACE / "plugin.py"
 
+        solo_root = tmp_path / "solo-root"
+        solo_root.mkdir()
+        (solo_root / "solo.py").write_text(textwrap.dedent(GREET_CODE), encoding="utf-8")
+        assert [s.name for s in discover([solo_root])] == ["solo"]
+
+    def test_directories_that_are_not_plugins_are_skipped(self, tmp_path: Path):
+        """没有清单的目录不是插件；占了保留名的也不是。"""
+        junk = tmp_path / "junk"
+        junk.mkdir()
+        (junk / "plugin.py").write_text("", encoding="utf-8")
+        assert discover([tmp_path]) == []
+
+        write_plugin(tmp_path, "shell", GREET_CODE)
+        assert discover([tmp_path], reserved={"shell"}) == []
+
     def test_a_plugin_without_code_is_still_a_plugin(self, tmp_path: Path):
         """`skills/` alone is a plugin — the standard's portable component."""
         write_plugin(tmp_path, "kit", skills=["deploy"])
         spec = discover([tmp_path])[0]
         assert spec.module is None
         assert load_plugin(spec) is None
-
-    def test_finds_single_file_plugins(self, tmp_path: Path):
-        (tmp_path / "solo.py").write_text(textwrap.dedent(GREET_CODE), encoding="utf-8")
-        assert [s.name for s in discover([tmp_path])] == ["solo"]
-
-    def test_a_directory_without_a_manifest_is_not_a_plugin(self, tmp_path: Path):
-        junk = tmp_path / "junk"
-        junk.mkdir()
-        (junk / "plugin.py").write_text("", encoding="utf-8")
-        assert discover([tmp_path]) == []
-
-    def test_reserved_names_are_skipped(self, tmp_path: Path):
-        write_plugin(tmp_path, "shell", GREET_CODE)
-        assert discover([tmp_path], reserved={"shell"}) == []
 
     def test_local_wins_over_global(self, tmp_path: Path):
         local, global_ = tmp_path / "local", tmp_path / "global"
@@ -197,7 +195,9 @@ class TestDiscovery:
 
 
 class TestLoading:
-    def test_module_level_instance_wins_over_first_class(self, tmp_path: Path):
+    def test_the_entry_point_is_chosen_by_instance_then_first_class(self, tmp_path: Path):
+        """入口选择规则：有模块级 ``plugin`` 实例用它；没有，就用第一个
+        Plugin 子类。"""
         write_plugin(
             tmp_path,
             "inst",
@@ -213,9 +213,6 @@ class TestLoading:
             plugin = Real()
             """,
         )
-        assert load_plugin(discover([tmp_path])[0]).name == "real"
-
-    def test_first_subclass_is_used_when_there_is_no_instance(self, tmp_path: Path):
         write_plugin(
             tmp_path,
             "multi",
@@ -226,7 +223,10 @@ class TestLoading:
                 name = "real"
             """,
         )
-        assert load_plugin(discover([tmp_path])[0]).name == "real"
+
+        specs = {s.name: s for s in discover([tmp_path])}
+        assert load_plugin(specs["inst"]).name == "real"
+        assert load_plugin(specs["multi"]).name == "real"
 
     def test_import_error_is_contained(self, tmp_path: Path, capsys):
         write_plugin(tmp_path, "broken", "raise RuntimeError('boom')")
@@ -238,14 +238,25 @@ class TestLoading:
 
 
 class TestPackagePlugins:
-    def test_a_package_entry_loads(self, tmp_path: Path):
+    def test_a_package_entry_loads_and_a_single_file_wins_over_it(self, tmp_path: Path):
+        """包形式的入口是 ``__init__.py``；单文件与包同时存在时单文件赢。"""
         write_plugin(tmp_path, "packaged", package=PACKAGE_PLUGIN)
-        spec = discover([tmp_path])[0]
-        assert spec.module is not None and spec.module.name == "__init__.py"
-        assert load_plugin(spec).name == "packaged"
+        packaged = {s.name: s for s in discover([tmp_path])}
+        assert packaged["packaged"].module is not None
+        assert packaged["packaged"].module.name == "__init__.py"
+        assert load_plugin(packaged["packaged"]).name == "packaged"
 
-    def test_submodules_load_by_relative_import(self, tmp_path: Path):
-        """`from .helper import x` inside the package, under the plugin's own name."""
+        write_plugin(tmp_path, "both", GREET_CODE, package=PACKAGE_PLUGIN)
+        both = {s.name: s for s in discover([tmp_path])}
+        assert both["both"].module is not None
+        assert both["both"].module.name == "plugin.py"
+        assert load_plugin(both["both"]).name == "greet"
+
+    def test_submodules_load_by_relative_import_under_the_plugins_own_name(
+        self, tmp_path: Path
+    ):
+        """`from .helper import x` 在包内成立，且解析到插件自己名下的模块
+        ——两个插件可以带同名子模块，sys.modules 里互不污染。"""
         write_plugin(tmp_path, "packaged", package=PACKAGE_PLUGIN)
         load_plugin(discover([tmp_path])[0])
 
@@ -253,8 +264,6 @@ class TestPackagePlugins:
 
         assert GREETING == "hello from a submodule"
 
-    def test_two_plugins_may_ship_same_named_submodules(self, tmp_path: Path):
-        """Each plugin's package lives under its own name — no sys.modules race."""
         for name in ("one", "two"):
             write_plugin(
                 tmp_path,
@@ -283,37 +292,25 @@ class TestPackagePlugins:
         assert "mocode_plugin_one.helper" in sys.modules
         assert "mocode_plugin_two.helper" in sys.modules
 
-    def test_the_single_file_wins_when_both_exist(self, tmp_path: Path):
-        write_plugin(tmp_path, "both", GREET_CODE, package=PACKAGE_PLUGIN)
-        spec = discover([tmp_path])[0]
-        assert spec.module is not None and spec.module.name == "plugin.py"
-        assert load_plugin(spec).name == "greet"
-
-    def test_a_package_without_init_is_reported_not_skipped(
-        self, tmp_path: Path, capsys
-    ):
-        plugin_dir = write_plugin(tmp_path, "no-init")
-        package = plugin_dir / HOST_NAMESPACE / "plugin"
+    def test_a_namespace_without_an_entry_point_is_reported(self, tmp_path: Path, capsys):
+        """命名段里没有入口点的两种形态都点名报出来：包目录缺 __init__、
+        散落的模块。"""
+        no_init = write_plugin(tmp_path, "no-init")
+        package = no_init / HOST_NAMESPACE / "plugin"
         package.mkdir(parents=True)
         (package / "helper.py").write_text("x = 1", encoding="utf-8")
 
-        spec = discover([tmp_path])[0]
-
-        assert spec.module is None
-        assert "plugin/__init__.py" in capsys.readouterr().err
-
-    def test_stray_modules_beside_no_entry_are_reported(
-        self, tmp_path: Path, capsys
-    ):
-        plugin_dir = write_plugin(tmp_path, "stray")
-        namespace = plugin_dir / HOST_NAMESPACE
+        stray = write_plugin(tmp_path, "stray")
+        namespace = stray / HOST_NAMESPACE
         namespace.mkdir(parents=True)
         (namespace / "helpers.py").write_text("x = 1", encoding="utf-8")
 
-        spec = discover([tmp_path])[0]
-
-        assert spec.module is None
-        assert "helpers.py" in capsys.readouterr().err
+        specs = {s.name: s for s in discover([tmp_path])}
+        assert specs["no-init"].module is None
+        assert specs["stray"].module is None
+        err = capsys.readouterr().err
+        assert "plugin/__init__.py" in err
+        assert "helpers.py" in err
 
     def test_a_namespace_that_ships_nothing_stays_quiet(self, tmp_path: Path, capsys):
         """An empty namespace directory is not a near-miss — nothing to fix."""
@@ -386,42 +383,37 @@ class TestPluginHost:
         assert ctx.agent is agent
         assert "<system-prompt>" in agent.system_prompt
 
-    def test_a_plugin_contributes_commands_without_a_terminal(
+    def test_a_loaded_plugin_contributes_tools_and_commands(
         self, tmp_path: Path, plugin_host
     ):
-        """A command contributed here is shared: any frontend can dispatch it."""
+        """从目录加载进来的插件，工具与命令都贡献——贡献出来的命令是共享
+        的：任何前端都能派发它。"""
         plugins_dir = tmp_path / "plugins"
         write_plugin(plugins_dir, "pingable", COMMAND_CODE)
+        write_plugin(plugins_dir, "greet", GREET_CODE)
 
         host = plugin_host(load=[plugins_dir])
 
         assert "/ping" in {c.name for c in host.ctx.commands.all()}
-
-    def test_directory_plugin_is_built(self, tmp_path: Path, plugin_host):
-        plugins_dir = tmp_path / "plugins"
-        write_plugin(plugins_dir, "greet", GREET_CODE)
-        host = plugin_host(load=[plugins_dir])
         assert "greet" in host.ctx.tools.names()
 
-    def test_disabled_plugin_contributes_nothing(self, tmp_path: Path, plugin_host):
+    def test_a_disabled_plugin_contributes_nothing(self, tmp_path: Path, plugin_host):
+        """禁用的插件什么都不贡献：工具没有；它带的命名段与 skills 的源
+        同样不给。"""
         host = plugin_host(
             config_kwargs={"plugins": {"shell": {"enabled": False}}}, load=[]
         )
         assert "bash" not in host.ctx.tools.names()
 
-    def test_disabling_a_plugin_hides_its_sources_too(
-        self, tmp_path: Path, plugin_host
-    ):
-        """A disabled plugin contributes nothing — namespace or skills either."""
         plugins_dir = tmp_path / "plugins"
         plugin_dir = write_plugin(plugins_dir, "greet", GREET_CODE)
 
-        host = plugin_host(
+        hidden = plugin_host(
             config_kwargs={"plugins": {"greet": {"enabled": False}}}, load=[plugins_dir]
         )
 
-        assert "greet" not in host.ctx.tools.names()
-        assert plugin_dir not in host.ctx.plugin_sources
+        assert "greet" not in hidden.ctx.tools.names()
+        assert plugin_dir not in hidden.ctx.plugin_sources
 
     def test_build_failure_is_isolated(self, tmp_path: Path, plugin_host, capsys):
         plugins_dir = tmp_path / "plugins"
@@ -467,16 +459,11 @@ class TestPluginHost:
         )
         assert host.ctx.plugin_config("configured") == {"greeting": "hi"}
 
-    def test_a_plugin_ships_portable_skills(self, tmp_path: Path, plugin_host):
-        """`skills/` inside a plugin travels with it, wherever it is installed."""
-        plugins_dir = tmp_path / "plugins"
-        write_plugin(plugins_dir, "kit", skills=["deploy"])
-
-        host = plugin_host(load=[plugins_dir])
-
-        assert "/skill:deploy" in {c.name for c in host.ctx.commands.all()}
-
-    def test_a_user_skill_shadows_a_plugin_one(self, tmp_path: Path, plugin_host):
+    def test_a_plugin_ships_portable_skills_and_a_user_skill_shadows_it(
+        self, tmp_path: Path, plugin_host
+    ):
+        """`skills/` inside a plugin travels with it, wherever it is
+        installed——用户自己目录里的同名技能压过插件带的那个。"""
         plugins_dir = tmp_path / "plugins"
         write_plugin(plugins_dir, "kit", skills=["deploy"])
 
@@ -488,6 +475,7 @@ class TestPluginHost:
 
         host = plugin_host(load=[plugins_dir])
 
+        assert "/skill:deploy" in {c.name for c in host.ctx.commands.all()}
         command = host.ctx.commands.get("/skill:deploy")
         assert command is not None and command.description == "mine"
 
@@ -582,10 +570,19 @@ class TestPluginSet:
 
 
 class TestHostContext:
-    def test_registries_are_created_on_demand(self, tmp_path: Path):
+    def test_registries_are_created_on_demand_and_accept_commands(self, tmp_path: Path):
+        """新 context 的注册表是空的，也接受注册。"""
         ctx = _ctx(tmp_path)
         assert ctx.tools.names() == []
         assert ctx.commands.all() == []
+
+        from mocode.host.command import CONTINUE, Command
+
+        async def _noop(ctx):
+            return CONTINUE
+
+        ctx.commands.register(Command("/x", "test", handler=_noop))
+        assert [c.name for c in ctx.commands.all()] == ["/x"]
 
     def test_build_context_has_no_agent_and_assembly_grows_it(self, tmp_path: Path):
         """The stage split, as a runtime fact: no agent during build(), the
@@ -599,16 +596,6 @@ class TestHostContext:
 
         assert isinstance(ctx, HostContext)  # grown in place, same object
         assert ctx.agent is grown
-
-    def test_commands_register_adds_commands(self, tmp_path: Path):
-        from mocode.host.command import CONTINUE, Command
-
-        async def _noop(ctx):
-            return CONTINUE
-
-        ctx = _ctx(tmp_path)
-        ctx.commands.register(Command("/x", "test", handler=_noop))
-        assert [c.name for c in ctx.commands.all()] == ["/x"]
 
     async def test_subscribe_reads_a_turn_out_of_band(
         self, tmp_path: Path, plugin_host
