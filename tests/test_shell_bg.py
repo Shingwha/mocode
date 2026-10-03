@@ -47,7 +47,7 @@ BG = {"run_in_background": True}
 #: How long a bounded sleep child sleeps — outlives every bound a test
 #: observes (a wait timeout, the watchdog deadline, the handle assertion)
 #: while costing the suite a fraction of a second.
-CHILD = 0.5
+CHILD = 0.3
 
 
 @pytest.fixture
@@ -63,6 +63,21 @@ def tools(session: BashSession):
 async def _start(bash, command: str) -> str:
     result = await bash.run_async({"command": command, **BG}, None)
     return result.details["shell_id"]
+
+
+def _quick_window(monkeypatch) -> None:
+    """Compress the plugin's coalescing window for the announcement tests.
+
+    What the window buys — same-moment finishers share one entry, a later
+    burst gets its own — is a property of *ordering*, and these tests prove
+    it by waiting for the announcement, never by watching a clock: the jobs
+    of one burst finish within milliseconds of each other, so a hundredth
+    of a second coalesces them exactly as three tenths would. The only
+    thing dropped is the wall clock the suite would otherwise spend.
+    """
+    from mocode.host.plugin.builtin.shell import session as shell_session
+
+    monkeypatch.setattr(shell_session, "_NOTIFY_WINDOW", 0.05)
 
 
 async def _done(session: BashSession, shell_id: str) -> None:
@@ -320,7 +335,10 @@ class TestLimits:
         session.configure({"max_background": 3, "background_timeout": 0})
         assert (session.max_background, session.background_timeout) == (3, 0)
 
-    async def test_a_background_deadline_times_the_job_out(self, mc, tmp_path: Path):
+    async def test_a_background_deadline_times_the_job_out(
+        self, mc, tmp_path: Path, monkeypatch
+    ):
+        _quick_window(monkeypatch)
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
 
@@ -443,10 +461,11 @@ class TestCompletionNotification:
         return found
 
     async def test_a_burst_of_finishers_announces_as_one_block(
-        self, mc, tmp_path: Path
+        self, mc, tmp_path: Path, monkeypatch
     ):
         """The two sides of the coalescing window: same-moment finishers
         share one announcement, a later burst gets a block of its own."""
+        _quick_window(monkeypatch)
         conversation = mc.new_conversation(cwd=tmp_path)
         bash = conversation.tools.get("bash")
 
@@ -476,18 +495,21 @@ class TestCompletionNotification:
         assert [m.block_id for m in messages] == ["shell-bg-1", "shell-bg-2"]
         conversation.close(save=False)
 
-    async def test_no_announcement_while_a_turn_is_running(self, wired, tmp_path: Path):
+    async def test_no_announcement_while_a_turn_is_running(
+        self, wired, tmp_path: Path, monkeypatch
+    ):
         """The model reads what it started; the announcement waits for idle —
         its empty run_id proves it was said between turns."""
+        _quick_window(monkeypatch)
         conversation, _ = wired(
-            call_tool("bash", {"command": f"sleep {CHILD}"}), "done"
+            call_tool("bash", {"command": "sleep 0.4"}), "done"
         )
         bash = conversation.tools.get("bash")
 
         # The background job finishes inside the foreground call's running
         # time — a comfortable margin — so what is held back is the
         # announcement, not the job.
-        await bash.run_async({"command": f"sleep 0.2", **BG}, None)
+        await bash.run_async({"command": "sleep 0.2", **BG}, None)
         await collect(conversation.stream("go"))
 
         messages = await self._messages(conversation, count=1)
