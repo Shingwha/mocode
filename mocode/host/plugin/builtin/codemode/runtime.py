@@ -49,7 +49,29 @@ _RESTRICTED_KEYS = (
     "ValueError", "KeyError", "IndexError", "TypeError", "zip", "map",
     "filter", "divmod", "pow", "chr", "ord", "bytes", "bytearray", "slice",
 )
-RESTRICTED: dict = {k: getattr(builtins, k) for k in _RESTRICTED_KEYS}
+
+
+def _whitelisted_names() -> list[str]:
+    """The names a script may use: the frozen safe set, every builtin
+    exception class, and ``dir``.
+
+    Exceptions are collected by rule — ``isinstance(value, type) and
+    issubclass(value, Exception)`` over ``vars(builtins)`` — which is also
+    the boundary: ``BaseException`` and its non-``Exception`` children
+    (``KeyboardInterrupt``, ``SystemExit``, ``GeneratorExit``) fail the rule
+    with no special case. A script can name what it catches (``except
+    RuntimeError``) yet can never bind the class that would swallow the
+    ``CancelledError`` unwinding a stopped or timed-out script.
+    """
+    exceptions = sorted(
+        name
+        for name, value in vars(builtins).items()
+        if isinstance(value, type) and issubclass(value, Exception)
+    )
+    return [*_RESTRICTED_KEYS, *exceptions, "dir"]
+
+
+RESTRICTED: dict = {name: getattr(builtins, name) for name in _whitelisted_names()}
 
 
 async def run_script(script: str, env: dict) -> object:

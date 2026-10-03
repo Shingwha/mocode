@@ -4,6 +4,7 @@ plugin and the end-to-end contract."""
 from __future__ import annotations
 
 import asyncio
+import builtins
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from mocode.host.plugin.builtin.codemode.api import (
     tool_entries,
 )
 from mocode.host.plugin.builtin.codemode.runtime import (
+    _RESTRICTED_KEYS,
     RESTRICTED,
     CodemodeError,
     _ScriptExit,
@@ -112,10 +114,76 @@ class TestRunScript:
         assert await run_script("return sum([1, 2, 3])", {}) == 6
         assert await run_script("return sorted([3, 1, 2])", {}) == [1, 2, 3]
 
-    @pytest.mark.parametrize("name", ["open", "__import__", "eval", "exec", "input"])
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "open",
+            "__import__",
+            "eval",
+            "exec",
+            "compile",
+            "input",
+            "globals",
+            "locals",
+            "vars",
+        ],
+    )
     async def test_restricted_builtins_hide_dangerous_names(self, name: str):
         with pytest.raises(NameError):
             await run_script(f"{name}", {})
+
+    async def test_restricted_builtins_allow_catching_by_name(self):
+        # D4: the builtin exception classes are whitelisted, so a script
+        # names what it catches instead of catching bare Exception.
+        assert await run_script(
+            "try:\n"
+            "    raise RuntimeError('boom')\n"
+            "except RuntimeError:\n"
+            "    return 'caught'",
+            {},
+        ) == "caught"
+
+    async def test_restricted_builtins_allow_dir(self):
+        # field-findings P1-1: dir() opens introspection of the result.
+        assert "append" in await run_script("return dir([])", {})
+
+    @pytest.mark.parametrize(
+        "name", ["BaseException", "KeyboardInterrupt", "SystemExit", "GeneratorExit"]
+    )
+    async def test_restricted_builtins_hide_cancellation_classes(self, name: str):
+        # Not Exception subclasses — the collection rule itself leaves them
+        # out, so a script cannot even name the class that would swallow
+        # the cancellation unwinding a stopped or timed-out script.
+        with pytest.raises(NameError):
+            await run_script(name, {})
+
+    async def test_script_cannot_swallow_a_cancellation_class(self):
+        script = (
+            "try:\n"
+            "    raise ValueError('x')\n"
+            "except BaseException:\n"
+            "    return 'swallowed'"
+        )
+        with pytest.raises(NameError):
+            await run_script(script, {})
+
+    def test_restricted_whitelist_snapshot(self):
+        # The frozen set stays, every builtin exception class joins by the
+        # issubclass rule, dir comes along — and nothing else is in there.
+        builtin_exceptions = {
+            name
+            for name, value in vars(builtins).items()
+            if isinstance(value, type) and issubclass(value, Exception)
+        }
+        assert set(_RESTRICTED_KEYS) <= set(RESTRICTED)
+        assert builtin_exceptions <= set(RESTRICTED)
+        assert set(RESTRICTED) == set(_RESTRICTED_KEYS) | builtin_exceptions | {"dir"}
+        assert not {
+            "BaseException",
+            "KeyboardInterrupt",
+            "SystemExit",
+            "GeneratorExit",
+        } & set(RESTRICTED)
 
     async def test_restricted_has_no_exit(self):
         # Python's own exit/quit are absent; the injected exit() is the only one.
@@ -737,6 +805,28 @@ class TestRunTool:
         )
         assert result.content.endswith('["echo:a", "echo:b"]')
         assert result.details["tool_calls"] == 2
+
+    async def test_script_branches_on_exception_types_after_gather(self, plugin_host):
+        # D4 end to end: the script names RuntimeError in an except clause
+        # and isinstance-branches after gather(return_exceptions=True).
+        registry = ToolRegistry()
+        registry.register(echo_tool())
+        registry.register(_failing_tool())
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await self._run(
+            host,
+            "rows = await asyncio.gather("
+            "tools.echo({'value': 'a'}), tools.fail({}), return_exceptions=True)\n"
+            "good = [r for r in rows if not isinstance(r, Exception)]\n"
+            "text('%d ok / %d failed' % (len(good), len(rows) - len(good)))\n"
+            "try:\n"
+            "    raise RuntimeError('inner')\n"
+            "except RuntimeError:\n"
+            "    text('caught RuntimeError')",
+        )
+        assert result.details["ok"] is True
+        assert "1 ok / 1 failed" in result.content
+        assert "caught RuntimeError" in result.content
 
     async def test_failed_script_keeps_partial_output(self, plugin_host):
         host = plugin_host(plugins=[PLUGIN], tools=_echo_registry())
