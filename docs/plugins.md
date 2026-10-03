@@ -840,8 +840,8 @@ tools are reached, and closing the conversation ends every connection, server
 children included. If program-only tools exist while codemode is disabled, one
 warning says so per conversation.
 
-In the section, a connected server also lists the raw names of its callable
-tools — a ``toolExposure: hidden`` entry is registered but disabled, so it
+In the section, a connected server also lists the registered full names of its
+callable tools — a ``toolExposure: hidden`` entry is registered but disabled, so it
 never appears (at most thirty names; past that, ``search_tools()`` in a
 codemode script takes over). The list is a catalogue, not a manual: names
 only, never schemas — a script fetches a tool's fields and description on
@@ -886,14 +886,16 @@ Inside a script:
 
 - `await tools.<name>(args)` calls a tool — *args* is a dict, or use
   keyword arguments. Own tools keep their name (`tools.bash`); an MCP tool
-  answers to its folded full name — `tools["mcp__dev_radius__search"]`, or
-  the attribute `tools.mcp__dev_radius__search`, or the same name written
-  with hyphens, which normalizes to it — and, when unambiguous, to its
-  short name (`tools.search`); an ambiguous short name raises listing the
-  candidates, and the exact name always wins. The facade forgives the
-  built-ins — `tools.describe_tool`, `tools.text`, `tools.store`, ... bind
-  the built-in itself, so either spelling works. `dir(tools)` and the
-  catalogue list registered tools only, and `codemode` cannot call itself.
+  answers to its registered full name only —
+  `tools["mcp__dev_radius__search"]`, or the attribute
+  `tools.mcp__dev_radius__search` — the same string; there is no bare
+  second spelling, so two servers with same-named tools cannot collide. A
+  miss reports the candidate full names (`unknown tool 'search'; use
+  search_tools() or all_tools() — did you mean 'mcp__anysearch__search'?`).
+  The facade forgives the built-ins — `tools.describe_tool`, `tools.text`,
+  `tools.store`, ... bind the built-in itself, so a bare name always means
+  the built-in. `dir(tools)` and the catalogue list registered tools only,
+  and `codemode` cannot call itself.
 - Success returns a Result — `.ok`, `.content`, `.details` (tool-specific
   facts), `.tool` (the resolved name), `.json()` (content parsed as JSON,
   a diagnostic string on failure) and `.structured` (an MCP tool's

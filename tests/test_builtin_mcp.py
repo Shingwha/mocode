@@ -2117,9 +2117,15 @@ class TestPromptSection:
         rows = _status_rows(text)
         assert "alpha" in rows
         assert rows["alpha"][0] == "direct"
-        # the D12 catalogue: raw names on an indented continuation line
+        # the catalogue: registered full names on an indented continuation
+        # line — the same spelling a script calls them by
         catalogues, tails = _tool_lines(text)
-        assert catalogues["alpha"] == ["ask", "fail", "pic", "search"]
+        assert catalogues["alpha"] == [
+            "mcp__alpha__ask",
+            "mcp__alpha__fail",
+            "mcp__alpha__pic",
+            "mcp__alpha__search",
+        ]
         assert "alpha" not in tails  # no cut, no pointer
         # a server with no configured description falls back to the first
         # line of the instructions it handed over the wire
@@ -2127,7 +2133,7 @@ class TestPromptSection:
         host.close()
 
         # past thirty names the list gives up counting and points at
-        # search_tools() — the truncated raws stay out of the section
+        # search_tools() — the truncated names stay out of the section
         tools = [
             {
                 "name": f"tool_{i:02d}",
@@ -2158,7 +2164,10 @@ class TestPromptSection:
         catalogues, tails = _tool_lines(text)
         catalogue = catalogues["many"]
         assert len(catalogue) == 30  # the list holds exactly thirty names
-        assert catalogue[0] == "tool_00" and catalogue[-1] == "tool_29"
+        assert (
+            catalogue[0] == "mcp__many__tool_00"
+            and catalogue[-1] == "mcp__many__tool_29"
+        )
         assert "tool_30" not in text and "tool_39" not in text
         assert tails["many"].startswith(" … +10 more ")
         host.close()

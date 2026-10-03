@@ -1,11 +1,10 @@
 """The script's ``tools`` facade — resolution, calls and the catalogue helpers.
 
 :class:`ToolBox` is the ``tools`` name a script runs with: attribute and
-subscript access bind one tool call through a three-tier resolution
-(exact registered name, normalized name, unambiguous MCP short name), the
-facade forgives the built-in names (``tools.describe_tool`` and friends
-return the built-in itself), and ``codemode`` itself is never callable.
-The catalogue helpers — :func:`tool_entries` and
+subscript access bind one tool call through the exact registered name —
+the single spelling of a tool — the facade forgives the built-in names
+(``tools.describe_tool`` and friends return the built-in itself), and
+``codemode`` itself is never callable. The catalogue helpers — :func:`tool_entries` and
 :func:`describe_tool_entry` — read the same program-audience projection
 the box is built from, so what the catalogue lists and what a script may
 call cannot drift apart.
@@ -31,48 +30,25 @@ if TYPE_CHECKING:
 
 __all__ = ["ToolBox", "describe_tool_entry", "tool_entries"]
 
-#: The MCP naming prefix — the full name of an MCP tool is
-#: ``mcp__<server>__<tool>`` (see ``mcp/naming.py``).
-_MCP_PREFIX = "mcp__"
-
 #: Sentinel :meth:`ToolBox._resolve` returns when a name is not a tool but
 #: a built-in the facade forgives — :meth:`ToolBox._bind` then hands the
 #: built-in itself back instead of a call.
 _FACADE = object()
 
 
-def _mcp_short_name(full: str) -> str | None:
-    """The MCP short name of a registered tool name — ``mcp__k__bash`` →
-    ``bash`` — or ``None`` for a name that is not MCP-style.
-
-    The server segment may itself fold with ``__`` (a server raw-named
-    ``a//b`` folds to ``a__b``), so the tool segment is taken with a right
-    split: only the last ``__``-separated piece is the tool. A name with no
-    ``__`` left after the prefix has no short form.
-    """
-    if not full.startswith(_MCP_PREFIX):
-        return None
-    rest = full[len(_MCP_PREFIX):]
-    if "__" not in rest:
-        return None
-    short = rest.rsplit("__", 1)[1]
-    return short or None
-
-
 class ToolBox:
     """The script's ``tools`` — attribute/subscript access binds a tool call.
 
-    Both entry points run the same resolution, in order: the exact
-    registered name (``mcp__dev-radius__search``), its normalized form
-    (``tools.mcp__dev_radius__search``; ``mcp__k__bash`` → ``tools.bash``
-    and ``tools["mcp__k__bash"]`` therefore agree), and the MCP short name.
-    The normalized and short forms only resolve when unambiguous — a
-    collision raises instead of guessing, listing the candidates. When no
-    tier matches, the facade forgives the built-in names (``store``,
-    ``describe_tool``, …) and returns the built-in itself; anything else
-    is unknown. ``codemode`` itself is never callable from a script. The
-    bindings are a snapshot of the registry at :class:`ToolBox` creation,
-    like ``all_tools()``.
+    Both entry points run the same resolution: the exact registered name,
+    the single spelling of a tool. An MCP tool answers only to its full
+    ``mcp__<server>__<tool>`` name — never to a bare spelling of its own —
+    so two servers with same-named tools cannot collide, and the bare
+    namespace belongs to the built-ins (``store``, ``describe_tool``, …)
+    even when a registered tool ends in it. A name no tool and no built-in
+    claims is unknown, and the error reports the candidate full names.
+    ``codemode`` itself is never callable from a script. ``dir(tools)`` and
+    the catalogue list the tools registered when the box was created;
+    resolution itself reads the live registry.
 
     An optional ``semaphore`` caps how many of this box's calls run at
     once: every call acquires it around the dispatcher, so a fan-out
@@ -99,44 +75,13 @@ class ToolBox:
         self._tool_names = sorted(
             t.name for t in registry.all() if t.name != "codemode"
         )
-        tools = [t for t in registry.all() if t.name != "codemode"]
-        counts: dict[str, int] = {}
-        for tool in tools:
-            attr = normalize(tool.name)
-            counts[attr] = counts.get(attr, 0) + 1
-        self._attr_map = {
-            attr: tool.name
-            for tool in tools
-            for attr in [normalize(tool.name)]
-            if counts[attr] == 1
-        }
-        # The MCP short names — one per registered full name, kept only when
-        # no second tool folds onto the same short name.
-        shorts: dict[str, int] = {}
-        for tool in tools:
-            short = _mcp_short_name(tool.name)
-            if short is not None:
-                shorts[short] = shorts.get(short, 0) + 1
-        self._short_map = {
-            short: tool.name
-            for tool in tools
-            for short in [_mcp_short_name(tool.name)]
-            if short is not None and shorts[short] == 1
-        }
-        #: Every registered name whose short form is *name* — the candidates
-        #: an ambiguous short name reports.
-        self._short_names: dict[str, list[str]] = {}
-        for tool in tools:
-            short = _mcp_short_name(tool.name)
-            if short is not None:
-                self._short_names.setdefault(short, []).append(tool.name)
 
     def __getitem__(self, name: str):
         return self._bind(name)
 
     def __getattr__(self, name: str):
         # Called only when normal attribute lookup failed — i.e. not for
-        # _bind/_attr_map/etc. Dunder probes answer AttributeError so generic
+        # _bind/_registry/etc. Dunder probes answer AttributeError so generic
         # protocol code (copy, pickle) keeps working.
         if name.startswith("__") and name.endswith("__"):
             raise AttributeError(name)
@@ -153,30 +98,38 @@ class ToolBox:
     def _resolve(self, name: str):
         """Resolve *name* to a registered tool name, or raise CodemodeError.
 
-        One resolution for both entry points: exact name, then normalized
-        name, then MCP short name. A name that fails all three falls back
-        to the facade's built-ins; when it collides as a short name the
-        error lists the candidates (tools win over built-ins).
+        One resolution for both entry points: the exact registered name,
+        then the facade's built-ins. There is no second spelling — an MCP
+        tool is reachable only under its full name — so a miss is an error
+        naming the candidate full names, never a guess.
         """
         if name == "codemode":
             raise CodemodeError("codemode cannot be called from a script")
         if self._registry.get(name) is not None:
             return name
-        target = self._attr_map.get(name)
-        if target is not None:
-            return target
-        target = self._short_map.get(name)
-        if target is not None:
-            return target
-        message = f"unknown tool {name!r}; use search_tools() or all_tools()"
-        candidates = self._short_names.get(name, [])
-        if len(candidates) > 1:
-            listed = ", ".join(repr(c) for c in sorted(candidates))
-            message += f" — ambiguous short name, candidates: {listed}"
-            raise CodemodeError(message)
         if name in self._facade:
             return _FACADE
-        raise CodemodeError(message)
+        raise CodemodeError(self._unknown_message(name))
+
+    def _candidates(self, name: str) -> list[str]:
+        """Registered names ending in the same ``__``-tail as *name* — the
+        did-you-mean set when a call misses. Folded, so a hyphenated miss
+        still finds the folded registered tail."""
+        folded = normalize(name).rsplit("__", 1)[-1]
+        return sorted(
+            tool.name for tool in self._registry.all()
+            if tool.name.rsplit("__", 1)[-1] == folded
+        )
+
+    def _unknown_message(self, name: str) -> str:
+        base = f"unknown tool {name!r}; use search_tools() or all_tools()"
+        found = self._candidates(name)
+        if len(found) == 1:
+            return f"{base} — did you mean {found[0]!r}?"
+        if len(found) > 1:
+            listed = ", ".join(repr(candidate) for candidate in found)
+            return f"{base} — candidates: {listed}"
+        return base
 
     def _bind(self, name: str):
         resolved = self._resolve(name)

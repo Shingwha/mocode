@@ -30,7 +30,6 @@ from mocode.host.plugin.builtin.codemode.runtime import (
 from mocode.host.plugin.builtin.codemode.store import Store
 from mocode.host.plugin.builtin.codemode.toolbox import (
     ToolBox,
-    _mcp_short_name,
     describe_tool_entry,
     tool_entries,
 )
@@ -351,52 +350,66 @@ class TestToolBox:
         assert box.calls == 2
 
     async def test_the_name_resolution_tiers(self):
-        # the normalized form finds a hyphenated name, and the exact name
-        # beats the short name a local and an MCP tool would share
+        # one spelling: the exact registered name. The folded form of a
+        # hyphenated name is not a second one, and a name no tool claims is
+        # the plain refusal
         box = _box(echo_tool("weird-name"))
-        assert (await box.weird_name({"value": "x"})).content == "echo:x"
         assert (await box["weird-name"]({"value": "y"})).content == "echo:y"
-        box = _box(echo_tool("bash"), echo_tool("mcp__k__bash"))
-        assert (await box.bash({"value": "x"})).content == "echo:x"
-
-        # an MCP tool answers to its full name and to its short form, the
-        # short form is the last ``__`` segment, and a hash-collision suffix
-        # rides along in it
-        box = _box(echo_tool("mcp__k__bash"), echo_tool("mcp__a__b__tool"), echo_tool("mcp__k__tool_1a2b3c"))
-        assert (await box["mcp__k__bash"]({"value": "a"})).content == "echo:a"
-        assert (await box.bash({"value": "b"})).content == "echo:b"
-        assert (await box["bash"]({"value": "c"})).content == "echo:c"
-        assert (await box.tool({"value": "x"})).content == "echo:x"
-        assert (await box.tool_1a2b3c({"value": "x"})).content == "echo:x"
-
-        # an ambiguous short form refuses to guess and names the candidates
-        box = _box(echo_tool("mcp__k__bash"), echo_tool("mcp__other__bash"))
-        expected = (
-            r"unknown tool 'bash'; use search_tools\(\) or all_tools\(\) "
-            r"— ambiguous short name, candidates: 'mcp__k__bash', "
-            r"'mcp__other__bash'"
-        )
-        with pytest.raises(CodemodeError, match=expected):
-            box.bash
-        with pytest.raises(CodemodeError, match=expected):
-            box["bash"]
-        assert (await box["mcp__k__bash"]({"value": "x"})).content == "echo:x"
-        assert (await box.mcp__other__bash({"value": "y"})).content == "echo:y"
-        # the normalized form of two names is equally unresolvable
-        box = _box(echo_tool("x-y"), echo_tool("x@y"))
-        with pytest.raises(CodemodeError, match="unknown tool 'x_y'"):
-            await box.x_y({"value": "x"})
-        assert (await box["x-y"]({"value": "x"})).content == "echo:x"
-
-        # and an unknown name is the plain unknown-tool refusal
+        with pytest.raises(
+            CodemodeError,
+            match=r"unknown tool 'weird_name'; use search_tools\(\) or all_tools\(\)",
+        ):
+            await box.weird_name({"value": "x"})
         box = _box(echo_tool())
         with pytest.raises(
             CodemodeError, match=r"unknown tool 'nope'; use search_tools\(\) or all_tools\(\)"
         ):
             box["nope"]
 
+        # a local bare name stays the local tool's even when an MCP tool
+        # ends in it — the exact name is the only tier
+        box = _box(echo_tool("bash"), echo_tool("mcp__k__bash"))
+        assert (await box.bash({"value": "x"})).content == "echo:x"
+
+        # an MCP tool answers to its full name only — the bare tail is a
+        # miss that reports the full name it could have meant
+        box = _box(echo_tool("mcp__k__bash"))
+        assert (await box["mcp__k__bash"]({"value": "a"})).content == "echo:a"
+        assert (await box.mcp__k__bash({"value": "a"})).content == "echo:a"
+        expected = (
+            r"unknown tool 'bash'; use search_tools\(\) or all_tools\(\) "
+            r"— did you mean 'mcp__k__bash'\?"
+        )
+        with pytest.raises(CodemodeError, match=expected):
+            box.bash
+        with pytest.raises(CodemodeError, match=expected):
+            box["bash"]
+
+        # the fold only folds: a hyphenated miss still finds the folded
+        # registered tail
+        box = _box(echo_tool("mcp__srv__web_search"))
+        with pytest.raises(
+            CodemodeError,
+            match=r"did you mean 'mcp__srv__web_search'\?",
+        ):
+            box["web-search"]
+
+        # two servers with the same tool name: the miss names both full
+        # names, and each stays reachable under its own
+        box = _box(echo_tool("mcp__k__bash"), echo_tool("mcp__other__bash"))
+        with pytest.raises(
+            CodemodeError,
+            match=(
+                r"unknown tool 'bash'; use search_tools\(\) or all_tools\(\) "
+                r"— candidates: 'mcp__k__bash', 'mcp__other__bash'"
+            ),
+        ):
+            box["bash"]
+        assert (await box["mcp__k__bash"]({"value": "x"})).content == "echo:x"
+        assert (await box.mcp__other__bash({"value": "y"})).content == "echo:y"
+
         # codemode itself is never callable from a script — under its full
-        # name or through the short form
+        # name or through the attribute
         registry = ToolRegistry()
         registry.register(echo_tool("codemode"))
         agent = make_agent()
@@ -438,7 +451,7 @@ class TestFacadeFallback:
         )
         return env, box, output
 
-    async def test_the_facade_names_resolve_their_bindings_and_a_tool_wins(self):
+    async def test_the_facade_names_resolve_their_bindings_and_the_full_name_reaches_the_mcp_tool(self):
         env, box, _ = self._env()
         for name in (
             "describe_tool",
@@ -471,35 +484,18 @@ class TestFacadeFallback:
         box.store("k", 1)
         assert env["load"]("k") == 1  # the same underlying store
 
-        # An MCP tool whose short name is "store" resolves as a tool — the
-        # built-in only fills the gaps the registered surface leaves.
+        # An MCP tool named mcp__k__store does not take the bare name: the
+        # built-in keeps it, and the MCP tool is reached under its full name
         agent = make_agent(echo_tool(), echo_tool("mcp__k__store"))
         output = _FakeOutput()
         env, box = build_env(
             agent.tool_registry, agent.dispatcher, "c", output, Store({})
         )
         assert [t["name"] for t in box.all_tools()] == ["echo", "mcp__k__store"]
-        bound = box.store
-        assert bound is not env["store"]
+        assert box.store is env["store"]
+        bound = box["mcp__k__store"]
         outcome = await bound({"value": "x"})
         assert outcome.content == "echo:x"
-
-
-class TestShortNameRule:
-    def test_short_name_boundaries(self):
-        # the rule: strip the mcp prefix, split on the LAST __ — and anything
-        # that is not an mcp name, or has no tool segment, has no short form
-        cases = {
-            "mcp__k__bash": "bash",
-            "mcp__a__b__tool": "tool",  # server folded with __ (a//b → a__b)
-            "mcp____tool": "tool",  # empty server segment
-            "mcp__k__tool_1a2b3c": "tool_1a2b3c",  # hash-collision suffix
-            "bash": None,  # not an MCP name
-            "mcp__k": None,  # no tool segment at all
-            "mcp__k__": None,  # empty tool segment
-        }
-        for full, short in cases.items():
-            assert _mcp_short_name(full) == short, full
 
 
 class TestResult:
@@ -882,7 +878,7 @@ class TestOutput:
 
 
 class TestTruncateBody:
-    def test_a_short_body_is_untouched_and_a_long_one_keeps_head_and_tail(self):
+    def test_a_brief_body_is_untouched_and_a_long_one_keeps_head_and_tail(self):
         assert truncate_body("hello", 12000) == ("hello", None)
         assert truncate_body("hello", 0) == ("hello", None)
         assert truncate_body("hello", -5) == ("hello", None)
@@ -1445,7 +1441,7 @@ class TestRunTool:
         assert result.details["ok"] is False
 
         # the recursion guard: codemode cannot be called from a script, not
-        # under its full name, not by its short form
+        # through the subscript, not through the attribute
         result = await self._run(host, 'await tools["codemode"]({"script": "pass"})')
         assert result.details["ok"] is False
         assert "codemode cannot be called from a script" in result.content
@@ -1793,15 +1789,15 @@ def _servers_table(**entries: Any) -> dict:
     }
 
 
-class TestMcpShortNames:
-    """The mcp short-name group: what a codemode script may call.
+class TestMcpTools:
+    """The mcp + codemode contract: what a script may call.
 
     A tool registered from an MCP server reaches a script under its full
-    name and under its short form — the tier the toolbox's resolution
-    offers, whatever the server was called.
+    registered name — the one spelling the toolbox resolves, whatever the
+    server was called.
     """
 
-    async def test_a_script_calls_an_mcp_tool_by_its_short_name(
+    async def test_a_script_calls_an_mcp_tool_by_its_full_name(
         self, plugin_host, monkeypatch, tmp_path
     ):
         _peer_servers(monkeypatch, echo=_echo_peer())
@@ -1999,8 +1995,8 @@ async def _cross_warning(reader, *, bound: float = BOUND) -> list:
 
     One drain that polls, so a warning that arrives while this waits is seen
     the moment it does — no guessed window. A *negative* assertion (no
-    warning at all) asks for a short bound: with the codemode plugin on, the
-    runtime returns before it can emit, and a short wait is enough to show
+    warning at all) asks for a brief bound: with the codemode plugin on, the
+    runtime returns before it can emit, and a brief wait is enough to show
     nothing arrives.
     """
     deadline = asyncio.get_running_loop().time() + bound

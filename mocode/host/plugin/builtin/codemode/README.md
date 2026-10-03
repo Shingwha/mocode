@@ -15,10 +15,10 @@ other prompt section.
   output-pipeline names, the `store`/`load` closures, `parallel`, the
   discovery helpers, the nine read-only modules — and the facade dict
   ToolBox forgives (`tools.text` and friends bind the very same objects).
-- `toolbox.py` — ToolBox: the three-tier name resolution (exact →
-  normalized → unambiguous MCP short name), the semaphore-bounded call,
-  the built-in facade fallback, `dir(tools)`, and the catalogue helpers
-  (`tool_entries`, `describe_tool_entry`).
+- `toolbox.py` — ToolBox: exact-name resolution (one spelling — the
+  registered full name; a miss reports the candidate full names), the
+  semaphore-bounded call, the built-in facade fallback, `dir(tools)`, and
+  the catalogue helpers (`tool_entries`, `describe_tool_entry`).
 - `result.py` — the first-class `Result` (`.ok`/`.content`/`.details`/
   `.tool`/`.json()`/`.structured` plus the Mapping protocol over the four
   wire fields), `ToolCallError`, and `parallel`/`Batch` with per-call
@@ -65,17 +65,19 @@ other prompt section.
   falls back to the built-ins (`describe_tool`, `all_tools`,
   `search_tools`, `store`, `load`, `text`, `console`, `image`, `print`,
   `exit`) and returns the built-in itself. Registered tools always win —
-  an ambiguous short name still names its candidates, `codemode` itself is
-  still refused first, and the unknown-tool message is unchanged. The
+  an MCP tool answers only to its full `mcp__<server>__<tool>` name, so
+  the bare namespace belongs to the built-ins even when a registered tool
+  ends in it — `codemode` itself is still refused first, and a name no
+  tool and no built-in claims raises naming the candidate full names. The
   catalogue stays strict: `dir(tools)` and `all_tools()` list registered
   tools only, and `describe_tool_entry` keeps the callable-only filter.
 - **Snapshot vs live**: `all_tools()` and `search_tools()` read one snapshot
-  of the program-audience registry taken at script start, and the ToolBox's
-  normalized-name and short-name maps freeze with it. Exact-name lookup and
-  `describe_tool()` read the live registry instead: a tool registered
-  mid-script is describable and exactly callable, but it never appears in
-  the snapshot tables. Catalogue entries preview descriptions at 80
-  characters; ranking reads the full text.
+  of the program-audience registry taken at script start, and `dir(tools)`
+  freezes with it. Name lookup and `describe_tool()` read the live registry
+  instead: a tool registered mid-script is callable under its exact name
+  and describable, but it never appears in the snapshot tables. Catalogue
+  entries preview descriptions at 80 characters; ranking reads the full
+  text.
 - **Deadlines, two layers**: the plugin wraps the script in its own
   `asyncio.wait_for` only when a deadline is explicit (`options.timeout_ms`,
   the `@options` comment, or `plugins.codemode.timeout_s`). A fired deadline
