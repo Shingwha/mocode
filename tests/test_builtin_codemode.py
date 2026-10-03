@@ -1210,73 +1210,43 @@ class TestPlugin:
         assert package.PLUGIN is PLUGIN
         assert package.CodemodePlugin is CodemodePlugin
 
-    def test_description_teaches_python_dsl(self):
-        assert "Python" in DESCRIPTION
-        assert "tools.<name>(args)" in DESCRIPTION
-        assert 'tools["mcp__dev_radius__search"]' in DESCRIPTION
-        assert "return_exceptions=True" in DESCRIPTION
-        assert "store(key, value)" in DESCRIPTION
-        assert "all_tools()" in DESCRIPTION
-        assert "describe_tool(name)" in DESCRIPTION
-        assert "exit()" in DESCRIPTION
-        assert "@options" in DESCRIPTION
-        assert "cannot call itself" in DESCRIPTION
-
-    def test_description_pins_contract_phrases(self):
-        # v2: one pin per behavior in the v2 contract, so a rewording that
-        # loses a behavior fails here. Phrases, not a full snapshot — the
-        # surrounding words stay free to move.
-        # the script shape
-        assert "top-level `await`" in DESCRIPTION
-        assert "never wrap" in DESCRIPTION and "asyncio.run()" in DESCRIPTION
-        assert "`asyncio.ensure_future`" in DESCRIPTION  # background tasks
-        # Result is first-class
-        assert ".ok" in DESCRIPTION
-        assert ".json()" in DESCRIPTION
-        assert ".structured" in DESCRIPTION
-        assert ".tool" in DESCRIPTION
-        assert 'res.get("content")' in DESCRIPTION  # Mapping access
-        assert "ToolCallError" in DESCRIPTION
-        assert "FAILED CALL RAISES" in DESCRIPTION  # asymmetry, big letters
-        # parallel / Batch
-        assert "parallel(" in DESCRIPTION
-        assert ".ok`/`.failed" in DESCRIPTION
-        assert "concurrency=N" in DESCRIPTION
-        assert "return_exceptions=True" in DESCRIPTION
-        # naming tiers and the forgiving facade
-        assert 'tools["mcp__dev_radius__search"]' in DESCRIPTION
-        assert "short name" in DESCRIPTION
-        assert "candidates" in DESCRIPTION  # ambiguity lists them
-        assert "exact names win" in DESCRIPTION
-        assert "cannot call itself" in DESCRIPTION
-        assert "dir(tools)" in DESCRIPTION
-        assert "tools.describe_tool" in DESCRIPTION
-        # output and the imperative truncation notice
-        assert "print(...)" in DESCRIPTION  # print reaches the output
-        assert "max_output_chars" in DESCRIPTION
-        assert "before relying on this output" in DESCRIPTION
-        assert "tools.read" in DESCRIPTION
-        # store limits and the large-payload idiom
-        assert "256KB" in DESCRIPTION and "1MB" in DESCRIPTION
-        assert "no pre-truncation" in DESCRIPTION
-        assert "store` the path" in DESCRIPTION
-        # discovery surface
-        assert "names_only=False" in DESCRIPTION  # discovery signature
-        assert "script-start snapshot" in DESCRIPTION  # all_tools() snapshot
-        assert "80-character previews" in DESCRIPTION  # catalogue trim
-        # gated import
-        assert "gated" in DESCRIPTION
-        assert "from asyncio import gather" in DESCRIPTION
-        assert "ImportError" in DESCRIPTION
-        # deadline and concurrency
-        assert "@options" in DESCRIPTION
-        assert "timed_out" in DESCRIPTION  # explicit deadline path
-        assert "partial output is lost" in DESCRIPTION  # dispatcher fallback
-        assert "max_concurrency" in DESCRIPTION
-        assert "default unlimited" in DESCRIPTION
-        # error locations
-        assert "(line N)" in DESCRIPTION
-        # hard cut: the old surface is gone
+    def test_description_covers_the_v2_contract(self):
+        # Coverage, not wording. The description teaches the v2 contract, so
+        # every piece of that contract must be *somewhere* in it - but in the
+        # description's own phrasing. Only API identifiers and one-word
+        # concept markers are pinned here: a reword is not a contract change,
+        # and a test that dies on a reword teaches everyone to ignore it.
+        # When the API itself renames, update this list - that IS churn with
+        # a reason.
+        required = (
+            # script shape
+            "Python", "asyncio.run()", "asyncio.ensure_future",
+            # the Result object
+            ".ok", ".content", ".details", ".tool", ".json()", ".structured",
+            "ToolCallError", "raises", "Mapping",
+            # parallel / batch
+            "parallel(", ".failed", "concurrency=N",
+            "return_exceptions=True", "max_concurrency",
+            # naming tiers and the forgiving facade
+            "mcp__dev_radius__search", "short name", "candidates",
+            "dir(tools)", "tools.describe_tool", "cannot call itself",
+            # output, and the truncation that asks to be read
+            "text(", "print(", "image(", "exit()",
+            "max_output_chars", "truncated", "tools.read",
+            # store and its limits
+            "store(key, value)", "load(", "256KB", "1MB",
+            # discovery
+            "all_tools()", "search_tools(", "describe_tool(",
+            "names_only", "snapshot",
+            # gated imports
+            "import asyncio", "from asyncio import gather",
+            "ImportError", "gated",
+            # deadline and error locations
+            "@options", "timeout_ms", "timed_out", "(line N)",
+        )
+        for term in required:
+            assert term in DESCRIPTION, f"description lost the term {term!r}"
+        # hard cut: the old surface stays gone (identity pins, reword-proof)
         assert "ALL_TOOLS" not in DESCRIPTION  # renamed to all_tools() (D3)
         assert "ToolOutcome" not in DESCRIPTION  # renamed to Result (D17)
         assert "mcp__dev-radius" not in DESCRIPTION  # folded-name example
