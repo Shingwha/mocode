@@ -37,21 +37,20 @@ def _finished(status="ok", result="", details=None, duration=-1.0, name="read") 
 class TestConversation:
     """Everything starts at column 0; the first character says what a line is."""
 
-    def test_the_user_line_carries_the_prompt_marker(self):
-        line = lines.user("  帮我看看  ")
-        assert (line.icon, line.text, line.style) == ("❯", "帮我看看", "user")
+    def test_the_prompt_is_the_trimmed_user_line_plus_a_blank(self):
+        """输入行脱掉空白、带上提示符；一段 prompt 就是它加一个空行。"""
+        assert lines.user("  帮我看看  ").icon == "❯"
+        assert lines.user("  帮我看看  ").text == "帮我看看"
+        assert lines.user("  帮我看看  ").style == "user"
+        assert lines.prompt("你好") == [lines.user("你好"), Line()]
 
-    def test_the_answer_is_unmarked(self):
-        """It is the default state — the one thing a reader came for."""
+    def test_the_answer_is_unmarked_and_reasoning_is_dim(self):
+        """答案是默认状态——读者唯一真正要看的东西；推理退后一步，也只是
+        换个颜色，不加字形。"""
         assert lines.answer("第一行\n第二行") == [Line(text="第一行"), Line(text="第二行")]
-
-    def test_reasoning_is_dim_and_unmarked(self):
         assert lines.reasoning("先看看目录") == [
             Line(text="先看看目录", style="reasoning")
         ]
-
-    def test_a_prompt_is_what_you_typed_plus_a_blank(self):
-        assert lines.prompt("你好") == [lines.user("你好"), Line()]
 
     def test_the_rule_closes_a_turn(self):
         rule = lines.divider()
@@ -77,19 +76,19 @@ class TestToolLines:
         assert (line.icon, line.text) == ("✓", "read  a.py")
         assert line.note == "lines=412"
 
-    def test_elapsed_joins_the_note(self):
+        # 没声明 result_key 的工具：没有任何细节可展示
+        without = lines.tool_close(
+            _finished(details={"lines": 412}), {"path": "a.py"}, _registry(result_key="")
+        )
+        assert without.note == ""
+
+    def test_elapsed_joins_the_note_only_when_it_is_worth_it(self):
+        """够慢的调用报时长；太快的报了只会挡住细节。"""
         line = lines.tool_close(_finished(duration=1.25), {"path": "a.py"}, _registry())
         assert line.note == "1.2s"
 
-    def test_a_fast_call_does_not_report_a_duration(self):
-        line = lines.tool_close(_finished(duration=0.02), {"path": "a.py"}, _registry())
-        assert line.note == ""
-
-    def test_a_tool_that_declares_no_result_key_shows_no_detail(self):
-        line = lines.tool_close(
-            _finished(details={"lines": 412}), {"path": "a.py"}, _registry(result_key="")
-        )
-        assert line.note == ""
+        fast = lines.tool_close(_finished(duration=0.02), {"path": "a.py"}, _registry())
+        assert fast.note == ""
 
     def test_a_running_call_is_dim_and_names_itself(self):
         """It holds the row its verdict will land on, so it has to read alone."""
@@ -122,9 +121,8 @@ class TestFailures:
         assert line.icon == "✗"
         assert line.note == expected
 
-    def test_a_timeout_does_not_repeat_its_own_duration(self):
-        line = lines.tool_close(_finished("timeout", duration=5.0), {}, _registry())
-        assert line.note == "timed out after 5s"
+    # test_a_timeout_does_not_repeat_its_own_duration 已删除：它与上面矩阵的
+    # timeout 行（同 duration=5.0、同 note="timed out after 5s"）是确凿重复。
 
 
 class TestReplay:
@@ -168,6 +166,7 @@ class TestReplay:
         assert got[-2] == lines.user("再来")  # …then the next prompt, no rule of its own
 
     def test_a_failed_result_replays_as_a_failure(self):
+        """失败与超时都会在重放里落成它们各自的裁决行。"""
         messages = self._messages()
         messages[2]["content"] = "error: command not found"
 
@@ -176,11 +175,10 @@ class TestReplay:
         assert verdict.icon == "✗"
         assert verdict.note == "error: command not found"
 
-    def test_a_timeout_prefix_replays_as_a_timeout(self):
-        messages = self._messages()
-        messages[2]["content"] = "timeout: 240s"
+        timed_out = self._messages()
+        timed_out[2]["content"] = "timeout: 240s"
 
-        assert "timed out" in lines.conversation(messages, _registry())[3].note
+        assert "timed out" in lines.conversation(timed_out, _registry())[3].note
 
     def test_history_carries_no_durations(self):
         """Nothing stored a timing, so nothing invents one."""
