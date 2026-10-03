@@ -49,13 +49,13 @@ from ..core.transcript import (
     tool_call_name,
     tool_calls_of,
 )
-from .text import ellipsize_middle, ellipsize_tail, terminal_width
+from .text import ellipsize_middle, ellipsize_tail, one_row, terminal_width
 from .theme import FAIL, OK, PENDING, RULE, USER
 
 if TYPE_CHECKING:
     from ..core.provider import Usage
 
-#: Width budget for tool arguments inside parentheses.
+#: Width budget for the argument a tool call shows.
 SUMMARY_WIDTH = 60
 #: Cap on a failure phrase, so one bad call cannot fill the screen.
 FAILURE_WIDTH = 80
@@ -138,7 +138,11 @@ def notice(text: str, level: str = "info") -> Line:
 
 
 def tool_summary(name: str, args: dict, tools: ToolRegistry | None = None) -> str:
-    """The one argument worth showing for *name*, per its declared ``summary_key``."""
+    """The one argument worth showing for *name*, per its declared ``summary_key``.
+
+    Flattened to one row before it is bounded: a multi-line argument —
+    codemode's script — is previewed as code, not printed as a wall of it.
+    """
     if not args:
         return ""
     key = ""
@@ -147,7 +151,7 @@ def tool_summary(name: str, args: dict, tools: ToolRegistry | None = None) -> st
         key = tool.summary_key
     if not key or key not in args:
         key = next(iter(args))
-    return ellipsize_middle(str(args.get(key, "")), SUMMARY_WIDTH)
+    return ellipsize_middle(one_row(str(args.get(key, ""))), SUMMARY_WIDTH)
 
 
 def _identity(name: str, args: dict, tools: ToolRegistry | None) -> str:

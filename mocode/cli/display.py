@@ -26,7 +26,7 @@ from wcwidth import wcswidth
 
 from ..core.events import Event
 from . import lines as L
-from .text import terminal_height, terminal_width, visible_width
+from .text import one_row, terminal_height, terminal_width, visible_width
 from .theme import DEFAULT_THEME, RESET, Theme
 
 if TYPE_CHECKING:
@@ -57,13 +57,16 @@ def fix_console() -> None:
 def clamp_visible(text: str, max_width: int) -> str:
     """Cut *text* down to *max_width* columns, keeping its escape codes.
 
-    This is the one place the renderer truncates instead of letting the terminal
-    wrap: a line rewritten in place has to stay exactly one row tall, or every
-    row offset in the block after it is wrong. Widths are measured, not counted,
-    so CJK text is cut earlier than its character count suggests.
+    One row, whatever it was handed: a control character has no width to
+    measure but still moves the cursor, so it is flattened first — and since
+    ``wcswidth`` reports -1 for one, nothing downstream would bound the text
+    without this. A line rewritten in place has to stay exactly one row tall,
+    or every row offset in the block after it is wrong. Widths are measured,
+    not counted, so CJK text is cut earlier than its character count suggests.
     """
     if max_width <= 0:
         return ""
+    text = one_row(text)
     if visible_width(text) <= max_width:
         return text
 

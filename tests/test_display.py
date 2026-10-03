@@ -97,6 +97,16 @@ class TestClamping:
         assert got.endswith("\033[0m")
         assert _plain(got) == "x" * 9 + "…"
 
+    def test_a_newline_cannot_split_the_row(self):
+        """控制字符没有宽度可量却照样移动光标，而 wcswidth 对它返回 -1——
+        不先压扁，块内行会占多行，后面所有行的偏移全是错的。"""
+        # 预算内：原样压扁，一行、标记在
+        got = clamp_visible("import asyncio\nmcode = asyncio.run\nprint(1)", 60)
+        assert _plain(got) == "import asyncio\\nmcode = asyncio.run\\nprint(1)"
+
+        # 超预算：一样先压扁再按列数收尾
+        assert _plain(clamp_visible("a\nbb\nccc", 6)) == "a\\nbb…"
+
 
 class TestStreaming:
     def test_answer_and_reasoning_stream_their_text_through(self, capsys):

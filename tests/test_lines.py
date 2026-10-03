@@ -104,6 +104,21 @@ class TestToolLines:
         assert line.text.startswith("read  a/") and line.text.endswith("/f.py…")
         assert len(line.text) < lines.SUMMARY_WIDTH + 10
 
+    def test_a_multiline_argument_collapses_to_one_row(self):
+        """A script is code, not a paragraph: the row previews it flattened,
+        head and tail — a newline has no width to measure, so nothing bounds
+        the text unless it is flattened first."""
+        script = "import asyncio\n" + "x = 1\n" * 40 + "print(asyncio.run)"
+        summary = lines.tool_summary("codemode", {"script": script})
+        assert "\n" not in summary and "\\n" in summary
+        assert "..." in summary
+        assert len(summary) <= lines.SUMMARY_WIDTH
+
+        # 短脚本不需要省略号，但也还是一行
+        short = lines.tool_pending("codemode", {"script": "import asyncio\nprint(1)"}, None)
+        assert "\n" not in short.text and "\\n" in short.text
+        assert "..." not in short.text
+
 
 class TestFailures:
     @pytest.mark.parametrize(

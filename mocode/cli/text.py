@@ -21,6 +21,18 @@ def visible_width(text: str) -> int:
     return wcswidth(_ANSI_RE.sub("", text))
 
 
+def one_row(text: str) -> str:
+    """Flatten *text* to a single terminal row.
+
+    A newline becomes the two-character marker ``\\n`` — plain ASCII, because a
+    ⏎ glyph is a symbol some terminals render at an unpredictable width (the
+    rule ``cli/theme.py`` sets for icons); a tab becomes a space. Escape
+    sequences contain none of the three, so colour survives untouched.
+    """
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text.replace("\n", "\\n").replace("\t", " ")
+
+
 def ellipsize_middle(text: str, max_width: int) -> str:
     """Truncate *text* in the middle: ``'abcdefghij'`` → ``'abcde...hij'``."""
     if visible_width(text) <= max_width:
@@ -75,6 +87,7 @@ __all__ = [
     "count_visual_lines",
     "ellipsize_middle",
     "ellipsize_tail",
+    "one_row",
     "terminal_height",
     "terminal_width",
     "visible_width",
