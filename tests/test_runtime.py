@@ -47,11 +47,17 @@ class TestTheRuntime:
                 MoCode(home=tmp_path / "home", plugin_dirs=[])  # the missing-config path
 
     def test_everything_it_owns_lives_under_home(self, make_mc, tmp_path: Path):
-        """Nothing the runtime writes escapes its home — not even sessions."""
+        """Nothing the runtime writes escapes its home — not even sessions —
+        而打开一个会话本身什么都不写。"""
         mc = make_mc()
         mc.config.save = lambda *a, **k: None
 
         assert mc.home == tmp_path / "home"
+
+        # 打开会话不是写盘：id 在手，store 还空着
+        opening = mc.new_conversation(cwd=tmp_path)
+        assert opening.id.startswith("session_")
+        assert mc.store.list_all() == []
 
         # A conversation whose project lies outside the home still records
         # its session inside it — and the store reads it back from there.
@@ -72,11 +78,6 @@ class TestTheRuntime:
         assert not hasattr(mc, "chat")
         assert not hasattr(mc, "messages")
         assert not hasattr(mc, "agent")
-
-    def test_opening_a_conversation_does_not_write_anything(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=tmp_path)
-        assert conversation.id.startswith("session_")
-        assert mc.store.list_all() == []
 
     def test_the_default_provider_type_is_openai(self, mc: MoCode):
         from mocode.providers.openai import OpenAIProvider
@@ -109,7 +110,9 @@ class TestProviderTypes:
     def _fake_factory(entry, key, model):
         return SimpleNamespace(model=model, built_from=key, api_key=entry.api_key_for(key))
 
-    def test_a_registered_type_is_built_from_the_config_entry(self, make_mc):
+    def test_a_registered_type_is_built_and_an_unregistered_one_is_a_mistake(
+        self, make_mc
+    ):
         config = make_config()
         config.providers["local"] = ProviderEntry(
             type="local", models=[ModelEntry(id="llama")]
@@ -122,15 +125,10 @@ class TestProviderTypes:
         assert (provider.model, provider.built_from) == ("llama", "local")
         assert provider.api_key == ""  # LOCAL_API_KEY is not set
 
-    def test_an_unregistered_type_is_a_configuration_mistake(self, make_mc):
-        config = make_config()
-        config.providers["local"] = ProviderEntry(
-            type="local", models=[ModelEntry(id="llama")]
-        )
-        mc = make_mc(config)
-
+        # 没注册过的 type 是配置错误：报错点名缺的是哪次注册
+        bare = make_mc(config)
         with pytest.raises(ValueError, match="register_provider_type"):
-            mc.provider_for("local", "llama")
+            bare.provider_for("local", "llama")
 
     def test_the_type_round_trips_through_the_file(self, tmp_path: Path):
         config = make_config()
@@ -196,9 +194,12 @@ class TestPluginProviderTypes:
         )
         return make_mc(config, plugin_dirs=[plugins_dir])
 
-    def test_the_registering_conversation_runs_on_it(self, make_mc, tmp_path: Path):
+    def test_the_registering_conversation_runs_on_it_and_a_later_registration_replaces_it(
+        self, make_mc, tmp_path: Path
+    ):
         """build() runs before the provider is resolved, so the conversation
-        that shipped the type uses it — no second conversation needed."""
+        that shipped the type uses it — no second conversation needed; and the
+        runtime's own registry keeps its rule: last registration wins."""
         mc = self._plugged_runtime(make_mc, tmp_path)
 
         conversation = mc.new_conversation(
@@ -209,11 +210,6 @@ class TestPluginProviderTypes:
 
         assert isinstance(conversation.agent.provider, PluggedProvider)
         assert conversation.agent.provider.model == "llama"
-
-    def test_a_later_registration_replaces_a_plugins(self, make_mc, tmp_path: Path):
-        """Same rule as the runtime's own registry: last registration wins."""
-        mc = self._plugged_runtime(make_mc, tmp_path)
-        mc.new_conversation(cwd=tmp_path, provider="local", model="llama")
 
         mc.register_provider_type(
             "plugged", lambda entry, key, model: SimpleNamespace(model=model)
@@ -239,8 +235,7 @@ class TestAConversation:
         assert conversation.state.answer == "hi there"
         assert conversation.messages[0] == {"role": "user", "content": "hello"}
 
-    def test_no_display_is_needed_for_any_of_it(self, mc: MoCode, tmp_path: Path):
-        conversation = mc.new_conversation(cwd=tmp_path)
+        # 全程没有一个 display 对象：agent 就在 host 的 ctx 上
         assert conversation.host.ctx.agent is conversation.agent
 
 
@@ -256,18 +251,25 @@ class TestTheTerminal:
             interactive=True, plugin_dirs=[],
         )
 
-    def test_its_commands_come_from_its_plugin(self, app):
+    def test_its_plugin_contributes_the_commands_and_the_host_knows_nothing_of_either(
+        self, app, tmp_path: Path
+    ):
+        """终端自己的命令来自它自己的插件；renderer 是 app 自己装的——host
+        的插件集（这里是内建的）两样都没有。命令属于 host：headless 也照旧有。
+        """
         assert "/help" in {c.name for c in app.commands.all()}
         assert "cli" in [p.name for p in app.plugins]
 
-    def test_the_renderer_is_installed_not_contributed(self, app, tmp_path: Path):
-        """Drawing a terminal is what this frontend does with the event stream."""
+        from mocode.cli import CLIApp
         from mocode.cli.render import CLIRenderer
 
         assert isinstance(app.renderer, CLIRenderer)
         # The renderer is the app's own doing — the host's plugin set (the
         # built-ins, here) contains nothing that installed it.
         assert "cli" not in [p.name for p in app.runtime.plugins_for(tmp_path)]
+
+        headless = CLIApp(config=make_config(), home=tmp_path / "home", interactive=False)
+        assert "/help" in {c.name for c in headless.commands.all()}
 
     def test_it_writes_sessions_under_its_own_home(self, app, tmp_path: Path):
         app.conversation.messages.append({"role": "user", "content": "hi"})
@@ -321,46 +323,32 @@ class TestTheTerminal:
         }
         assert listed == {c.name for c in app.commands.all()}
 
-    def test_a_one_shot_can_render_without_a_repl(self, tmp_path: Path):
-        """`-p` on a terminal draws the turn; `render` asks for that."""
+    def test_the_display_attaches_only_when_a_frontend_is_asked_for(self, tmp_path: Path):
+        """display/renderer 的挂载规则：非交互默认什么都不挂（那正是 -p
+        保持为管道的原因）；render 只能要一个前端；interactive 必然带一个
+        ——render 可以要，永远收不走。"""
         from mocode.cli import CLIApp
 
-        app = CLIApp(
-            config=make_config(), home=tmp_path / "home",
-            interactive=False, render=True,
-        )
+        def _app(**flags):
+            return CLIApp(
+                config=make_config(), home=tmp_path / "home", **flags
+            )
 
-        assert app.display is not None and app.renderer is not None
+        rendered = _app(interactive=False, render=True)
+        assert rendered.display is not None and rendered.renderer is not None
 
-    def test_interactive_implies_rendering(self, tmp_path: Path):
-        """`render` can only ask for a frontend, never take one away."""
-        from mocode.cli import CLIApp
+        interactive = _app(interactive=True, render=False)
+        assert interactive.display is not None
 
-        app = CLIApp(
-            config=make_config(), home=tmp_path / "home",
-            interactive=True, render=False,
-        )
+        piped = _app(interactive=False)
+        assert piped.display is None
+        assert piped.renderer is None
 
-        assert app.display is not None
-
-    def test_a_piped_one_shot_attaches_nothing(self, tmp_path: Path):
-        """The default for a non-interactive run — that is what keeps `-p` a pipe."""
-        from mocode.cli import CLIApp
-
-        app = CLIApp(config=make_config(), home=tmp_path / "home", interactive=False)
-
-        assert app.display is None
-        assert app.renderer is None
-
-    def test_a_headless_cli_still_has_commands(self, tmp_path: Path):
-        from mocode.cli import CLIApp
-
-        app = CLIApp(config=make_config(), home=tmp_path / "home", interactive=False)
-
-        assert "/help" in {c.name for c in app.commands.all()}
-
-    def test_a_piped_run_saves_nothing(self, tmp_path: Path, capsys):
-        """A one-shot is not a session."""
+    def test_a_one_shot_prints_the_answer_once_and_records_nothing(
+        self, tmp_path: Path, capsys
+    ):
+        """一次性运行不是会话：答案打一遍（渲染过的 run 不会打两遍），
+        什么也不存档。"""
         from mocode.cli import CLIApp
 
         app = CLIApp(config=make_config(), home=tmp_path / "home", interactive=False)
@@ -374,20 +362,16 @@ class TestTheTerminal:
         assert capsys.readouterr().out.strip() == "answer"
         assert app.runtime.store.list_all() == []
 
-    def test_a_rendered_one_shot_prints_nothing_twice(self, tmp_path: Path, capsys):
-        from mocode.cli import CLIApp
-
-        app = CLIApp(
+        drawn = CLIApp(
             config=make_config(), home=tmp_path / "home",
             interactive=False, render=True,
         )
-        app.display.clear_screen = lambda: None
+        drawn.display.clear_screen = lambda: None
         wire(
-            app.conversation,
+            drawn.conversation,
             Response(content="drawn", usage=Usage(1, 1), finish_reason="stop"),
         )
 
-        app.run_oneshot("hello")
+        drawn.run_oneshot("hello")
 
-        out = strip_ansi(capsys.readouterr().out)
-        assert out.count("drawn") == 1
+        assert strip_ansi(capsys.readouterr().out).count("drawn") == 1
