@@ -8,30 +8,35 @@ prompt section.
 from __future__ import annotations
 
 DESCRIPTION = """\
-Run a Python script that calls other tools. Only the script's output reaches
-you, so use it to run calls in parallel and filter large results before they
-enter the conversation.
+Run a Python script that calls other tools; only its output comes back. The
+script is an async function body: top-level `await`/`return` are legal —
+never `asyncio.run()`/`main()`; `asyncio.ensure_future` tasks are never
+awaited. All names below are injected — use them directly, do not `import`.
 
-The script runs as the body of an async function: top-level `await` and
-top-level `return` are allowed. Available names:
-
-- `await tools.<name>(args)` — call a tool. Use `tools["exact-name"]` when the
-  name is not a valid Python identifier, e.g. `tools["mcp__dev_radius__search"]`.
-  A successful call returns an object with `.content` (text), `.details`
-  (dict), `.status`; `str(result)` is `.content`. A failed call raises; use
-  `asyncio.gather(..., return_exceptions=True)` to keep the successful ones.
-- `text(value)` / `console.log(...)` — append output. `return value` does the
-  same.
-- `image(block)` — show an image block.
-- `store(key, value)` / `load(key)` — small JSON state kept across codemode
-  calls. `store(key, None)` deletes it.
-- `search_tools(query, limit=8)` / `describe_tool(name)` / `ALL_TOOLS` —
-  discover callable tools (including tools not listed in the tool interface).
-- `exit()` — end the script successfully.
+- `await tools.<name>(args)` calls a tool. Own tools keep their name
+  (`tools.bash`); an MCP tool answers to its folded full name, subscript or
+  attribute (`tools["mcp__dev_radius__search"]`), and, when unambiguous,
+  its short name (`tools.search`); ambiguous short names raise, listing
+  candidates — exact names win. Success has `.content`, `.details`,
+  `.status`, `.error_code` (Mapping too — `res.get("content")`); failure
+  raises — `asyncio.gather(..., return_exceptions=True)` keeps successes;
+  builtin exceptions are catchable by name.
+- `text(value)` / `console.log(...)` / `print(...)` append output in order;
+  `return value` appends last on success; `image(block)` adds an image;
+  `exit()` ends the script. Past `max_output_chars` (default 12000), head
+  and tail survive plus a temp-file path.
+- `store(key, value)` / `load(key)` — small JSON state across codemode
+  calls; `store(key, None)` deletes; commits on success, within size limits.
+- `all_tools()` (script-start snapshot), `search_tools(query, limit=8,
+  namespace=None, names_only=False)`, `describe_tool(name)` — every
+  callable tool, even program-only ones.
 
 `asyncio`, `json`, `re`, `math`, `datetime`, `textwrap`, `collections`,
-`itertools` and `functools` are available. There is no file system, network,
-timer, `open`, or `import`. `codemode` cannot call itself. A whole-script
-deadline can be set with `# @options: {"timeout_ms": 60000}` on the first
-line, or the `options` argument.
+`itertools`, `functools` are injected read-only — no file system, network,
+timer, `open`, or `import`. `codemode` cannot call itself. An explicit
+deadline (`options.timeout_ms`, a first-line
+`# @options: {"timeout_ms": 60000}`, or `plugins.codemode.timeout_s`) keeps
+the output so far (`timed_out`); with none, the agent's tool timeout applies
+and partial output is lost. `plugins.codemode.max_concurrency` caps parallel
+calls (default unlimited).
 """
