@@ -1,4 +1,4 @@
-✅ 待填 —— lead 收尾时补一行（`✅ 日期 @ 分支`）
+✅ 2026-10-04 全组完成（W1 合并入 master，merge `923dd64` @ `feat/codemode-long-names`；505 passed / exit 0，pre 506 → post 505，唯一下降 = 删除的 `TestShortNameRule::test_short_name_boundaries`；不 push，等用户指令）
 
 # Spec Group · codemode 调用路径：只认全名（2026-10-03）
 
