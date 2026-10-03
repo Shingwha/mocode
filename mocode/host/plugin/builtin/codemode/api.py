@@ -2,9 +2,10 @@
 
 Everything a codemode script may touch is assembled here into one globals
 dict: the ``tools`` proxy, ``text``/``console``/``print``/``image``/``exit``,
-the ``store``/``load`` closures, the discovery helpers and the read-only
-standard-library modules. ``print`` is the one builtin the env replaces —
-it appends to the output pipeline instead of writing to the host's stdout.
+the ``store``/``load`` closures, ``parallel``, the discovery helpers and the
+read-only standard-library modules. ``print`` is the one builtin the env
+replaces — it appends to the output pipeline instead of writing to the
+host's stdout.
 
 Every tool call a script makes goes through the dispatcher with
 ``origin="program"`` — that is the program-origin contract: the calls are
@@ -26,7 +27,7 @@ import textwrap
 from typing import TYPE_CHECKING, Any
 
 from .....core.tool import ToolRegistry
-from .result import Result, ToolCallError
+from .result import Result, ToolCallError, _PARALLEL_LIMIT, parallel
 from .runtime import CodemodeError, _ScriptExit
 from .search import normalize, rank
 
@@ -185,7 +186,15 @@ class ToolBox:
 
         async def call(args: dict | None = None, **kwargs):
             merged = {**(args or {}), **kwargs}
-            if self._semaphore is None:
+            # A parallel() batch limit overrides the global cap: the batch
+            # semaphore already bounds this call, so the box must not
+            # acquire anything itself — stacking the two would halve the
+            # effective limit (and, at a batch limit of one, deadlock).
+            if _PARALLEL_LIMIT.get() is not None:
+                semaphore = None
+            else:
+                semaphore = self._semaphore
+            if semaphore is None:
                 result = await self._dispatcher.run(
                     resolved,
                     merged,
@@ -193,7 +202,7 @@ class ToolBox:
                     parent_call_id=self._parent_call_id,
                 )
             else:
-                async with self._semaphore:
+                async with semaphore:
                     result = await self._dispatcher.run(
                         resolved,
                         merged,
@@ -427,6 +436,7 @@ def build_env(
             "exit": exit,
             "store": store_value,
             "load": load_value,
+            "parallel": parallel,
             "all_tools": all_tools,
             "search_tools": search_tools,
             "describe_tool": lambda name: describe_tool_entry(registry, name),

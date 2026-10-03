@@ -19,7 +19,7 @@ from mocode.host.plugin.builtin.codemode.api import (
     describe_tool_entry,
     tool_entries,
 )
-from mocode.host.plugin.builtin.codemode.result import Result
+from mocode.host.plugin.builtin.codemode.result import Batch, Result, ToolCallError, parallel
 from mocode.host.plugin.builtin.codemode.runtime import (
     _RESTRICTED_KEYS,
     RESTRICTED,
@@ -539,6 +539,86 @@ class TestResultMapping:
         assert str(result) == "c"
 
 
+class TestParallel:
+    """D18 — batch calls are first-class: per-call failure capture, order
+    preserved, a per-batch concurrency that overrides the global cap."""
+
+    async def test_all_success_keeps_argument_order(self):
+        box = _box(echo_tool())
+        rs = await parallel(
+            box.echo({"value": "a"}),
+            box.echo({"value": "b"}),
+            box.echo({"value": "c"}),
+        )
+        assert isinstance(rs, Batch)
+        assert len(rs) == 3
+        assert [r.content for r in rs] == ["echo:a", "echo:b", "echo:c"]
+        assert rs.ok == list(rs)
+        assert rs.failed == []
+        assert box.calls == 3
+
+    async def test_mixed_failure_is_captured_not_raised(self):
+        box = _box(echo_tool(), _failing_tool())
+        rs = await parallel(box.echo({"value": "ok"}), box.fail({}))
+        assert [r.ok for r in rs] == [True, False]  # argument order kept
+        assert [r.content for r in rs.ok] == ["echo:ok"]
+        bad = rs.failed[0]
+        assert bad.tool == "fail"
+        assert bad.status == "error"
+        assert bad.error_code == "execution_error"
+        assert "nope" in bad.error
+        assert box.calls == 2
+
+    async def test_all_failures(self):
+        box = _box(_failing_tool())
+        rs = await parallel(box.fail({}), box.fail({}))
+        assert rs.ok == []
+        assert len(rs.failed) == 2
+        assert all(r.error for r in rs.failed)
+
+    async def test_non_awaitable_argument_raises(self):
+        box = _box(echo_tool())
+        with pytest.raises(TypeError, match="expects awaitables"):
+            await parallel(box.echo)  # the bound call, never awaited
+        with pytest.raises(TypeError, match="expects awaitables"):
+            await parallel("not a coroutine")
+
+    async def test_bad_concurrency_raises(self):
+        box = _box(echo_tool())
+        for bad in (0, -1, 2.0, True, "8"):
+            with pytest.raises(ValueError, match="concurrency"):
+                await parallel(box.echo({"value": "x"}), concurrency=bad)
+
+    async def test_concurrency_one_serializes_calls(self):
+        log = []
+        box = _box(_order_tool("a", log), _order_tool("b", log))
+        rs = await parallel(box.a({}), box.b({}), concurrency=1)
+        assert [r.ok for r in rs] == [True, True]
+        assert log == ["a:start", "a:end", "b:start", "b:end"]
+
+    async def test_concurrency_overrides_the_global_semaphore(self):
+        # The global cap is one, but the batch asks for eight: both calls
+        # still get in flight — the per-batch limit replaces the global one.
+        started: list = []
+        both_started = asyncio.Event()
+        release = asyncio.Event()
+        agent = make_agent(
+            _gate_tool("gate_a", started, both_started, release),
+            _gate_tool("gate_b", started, both_started, release),
+        )
+        box = ToolBox(
+            agent.tool_registry, agent.dispatcher, "c", semaphore=asyncio.Semaphore(1)
+        )
+        task = asyncio.create_task(
+            parallel(box.gate_a({}), box.gate_b({}), concurrency=8)
+        )
+        await asyncio.wait_for(both_started.wait(), 5)
+        release.set()
+        rs = await task
+        assert [r.ok for r in rs] == [True, True]
+        assert sorted(started) == ["gate_a", "gate_b"]
+
+
 class TestDiscovery:
     def _registry(self) -> ToolRegistry:
         registry = ToolRegistry()
@@ -1008,6 +1088,22 @@ class TestRunTool:
             "\nreturn [o.content for o in outcomes]",
         )
         assert result.content.endswith('["echo:a", "echo:b"]')
+        assert result.details["tool_calls"] == 2
+
+    async def test_parallel_in_script_captures_failures(self, plugin_host):
+        registry = ToolRegistry()
+        registry.register(echo_tool())
+        registry.register(_failing_tool())
+        host = plugin_host(plugins=[PLUGIN], tools=registry)
+        result = await self._run(
+            host,
+            "rs = await parallel(tools.echo({'value': 'a'}), tools.fail({}))\n"
+            "text('%d ok / %d failed' % (len(rs.ok), len(rs.failed)))\n"
+            "text(rs.failed[0].error)",
+        )
+        assert result.details["ok"] is True
+        assert "1 ok / 1 failed" in result.content
+        assert "nope" in result.content
         assert result.details["tool_calls"] == 2
 
     async def test_script_branches_on_exception_types_after_gather(self, plugin_host):
