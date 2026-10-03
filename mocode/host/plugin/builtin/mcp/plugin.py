@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from .....core.prompt import Section
 from ...base import Plugin
+from .client import STATE_CONNECTED
 from .naming import resolve_server_exposure
 from .runtime import McpRuntime
 from .tools import mcp_status_tool
@@ -25,21 +26,34 @@ from .tools import mcp_status_tool
 if TYPE_CHECKING:
     from ...context import BuildContext, HostContext
 
+#: Names per server in the prompt list — past this, search_tools() takes over.
+_PROMPT_TOOL_NAME_LIMIT = 30
+
 
 def _render_mcp_servers(
     runtime: McpRuntime,
 ) -> Callable[[dict[str, Any]], str]:
-    """The mcp_servers section — one line per reachable server.
+    """The mcp_servers section — one line per reachable server, plus the
+    tool-name catalogue of every connected one.
 
     Every enabled server whose effective exposure is not ``hidden``: its
     namespace, how its tools are reached (``direct`` to the model,
     ``codemode`` otherwise) and a one-line description — the configured one,
-    else the first line of the server instructions once connected. No
-    servers → an empty render, and the prompt skips the section.
+    else the first line of the server instructions once connected. A
+    connected server additionally lists its tools' raw names (the registry,
+    decision D12) on an indented continuation line — a catalogue, not a
+    manual: usage stays with ``describe_tool()`` in a codemode script. Only
+    callable names make the list — the program audience's projection of the
+    registry drops ``hidden`` per-tool entries, never advertising a name the
+    run would refuse. A server still connecting keeps the one-line form, and
+    a list longer than ``_PROMPT_TOOL_NAME_LIMIT`` truncates with a
+    ``search_tools()`` pointer. No servers → an empty render, and the prompt
+    skips the section.
     """
 
     def render(builder_context: dict[str, Any]) -> str:
         lines = []
+        visible = set(runtime._ctx.tools.names(audience="program"))
         for key, cfg in runtime.config.items():
             if not cfg.enabled:
                 continue
@@ -48,14 +62,33 @@ def _render_mcp_servers(
                 continue
             how = "direct" if exposure == "direct" else "codemode"
             description = cfg.description
-            if not description:
-                session = runtime.sessions.get(key)
-                if session is not None and session.instructions:
-                    description = session.instructions.splitlines()[0]
+            session = runtime.sessions.get(key)
+            if not description and session is not None and session.instructions:
+                description = session.instructions.splitlines()[0]
             line = f"- {cfg.name}: {how}"
             if description:
                 line += f" — {description}"
             lines.append(line)
+            registered = runtime._registered.get(key, {})
+            if session is not None and session.state == STATE_CONNECTED and registered:
+                names = sorted(
+                    raw for full, raw in registered.items() if full in visible
+                )
+                if not names:
+                    continue
+                if len(names) > _PROMPT_TOOL_NAME_LIMIT:
+                    rest = len(names) - _PROMPT_TOOL_NAME_LIMIT
+                    tail = (
+                        f" … +{rest} more"
+                        " (search_tools() in a codemode script)"
+                    )
+                    lines.append(
+                        "  tools: "
+                        + ", ".join(names[:_PROMPT_TOOL_NAME_LIMIT])
+                        + tail
+                    )
+                else:
+                    lines.append("  tools: " + ", ".join(names))
         return "\n".join(lines)
 
     return render
