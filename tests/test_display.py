@@ -26,7 +26,7 @@ from mocode.core import (
     ToolRegistry,
     ToolResult,
 )
-from mocode.core.provider import Response, ToolCall, Usage
+from mocode.core.provider import Chunk, Response, ToolCall, ToolCallDelta, Usage
 from mocode.testing import MockProvider, tool_call_response
 
 from .conftest import strip_ansi
@@ -369,8 +369,13 @@ class TestLiveBlock:
         out = capsys.readouterr().out
 
         # Every call claims its row before any of them finishes: that is the
-        # property the whole design rests on.
+        # property the whole design rests on. The rows open on the tool name
+        # while the arguments stream, then each is rewritten in place with its
+        # final arguments.
         assert [l for l in _plain(out).splitlines() if l.startswith("· ")] == [
+            "· a…",
+            "· b…",
+            "· c…",
             "· a  a…",
             "· b  b…",
             "· c  c…",
@@ -378,6 +383,9 @@ class TestLiveBlock:
         # Then each verdict is written into its own row, counting up from the
         # bottom of the block.
         assert [(m[0], _plain(m[1])) for m in REWRITE.findall(out)] == [
+            ("3", "· a  a…"),
+            ("2", "· b  b…"),
+            ("1", "· c  c…"),
             ("3", "✓ a  a"),
             ("2", "✓ b  b"),
             ("1", "✓ c  c"),
@@ -409,7 +417,105 @@ class TestLiveBlock:
         out = capsys.readouterr().out
         assert "· noisy…" in _plain(out)          # the row it claimed
         assert "careful" in _plain(out)           # what froze the block
-        assert not REWRITE.search(out)            # so the verdict is appended
+        # The one in-place rewrite is the final arguments, written before the
+        # notice froze the block — the verdict has nowhere to land but a new
+        # line.
+        assert [(m[0], _plain(m[1])) for m in REWRITE.findall(out)] == [
+            ("1", "· noisy…")
+        ]
+        assert "✓ noisy" in _plain(out)
+
+    async def test_a_call_gets_its_row_when_the_model_names_it(self, capsys):
+        """Three phases, one row: it opens on the tool while the arguments
+        stream, then the same row takes the final arguments and the verdict —
+        one place, two in-place rewrites."""
+        display = _make_display(live=True)
+        registry = ToolRegistry()
+        registry.register(
+            Tool(
+                "write",
+                "d",
+                {"path": {"type": "string", "description": "p"}},
+                lambda a: "w",
+                summary_key="path",
+            )
+        )
+        agent = AgentLoop(
+            provider=MockProvider([
+                tool_call_response("write", '{"path": "a.py"}'),
+                Response(content="done", usage=Usage(1, 1), finish_reason="stop"),
+            ]),
+            system_prompt="t",
+            tools=registry,
+            hooks=HookRunner(),
+        )
+        renderer = _renderer(display, registry)
+        async for event in agent.stream("hi"):
+            renderer.draw(event)
+
+        out = capsys.readouterr().out
+        assert _plain(out).splitlines()[:3] == [
+            "· write…",        # the row the first fragment opened, name only
+            "· write  a.py…",  # the same row, rewritten with the final arguments
+            "✓ write  a.py",   # and its verdict
+        ]
+        # One row, rewritten in place twice — the row offset proves there was
+        # exactly one place.
+        assert [(m[0], _plain(m[1])) for m in REWRITE.findall(out)] == [
+            ("1", "· write  a.py…"),
+            ("1", "✓ write  a.py"),
+        ]
+
+    async def test_text_after_a_forming_row_freezes_the_block(self, capsys):
+        """A row is only rewritable while nothing else has been printed — text
+        that arrives after the row opened freezes the block for good, and the
+        rest of the call's phases are appended."""
+
+        class TalksAfterNaming:
+            """A model that keeps talking after it names the tool: the call's
+            fragments first, streamed text after — the order the degradation
+            needs. The second turn answers, so the run ends."""
+
+            model = "mock"
+
+            def __init__(self) -> None:
+                self._turns = 0
+
+            def is_retriable(self, exc: Exception) -> bool:
+                return False
+
+            async def stream(self, messages, system, tools, max_tokens, effort):
+                self._turns += 1
+                if self._turns == 1:
+                    yield Chunk(
+                        tool_calls=[ToolCallDelta(index=0, id="c1", name="noisy")]
+                    )
+                    yield Chunk(tool_calls=[ToolCallDelta(index=0, arguments="{}")])
+                    yield Chunk(text="and some text after")
+                    yield Chunk(finish_reason="tool_calls")
+                    yield Chunk(usage=Usage(1, 1))
+                else:
+                    yield Chunk(text="done")
+                    yield Chunk(finish_reason="stop")
+                    yield Chunk(usage=Usage(1, 1))
+
+        display = _make_display(live=True)
+        registry = ToolRegistry()
+        registry.register(Tool("noisy", "d", {}, lambda a: "x"))
+        agent = AgentLoop(
+            provider=TalksAfterNaming(),
+            system_prompt="t",
+            tools=registry,
+            hooks=HookRunner(),
+        )
+        renderer = _renderer(display, registry)
+        async for event in agent.stream("hi"):
+            renderer.draw(event)
+
+        out = capsys.readouterr().out
+        assert "· noisy…" in _plain(out)              # the row it claimed
+        assert "and some text after" in _plain(out)   # what froze the block
+        assert not REWRITE.search(out)                # so the rest is appended
         assert "✓ noisy" in _plain(out)
 
     async def test_a_redirected_run_prints_no_placeholders(self, capsys):
@@ -436,5 +542,8 @@ class TestLiveBlock:
         await _run_parallel(_make_display(live=True), ["a", "b", "c"])
 
         out = capsys.readouterr().out
-        assert len([l for l in _plain(out).splitlines() if l.startswith("· ")]) == 3 - 1
+        # Two rows fit: each is placed by the fragment that names its tool and
+        # rewritten in place once with the final arguments — the third claims
+        # nothing and is appended when it ends.
+        assert len([l for l in _plain(out).splitlines() if l.startswith("· ")]) == 2 + 2
         assert "✓ c  c" in _plain(out)   # the third call is appended when it ends

@@ -35,6 +35,7 @@ from .events import (
     RunStarted,
     StopReason,
     TextDelta,
+    ToolCallArgsDelta,
 )
 from .hook import (
     HookRunner,
@@ -465,6 +466,9 @@ class AgentLoop:
             self.system_prompt = request.system_prompt
 
             acc = StreamAccumulator()
+            # index -> call_id, minted at a slot's first fragment: the identity the
+            # events announce is the identity the dispatch below will use.
+            call_ids: dict[int, str] = {}
             try:
                 async for chunk in with_retry_stream(
                     self.provider,
@@ -485,6 +489,18 @@ class AgentLoop:
                         await self._publish(ReasoningDelta(text=chunk.reasoning))
                     if chunk.text:
                         await self._publish(TextDelta(text=chunk.text))
+                    for delta in chunk.tool_calls:
+                        if delta.index not in call_ids:
+                            call_ids[delta.index] = (
+                                self.dispatcher.mint_model_call_id(delta.id)
+                            )
+                        await self._publish(
+                            ToolCallArgsDelta(
+                                call_id=call_ids[delta.index],
+                                name=delta.name,
+                                arguments=delta.arguments,
+                            )
+                        )
             except RetryDeadlineExceeded:
                 # The budget ran out inside retry backoff — the same budget
                 # endgame as the checkpoints above, not a provider failure
@@ -498,6 +514,12 @@ class AgentLoop:
                 break
 
             response = acc.build()
+
+            # The fragments already announced each call's identity; the accumulator
+            # only merged the wire. Force the ids the events carry onto the calls the
+            # dispatcher is about to run, so one identity covers all three phases.
+            for index, call in enumerate(response.tool_calls or []):
+                call.id = call_ids[index]
 
             # The response as accounted for — a usage rewrite here flows into
             # IterationFinished and the turn's totals.

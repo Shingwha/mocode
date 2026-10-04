@@ -1289,6 +1289,7 @@ class TestRunTool:
         result = await host.ctx.agent.dispatcher.run(
             "codemode",
             {"script": 'await tools.slow({"value": "x"})'},
+            call_id="c1",
             timeout=30,
         )
         assert result.status == "ok"
@@ -1305,6 +1306,7 @@ class TestRunTool:
         result = await host.ctx.agent.dispatcher.run(
             "codemode",
             {"script": 'text("before")\nawait asyncio.sleep(10)'},
+            call_id="c1",
             timeout=0.3,
         )
         assert result.status == "timeout"

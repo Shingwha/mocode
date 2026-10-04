@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 
 import pytest
@@ -16,6 +17,7 @@ from mocode.core.events import (
     RunFinished,
     RunStarted,
     TextDelta,
+    ToolCallArgsDelta,
     ToolCallFinished,
     ToolCallStarted,
     ToolOutput,
@@ -110,11 +112,49 @@ class TestEventStream:
         assert finished[0].status == "ok"
         assert finished[0].duration >= 0
 
+        # 参数流：模型边写边广播，碎片带与 started/finished 同一个 call_id，
+        # 拼接起来正是模型写下的参数 JSON。
+        deltas = [e for e in events if isinstance(e, ToolCallArgsDelta)]
+        assert deltas[0].name == "echo"
+        assert "".join(d.arguments for d in deltas) == json.dumps(started[0].args)
+        assert [d.call_id for d in deltas] == ["c1"] * len(deltas)
+        # 广播在前：Started 的 seq 大于最后一个 delta 的。
+        assert started[0].seq > deltas[-1].seq
+
         # turn 的总结：两次迭代、一次工具调用，用量随之累计。
         done = events[-1]
         assert isinstance(done, RunFinished)
         assert (done.content, done.iterations, done.tool_calls_made) == ("final", 2, 1)
         assert done.usage.prompt_tokens == 2
+
+    async def test_a_call_the_endpoint_never_named_still_has_one_identity(self):
+        """An endpoint that omits ids gets kernel-minted ones — one per call,
+        shared by the fragments, the started/finished pair and the state."""
+        agent = make_agent(echo_tool())
+        agent.provider.responses = [
+            tool_call_response("echo", '{"value":"x"}', call_id=""),
+            tool_call_response("echo", '{"value":"x"}', call_id=""),
+            say("done"),
+        ]
+
+        events = await collect(agent.stream("hi"))
+
+        ids = ["call_1", "call_2"]
+        deltas = [e for e in events if isinstance(e, ToolCallArgsDelta)]
+        assert [d.call_id for d in deltas] == [
+            "call_1", "call_1", "call_1", "call_2", "call_2", "call_2",
+        ]
+        # The first fragment of each call names it; the arguments concatenate
+        # to what the model wrote, per id.
+        assert [d.name for d in deltas if d.name] == ["echo", "echo"]
+        for call_id in ids:
+            streamed = "".join(d.arguments for d in deltas if d.call_id == call_id)
+            assert streamed == '{"value":"x"}'
+
+        started = [e for e in events if isinstance(e, ToolCallStarted)]
+        finished = [e for e in events if isinstance(e, ToolCallFinished)]
+        assert [e.call_id for e in started] == [e.call_id for e in finished] == ids
+        assert set(agent.state.tool_calls) == set(ids)
 
     async def test_cancellation_leaves_the_history_answerable(self):
         started = asyncio.Event()

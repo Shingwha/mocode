@@ -2257,7 +2257,9 @@ async def _dispatch(host, name: str, args: dict, *, origin: str = "model"):
         events.append(event)
 
     dispatcher = ToolDispatcher(host.ctx.tools, HookRunner(), AgentConfig(), publish)
-    result = await asyncio.wait_for(dispatcher.run(name, args, origin=origin), BOUND)
+    result = await asyncio.wait_for(
+        dispatcher.run(name, args, call_id="c1", origin=origin), BOUND
+    )
     return result, events
 
 

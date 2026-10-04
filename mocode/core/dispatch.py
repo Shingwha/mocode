@@ -23,6 +23,11 @@ on the program's own behalf — nested inside a parent call or between turns:
 * it does not fold into the parent turn's ``tool_calls_made`` count — the
   live state stays the model's side of the story.
 
+Identity is minted per origin: the loop mints a model-side id while the
+response streams (:meth:`ToolDispatcher.mint_model_call_id`) and passes it in
+with the call, so :meth:`ToolDispatcher._assign_call_id` serves program
+origin only.
+
 The dispatcher's events reach the channel through an injected ``publish``
 callback; the dispatcher decides, per call, which of the two paths an event
 takes (folded for model origin, stamp-only for program origin), so the two
@@ -118,6 +123,20 @@ class ToolDispatcher:
         self._call_seq = 0
         self._nested_seq: dict[str, int] = {}
 
+    def mint_model_call_id(self, provider_id: str) -> str:
+        """Identity for a model-side call, minted while the response streams.
+
+        The provider's own id when the endpoint sent one, a kernel-minted
+        ``call_<n>`` otherwise. This is the only place a tool call's identity is
+        minted: the loop asks for it as a call's first fragment arrives, so the
+        deltas it publishes, the ``ToolCallStarted`` the finished response
+        triggers and the tool message in the history all share one id. The
+        counter is shared with program-origin ids, so the two forms never
+        collide.
+        """
+        self._call_seq += 1
+        return provider_id or f"call_{self._call_seq}"
+
     async def run(
         self,
         name: str,
@@ -131,18 +150,27 @@ class ToolDispatcher:
     ) -> DispatchResult:
         """Run one tool call through the pipeline and report what came back.
 
-        ``origin="model"`` is a call the model asked for: pass the provider's
-        own ``call_id`` (one is synthesized when the endpoint omitted it), the
-        parsed ``args``, and ``parse_error`` set when the arguments would not
-        parse. ``origin="program"`` is a call made on the program's behalf:
-        the dispatcher assigns its identity — ``<parent_call_id>:<n>`` nested
-        inside a parent call, ``pcall_<n>`` standalone — and its events take
-        the stamp-only path (see the module docstring for the contract).
+        ``origin="model"`` is a call the model asked for: pass the identity
+        the loop minted while the response streamed
+        (:meth:`mint_model_call_id`), the parsed ``args``, and ``parse_error``
+        set when the arguments would not parse. ``origin="program"`` is a call
+        made on the program's behalf: the dispatcher assigns its identity —
+        ``<parent_call_id>:<n>`` nested inside a parent call, ``pcall_<n>``
+        standalone — and its events take the stamp-only path (see the module
+        docstring for the contract).
 
         ``timeout`` overrides ``AgentConfig.tool_timeout`` for this one call.
         """
         fold = origin == "model"
-        cid = self._assign_call_id(call_id, origin, parent_call_id)
+        if origin == "model":
+            if not call_id:
+                raise ValueError(
+                    "a model-origin call arrives with the identity the loop "
+                    "minted while the response streamed — pass it as call_id"
+                )
+            cid = call_id
+        else:
+            cid = self._assign_call_id(parent_call_id)
 
         async def emit(event: "Event") -> None:
             await self._publish(event, fold=fold)
@@ -289,27 +317,18 @@ class ToolDispatcher:
             return result[:limit] + "\n... [truncated]"
         return result
 
-    def _assign_call_id(
-        self, call_id: str, origin: Origin, parent_call_id: str | None
-    ) -> str:
-        """Identity for a tool call, shared by its events and its context.
-
-        A model-origin call prefers the provider's own id, so events correlate
-        directly with the tool message in the history; one is synthesized when
-        an endpoint omits it. A program-origin call gets a structured identity
-        instead: ``<parent_call_id>:<n>`` when nested inside a parent call —
-        numbered per parent, so siblings read as a series a UI can fold — and
-        ``pcall_<n>`` when standalone. The two counters share one sequence, so
-        synthesized ids never collide across origins.
+    def _assign_call_id(self, parent_call_id: str | None) -> str:
+        """Identity for a program-origin call: nested under its parent —
+        numbered per parent, so siblings read as a series a UI can fold — or a
+        standalone ``pcall_<n>``. Model-origin identity is minted by the loop
+        while the response streams (:meth:`mint_model_call_id`), never here.
         """
         self._call_seq += 1
-        if origin == "program":
-            if parent_call_id:
-                n = self._nested_seq.get(parent_call_id, 0) + 1
-                self._nested_seq[parent_call_id] = n
-                return f"{parent_call_id}:{n}"
-            return f"pcall_{self._call_seq}"
-        return call_id or f"call_{self._call_seq}"
+        if parent_call_id:
+            n = self._nested_seq.get(parent_call_id, 0) + 1
+            self._nested_seq[parent_call_id] = n
+            return f"{parent_call_id}:{n}"
+        return f"pcall_{self._call_seq}"
 
 
 __all__ = ["DispatchResult", "Origin", "PublishFn", "ToolDispatcher"]
