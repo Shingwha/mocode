@@ -104,7 +104,7 @@ class TestBareCoreDispatcher:
         # 结构化 details 走第二条通道：结果与事件都带，模型读的 content 不带。
         stats = Tool("stats", "d", {}, lambda a: ToolResult("read it", {"lines": 412}))
         structured, structured_events, _ = _bare_dispatcher(stats)
-        structured_result = await structured.run("stats", {})
+        structured_result = await structured.run("stats", {}, call_id="c1")
 
         assert structured_result.details == {"lines": 412}
         assert structured_events[1].details == {"lines": 412}
@@ -114,7 +114,7 @@ class TestBareCoreDispatcher:
         tool = echo_tool()
 
         model, _, model_folds = _bare_dispatcher(tool)
-        await model.run("echo", {"value": "x"})
+        await model.run("echo", {"value": "x"}, call_id="c1")
         assert model_folds == [True, True]
 
         program, _, program_folds = _bare_dispatcher(tool)
@@ -145,7 +145,7 @@ class TestToolPolicy:
             slow, config=AgentConfig(tool_timeout=config_timeout)
         )
 
-        result = await dispatcher.run("slow", {}, timeout=call_timeout)
+        result = await dispatcher.run("slow", {}, call_id="c1", timeout=call_timeout)
 
         assert result.status == "timeout"
         assert "0.05" in result.content  # 生效的那个超时值落在结果文案里
@@ -159,7 +159,7 @@ class TestToolPolicy:
             overridden, config=AgentConfig(tool_result_limit=50)
         )
 
-        result = await dispatcher.run("big", {})
+        result = await dispatcher.run("big", {}, call_id="c1")
 
         assert result.content == "x" * 10 + "\n... [truncated]"
 
@@ -169,7 +169,9 @@ class TestToolPolicy:
             plain, config=AgentConfig(tool_result_limit=10)
         )
 
-        assert (await config_only.run("big", {})).content == "x" * 10 + "\n... [truncated]"
+        assert (await config_only.run("big", {}, call_id="c1")).content == (
+            "x" * 10 + "\n... [truncated]"
+        )
 
     async def test_a_callable_policy_reads_the_call_arguments(self):
         seen: list[dict] = []
@@ -185,7 +187,7 @@ class TestToolPolicy:
         slow = _sleeper(schema=schema, policy=policy)
         dispatcher, _, _ = _bare_dispatcher(slow, config=AgentConfig(tool_timeout=30))
 
-        result = await dispatcher.run("slow", {"t": 0.05})
+        result = await dispatcher.run("slow", {"t": 0.05}, call_id="c1")
 
         assert result.status == "timeout"
         assert seen == [{"t": 0.05}]
@@ -205,7 +207,7 @@ class TestToolPolicy:
             tool, hooks=[Reader()], config=AgentConfig(tool_timeout=30, tool_result_limit=500)
         )
 
-        await dispatcher.run("ok", {})
+        await dispatcher.run("ok", {}, call_id="c1")
 
         # on_tool_start sees the config-level values (the tool policy resolves
         # after it, in the execution step); on_tool_complete sees the effective
@@ -232,14 +234,25 @@ class TestCallIdentity:
         ids = [e.call_id for e in events if isinstance(e, ToolCallStarted)]
         assert ids == ["p9:1", "p9:2", "other:1", "pcall_4", "pcall_5"]
 
-    async def test_model_calls_keep_the_provider_id_or_get_one_made_up(self):
+    async def test_a_model_call_keeps_the_provider_id_and_demands_one(self):
+        """model-origin 身份由 loop 在流式期铸好随调用传入——没有兜底合成。"""
         dispatcher, events, _ = _bare_dispatcher(echo_tool())
 
         await dispatcher.run("echo", {}, call_id="from-provider")
-        await dispatcher.run("echo", {})
+        with pytest.raises(ValueError):
+            await dispatcher.run("echo", {})
 
         ids = [e.call_id for e in events if isinstance(e, ToolCallStarted)]
-        assert ids == ["from-provider", "call_2"]
+        assert ids == ["from-provider"]
+
+    async def test_the_loop_mints_model_side_ids_at_stream_time(self):
+        """mint 是 model-origin 身份的唯一出处：provider id 优先，缺省自增铸
+        ``call_<n>``——计数器恒自增，provider id 也占位，保持一条序列。"""
+        dispatcher, _, _ = _bare_dispatcher(echo_tool())
+
+        assert dispatcher.mint_model_call_id("") == "call_1"
+        assert dispatcher.mint_model_call_id("prov-9") == "prov-9"
+        assert dispatcher.mint_model_call_id("") == "call_3"
 
 
 # ── outcome parity: the origins cannot drift ─────────────────
@@ -281,7 +294,9 @@ class TestOutcomeParity:
         outcomes = {}
         for origin in ("model", "program"):
             dispatcher, _, _ = _bare_dispatcher(tool, config=config)
-            result = await dispatcher.run(name, {}, origin=origin, **kwargs)
+            result = await dispatcher.run(
+                name, {}, call_id="c1", origin=origin, **kwargs
+            )
             outcomes[origin] = (result.status, result.content, result.error_code)
         assert outcomes["model"] == outcomes["program"] == expected
 
@@ -289,7 +304,9 @@ class TestOutcomeParity:
         for origin in ("model", "program"):
             dispatcher, _, _ = _bare_dispatcher(echo_tool())
             dispatcher.registry.disable("echo")
-            result = await dispatcher.run("echo", {"value": "x"}, origin=origin)
+            result = await dispatcher.run(
+                "echo", {"value": "x"}, call_id="c1", origin=origin
+            )
             assert result.status == "denied"
             assert "switched off" in result.content
 
@@ -359,7 +376,9 @@ class TestAvailability:
             ("program", "model_only", "denied"),
         ]
         for origin, name, expected in cases:
-            result = await dispatcher.run(name, {}, origin=origin)
+            result = await dispatcher.run(
+                name, {}, call_id="c1", origin=origin
+            )
             assert result.status == expected, (origin, name, result.status)
 
 

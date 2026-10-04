@@ -103,7 +103,9 @@ class TestBashSession:
             registry, HookRunner(), AgentConfig(tool_timeout=30), publish
         )
 
-        result = await dispatcher.run("bash", {"command": "sleep 5", "timeout": 0.2})
+        result = await dispatcher.run(
+            "bash", {"command": "sleep 5", "timeout": 0.2}, call_id="c1"
+        )
 
         assert result.status == "timeout"
         assert result.content.startswith("timeout:")
