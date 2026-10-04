@@ -114,12 +114,24 @@ class TestRunState:
         assert state.last_usage == Usage(3, 2)
 
     def test_a_tool_call_runs_from_started_to_finished(self):
-        """一个调用的折叠全程：在飞、输出累积、终态，计数与调用数一致。"""
+        """一个调用的折叠全程：参数流（forming）、执行（running）、输出累积、终态，
+        计数与调用数一致。"""
         state = self._state(
             ev.RunStarted(),
-            ev.ToolCallStarted(call_id="c1", name="bash", args={"command": "ls"}),
+            ev.ToolCallArgsDelta(call_id="c1", name="bash", arguments='{"comm'),
+            ev.ToolCallArgsDelta(call_id="c1", arguments='and": "ls"}'),
         )
+        forming = state.tool_calls["c1"]
+        assert forming.status == "forming" and not forming.done
+        assert forming.args_text == '{"command": "ls"}'
         assert [c.name for c in state.tool_calls.values() if not c.done] == ["bash"]
+
+        state.apply(
+            ev.ToolCallStarted(call_id="c1", name="bash", args={"command": "ls"})
+        )
+        assert state.tool_calls["c1"].status == "running"
+        assert state.tool_calls["c1"].args == {"command": "ls"}
+        assert not state.tool_calls["c1"].done
 
         # 输出按调用累积，别的调用的输出不混进来。
         state.apply(ev.ToolOutput(call_id="c1", text="one\n"))

@@ -20,6 +20,7 @@ from .events import (
     RunFinished,
     RunStarted,
     TextDelta,
+    ToolCallArgsDelta,
     ToolCallFinished,
     ToolCallStarted,
     ToolOutput,
@@ -33,9 +34,11 @@ DONE = "done"
 FAILED = "failed"
 CANCELLED = "cancelled"
 
-#: Fold-only tool status: a call that has started and not finished. Never an
-#: event status — the wire carries only the five terminal ``TOOL_*`` values
-#: defined in :mod:`mocode.core.events`.
+#: Fold-only tool statuses: a call the model is still writing the arguments
+#: for, and one that is executing. Neither is an event status — the wire
+#: carries only the five terminal ``TOOL_*`` values defined in
+#: :mod:`mocode.core.events`.
+TOOL_FORMING = "forming"
 TOOL_RUNNING = "running"
 
 
@@ -43,14 +46,21 @@ TOOL_RUNNING = "running"
 class ToolCallState:
     """One tool call as observed so far.
 
-    ``status`` is :data:`TOOL_RUNNING <mocode.core.state.TOOL_RUNNING>` until
-    the call finishes, then one of the terminal ``TOOL_*`` values from
+    ``status`` is :data:`TOOL_FORMING <mocode.core.state.TOOL_FORMING>` while
+    the model streams the arguments, :data:`TOOL_RUNNING
+    <mocode.core.state.TOOL_RUNNING>` once the call is announced for
+    execution, then one of the terminal ``TOOL_*`` values from
     :mod:`mocode.core.events`.
     """
 
     call_id: str = ""
     name: str = ""
     args: dict[str, Any] = field(default_factory=dict)
+    #: The argument text as it streamed in, before the call was announced for
+    #: execution. Fold-only live view: not part of ``to_dict`` — a call that is
+    #: running (or finished) shows its parsed ``args`` instead, and a forming
+    #: call cannot outlive the turn it is in.
+    args_text: str = ""
     status: str = TOOL_RUNNING
     result: str = ""
     details: dict[str, Any] = field(default_factory=dict)
@@ -62,10 +72,11 @@ class ToolCallState:
     def done(self) -> bool:
         """Whether this call has finished — any terminal status, including an error.
 
-        The opposite of :data:`TOOL_RUNNING`: while it is False the call is
-        still in flight and its result is not yet an answer.
+        The opposite of the two fold-only statuses: while it is False the call
+        is still in flight — forming or running — and its result is not yet an
+        answer.
         """
-        return self.status != TOOL_RUNNING
+        return self.status not in (TOOL_RUNNING, TOOL_FORMING)
 
     @property
     def output_text(self) -> str:
@@ -152,12 +163,27 @@ class RunState:
                 self._elide_content()
             case ReasoningDelta():
                 self.reasoning += event.text
+            case ToolCallArgsDelta():
+                call = self.tool_calls.get(event.call_id)
+                if call is None:
+                    call = self.tool_calls.setdefault(
+                        event.call_id,
+                        ToolCallState(
+                            call_id=event.call_id, name=event.name, status=TOOL_FORMING
+                        ),
+                    )
+                if event.name:
+                    call.name = event.name
+                call.args_text += event.arguments
             case ToolCallStarted():
-                self.tool_calls[event.call_id] = ToolCallState(
-                    call_id=event.call_id,
-                    name=event.name,
-                    args=dict(event.args),
-                )
+                call = self.tool_calls.get(event.call_id)
+                if call is None:
+                    call = ToolCallState(call_id=event.call_id, name=event.name)
+                    self.tool_calls[event.call_id] = call
+                else:
+                    call.name = event.name or call.name
+                call.status = TOOL_RUNNING
+                call.args = dict(event.args)
             case ToolOutput():
                 call = self.tool_calls.get(event.call_id)
                 if call is not None:
