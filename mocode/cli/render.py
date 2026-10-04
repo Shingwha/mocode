@@ -5,11 +5,12 @@ into lines from :mod:`mocode.cli.lines`; it implements no hooks and intercepts
 nothing. What it owns is the state of a turn *as it is being drawn* — which tool
 calls are in flight, and which row on screen each of them owns.
 
-A tool call owns a row from the moment it starts: a dim placeholder that is
-rewritten in place with its verdict when it ends. That gives a slow, quiet tool
-a visible row while it runs at no cost in lines, and it keeps a parallel batch
-to one row per call, in the order the calls were made rather than the order
-they happen to finish.
+A tool call owns a row from the moment the model names it: a dim placeholder
+opened while the arguments stream, rewritten in place with the final
+arguments when the call starts and with its verdict when it ends. That gives
+a slow, quiet tool a visible row while it runs at no cost in lines, and it
+keeps a parallel batch to one row per call, in the order the calls were made
+rather than the order they happen to finish.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from ..core.events import (
     RunFinished,
     RunStarted,
     TextDelta,
+    ToolCallArgsDelta,
     ToolCallFinished,
     ToolCallStarted,
     ToolOutput,
@@ -67,6 +69,9 @@ class CLIRenderer:
             case ReasoningDelta():
                 self._d.stream(event.text, kind="reasoning")
 
+            case ToolCallArgsDelta():
+                self._tool_forming(event)
+
             case ToolCallStarted():
                 self._tool_start(event)
 
@@ -108,17 +113,40 @@ class CLIRenderer:
 
     # ── Tool calls ─────────────────────────────────────────
 
-    def _tool_start(self, event: ToolCallStarted) -> None:
-        """Claim the call's row, so its verdict has somewhere to land.
+    def _tool_forming(self, event: ToolCallArgsDelta) -> None:
+        """Open the call's row the moment the model names the tool.
 
-        Nothing else may be drawn while a batch runs, or the row offsets this
-        row is addressed by stop being true — the display freezes the block the
-        moment anything else is printed.
+        Arguments stream before the call runs, and the first fragment carries
+        the name — so the row opens on the tool, and the name-only pending
+        line stands there while the rest of the arguments arrive. Later
+        fragments draw nothing: partial JSON has no summary to show, and a row
+        rewritten per fragment is a row that flickers. ``ToolCallStarted``
+        rewrites the row with the final arguments.
         """
-        self._running[event.call_id] = event.args
+        if event.call_id in self._rows or not event.name:
+            return
         self._rows[event.call_id] = self._d.place(
-            L.tool_pending(event.name, event.args, self._conversation.tools)
+            L.tool_pending(event.name, {}, self._conversation.tools)
         )
+
+    def _tool_start(self, event: ToolCallStarted) -> None:
+        """Give the call's row the final arguments, so its verdict has somewhere
+        to land.
+
+        A row the argument stream already opened is rewritten in place with the
+        final arguments; a call no fragment announced — a program-origin call,
+        a model that never named the tool — claims its row now. Nothing else
+        may be drawn while a batch runs, or the row offsets this row is
+        addressed by stop being true — the display freezes the block the moment
+        anything else is printed.
+        """
+        row = self._rows.get(event.call_id)
+        line = L.tool_pending(event.name, event.args, self._conversation.tools)
+        if row is None:
+            self._rows[event.call_id] = self._d.place(line)
+        else:
+            self._d.rewrite(row, line)
+        self._running[event.call_id] = event.args
 
     def _tool_done(self, event: ToolCallFinished) -> None:
         args = self._running.pop(event.call_id, {})
