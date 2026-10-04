@@ -1,4 +1,7 @@
 # Spec 三相位 · 工具调用的流式事件、身份与渲染（波次 W1）
+
+✅ 2026-10-04 完成 @ `feat/tool-call-streaming`（五个 commit `bffdbd7`→`faea778`，逐个全量绿；T3+T5 合并为 commit `732e62b`——原因见 deviation：显示测试驱动 loop，拆开任何一半都红）
+
 > 分支 `feat/tool-call-streaming`（worktree 为界，只此一个 agent）；
 > 前置：无；深读：`00-overview.md`（本组，D1-D8 与不变量以它为准）。
 > 行号为基线锚（master @ `a43cf7e`），会漂移，按语义定位。

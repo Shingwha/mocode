@@ -1,5 +1,7 @@
 # Spec Group · 工具调用的流式三相位（2026-10-04）
 
+✅ 2026-10-04 全组完成（W1 合并入 master，merge `e94fefb` @ `feat/tool-call-streaming`；509 passed / exit 0，pre 505 → post 509，+4 新用例零删除；过程中打回一次：T3 与 T5 的显示测试端到端驱动 loop、拆开必红，重排为五个"逐 commit 全量绿"的原子提交；两处 three→four 失真文案随 C1/C5 修正；不 push，等用户指令）
+
 > Group: `specs/2026-10-04-tool-call-streaming/`
 > 来源：用户要求"从底层重构，让内核更干净清晰，不要打补丁式代码，不需要向后兼容"
 > ——具体诉求：后端/嵌入方要能实时预览工具调用（write、edit 等）的状态，且 CLI 终端
