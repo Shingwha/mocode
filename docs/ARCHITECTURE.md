@@ -18,7 +18,7 @@ mocode/
 │   ├── turn.py          Turn — one turn's window on the channel; wait/cancel
 │   ├── channel.py       EventChannel, Subscription — the run's event stream
 │   ├── dispatch.py      ToolDispatcher, DispatchResult — the one execution path
-│   ├── events.py        Event + the twelve events a run emits
+│   ├── events.py        Event + the thirteen events a run emits
 │   ├── state.py         RunState, ToolCallState — events folded into a snapshot
 │   ├── hook.py          AgentHook, HookRunner, contexts — the interception channel
 │   ├── prompt.py        Prompt, Section — section-based XML assembly
@@ -272,7 +272,7 @@ start(prompt) → Turn
       │   ├─ IterationStarted
       │   ├─ before_request(ctx)        intercept: the request about to be sent
       │   ├─ provider.stream(...)       retried by with_retry_stream
-      │   │   └─ TextDelta / ReasoningDelta as chunks arrive
+      │   │   └─ TextDelta / ReasoningDelta / ToolCallArgsDelta as chunks arrive
       │   ├─ after_response(ctx)        intercept: usage / finish reason
       │   ├─ IterationFinished          usage + stop reason
       │   └─ per tool call, in parallel:

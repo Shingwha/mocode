@@ -52,7 +52,7 @@ around it.
 | `RunFailed` | `error`, `kind` | a turn ended on an unhandled error |
 | `IterationStarted` / `IterationFinished` | `iteration` / `iteration`, `usage`, `stop_reason` | one LLM call, before and after |
 | `TextDelta` / `ReasoningDelta` | `text` | a fragment of the answer / of the reasoning trace |
-| `ToolCallStarted` / `ToolOutput` / `ToolCallFinished` | `call_id`, `name`, `args`, `origin`, `parent_call_id` / `call_id`, `text`, `stream` / `call_id`, `name`, `status`, `result`, `error_code`, `duration`, `details`, `origin`, `parent_call_id` | a tool call's three moments, one identity |
+| `ToolCallArgsDelta` / `ToolCallStarted` / `ToolOutput` / `ToolCallFinished` | `call_id`, `name`, `arguments` / `call_id`, `name`, `args`, `origin`, `parent_call_id` / `call_id`, `text`, `stream` / `call_id`, `name`, `status`, `result`, `error_code`, `duration`, `details`, `origin`, `parent_call_id` | a tool call's four moments, one identity |
 | `Notice` | `message`, `level` | a line a plugin or the host wants to say |
 | `PluginMessage` | `kind`, `data`, `block_id`, `sealed` | a structured plugin entry; `block_id` addresses a display block (`mocode.core.events`, and `mocode.plugins`) |
 | `StopReason` / `ToolStatus` | `"completed" \| "max_iterations" \| "max_tool_calls" \| "time_budget" \| "cancelled"` / `"ok" \| "error" \| "timeout" \| "denied" \| "not_found"` | the two closed vocabularies |
@@ -138,7 +138,7 @@ caller's side or inside a hook.
 | Name | Purpose |
 |---|---|
 | `RunState` | the events folded into a snapshot: `status`, `model`, `iteration`, `content`, `answer`, `reasoning`, `tool_calls`, `usage`, `last_usage`, `error`, `apply(event)`, `to_dict()` |
-| `ToolCallState` | `call_id`, `name`, `args`, `status`, `result`, `details`, `error_code`, `duration`, `output`, `.output_text`, `.done` — `status` is `"running"` until the call finishes |
+| `ToolCallState` | `call_id`, `name`, `args`, `status`, `result`, `details`, `error_code`, `duration`, `output`, `.output_text`, `.done` — `status` is `"forming"` while the model streams the arguments, `"running"` while it executes, then a terminal `TOOL_*` value |
 
 ## `mocode.host` — the embeddable layer
 
@@ -257,7 +257,7 @@ reaches into `mocode.core`:
 | commands | `Command`, `CommandContext`, `CommandResult`, `CommandRegistry`, `Kind`, `CONTINUE`, `EXIT` |
 | hooks | `AgentHook`, `HookRunner`, `IterationContext`, `RequestContext`, `ResponseContext` |
 | prompt | `Prompt`, `Section` |
-| events | `Event`, `RunStarted`, `RunFinished`, `RunFailed`, `IterationStarted`, `IterationFinished`, `TextDelta`, `ReasoningDelta`, `ToolCallStarted`, `ToolOutput`, `ToolCallFinished`, `Notice`, `PluginMessage`, `TOOL_*`, `ToolStatus`, `RunState` |
+| events | `Event`, `RunStarted`, `RunFinished`, `RunFailed`, `IterationStarted`, `IterationFinished`, `TextDelta`, `ReasoningDelta`, `ToolCallArgsDelta`, `ToolCallStarted`, `ToolOutput`, `ToolCallFinished`, `Notice`, `PluginMessage`, `TOOL_*`, `ToolStatus`, `RunState` |
 | loop | `AgentConfig`, `Turn`, `LoopResult`, `IterationLimit`, `EventChannel`, `Subscription` — the loop itself is the host's to assemble (`mocode.core` if you build one yourself) |
 | providers | `Provider`, `Chunk`, `Usage`, `ToolCall`, `ToolCallDelta`, `ModelSpec`, `Effort`, `EFFORTS`, `RetryPolicy`, `RetryDeadlineExceeded`, `StreamAccumulator` |
 | transcript | `IMAGE_PLACEHOLDER`, `assistant_message`, `tool_result`, `tool_call_dicts`, `text_of`, `reasoning_of`, `content_parts`, `is_user`, `is_assistant`, `is_tool_result`, `tool_calls_of`, `tool_call_id`, `tool_call_name`, `tool_call_arguments`, `tool_call_args`, `tool_call_by_id`, `answered_call_id` |

@@ -122,6 +122,7 @@ plain data: each has a `type` string, a `run_id`, a monotonic `seq`, and a
 | `IterationStarted` | `iteration` | one LLM call is about to happen |
 | `TextDelta` | `text` | a fragment of the answer |
 | `ReasoningDelta` | `text` | a fragment of the model's reasoning trace |
+| `ToolCallArgsDelta` | `call_id`, `name`, `arguments` | a fragment of a tool call the model is streaming — same `call_id` as its started/finished pair |
 | `IterationFinished` | `iteration`, `usage`, `stop_reason` | the response is complete |
 | `ToolCallStarted` | `call_id`, `name`, `args`, `origin`, `parent_call_id` | a tool is about to run; args are final |
 | `ToolOutput` | `call_id`, `text`, `stream` | a running tool produced output |
@@ -144,7 +145,7 @@ Four rules make the stream safe to build on:
 
 - **Text arrives in fragments; concatenate them in `seq` order.** If you only
   want the final answer, read `RunFinished.content` and ignore deltas.
-- **A tool call is an object with an identity, not a return value.** All three
+- **A tool call is an object with an identity, not a return value.** All four
   tool events carry the same `call_id`, which correlates with the tool message
   in `conv.messages` (`tool_call_id`).
 - **A turn ends with exactly one of `RunFinished` or `RunFailed`** — including
@@ -204,7 +205,11 @@ conv.state.tool_calls["c1"]       # one call by id
 Each `ToolCallState` has `name`, `args`, `status`, `result`, `details`,
 `error_code`, `duration`, and `output` / `output_text` — everything the tool
 streamed while it ran. `result` is what went to the model; `details` is
-structured data for *you* — it never entered the conversation.
+structured data for *you* — it never entered the conversation. `status` is
+`"forming"` while the model streams the arguments and `"running"` while the
+call executes, then one of the terminal `TOOL_*` values; `args_text` holds
+the arguments as they streamed in — a fold-only live view, never part of
+`to_dict()`.
 
 Because it is just a reducer over the events, you can hold your own:
 
