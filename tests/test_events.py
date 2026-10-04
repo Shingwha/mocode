@@ -17,6 +17,7 @@ ALL_EVENTS = [
     ev.IterationStarted(iteration=2),
     ev.TextDelta(text="hi"),
     ev.ReasoningDelta(text="why"),
+    ev.ToolCallArgsDelta(call_id="c1", name="write", arguments='{"pa'),
     ev.ToolCallStarted(call_id="c1", name="echo", args={"v": 1}),
     ev.ToolOutput(call_id="c1", text="out", stream="stderr"),
     ev.ToolCallFinished(call_id="c1", name="echo", status="ok", result="r", duration=1.5),

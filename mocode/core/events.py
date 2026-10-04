@@ -9,9 +9,9 @@ Two rules keep the contract usable:
 
 * ``run_id`` + ``seq`` identify and order events. A consumer that fans them out
   to several places can re-order or drop duplicates without guessing.
-* A tool call is an object with an identity, not a return value: it starts,
-  may report output while it runs, and finishes with a status. All three
-  events carry the same ``call_id``.
+* A tool call is an object with an identity, not a return value: the model
+  streams its arguments, it starts, may report output while it runs, and
+  finishes with a status. All four events carry the same ``call_id``.
 """
 
 from __future__ import annotations
@@ -193,6 +193,26 @@ ToolStatus = Literal["ok", "error", "timeout", "denied", "not_found"]
 
 
 @dataclass
+class ToolCallArgsDelta(Event):
+    """A fragment of a tool call the model is streaming.
+
+    The model produces a tool call the way it produces text: in pieces. The
+    first fragment of a call carries its ``name``; every fragment carries the
+    ``call_id`` — the identity this call's ``ToolCallStarted`` and
+    ``ToolCallFinished`` also carry, so a consumer folds the fragments with
+    the call they belong to. Concatenate the ``arguments`` of one ``call_id``
+    to get the arguments exactly as the model wrote them. There is no
+    separate start event: the first fragment that names a tool is where a
+    consumer opens its row.
+    """
+
+    call_id: str = ""
+    name: str = ""
+    arguments: str = ""
+    type: ClassVar[str] = "tool_call_args_delta"
+
+
+@dataclass
 class ToolCallStarted(Event):
     """A tool is about to execute.
 
@@ -321,6 +341,7 @@ __all__ = [
     "TOOL_NOT_FOUND",
     "TOOL_OK",
     "TOOL_TIMEOUT",
+    "ToolCallArgsDelta",
     "ToolCallFinished",
     "ToolCallStarted",
     "ToolOutput",
